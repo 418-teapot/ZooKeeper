@@ -107,10 +107,7 @@ mod tests {
 
     #[test]
     fn test_parse_zoo_log_from_temp_file() {
-        let tmp = std::env::temp_dir().join(format!(
-            "zutil-test-parse-zoo-log-{}.jsonl",
-            std::process::id()
-        ));
+        let tmp = ztest::temp_dir("zutil-parse-zoo-log").join("log.jsonl");
         let content = r#"{"a":1,"b":"two"}
 {"x":true}
 not valid json
@@ -141,10 +138,7 @@ not valid json
         let line = format!(
             r#"{{"hook": "subagent-prompt", "event": "validate", "msg": "hello{vs16}world"}}"#
         );
-        let tmp = std::env::temp_dir().join(format!(
-            "zutil-test-parse-vs16-{}.jsonl",
-            std::process::id()
-        ));
+        let tmp = ztest::temp_dir("zutil-parse-vs16").join("log.jsonl");
         std::fs::write(&tmp, line).unwrap();
 
         let result = parse_zoo_log(tmp.to_str().unwrap());

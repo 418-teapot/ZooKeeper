@@ -210,17 +210,10 @@ pub fn downgrade_status(status: &str) -> &str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::bundle::testutil::temp_dir;
     use serde_json::Value;
     use std::fs;
     use std::path::PathBuf;
-
-    fn temp_dir(name: &str) -> PathBuf {
-        let dir =
-            std::env::temp_dir().join("zwiki-test").join("property").join(name);
-        let _ = fs::remove_dir_all(&dir);
-        fs::create_dir_all(&dir).expect("failed to create temp dir");
-        dir
-    }
 
     fn make_page(dir: &Path, filename: &str, frontmatter: &str) -> PathBuf {
         let path = dir.join(filename);

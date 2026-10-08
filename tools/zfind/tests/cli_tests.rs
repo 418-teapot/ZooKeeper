@@ -11,8 +11,13 @@ use std::path::Path;
 use std::process::Command;
 
 use rusqlite::Connection;
-use serde_json::{Value, json};
-use tempfile::TempDir;
+use serde_json::Value;
+use ztest::TestEnv;
+use ztest::parse_stdout_json;
+use ztest::pi::{
+    assistant_message, data_dir as pi_data_dir,
+    session_lines as pi_session_lines, tool_result_message, user_message,
+};
 
 /// Path to the `zfind` binary, set by `cargo test`.
 const ZFIND_BIN: &str = env!("CARGO_BIN_EXE_zfind");
@@ -22,7 +27,9 @@ const NO_DB: &str = "/tmp/zfind-test-nonexistent.db";
 
 #[test]
 fn test_help_exits_0() {
-    let output = Command::new(ZFIND_BIN)
+    let env = TestEnv::new();
+    let output = env
+        .command(ZFIND_BIN)
         .arg("--help")
         .output()
         .expect("failed to run zfind --help");
@@ -48,7 +55,9 @@ fn test_help_exits_0() {
 
 #[test]
 fn test_list_with_nonexistent_db_exits_2() {
-    let output = Command::new(ZFIND_BIN)
+    let env = TestEnv::new();
+    let output = env
+        .command(ZFIND_BIN)
         .args(["--db", NO_DB, "list"])
         .output()
         .expect("failed to run zfind --db <no-db> list");
@@ -67,7 +76,9 @@ fn test_list_with_nonexistent_db_exits_2() {
 
 #[test]
 fn test_show_invalid_with_nonexistent_db_exits_2() {
-    let output = Command::new(ZFIND_BIN)
+    let env = TestEnv::new();
+    let output = env
+        .command(ZFIND_BIN)
         .args(["--db", NO_DB, "show", "nonexistent-session-xyz"])
         .output()
         .expect("failed to run zfind show <invalid>");
@@ -86,7 +97,9 @@ fn test_show_invalid_with_nonexistent_db_exits_2() {
 
 #[test]
 fn test_message_invalid_with_nonexistent_db_exits_2() {
-    let output = Command::new(ZFIND_BIN)
+    let env = TestEnv::new();
+    let output = env
+        .command(ZFIND_BIN)
         .args(["--db", NO_DB, "message", "invalid-msg-id"])
         .output()
         .expect("failed to run zfind message <invalid>");
@@ -108,7 +121,9 @@ fn test_json_list_with_nonexistent_db_exits_2() {
     // With no DB, list exits 2 before producing any output.
     // If there were output (e.g. on a system with a real DB), it
     // should be valid JSON — we guard with the empty check.
-    let output = Command::new(ZFIND_BIN)
+    let env = TestEnv::new();
+    let output = env
+        .command(ZFIND_BIN)
         .args(["--db", NO_DB, "--json", "list"])
         .output()
         .expect("failed to run zfind --json list");
@@ -128,7 +143,9 @@ fn test_json_list_with_nonexistent_db_exits_2() {
 
 #[test]
 fn test_list_help_shows_all_flag() {
-    let output = Command::new(ZFIND_BIN)
+    let env = TestEnv::new();
+    let output = env
+        .command(ZFIND_BIN)
         .args(["list", "--help"])
         .output()
         .expect("failed to run zfind list --help");
@@ -146,7 +163,9 @@ fn test_list_help_shows_all_flag() {
 
 #[test]
 fn test_list_all_with_nonexistent_db_exits_2() {
-    let output = Command::new(ZFIND_BIN)
+    let env = TestEnv::new();
+    let output = env
+        .command(ZFIND_BIN)
         .args(["--db", NO_DB, "list", "--all"])
         .output()
         .expect("failed to run zfind --db <no-db> list --all");
@@ -167,7 +186,9 @@ fn test_list_all_with_nonexistent_db_exits_2() {
 fn test_no_args_exits_1() {
     // No subcommand given → print help and exit 1
     // (consistent with zlog, zinspect, ztrace)
-    let output = Command::new(ZFIND_BIN)
+    let env = TestEnv::new();
+    let output = env
+        .command(ZFIND_BIN)
         .output()
         .expect("failed to run zfind with no args");
     assert_eq!(
@@ -185,7 +206,9 @@ fn test_no_args_exits_1() {
 
 #[test]
 fn test_search_help_shows_search_specific_flags() {
-    let output = Command::new(ZFIND_BIN)
+    let env = TestEnv::new();
+    let output = env
+        .command(ZFIND_BIN)
         .args(["search", "--help"])
         .output()
         .expect("failed to run zfind search --help");
@@ -207,7 +230,9 @@ fn test_search_help_shows_search_specific_flags() {
 
 #[test]
 fn test_show_help_shows_show_specific_usage() {
-    let output = Command::new(ZFIND_BIN)
+    let env = TestEnv::new();
+    let output = env
+        .command(ZFIND_BIN)
         .args(["show", "--help"])
         .output()
         .expect("failed to run zfind show --help");
@@ -225,7 +250,9 @@ fn test_show_help_shows_show_specific_usage() {
 
 #[test]
 fn test_message_help_shows_message_specific_flags() {
-    let output = Command::new(ZFIND_BIN)
+    let env = TestEnv::new();
+    let output = env
+        .command(ZFIND_BIN)
         .args(["message", "--help"])
         .output()
         .expect("failed to run zfind message --help");
@@ -251,8 +278,8 @@ fn test_message_help_shows_message_specific_flags() {
 /// message, and part tables populated with sample data. The fixture is alive
 /// for the duration of the test (drop = cleanup).
 struct TestFixture {
-    /// Keeps the temp dir alive until the test ends.
-    _db_dir: TempDir,
+    /// Hermetic environment; its opencode data dir holds the fixture DB.
+    env: TestEnv,
     /// Absolute path to the SQLite database file.
     db_path: String,
 }
@@ -260,19 +287,23 @@ struct TestFixture {
 impl TestFixture {
     /// Create a new fixture with a populated database.
     fn new() -> Self {
-        let db_dir = TempDir::new().expect("create temp dir for db");
-        let db_path = db_dir.path().join("opencode.db");
+        let env = TestEnv::new();
+        let db_path = env.opencode_data().join("opencode.db");
         let db_path_str = db_path.to_string_lossy().to_string();
 
         Self::create_db(&db_path);
 
-        Self { _db_dir: db_dir, db_path: db_path_str }
+        Self { env, db_path: db_path_str }
     }
 
     /// Build a `Command` that runs `zfind` with `--db` set to the fixture's
     /// database and `--no-color` (table rendering needs it without a TTY).
+    ///
+    /// The harness pins `COLUMNS` to 80 so table output does not depend on
+    /// the terminal size of the test environment: `zutil::get_terminal_width`
+    /// reads `COLUMNS` before querying the control terminal.
     fn zfind(&self) -> Command {
-        let mut cmd = Command::new(ZFIND_BIN);
+        let mut cmd = self.env.command(ZFIND_BIN);
         cmd.args(["--db", &self.db_path, "--no-color"]);
         cmd
     }
@@ -282,80 +313,21 @@ impl TestFixture {
     fn create_db(path: &Path) {
         let conn = Connection::open(path).expect("open test db");
 
-        conn.execute_batch(
-            "CREATE TABLE session (
-                id TEXT PRIMARY KEY,
-                parent_id TEXT,
-                title TEXT,
-                slug TEXT,
-                agent TEXT,
-                directory TEXT,
-                model TEXT,
-                time_created INTEGER,
-                time_updated INTEGER,
-                cost REAL,
-                tokens_input REAL,
-                tokens_output REAL,
-                tokens_reasoning REAL,
-                tokens_cache_read REAL,
-                tokens_cache_write REAL
-            );
-            CREATE TABLE message (
-                id TEXT PRIMARY KEY,
-                session_id TEXT NOT NULL,
-                time_created INTEGER,
-                data TEXT
-            );
-            CREATE TABLE part (
-                id TEXT PRIMARY KEY,
-                message_id TEXT NOT NULL,
-                session_id TEXT NOT NULL,
-                time_created INTEGER,
-                time_updated INTEGER,
-                data TEXT
-            );",
-        )
-        .expect("create tables");
+        zutil::test_db::create_common_tables(&conn);
+        zutil::test_db::create_part_table(&conn);
 
-        let model_json = r#"{"name":"deepseek-v4"}"#;
-
-        // ── ses-001 (root, "auth middleware debug") ───────────────────────
-        conn.execute(
-            concat!(
-                "INSERT INTO session VALUES ",
-                "(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15)",
-            ),
-            rusqlite::params![
-                "ses-001",
-                Option::<&str>::None,
-                "auth middleware debug",
-                "auth-middleware-debug",
-                "beaver",
-                "/app",
-                model_json,
-                1_715_000_000_000_i64,
-                1_715_000_100_000_i64,
-                0.012,
-                500.0,
-                300.0,
-                0.0,
-                0.0,
-                0.0,
-            ],
-        )
-        .expect("insert ses-001");
+        // ── ses-001 (root, "auth middleware debug") and ses-002 (root,
+        //    "DB migration from v2 to v3") ────────────────────────────────
+        zutil::test_db::seed_common_sessions(&conn);
 
         // msg-001: user turn with text
-        conn.execute(
-            "INSERT INTO message VALUES (?1,?2,?3,?4)",
-            rusqlite::params![
-                "msg-001",
-                "ses-001",
-                1_715_000_010_000_i64,
-                r#"{"role":"user","agent":"beaver"}"#,
-            ],
-        )
-        .expect("insert msg-001");
+        zutil::test_db::insert_message(
+            &conn,
+            "msg-001",
+            "ses-001",
+            1_715_000_010_000,
+            r#"{"role":"user","agent":"beaver"}"#,
+        );
 
         conn.execute(
             "INSERT INTO part VALUES (?1,?2,?3,?4,?5,?6)",
@@ -372,16 +344,13 @@ impl TestFixture {
 
         // msg-002: assistant turn with reasoning + tool (its structured
         // `model` decides the session-level model shown in the meta block)
-        conn.execute(
-            "INSERT INTO message VALUES (?1,?2,?3,?4)",
-            rusqlite::params![
-                "msg-002",
-                "ses-001",
-                1_715_000_020_000_i64,
-                r#"{"role":"assistant","agent":"beaver","model":{"providerID":"openai","modelID":"gpt-5"}}"#,
-            ],
-        )
-        .expect("insert msg-002");
+        zutil::test_db::insert_message(
+            &conn,
+            "msg-002",
+            "ses-001",
+            1_715_000_020_000,
+            r#"{"role":"assistant","agent":"beaver","model":{"providerID":"openai","modelID":"gpt-5"}}"#,
+        );
 
         conn.execute(
             "INSERT INTO part VALUES (?1,?2,?3,?4,?5,?6)",
@@ -406,43 +375,14 @@ impl TestFixture {
         )
         .expect("insert part tool msg-002");
 
-        // ── ses-002 (root, "DB migration from v2 to v3") ──────────────────
-        conn.execute(
-            concat!(
-                "INSERT INTO session VALUES ",
-                "(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15)",
-            ),
-            rusqlite::params![
-                "ses-002",
-                Option::<&str>::None,
-                "DB migration from v2 to v3",
-                "db-migration-v2-v3",
-                "lynx",
-                "/db",
-                model_json,
-                1_715_000_200_000_i64,
-                1_715_000_300_000_i64,
-                0.008,
-                200.0,
-                100.0,
-                50.0,
-                0.0,
-                0.0,
-            ],
-        )
-        .expect("insert ses-002");
-
         // msg-003: user turn with text
-        conn.execute(
-            "INSERT INTO message VALUES (?1,?2,?3,?4)",
-            rusqlite::params![
-                "msg-003",
-                "ses-002",
-                1_715_000_210_000_i64,
-                r#"{"role":"user","agent":"lynx"}"#,
-            ],
-        )
-        .expect("insert msg-003");
+        zutil::test_db::insert_message(
+            &conn,
+            "msg-003",
+            "ses-002",
+            1_715_000_210_000,
+            r#"{"role":"user","agent":"lynx"}"#,
+        );
 
         conn.execute(
             "INSERT INTO part VALUES (?1,?2,?3,?4,?5,?6)",
@@ -458,14 +398,13 @@ impl TestFixture {
         .expect("insert part msg-003");
 
         // msg-004: assistant with tokens, various part types
-        conn.execute(
-            "INSERT INTO message VALUES (?1,?2,?3,?4)",
-            rusqlite::params![
-                "msg-004", "ses-002", 1_715_000_220_000_i64,
-                r#"{"role":"assistant","agent":"lynx","tokens":{"input":100,"output":50}}"#,
-            ],
-        )
-        .expect("insert msg-004");
+        zutil::test_db::insert_message(
+            &conn,
+            "msg-004",
+            "ses-002",
+            1_715_000_220_000,
+            r#"{"role":"assistant","agent":"lynx","tokens":{"input":100,"output":50}}"#,
+        );
 
         // text part → exercises print_text_part (label: "text")
         conn.execute(
@@ -518,30 +457,26 @@ impl TestFixture {
         .expect("insert part custom msg-004");
 
         // ── ses-003 (child of ses-001, no messages) ───────────────────────
-        conn.execute(
-            concat!(
-                "INSERT INTO session VALUES ",
-                "(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15)",
-            ),
-            rusqlite::params![
-                "ses-003",
-                "ses-001",
-                "auth retry",
-                "auth-retry",
-                "beaver",
-                "/app",
-                model_json,
-                1_715_000_400_000_i64,
-                1_715_000_500_000_i64,
-                0.004,
-                100.0,
-                50.0,
-                0.0,
-                0.0,
-                0.0,
-            ],
-        )
-        .expect("insert ses-003");
+        zutil::test_db::insert_session(
+            &conn,
+            &zutil::test_db::SessionRow {
+                id: "ses-003",
+                parent_id: Some("ses-001"),
+                title: "auth retry",
+                slug: "auth-retry",
+                agent: "beaver",
+                directory: "/app",
+                model: r#"{"name":"deepseek-v4"}"#,
+                time_created: 1_715_000_400_000,
+                time_updated: 1_715_000_500_000,
+                cost: 0.004,
+                tokens_input: 100.0,
+                tokens_output: 50.0,
+                tokens_reasoning: 0.0,
+                tokens_cache_read: 0.0,
+                tokens_cache_write: 0.0,
+            },
+        );
 
         conn.close().expect("close test db");
     }
@@ -1062,26 +997,25 @@ fn test_message_no_match() {
 
 // ── Default aggregation across multiple databases ───────────────────────────
 
-/// Build a temp data dir with both fixture DBs and return it.
-fn two_db_data_dir() -> TempDir {
-    let dir = TempDir::new().expect("create temp data dir");
-    TestFixture::create_db(&dir.path().join("opencode.db"));
-    zutil::test_db::create_second_db(&dir.path().join("opencode-stable.db"));
-    dir
+/// Populate a hermetic environment's opencode data dir with both fixture
+/// databases.
+fn two_db_env() -> TestEnv {
+    let env = TestEnv::new();
+    TestFixture::create_db(&env.opencode_data().join("opencode.db"));
+    zutil::test_db::create_second_db(
+        &env.opencode_data().join("opencode-stable.db"),
+    );
+    env
 }
 
 #[test]
 fn test_default_no_db_list_aggregates_two_databases() {
-    let dir = two_db_data_dir();
-    let data_dir = dir.path().to_string_lossy().to_string();
-    // A deterministic environment: no `--db` auto-detects both hosts, so
-    // pi must be pinned to an empty dir to keep the count exact (the real
-    // `~/.pi/agent` must not leak into the fixture run).
-    let empty_pi = TempDir::new().expect("create temp pi dir");
+    // No `--db` auto-detects both hosts; the harness pins pi to an empty
+    // dir so the count stays exact (the real `~/.pi/agent` cannot leak in).
+    let env = two_db_env();
 
-    let output = Command::new(ZFIND_BIN)
-        .env("ZOO_OPENCODE_DATA_DIR", &data_dir)
-        .env("ZOO_PI_DATA_DIR", empty_pi.path())
+    let output = env
+        .command(ZFIND_BIN)
         .args(["--no-color", "list", "--json"])
         .output()
         .expect("failed to run zfind list --json (default aggregation)");
@@ -1111,16 +1045,13 @@ fn test_default_no_db_list_aggregates_two_databases() {
 
 #[test]
 fn test_default_search_finds_session_only_in_second_db() {
-    let dir = two_db_data_dir();
-    let data_dir = dir.path().to_string_lossy().to_string();
-    // Same deterministic environment as the list test above.
-    let empty_pi = TempDir::new().expect("create temp pi dir");
+    // Same hermetic environment as the list test above.
+    let env = two_db_env();
 
     // "archived" only appears in ses-900's title → single match → the
     // command prints the session ID (pipe-friendly output).
-    let output = Command::new(ZFIND_BIN)
-        .env("ZOO_OPENCODE_DATA_DIR", &data_dir)
-        .env("ZOO_PI_DATA_DIR", empty_pi.path())
+    let output = env
+        .command(ZFIND_BIN)
         .args(["--no-color", "search", "archived"])
         .output()
         .expect("failed to run zfind search archived (default aggregation)");
@@ -1139,12 +1070,13 @@ fn test_default_search_finds_session_only_in_second_db() {
 
 #[test]
 fn test_explicit_db_preserves_single_db_behavior() {
-    let dir = two_db_data_dir();
-    let data_dir = dir.path().to_string_lossy().to_string();
+    let env = two_db_env();
+    let data_dir = env.opencode_data().to_string_lossy().to_string();
 
     // First DB only: root sessions ses-001/ses-002; ses-900 must be
     // invisible (ses-003 is a child and excluded by `list`).
-    let output = Command::new(ZFIND_BIN)
+    let output = env
+        .command(ZFIND_BIN)
         .args([
             "--db",
             &format!("{data_dir}/opencode.db"),
@@ -1175,7 +1107,8 @@ fn test_explicit_db_preserves_single_db_behavior() {
     );
 
     // Second DB only: ses-001 must be invisible, ses-900 visible.
-    let output = Command::new(ZFIND_BIN)
+    let output = env
+        .command(ZFIND_BIN)
         .args([
             "--db",
             &format!("{data_dir}/opencode-stable.db"),
@@ -1197,7 +1130,8 @@ fn test_explicit_db_preserves_single_db_behavior() {
     assert_eq!(parsed["sessions"][0]["id"], "ses-900");
 
     // Searching for the second-DB session against the first DB exits 2.
-    let output = Command::new(ZFIND_BIN)
+    let output = env
+        .command(ZFIND_BIN)
         .args([
             "--db",
             &format!("{data_dir}/opencode.db"),
@@ -1220,99 +1154,6 @@ fn test_explicit_db_preserves_single_db_behavior() {
 /// A pi session id with UUID shape.
 const PI_UUID: &str = "01a04bc0-fa14-76d5-95ec-a8d5ee80f706";
 
-/// Write one pi session file per entry under
-/// `<root>/sessions/<cwd-dir>/<name>.jsonl`, the layout the pi provider
-/// scans.
-fn pi_data_dir(root: &Path, sessions: &[(&str, &[String])]) {
-    for (name, lines) in sessions {
-        let cwd = root.join("sessions").join("--cwd--");
-        fs::create_dir_all(&cwd).expect("create pi cwd dir");
-        fs::write(cwd.join(format!("{name}.jsonl")), lines.join("\n"))
-            .expect("write pi session file");
-    }
-}
-
-/// One pi session file's JSONL lines: the session header plus message
-/// records (in stream order).
-fn pi_session_lines(
-    id: &str,
-    header_ts: i64,
-    messages: &[Value],
-) -> Vec<String> {
-    let mut lines = vec![
-        json!({
-            "type": "session", "version": 3, "id": id,
-            "timestamp": zutil::epoch_ms_to_iso(header_ts), "cwd": "/w",
-        })
-        .to_string(),
-    ];
-    for msg in messages {
-        lines.push(msg.to_string());
-    }
-    lines
-}
-
-/// A pi `message` record with a user role.
-fn user_message(id: &str, ts: i64, text: &str) -> Value {
-    json!({
-        "type": "message", "id": id, "timestamp": zutil::epoch_ms_to_iso(ts),
-        "message": {
-            "role": "user",
-            "content": [{"type": "text", "text": text}],
-        },
-    })
-}
-
-/// A pi `message` record with an assistant role carrying an optional tool
-/// call.
-fn assistant_message(
-    id: &str,
-    ts: i64,
-    text: &str,
-    tool: Option<(&str, &str)>,
-) -> Value {
-    let mut body = json!({
-        "role": "assistant",
-        "content": [{"type": "text", "text": text}],
-        "timestamp": ts,
-    });
-    if let Some((call_id, name)) = tool {
-        body["content"] = json!([
-            {"type": "text", "text": text},
-            {"type": "toolCall", "id": call_id, "name": name,
-             "arguments": {"command": "ls"}},
-        ]);
-    }
-    json!({
-        "type": "message", "id": id, "timestamp": zutil::epoch_ms_to_iso(ts),
-        "message": body,
-    })
-}
-
-/// A pi `message` record with a toolResult role.
-fn tool_result_message(
-    id: &str,
-    ts: i64,
-    call_id: &str,
-    name: &str,
-    text: &str,
-) -> Value {
-    json!({
-        "type": "message", "id": id, "timestamp": zutil::epoch_ms_to_iso(ts),
-        "message": {
-            "role": "toolResult", "toolCallId": call_id, "toolName": name,
-            "content": [{"type": "text", "text": text}],
-            "isError": false, "timestamp": ts,
-        },
-    })
-}
-
-/// Parse the command's stdout as JSON.
-fn parse_stdout_json(output: &std::process::Output) -> Value {
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    serde_json::from_str(stdout.trim()).expect("stdout should be valid JSON")
-}
-
 /// A pi fixture session with a user turn, an assistant tool call, and its
 /// result — the events `show`/`message` expose.
 fn pi_events_session_lines() -> Vec<String> {
@@ -1325,6 +1166,7 @@ fn pi_events_session_lines() -> Vec<String> {
                 "m2",
                 1_715_000_010_000,
                 "calling bash",
+                None,
                 Some(("call-1", "bash")),
             ),
             tool_result_message(
@@ -1340,13 +1182,13 @@ fn pi_events_session_lines() -> Vec<String> {
 
 #[test]
 fn test_pi_search_hits_session() {
-    let pi_root = TempDir::new().expect("temp pi root");
+    let env = TestEnv::new();
     let lines = pi_events_session_lines();
-    pi_data_dir(pi_root.path(), &[(PI_UUID, &lines)]);
+    pi_data_dir(env.pi_data(), &[(PI_UUID, &lines)]);
 
     // Single match → pipe-friendly output: the bare session id.
-    let output = Command::new(ZFIND_BIN)
-        .env("ZOO_PI_DATA_DIR", pi_root.path())
+    let output = env
+        .command(ZFIND_BIN)
         .args(["--no-color", "--host", "pi", "search", "parser"])
         .output()
         .expect("failed to run zfind --host pi search parser");
@@ -1359,8 +1201,8 @@ fn test_pi_search_hits_session() {
     assert_eq!(stdout.trim(), PI_UUID);
 
     // The provider search matches message text too, not just the label.
-    let output = Command::new(ZFIND_BIN)
-        .env("ZOO_PI_DATA_DIR", pi_root.path())
+    let output = env
+        .command(ZFIND_BIN)
         .args(["--no-color", "--host", "pi", "search", "tests passed"])
         .output()
         .expect("failed to run zfind --host pi search tests passed");
@@ -1370,7 +1212,7 @@ fn test_pi_search_hits_session() {
 
 #[test]
 fn test_pi_search_exact_matches_untruncated_long_title() {
-    let pi_root = TempDir::new().expect("temp pi root");
+    let env = TestEnv::new();
     // Longer than the 60-character label truncation: --exact must match
     // against the full first user message, not the shortened label.
     let long_title = "refactor the entire authentication flow and add \
@@ -1381,10 +1223,10 @@ fn test_pi_search_exact_matches_untruncated_long_title() {
         1_715_000_000_000,
         &[user_message("m1", 1_715_000_001_000, long_title)],
     );
-    pi_data_dir(pi_root.path(), &[(PI_UUID, &lines)]);
+    pi_data_dir(env.pi_data(), &[(PI_UUID, &lines)]);
 
-    let output = Command::new(ZFIND_BIN)
-        .env("ZOO_PI_DATA_DIR", pi_root.path())
+    let output = env
+        .command(ZFIND_BIN)
         .args(["--no-color", "--host", "pi", "search", "--exact", long_title])
         .output()
         .expect("failed to run zfind search --exact <long title>");
@@ -1399,8 +1241,8 @@ fn test_pi_search_exact_matches_untruncated_long_title() {
     // A truncated prefix must NOT match: exact compares the whole,
     // untruncated first user message.
     let truncated: String = long_title.chars().take(60).collect();
-    let output = Command::new(ZFIND_BIN)
-        .env("ZOO_PI_DATA_DIR", pi_root.path())
+    let output = env
+        .command(ZFIND_BIN)
         .args(["--no-color", "--host", "pi", "search", "--exact", &truncated])
         .output()
         .expect("failed to run zfind search --exact <prefix>");
@@ -1413,13 +1255,13 @@ fn test_pi_search_exact_matches_untruncated_long_title() {
 
 #[test]
 fn test_pi_message_scan_hits_newest_across_cwd_dirs() {
-    let pi_root = TempDir::new().expect("temp pi root");
+    let env = TestEnv::new();
     // The newer session sits in the alphabetically-first cwd directory;
     // --scan 1 must consult it even though a full-path sort would scan
     // the older `--z--` session first.
-    fs::create_dir_all(pi_root.path().join("sessions").join("--a--"))
+    fs::create_dir_all(env.pi_data().join("sessions").join("--a--"))
         .expect("create --a-- dir");
-    fs::create_dir_all(pi_root.path().join("sessions").join("--z--"))
+    fs::create_dir_all(env.pi_data().join("sessions").join("--z--"))
         .expect("create --z-- dir");
     let new_lines = pi_session_lines(
         "01a04bc0-fa14-76d5-95ec-222222222222",
@@ -1427,8 +1269,7 @@ fn test_pi_message_scan_hits_newest_across_cwd_dirs() {
         &[user_message("mnew", 1_715_000_101_000, "newest turn")],
     );
     fs::write(
-        pi_root
-            .path()
+        env.pi_data()
             .join("sessions")
             .join("--a--")
             .join("2026-08-29T04-22-13-268Z_01a04bc0-fa14-76d5-95ec-222222222222.jsonl"),
@@ -1441,8 +1282,7 @@ fn test_pi_message_scan_hits_newest_across_cwd_dirs() {
         &[user_message("mold", 1_715_000_001_000, "oldest turn")],
     );
     fs::write(
-        pi_root
-            .path()
+        env.pi_data()
             .join("sessions")
             .join("--z--")
             .join("2026-08-01T00-00-00-000Z_01a04bc0-fa14-76d5-95ec-111111111111.jsonl"),
@@ -1450,8 +1290,8 @@ fn test_pi_message_scan_hits_newest_across_cwd_dirs() {
     )
     .expect("write older pi session");
 
-    let output = Command::new(ZFIND_BIN)
-        .env("ZOO_PI_DATA_DIR", pi_root.path())
+    let output = env
+        .command(ZFIND_BIN)
         .args(["--no-color", "--host", "pi", "message", "mnew", "--scan", "1"])
         .output()
         .expect("failed to run zfind message mnew --scan 1");
@@ -1471,8 +1311,8 @@ fn test_pi_message_scan_hits_newest_across_cwd_dirs() {
     );
 
     // A scan budget of 1 also misses the older session's message.
-    let output = Command::new(ZFIND_BIN)
-        .env("ZOO_PI_DATA_DIR", pi_root.path())
+    let output = env
+        .command(ZFIND_BIN)
         .args(["--no-color", "--host", "pi", "message", "mold", "--scan", "1"])
         .output()
         .expect("failed to run zfind message mold --scan 1");
@@ -1485,12 +1325,12 @@ fn test_pi_message_scan_hits_newest_across_cwd_dirs() {
 
 #[test]
 fn test_pi_show_json() {
-    let pi_root = TempDir::new().expect("temp pi root");
+    let env = TestEnv::new();
     let lines = pi_events_session_lines();
-    pi_data_dir(pi_root.path(), &[(PI_UUID, &lines)]);
+    pi_data_dir(env.pi_data(), &[(PI_UUID, &lines)]);
 
-    let output = Command::new(ZFIND_BIN)
-        .env("ZOO_PI_DATA_DIR", pi_root.path())
+    let output = env
+        .command(ZFIND_BIN)
         .args(["show", PI_UUID, "--host", "pi", "--json"])
         .output()
         .expect("failed to run zfind show <pi> --json");
@@ -1517,17 +1357,15 @@ fn test_pi_show_json() {
 
 #[test]
 fn test_list_merges_both_hosts_with_markers() {
-    let oc_dir = TempDir::new().expect("temp oc dir");
-    let pi_root = TempDir::new().expect("temp pi root");
-    TestFixture::create_db(&oc_dir.path().join("opencode.db"));
+    let env = TestEnv::new();
+    TestFixture::create_db(&env.opencode_data().join("opencode.db"));
     let lines = pi_events_session_lines();
-    pi_data_dir(pi_root.path(), &[(PI_UUID, &lines)]);
+    pi_data_dir(env.pi_data(), &[(PI_UUID, &lines)]);
 
     // Auto (no --host/--db): both hosts merge; JSON rows carry the host
     // tag.
-    let output = Command::new(ZFIND_BIN)
-        .env("ZOO_OPENCODE_DATA_DIR", oc_dir.path())
-        .env("ZOO_PI_DATA_DIR", pi_root.path())
+    let output = env
+        .command(ZFIND_BIN)
         .args(["--no-color", "list", "--json"])
         .output()
         .expect("failed to run zfind list --json (both hosts)");
@@ -1556,9 +1394,8 @@ fn test_list_merges_both_hosts_with_markers() {
 
     // Human-readable mode shows the host column too (wide COLUMNS so the
     // host names are not ellipsized).
-    let output = Command::new(ZFIND_BIN)
-        .env("ZOO_OPENCODE_DATA_DIR", oc_dir.path())
-        .env("ZOO_PI_DATA_DIR", pi_root.path())
+    let output = env
+        .command(ZFIND_BIN)
         .env("COLUMNS", "200")
         .args(["--no-color", "list"])
         .output()
@@ -1573,15 +1410,13 @@ fn test_list_merges_both_hosts_with_markers() {
 
 #[test]
 fn test_pi_list_host_restricted() {
-    let oc_dir = TempDir::new().expect("temp oc dir");
-    let pi_root = TempDir::new().expect("temp pi root");
-    TestFixture::create_db(&oc_dir.path().join("opencode.db"));
+    let env = TestEnv::new();
+    TestFixture::create_db(&env.opencode_data().join("opencode.db"));
     let lines = pi_events_session_lines();
-    pi_data_dir(pi_root.path(), &[(PI_UUID, &lines)]);
+    pi_data_dir(env.pi_data(), &[(PI_UUID, &lines)]);
 
-    let output = Command::new(ZFIND_BIN)
-        .env("ZOO_OPENCODE_DATA_DIR", oc_dir.path())
-        .env("ZOO_PI_DATA_DIR", pi_root.path())
+    let output = env
+        .command(ZFIND_BIN)
         .args(["--no-color", "--host", "pi", "list", "--json"])
         .output()
         .expect("failed to run zfind --host pi list --json");
@@ -1599,13 +1434,13 @@ fn test_pi_list_host_restricted() {
 
 #[test]
 fn test_pi_message_lookup() {
-    let pi_root = TempDir::new().expect("temp pi root");
+    let env = TestEnv::new();
     let lines = pi_events_session_lines();
-    pi_data_dir(pi_root.path(), &[(PI_UUID, &lines)]);
+    pi_data_dir(env.pi_data(), &[(PI_UUID, &lines)]);
 
     // Message-id lookup returns the user message.
-    let output = Command::new(ZFIND_BIN)
-        .env("ZOO_PI_DATA_DIR", pi_root.path())
+    let output = env
+        .command(ZFIND_BIN)
         .args(["message", "m1", "--host", "pi", "--json"])
         .output()
         .expect("failed to run zfind message m1 --host pi --json");
@@ -1622,8 +1457,8 @@ fn test_pi_message_lookup() {
     assert_eq!(parsed["messages"][0]["session_id"], PI_UUID);
 
     // Tool-call id lookup returns the use + result pair.
-    let output = Command::new(ZFIND_BIN)
-        .env("ZOO_PI_DATA_DIR", pi_root.path())
+    let output = env
+        .command(ZFIND_BIN)
         .args(["message", "call-1", "--host", "pi", "--json"])
         .output()
         .expect("failed to run zfind message call-1 --host pi --json");

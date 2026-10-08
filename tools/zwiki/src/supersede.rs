@@ -253,19 +253,10 @@ fn append_frontmatter_block(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::bundle::testutil::temp_dir;
     use crate::wiki;
     use std::fs;
     use std::path::PathBuf;
-
-    fn temp_dir(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir()
-            .join("zwiki-test")
-            .join("supersede")
-            .join(name);
-        let _ = fs::remove_dir_all(&dir);
-        fs::create_dir_all(&dir).expect("failed to create temp dir");
-        dir
-    }
 
     fn make_page(dir: &Path, filename: &str, content: &str) -> PathBuf {
         let path = dir.join(filename);

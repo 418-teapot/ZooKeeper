@@ -1014,19 +1014,13 @@ pub fn run_all(root: &Path) -> CheckResults {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::bundle::testutil::{setup_wiki, temp_dir};
     use std::fs;
     use std::path::PathBuf;
 
     // -------------------------------------------------------------------
     // Helpers
     // -------------------------------------------------------------------
-
-    fn temp_dir(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join("zwiki-test-health").join(name);
-        let _ = fs::remove_dir_all(&dir);
-        fs::create_dir_all(&dir).expect("failed to create temp dir");
-        dir
-    }
 
     fn write(path: &Path, text: &str) -> PathBuf {
         if let Some(parent) = path.parent() {
@@ -1083,38 +1077,6 @@ mod tests {
             .collect()
     }
 
-    /// Create a temp wiki directory and return (`wiki_dir`, pages).
-    fn setup_wiki(
-        dir_name: &str,
-        files: &[(&str, &str)],
-    ) -> (PathBuf, Vec<Page>) {
-        let dir = temp_dir(dir_name);
-        for (rel_path, content) in files {
-            let path = dir.join(rel_path);
-            if let Some(parent) = path.parent() {
-                fs::create_dir_all(parent).ok();
-            }
-            fs::write(&path, content).unwrap();
-        }
-        // Discover pages
-        let paths = discover_local_pages_raw(&dir);
-        let pages = page_paths_to_pages(&paths, &dir);
-        (dir, pages)
-    }
-
-    /// Helper: discover all `.md` files under `dir` (including meta files).
-    fn discover_local_pages_raw(dir: &Path) -> Vec<PathBuf> {
-        walkdir::WalkDir::new(dir)
-            .into_iter()
-            .filter_map(Result::ok)
-            .filter(|e| e.file_type().is_file())
-            .filter(|e| {
-                e.path().extension().and_then(|ext| ext.to_str()) == Some("md")
-            })
-            .map(|e| e.path().to_path_buf())
-            .collect()
-    }
-
     // =======================================================================
     // check_empty_files
     // =======================================================================
@@ -1122,7 +1084,7 @@ mod tests {
     #[test]
     fn test_empty_files_stub() {
         // Body < 100 chars -> stub
-        let (_, pages) = setup_wiki(
+        let (_, pages, _) = setup_wiki(
             "empty_stub",
             &[("concepts/foo.md", "---\ntitle: Foo\n---\nShort body.")],
         );
@@ -1135,7 +1097,7 @@ mod tests {
     #[test]
     fn test_empty_files_empty() {
         // Body == 0 chars -> empty
-        let (_, pages) = setup_wiki(
+        let (_, pages, _) = setup_wiki(
             "empty_empty",
             &[("concepts/empty.md", "---\ntitle: Empty\n---")],
         );
@@ -1148,7 +1110,7 @@ mod tests {
     fn test_empty_files_custom_threshold() {
         // Body has 200 chars, threshold 50 -> no issue
         let long_body = "A".repeat(200);
-        let (_, pages) = setup_wiki(
+        let (_, pages, _) = setup_wiki(
             "empty_threshold",
             &[(
                 "concepts/long.md",
@@ -1162,7 +1124,7 @@ mod tests {
     #[test]
     fn test_empty_files_no_issues() {
         let long_body = "A".repeat(200);
-        let (_, pages) = setup_wiki(
+        let (_, pages, _) = setup_wiki(
             "empty_no_issues",
             &[(
                 "concepts/long.md",

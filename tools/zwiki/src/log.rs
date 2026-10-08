@@ -123,7 +123,7 @@ pub fn add_entry_at(
     action: &str,
     note: Option<&str>,
 ) -> Result<(), String> {
-    let year_month = chrono::Local::now().format("%Y-%m").to_string();
+    let year_month = chrono::Utc::now().format("%Y-%m").to_string();
     let log_path: PathBuf =
         wiki_root.join("logs").join(format!("{year_month}.md"));
 
@@ -136,7 +136,7 @@ pub fn add_entry_at(
     // Format entry
     let entry = format_entry(&path, action, &note);
 
-    let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+    let today = chrono::Utc::now().format("%Y-%m-%d").to_string();
 
     // Create parent directory if needed
     if let Some(parent) = log_path.parent() {
@@ -208,20 +208,13 @@ pub fn add_move_entry_at(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::bundle::testutil::temp_dir;
     use std::fs;
     use std::path::PathBuf;
 
-    fn temp_dir(name: &str) -> PathBuf {
-        let dir =
-            std::env::temp_dir().join("zwiki-test").join("log").join(name);
-        let _ = fs::remove_dir_all(&dir);
-        fs::create_dir_all(&dir).expect("failed to create temp dir");
-        dir
-    }
-
     /// Return the monthly log path expected by `add_entry_at`.
     fn monthly_log_path(root: &Path) -> PathBuf {
-        let year_month = chrono::Local::now().format("%Y-%m").to_string();
+        let year_month = chrono::Utc::now().format("%Y-%m").to_string();
         root.join("logs").join(format!("{year_month}.md"))
     }
 

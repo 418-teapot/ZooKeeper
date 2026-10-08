@@ -16,3 +16,4 @@ zutil = { path = "../zutil", features = ["file-lock"] }
 
 [dev-dependencies]
 tempfile = "3"
+ztest = { path = "../ztest" }

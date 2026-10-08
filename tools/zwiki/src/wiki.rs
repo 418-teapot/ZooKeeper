@@ -707,18 +707,11 @@ pub fn parse_date(date_str: &str) -> Option<chrono::NaiveDate> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::bundle::testutil::temp_dir;
 
     // -------------------------------------------------------------------
     // Helpers
     // -------------------------------------------------------------------
-
-    /// Create a temporary directory for a test group.
-    fn temp_dir(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join("zwiki-test").join(name);
-        let _ = fs::remove_dir_all(&dir);
-        fs::create_dir_all(&dir).expect("failed to create temp dir");
-        dir
-    }
 
     /// Write `text` to `path`, creating parent directories.
     fn write(path: &Path, text: &str) -> PathBuf {

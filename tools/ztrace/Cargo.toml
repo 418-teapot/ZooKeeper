@@ -15,3 +15,4 @@ rich_rust = "0.2.2"
 [dev-dependencies]
 rusqlite = { version = "0.31", features = ["bundled"] }
 tempfile = "3"
+ztest = { path = "../ztest" }

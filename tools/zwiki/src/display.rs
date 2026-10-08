@@ -1,6 +1,6 @@
 //! Output formatting — Chinese markdown reports and JSON output.
 
-use chrono::Local;
+use chrono::Utc;
 
 // ---------------------------------------------------------------------------
 // Section counts — must match the number of fields in CheckResults/LintResults
@@ -95,7 +95,7 @@ pub struct Issue {
 
 /// Current date as `YYYY-MM-DD`.
 fn today() -> String {
-    Local::now().format("%Y-%m-%d").to_string()
+    Utc::now().format("%Y-%m-%d").to_string()
 }
 
 /// Truncate a string for display: keep the first `max` characters,

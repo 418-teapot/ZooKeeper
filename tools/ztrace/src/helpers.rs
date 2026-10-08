@@ -1204,9 +1204,7 @@ mod tests {
 
     #[test]
     fn test_discover_child_sessions_transitive() {
-        let dir = std::env::temp_dir()
-            .join(format!("ztrace-helper-children-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+        let dir = ztest::temp_dir("ztrace-child-sessions");
         std::fs::create_dir_all(dir.join("sessions")).expect("create root");
         write_pi_session(&dir, "a-root-id", None);
         write_pi_session(&dir, "b-child-id", Some("a-root-id"));
@@ -1229,9 +1227,7 @@ mod tests {
 
     #[test]
     fn test_discover_child_sessions_no_children() {
-        let dir = std::env::temp_dir()
-            .join(format!("ztrace-helper-nokids-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+        let dir = ztest::temp_dir("ztrace-child-sessions-none");
         std::fs::create_dir_all(dir.join("sessions")).expect("create root");
         write_pi_session(&dir, "only-session", None);
 

@@ -647,20 +647,11 @@ pub fn cmd_apply(root: &Path, json: bool, note: Option<&str>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::bundle::testutil::temp_dir;
 
     // -------------------------------------------------------------------
     // Helpers
     // -------------------------------------------------------------------
-
-    fn temp_dir(name: &str) -> std::path::PathBuf {
-        let dir = std::env::temp_dir()
-            .join("zwiki-test")
-            .join("contradictions")
-            .join(name);
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).expect("failed to create temp dir");
-        dir
-    }
 
     fn write(path: &std::path::Path, text: &str) {
         if let Some(parent) = path.parent() {

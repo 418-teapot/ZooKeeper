@@ -18,7 +18,7 @@ use std::process::{Command, Stdio};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
-use tempfile::TempDir;
+use ztest::TestEnv;
 
 /// Path to the `zlog` binary, set by `cargo test`.
 const ZLOG_BIN: &str = env!("CARGO_BIN_EXE_zlog");
@@ -30,28 +30,26 @@ const ZLOG_BIN: &str = env!("CARGO_BIN_EXE_zlog");
 ///
 /// The fixture is alive for the duration of the test (drop = cleanup).
 struct TestFixture {
-    /// Keeps the fake HOME alive until the test ends.
-    _home_dir: TempDir,
-    /// Absolute path to the fake HOME directory.
-    home_path: String,
+    /// Hermetic environment; its temp HOME backs the fake `~/.zoo/log/`.
+    env: TestEnv,
 }
 
 impl TestFixture {
     /// Create a new fixture with a populated `~/.zoo/log/` directory.
     fn new() -> Self {
-        let home_dir = TempDir::new().expect("create temp dir");
-        let log_dir = home_dir.path().join(".zoo").join("log");
+        let env = TestEnv::new();
+        let log_dir = env.zoo_log_dir();
         fs::create_dir_all(&log_dir).expect("create log dir");
 
         // ses-001: 4 log entries with different hook/level combinations
         let data_001 = concat!(
-            r#"{"hook":"subagent-prompt","level":"info","event":"trigger","ts":"2025-01-09T12:00:00Z","sessionId":"ses-001"}"#,
+            r#"{"hook":"subagent-prompt","level":"info","event":"trigger","timestamp":"2025-01-09T12:00:00Z","sessionId":"ses-001"}"#,
             "\n",
-            r#"{"hook":"json-error-nudge","level":"warn","event":"trigger","ts":"2025-01-09T12:01:00Z","sessionId":"ses-001","tool":"webfetch","pattern":"SyntaxError"}"#,
+            r#"{"hook":"json-error-nudge","level":"warn","event":"trigger","timestamp":"2025-01-09T12:01:00Z","sessionId":"ses-001","tool":"webfetch","pattern":"SyntaxError"}"#,
             "\n",
-            r#"{"hook":"direct-work-nudge","level":"info","event":"trigger","ts":"2025-01-09T12:02:00Z","sessionId":"ses-001","tool":"edit"}"#,
+            r#"{"hook":"direct-work-nudge","level":"info","event":"trigger","timestamp":"2025-01-09T12:02:00Z","sessionId":"ses-001","tool":"edit"}"#,
             "\n",
-            r#"{"hook":"post-subagent-nudge","level":"info","event":"trigger","ts":"2025-01-09T12:03:00Z","sessionId":"ses-001","todo_state":"pending","nudge":"beaver"}"#,
+            r#"{"hook":"post-subagent-nudge","level":"info","event":"trigger","timestamp":"2025-01-09T12:03:00Z","sessionId":"ses-001","todo_state":"pending","nudge":"beaver"}"#,
             "\n",
         );
         fs::write(log_dir.join("opencode-ses-001.log"), data_001)
@@ -61,23 +59,20 @@ impl TestFixture {
         // log lives in `pi-ses-002.log` and must be resolved via the pi
         // prefix.
         let data_002 = concat!(
-            r#"{"hook":"subagent-prompt","level":"info","event":"trigger","ts":"2025-01-09T14:00:00Z","sessionId":"ses-002"}"#,
+            r#"{"hook":"subagent-prompt","level":"info","event":"trigger","timestamp":"2025-01-09T14:00:00Z","sessionId":"ses-002"}"#,
             "\n",
         );
         fs::write(log_dir.join("pi-ses-002.log"), data_002)
             .expect("write ses-002 log");
 
-        Self {
-            home_path: home_dir.path().to_string_lossy().to_string(),
-            _home_dir: home_dir,
-        }
+        Self { env }
     }
 
-    /// Build a `Command` that runs `zlog` with HOME pointing at the
-    /// fixture's temp home directory and `--no-color` (no ANSI escapes).
+    /// Build a `Command` that runs `zlog` inside the fixture's hermetic
+    /// environment with `--no-color` (no ANSI escapes).
     fn zlog(&self) -> Command {
-        let mut cmd = Command::new(ZLOG_BIN);
-        cmd.env("HOME", &self.home_path).arg("--no-color");
+        let mut cmd = self.env.command(ZLOG_BIN);
+        cmd.arg("--no-color");
         cmd
     }
 }
@@ -86,10 +81,10 @@ impl TestFixture {
 
 #[test]
 fn test_help_exits_0() {
-    let home_dir = TempDir::new().expect("create temp dir");
-    let output = Command::new(ZLOG_BIN)
+    let env = TestEnv::new();
+    let output = env
+        .command(ZLOG_BIN)
         .arg("--help")
-        .env("HOME", home_dir.path())
         .output()
         .expect("failed to run zlog --help");
     assert!(
@@ -103,10 +98,10 @@ fn test_help_exits_0() {
 
 #[test]
 fn test_show_help_exits_0() {
-    let home_dir = TempDir::new().expect("create temp dir");
-    let output = Command::new(ZLOG_BIN)
+    let env = TestEnv::new();
+    let output = env
+        .command(ZLOG_BIN)
         .args(["show", "--help"])
-        .env("HOME", home_dir.path())
         .output()
         .expect("failed to run zlog show --help");
     assert!(
@@ -118,10 +113,10 @@ fn test_show_help_exits_0() {
 
 #[test]
 fn test_tail_help_exits_0() {
-    let home_dir = TempDir::new().expect("create temp dir");
-    let output = Command::new(ZLOG_BIN)
+    let env = TestEnv::new();
+    let output = env
+        .command(ZLOG_BIN)
         .args(["tail", "--help"])
-        .env("HOME", home_dir.path())
         .output()
         .expect("failed to run zlog tail --help");
     assert!(
@@ -133,7 +128,13 @@ fn test_tail_help_exits_0() {
 
 #[test]
 fn test_show_invalid_exits_2() {
-    let output = Command::new(ZLOG_BIN)
+    // The harness keeps HOME hermetic; seed an empty log dir so the run
+    // reaches the "no unique log file" path instead of failing earlier on
+    // a missing directory.
+    let env = TestEnv::new();
+    fs::create_dir_all(env.zoo_log_dir()).expect("create empty zoo log dir");
+    let output = env
+        .command(ZLOG_BIN)
         .args(["show", "nonexistent-session-xyz"])
         .output()
         .expect("failed to run zlog show <invalid>");
@@ -152,7 +153,13 @@ fn test_show_invalid_exits_2() {
 
 #[test]
 fn test_tail_invalid_exits_2() {
-    let output = Command::new(ZLOG_BIN)
+    // The harness keeps HOME hermetic; seed an empty log dir so the run
+    // reaches the "no unique log file" path instead of failing earlier on
+    // a missing directory.
+    let env = TestEnv::new();
+    fs::create_dir_all(env.zoo_log_dir()).expect("create empty zoo log dir");
+    let output = env
+        .command(ZLOG_BIN)
         .args(["tail", "nonexistent-session-xyz"])
         .output()
         .expect("failed to run zlog tail <invalid>");
@@ -171,7 +178,9 @@ fn test_tail_invalid_exits_2() {
 
 #[test]
 fn test_no_subcommand_exits_1() {
-    let output = Command::new(ZLOG_BIN)
+    let env = TestEnv::new();
+    let output = env
+        .command(ZLOG_BIN)
         .output()
         .expect("failed to run zlog with no subcommand");
     assert_eq!(
@@ -185,11 +194,12 @@ fn test_no_subcommand_exits_1() {
 
 #[test]
 fn test_log_dir_missing_exits_2() {
-    let home_dir = TempDir::new().expect("create temp dir");
-    // Intentionally do NOT create ~/.zoo/log/ — main() should catch it
-    let output = Command::new(ZLOG_BIN)
+    // The harness HOME stays empty: intentionally do NOT create
+    // ~/.zoo/log/ — main() should catch it.
+    let env = TestEnv::new();
+    let output = env
+        .command(ZLOG_BIN)
         .args(["show", "ses-001"])
-        .env("HOME", home_dir.path())
         .output()
         .expect("failed to run zlog with missing log dir");
     assert_eq!(
@@ -314,14 +324,9 @@ fn test_show_raw_json_flag_disables_raw() {
 
 // ── cmd_show: jq pipeline ────────────────────────────────────────────────────
 
-/// Returns `true` if `jq` is available on `PATH` or at `/usr/bin/jq`.
+/// Thin wrapper over [`zutil::jq_installed`].
 fn jq_installed() -> bool {
-    Command::new(zutil::jq_path())
-        .arg("--version")
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .is_ok_and(|s| s.success())
+    zutil::jq_installed()
 }
 
 #[test]
@@ -568,12 +573,7 @@ fn test_show_absolute_path_resolved() {
 #[test]
 fn test_show_raw_unreadable_file_exits_1() {
     let fix = TestFixture::new();
-    let log_path = fix
-        ._home_dir
-        .path()
-        .join(".zoo")
-        .join("log")
-        .join("opencode-ses-001.log");
+    let log_path = fix.env.zoo_log_dir().join("opencode-ses-001.log");
 
     // Make the file unreadable so fs::read_to_string fails.
     fs::set_permissions(&log_path, fs::Permissions::from_mode(0o000))
@@ -607,12 +607,7 @@ fn test_show_jq_unreadable_file_exits_1() {
         return;
     }
     let fix = TestFixture::new();
-    let log_path = fix
-        ._home_dir
-        .path()
-        .join(".zoo")
-        .join("log")
-        .join("opencode-ses-001.log");
+    let log_path = fix.env.zoo_log_dir().join("opencode-ses-001.log");
 
     // Make the file unreadable so fs::File::open (jq path) fails.
     fs::set_permissions(&log_path, fs::Permissions::from_mode(0o000))
@@ -789,15 +784,10 @@ fn test_tail_raw_new_line_appended() {
     // Append a new JSONL line to the watched log file.
     let new_line = concat!(
         r#"{"hook":"new-event","level":"info","event":"test","#,
-        r#""ts":"2025-01-09T13:00:00Z","sessionId":"ses-001"}"#,
+        r#""timestamp":"2025-01-09T13:00:00Z","sessionId":"ses-001"}"#,
         "\n",
     );
-    let log_path = fix
-        ._home_dir
-        .path()
-        .join(".zoo")
-        .join("log")
-        .join("opencode-ses-001.log");
+    let log_path = fix.env.zoo_log_dir().join("opencode-ses-001.log");
     let mut f = fs::OpenOptions::new()
         .append(true)
         .open(&log_path)

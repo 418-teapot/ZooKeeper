@@ -15,6 +15,7 @@ use std::process::Command;
 
 use rusqlite::Connection;
 use tempfile::TempDir;
+use ztest::TestEnv;
 
 /// Path to the `ztrace` binary, set by `cargo test`.
 const ZTRACE_BIN: &str = env!("CARGO_BIN_EXE_ztrace");
@@ -26,7 +27,9 @@ const NO_DB: &str = "/tmp/ztrace-test-nonexistent.db";
 
 #[test]
 fn test_help_exits_0() {
-    let output = Command::new(ZTRACE_BIN)
+    let env = TestEnv::new();
+    let output = env
+        .command(ZTRACE_BIN)
         .arg("--help")
         .output()
         .expect("failed to run ztrace --help");
@@ -42,7 +45,9 @@ fn test_help_exits_0() {
 
 #[test]
 fn test_tokens_help_exits_0() {
-    let output = Command::new(ZTRACE_BIN)
+    let env = TestEnv::new();
+    let output = env
+        .command(ZTRACE_BIN)
         .args(["tokens", "--help"])
         .output()
         .expect("failed to run ztrace tokens --help");
@@ -62,7 +67,9 @@ fn test_tokens_help_exits_0() {
 fn test_no_subcommand_exits_1() {
     // No subcommand given → print help and exit 1 (consistent with
     // zfind, zinspect, zlog)
-    let output = Command::new(ZTRACE_BIN)
+    let env = TestEnv::new();
+    let output = env
+        .command(ZTRACE_BIN)
         .output()
         .expect("failed to run ztrace with no args");
     assert_eq!(
@@ -77,7 +84,9 @@ fn test_no_subcommand_exits_1() {
 fn test_tokens_no_session_exits_2() {
     // tokens requires a session_id positional arg; clap exits 2 when
     // a required positional argument is missing.
-    let output = Command::new(ZTRACE_BIN)
+    let env = TestEnv::new();
+    let output = env
+        .command(ZTRACE_BIN)
         .arg("tokens")
         .output()
         .expect("failed to run ztrace tokens with no session");
@@ -98,7 +107,9 @@ fn test_tokens_no_session_exits_2() {
 
 #[test]
 fn test_steps_help_exits_0() {
-    let output = Command::new(ZTRACE_BIN)
+    let env = TestEnv::new();
+    let output = env
+        .command(ZTRACE_BIN)
         .args(["steps", "--help"])
         .output()
         .expect("failed to run ztrace steps --help");
@@ -124,7 +135,9 @@ fn test_steps_help_exits_0() {
 
 #[test]
 fn test_steps_no_session_exits_2() {
-    let output = Command::new(ZTRACE_BIN)
+    let env = TestEnv::new();
+    let output = env
+        .command(ZTRACE_BIN)
         .arg("steps")
         .output()
         .expect("failed to run ztrace steps with no session");
@@ -694,7 +707,9 @@ fn test_steps_empty_session() {
 
 #[test]
 fn test_tokens_invalid_session_exits_2() {
-    let output = Command::new(ZTRACE_BIN)
+    let env = TestEnv::new();
+    let output = env
+        .command(ZTRACE_BIN)
         .args(["--db", NO_DB, "tokens", "nonexistent-session"])
         .output()
         .expect("failed to run ztrace tokens <invalid>");
@@ -713,7 +728,9 @@ fn test_tokens_invalid_session_exits_2() {
 
 #[test]
 fn test_tokens_json_invalid_session_exits_2() {
-    let output = Command::new(ZTRACE_BIN)
+    let env = TestEnv::new();
+    let output = env
+        .command(ZTRACE_BIN)
         .args(["--db", NO_DB, "--json", "tokens", "nonexistent"])
         .output()
         .expect("failed to run ztrace --json tokens <invalid>");
@@ -734,42 +751,32 @@ fn test_tokens_json_invalid_session_exits_2() {
 
 /// A test fixture that provisions a temporary SQLite database and a home
 /// directory with a `~/.zoo/log/` folder containing JSONL log files and
-/// the main opencode log at `~/.local/share/opencode/log/opencode.log`.
+/// the main opencode log at `<ZOO_OPENCODE_DATA_DIR>/log/opencode.log`.
 ///
 /// The fixture is alive for the duration of the test (drop = cleanup).
 struct TestFixture {
-    /// Keeps the temp dir alive until the test ends.
-    _db_dir: TempDir,
-    /// Keeps the fake HOME alive until the test ends.
-    _home_dir: TempDir,
+    /// Hermetic environment; HOME backs the fake logs and the opencode data
+    /// dir holds the fixture DB.
+    env: TestEnv,
     /// Absolute path to the SQLite database file.
     db_path: String,
-    /// Absolute path to the fake HOME directory.
-    home_path: String,
 }
 
 impl TestFixture {
     /// Create a new fixture with a populated database and log files.
     fn new() -> Self {
-        let db_dir = TempDir::new().expect("create temp dir for db");
-        let home_dir = TempDir::new().expect("create temp dir for home");
+        let env = TestEnv::new().with_columns(200);
 
         // Create log directory structure: ~/.zoo/log/
-        let log_dir = home_dir.path().join(".zoo").join("log");
+        let log_dir = env.zoo_log_dir();
         fs::create_dir_all(&log_dir).expect("create log dir");
 
-        // Create opencode log directory: ~/.local/share/opencode/log/
-        let opencode_log_dir = home_dir
-            .path()
-            .join(".local")
-            .join("share")
-            .join("opencode")
-            .join("log");
+        // Create opencode log directory: <data dir>/log/
+        let opencode_log_dir = env.opencode_data().join("log");
         fs::create_dir_all(&opencode_log_dir).expect("create opencode log dir");
 
-        let db_path = db_dir.path().join("opencode.db");
+        let db_path = env.opencode_data().join("opencode.db");
         let db_path_str = db_path.to_string_lossy().to_string();
-        let home_path_str = home_dir.path().to_string_lossy().to_string();
 
         Self::create_db(&db_path);
         Self::create_log_file(&log_dir.join("opencode-ses-001.log"), "ses-001");
@@ -778,23 +785,15 @@ impl TestFixture {
         Self::create_log_file(&log_dir.join("pi-ses-002.log"), "ses-002");
         Self::create_opencode_log_file(&opencode_log_dir.join("opencode.log"));
 
-        Self {
-            _db_dir: db_dir,
-            _home_dir: home_dir,
-            db_path: db_path_str,
-            home_path: home_path_str,
-        }
+        Self { env, db_path: db_path_str }
     }
 
-    /// Build a `Command` that runs `ztrace` with HOME pointing at the
-    /// fixture's temp home directory and `--db` set to the fixture's database.
+    /// Build a `Command` that runs `ztrace` against the fixture database.
+    /// The harness pins HOME so log resolution stays hermetic, and COLUMNS
+    /// to 200 so the wide table columns are exercised by default.
     fn ztrace(&self) -> Command {
-        let mut cmd = Command::new(ZTRACE_BIN);
-        cmd.env("HOME", &self.home_path).env("COLUMNS", "200").args([
-            "--db",
-            &self.db_path,
-            "--no-color",
-        ]);
+        let mut cmd = self.env.command(ZTRACE_BIN);
+        cmd.args(["--db", &self.db_path, "--no-color"]);
         cmd
     }
 
@@ -803,78 +802,20 @@ impl TestFixture {
     fn create_db(path: &Path) {
         let conn = Connection::open(path).expect("open test db");
 
-        conn.execute_batch(
-            "CREATE TABLE session (
-                id TEXT PRIMARY KEY,
-                parent_id TEXT,
-                title TEXT,
-                slug TEXT,
-                agent TEXT,
-                directory TEXT,
-                model TEXT,
-                time_created INTEGER,
-                time_updated INTEGER,
-                cost REAL,
-                tokens_input REAL,
-                tokens_output REAL,
-                tokens_reasoning REAL,
-                tokens_cache_read REAL,
-                tokens_cache_write REAL
-            );
-            CREATE TABLE message (
-                id TEXT PRIMARY KEY,
-                session_id TEXT NOT NULL,
-                time_created INTEGER,
-                data TEXT
-            );
-            CREATE TABLE part (
-                id TEXT PRIMARY KEY,
-                message_id TEXT NOT NULL,
-                session_id TEXT NOT NULL,
-                time_created INTEGER,
-                time_updated INTEGER,
-                data TEXT
-            );",
-        )
-        .expect("create tables");
+        zutil::test_db::create_common_tables(&conn);
+        zutil::test_db::create_part_table(&conn);
 
         // ── ses-001 (root, "auth middleware debug") ───────────────────────
-        conn.execute(
-            concat!(
-                "INSERT INTO session VALUES ",
-                "(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15)",
-            ),
-            rusqlite::params![
-                "ses-001",
-                Option::<&str>::None,
-                "auth middleware debug",
-                "auth-middleware-debug",
-                "beaver",
-                "/app",
-                r#"{"name":"deepseek-v4"}"#,
-                1_715_000_000_000_i64,
-                1_715_000_100_000_i64,
-                0.012,
-                500.0,
-                300.0,
-                0.0,
-                0.0,
-                0.0,
-            ],
-        )
-        .expect("insert ses-001");
+        zutil::test_db::seed_common_sessions(&conn);
 
         // msg-001 (user role, text part + step-finish)
-        conn.execute(
-            "INSERT INTO message VALUES (?1,?2,?3,?4)",
-            rusqlite::params![
-                "msg-001",
-                "ses-001",
-                1_715_000_010_000_i64,
-                r#"{"role":"user","agent":"beaver","time":{"created":1715000010000,"completed":1715000015000}}"#,
-            ],
-        )
-        .expect("insert msg-001");
+        zutil::test_db::insert_message(
+            &conn,
+            "msg-001",
+            "ses-001",
+            1_715_000_010_000,
+            r#"{"role":"user","agent":"beaver","time":{"created":1715000010000,"completed":1715000015000}}"#,
+        );
 
         // Text part for msg-001
         conn.execute(
@@ -905,16 +846,13 @@ impl TestFixture {
         .expect("insert part-002");
 
         // msg-002 (assistant with tool → tool_use role_class)
-        conn.execute(
-            "INSERT INTO message VALUES (?1,?2,?3,?4)",
-            rusqlite::params![
-                "msg-002",
-                "ses-001",
-                1_715_000_020_000_i64,
-                r#"{"role":"assistant","agent":"beaver","modelID":"gpt-4","time":{"created":1715000020000,"completed":1715000025000}}"#,
-            ],
-        )
-        .expect("insert msg-002");
+        zutil::test_db::insert_message(
+            &conn,
+            "msg-002",
+            "ses-001",
+            1_715_000_020_000,
+            r#"{"role":"assistant","agent":"beaver","modelID":"gpt-4","time":{"created":1715000020000,"completed":1715000025000}}"#,
+        );
 
         // Text part for msg-002
         conn.execute(
@@ -953,16 +891,13 @@ impl TestFixture {
         .expect("insert part-005");
 
         // msg-003 (assistant without tool → "assistant" role_class)
-        conn.execute(
-            "INSERT INTO message VALUES (?1,?2,?3,?4)",
-            rusqlite::params![
-                "msg-003",
-                "ses-001",
-                1_715_000_030_000_i64,
-                r#"{"role":"assistant","agent":"beaver","modelID":"gpt-4"}"#,
-            ],
-        )
-        .expect("insert msg-003");
+        zutil::test_db::insert_message(
+            &conn,
+            "msg-003",
+            "ses-001",
+            1_715_000_030_000,
+            r#"{"role":"assistant","agent":"beaver","modelID":"gpt-4"}"#,
+        );
 
         // Text part for msg-003 only (no tool parts)
         conn.execute(
@@ -976,16 +911,13 @@ impl TestFixture {
         .expect("insert part-006");
 
         // msg-004 (tool role → "tool_result" role_class)
-        conn.execute(
-            "INSERT INTO message VALUES (?1,?2,?3,?4)",
-            rusqlite::params![
-                "msg-004",
-                "ses-001",
-                1_715_000_040_000_i64,
-                r#"{"role":"tool","agent":"beaver"}"#,
-            ],
-        )
-        .expect("insert msg-004");
+        zutil::test_db::insert_message(
+            &conn,
+            "msg-004",
+            "ses-001",
+            1_715_000_040_000,
+            r#"{"role":"tool","agent":"beaver"}"#,
+        );
 
         // Text part for msg-004
         conn.execute(
@@ -998,57 +930,27 @@ impl TestFixture {
         )
         .expect("insert part-007");
 
-        // ── ses-002 (root, empty — no messages) ───────────────────────────
-        conn.execute(
-            concat!(
-                "INSERT INTO session VALUES ",
-                "(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15)",
-            ),
-            rusqlite::params![
-                "ses-002",
-                Option::<&str>::None,
-                "DB migration from v2 to v3",
-                "db-migration-v2-v3",
-                "lynx",
-                "/db",
-                r#"{"name":"deepseek-v4"}"#,
-                1_715_000_200_000_i64,
-                1_715_000_300_000_i64,
-                0.008,
-                200.0,
-                100.0,
-                50.0,
-                0.0,
-                0.0,
-            ],
-        )
-        .expect("insert ses-002");
-
         // ── ses-003 (child of ses-001, no messages) ───────────────────────
-        conn.execute(
-            concat!(
-                "INSERT INTO session VALUES ",
-                "(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15)",
-            ),
-            rusqlite::params![
-                "ses-003",
-                "ses-001",
-                "auth retry",
-                "auth-retry",
-                "beaver",
-                "/app",
-                r#"{"name":"deepseek-v4"}"#,
-                1_715_000_400_000_i64,
-                1_715_000_500_000_i64,
-                0.004,
-                100.0,
-                50.0,
-                0.0,
-                0.0,
-                0.0,
-            ],
-        )
-        .expect("insert ses-003");
+        zutil::test_db::insert_session(
+            &conn,
+            &zutil::test_db::SessionRow {
+                id: "ses-003",
+                parent_id: Some("ses-001"),
+                title: "auth retry",
+                slug: "auth-retry",
+                agent: "beaver",
+                directory: "/app",
+                model: r#"{"name":"deepseek-v4"}"#,
+                time_created: 1_715_000_400_000,
+                time_updated: 1_715_000_500_000,
+                cost: 0.004,
+                tokens_input: 100.0,
+                tokens_output: 50.0,
+                tokens_reasoning: 0.0,
+                tokens_cache_read: 0.0,
+                tokens_cache_write: 0.0,
+            },
+        );
 
         conn.close().expect("close test db");
     }
@@ -1685,7 +1587,9 @@ fn run_export_test(
 
 #[test]
 fn test_export_help_exits_0() {
-    let output = Command::new(ZTRACE_BIN)
+    let env = TestEnv::new();
+    let output = env
+        .command(ZTRACE_BIN)
         .args(["export", "--help"])
         .output()
         .expect("failed to run ztrace export --help");
@@ -1776,7 +1680,9 @@ fn test_export_json_envelope() {
 
 #[test]
 fn test_export_no_session_exits_2() {
-    let output = Command::new(ZTRACE_BIN)
+    let env = TestEnv::new();
+    let output = env
+        .command(ZTRACE_BIN)
         .arg("export")
         .output()
         .expect("failed to run ztrace export with no session");
@@ -1837,23 +1743,28 @@ fn test_export_ambiguous_prefix_exits_2() {
 
 // ── Default aggregation across multiple databases ───────────────────────────
 
-/// Build a temp data dir with both fixture DBs and return it.
-fn two_db_data_dir() -> TempDir {
-    let dir = TempDir::new().expect("create temp data dir");
-    TestFixture::create_db(&dir.path().join("opencode.db"));
-    zutil::test_db::create_second_db(&dir.path().join("opencode-stable.db"));
-    dir
+/// Populate a hermetic environment's opencode data dir with both fixture
+/// databases.
+fn two_db_env() -> TestEnv {
+    let env = TestEnv::new();
+    TestFixture::create_db(&env.opencode_data().join("opencode.db"));
+    zutil::test_db::create_second_db(
+        &env.opencode_data().join("opencode-stable.db"),
+    );
+    env
 }
 
 #[test]
 fn test_show_default_finds_session_in_second_db() {
-    let dir = two_db_data_dir();
-    let data_dir = dir.path().to_string_lossy().to_string();
+    // No `--db`: both hosts are auto-detected. The harness pins HOME and
+    // pi to empty dirs so the real `~/.zoo/log` / `~/.pi/agent` cannot
+    // leak into the run.
+    let env = two_db_env();
 
-    // No --db: ses-900 lives only in the second DB, but the aggregate
-    // view resolves it and surfaces its message in the timeline.
-    let output = Command::new(ZTRACE_BIN)
-        .env("ZOO_OPENCODE_DATA_DIR", &data_dir)
+    // ses-900 lives only in the second DB, but the aggregate view
+    // resolves it and surfaces its message in the timeline.
+    let output = env
+        .command(ZTRACE_BIN)
         .args(["--no-color", "show", "ses-900", "--json"])
         .output()
         .expect("failed to run ztrace show ses-900 (default aggregation)");
@@ -1879,11 +1790,12 @@ fn test_show_default_finds_session_in_second_db() {
 
 #[test]
 fn test_show_explicit_db_only_sees_that_db() {
-    let dir = two_db_data_dir();
-    let data_dir = dir.path().to_string_lossy().to_string();
+    let env = two_db_env();
+    let data_dir = env.opencode_data().to_string_lossy().to_string();
 
     // First DB only: ses-900 is invisible → exit 2.
-    let output = Command::new(ZTRACE_BIN)
+    let output = env
+        .command(ZTRACE_BIN)
         .args([
             "--db",
             &format!("{data_dir}/opencode.db"),
@@ -1907,7 +1819,8 @@ fn test_show_explicit_db_only_sees_that_db() {
     );
 
     // Second DB only: ses-900 resolves and its message is listed.
-    let output = Command::new(ZTRACE_BIN)
+    let output = env
+        .command(ZTRACE_BIN)
         .args([
             "--db",
             &format!("{data_dir}/opencode-stable.db"),
@@ -1947,23 +1860,17 @@ const PI_UUID: &str = "01a04bc0-fa14-76d5-95ec-a8d5ee80f706";
 /// `jsonl` session file plus a fake HOME carrying
 /// `~/.zoo/log/pi-<uuid>.log` for the zoo overlay.
 struct PiFixture {
-    /// Keeps the data dir alive until the test ends.
-    _dir: TempDir,
-    /// Keeps the fake HOME alive until the test ends.
-    _home: TempDir,
-    /// Absolute path of the pi data dir.
-    data_dir: String,
-    /// Absolute path of the fake HOME directory.
-    home_path: String,
+    /// Hermetic environment; its pi data dir holds the session file and its
+    /// HOME carries the zoo overlay log.
+    env: TestEnv,
 }
 
 impl PiFixture {
     fn new() -> Self {
-        let dir = TempDir::new().expect("create temp dir for pi data");
-        let home_dir = TempDir::new().expect("create temp dir for pi home");
+        let env = TestEnv::new().with_columns(200);
 
         // Session file: <data>/sessions/<cwd-dir>/<name>.jsonl
-        let sessions = dir.path().join("sessions").join("--work--");
+        let sessions = env.pi_data().join("sessions").join("--work--");
         fs::create_dir_all(&sessions).expect("create pi sessions dir");
         let lines = [
             r#"{"type":"session","version":3,"id":"01a04bc0-fa14-76d5-95ec-a8d5ee80f706","timestamp":"2026-08-29T04:22:13.268Z","cwd":"/Users/teapot/Code/ZooKeeper"}"#.to_string(),
@@ -1979,7 +1886,7 @@ impl PiFixture {
         .expect("write pi session file");
 
         // Zoo overlay for the pi session.
-        let zoo_dir = home_dir.path().join(".zoo").join("log");
+        let zoo_dir = env.zoo_log_dir();
         fs::create_dir_all(&zoo_dir).expect("create zoo log dir");
         fs::write(
             zoo_dir.join(format!("pi-{PI_UUID}.log")),
@@ -1989,18 +1896,13 @@ impl PiFixture {
         )
         .expect("write pi zoo log");
 
-        let data_dir = dir.path().to_string_lossy().to_string();
-        let home_path = home_dir.path().to_string_lossy().to_string();
-        Self { _dir: dir, _home: home_dir, data_dir, home_path }
+        Self { env }
     }
 
     /// Build a `Command` for `ztrace` pointed at the pi fixture.
     fn ztrace(&self) -> Command {
-        let mut cmd = Command::new(ZTRACE_BIN);
-        cmd.env("HOME", &self.home_path)
-            .env("ZOO_PI_DATA_DIR", &self.data_dir)
-            .env("COLUMNS", "200")
-            .arg("--no-color");
+        let mut cmd = self.env.command(ZTRACE_BIN);
+        cmd.arg("--no-color");
         cmd
     }
 }
@@ -2122,8 +2024,8 @@ fn test_pi_steps_table_shows_model_column() {
 fn test_steps_table_hides_model_column_when_absent() {
     // A session whose message data records no model: the steps table
     // must not render a Model column at all.
-    let db_dir = TempDir::new().expect("create temp dir");
-    let db_path = db_dir.path().join("opencode.db");
+    let env = TestEnv::new();
+    let db_path = env.opencode_data().join("opencode.db");
     let conn = Connection::open(&db_path).expect("open test db");
     conn.execute_batch(
         "CREATE TABLE session (
@@ -2196,7 +2098,13 @@ fn test_steps_table_hides_model_column_when_absent() {
     .expect("insert part-x");
     conn.close().expect("close test db");
 
-    let output = Command::new(ZTRACE_BIN)
+    // The harness pins width and HOME so the table output does not depend
+    // on the test environment: `zutil::get_terminal_width` reads `COLUMNS`
+    // before querying the control terminal, and an isolated HOME keeps log
+    // resolution off the real `~/.zoo/log`.
+    let output = env
+        .command(ZTRACE_BIN)
+        .env("COLUMNS", "200")
         .args([
             "--db",
             db_path.to_str().unwrap_or(""),

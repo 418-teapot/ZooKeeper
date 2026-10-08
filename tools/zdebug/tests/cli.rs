@@ -1,9 +1,10 @@
 //! End-to-end CLI integration tests for `zdebug`.
 //!
 //! Every test spawns the real `zdebug` binary (`CARGO_BIN_EXE_zdebug`)
-//! inside its own temporary workspace. Nothing is mocked: the Case facade,
-//! the append-only event store, the experiment runner, and Git all run for
-//! real across the process boundary.
+//! inside its own temporary workspace, with `HOME` and the host data
+//! directories pinned by [`ztest::TestEnv`]. Nothing is mocked: the Case
+//! facade, the append-only event store, the experiment runner, and Git all
+//! run for real across the process boundary.
 //!
 //! Assertions target the documented contract: a successful command exits 0
 //! and prints `{"ok":true,"result":...}` on stdout, while a business error
@@ -18,6 +19,7 @@ use std::process::{Command, Stdio};
 use serde_json::{Value, json};
 use tempfile::TempDir;
 use zdebug::events::EventStore;
+use ztest::TestEnv;
 
 /// Absolute path to the freshly built `zdebug` binary.
 const ZDEBUG: &str = env!("CARGO_BIN_EXE_zdebug");
@@ -73,19 +75,23 @@ impl Run {
 }
 
 /// A temporary workspace and the Case operations run inside it.
+///
+/// The workspace root is [`TestEnv::home`], so every spawned `zdebug`
+/// inherits a pinned `HOME` (and empty host data directories) instead of
+/// whatever environment happens to run the suite.
 struct Workspace {
-    dir: TempDir,
+    env: TestEnv,
 }
 
 impl Workspace {
     /// Create an empty temporary workspace.
     fn new() -> Self {
-        Self { dir: TempDir::new().expect("create tempdir") }
+        Self { env: TestEnv::new() }
     }
 
     /// The workspace root path.
     fn path(&self) -> &Path {
-        self.dir.path()
+        self.env.home()
     }
 
     /// Resolve a path relative to the workspace root.
@@ -98,24 +104,34 @@ impl Workspace {
         fs::write(self.file(relative), contents).expect("write fixture");
     }
 
-    /// Run `zdebug` in the workspace root.
+    /// Run `zdebug` in the workspace root under the pinned environment.
     fn run(&self, args: &[&str]) -> Run {
-        Self::run_in(self.path(), args)
+        Self::run_in(&self.env, self.path(), args)
     }
 
-    /// Run `zdebug` in `cwd`.
-    fn run_in(cwd: &Path, args: &[&str]) -> Run {
-        Self::run_child(cwd, None, args)
+    /// Run `zdebug` in `cwd` under `env`.
+    fn run_in(env: &TestEnv, cwd: &Path, args: &[&str]) -> Run {
+        Self::run_child(env, cwd, None, args)
     }
 
     /// Run `zdebug` in `cwd` with `HOME` overridden for the child.
-    fn run_with_home(home: &Path, cwd: &Path, args: &[&str]) -> Run {
-        Self::run_child(cwd, Some(home), args)
+    fn run_with_home(
+        env: &TestEnv,
+        home: &Path,
+        cwd: &Path,
+        args: &[&str],
+    ) -> Run {
+        Self::run_child(env, cwd, Some(home), args)
     }
 
-    /// Spawn `zdebug`, optionally overriding the child `HOME`.
-    fn run_child(cwd: &Path, home: Option<&Path>, args: &[&str]) -> Run {
-        let mut command = Command::new(ZDEBUG);
+    /// Spawn `zdebug` under `env`, optionally overriding the child `HOME`.
+    fn run_child(
+        env: &TestEnv,
+        cwd: &Path,
+        home: Option<&Path>,
+        args: &[&str],
+    ) -> Run {
+        let mut command = env.command(ZDEBUG);
         command.args(args).current_dir(cwd);
         if let Some(home) = home {
             command.env("HOME", home);
@@ -129,8 +145,14 @@ impl Workspace {
     }
 
     /// Spawn `zdebug` in `cwd` with `TMPDIR` overridden for the child.
-    fn run_with_tmpdir(tmpdir: &Path, cwd: &Path, args: &[&str]) -> Run {
-        let output = Command::new(ZDEBUG)
+    fn run_with_tmpdir(
+        env: &TestEnv,
+        tmpdir: &Path,
+        cwd: &Path,
+        args: &[&str],
+    ) -> Run {
+        let output = env
+            .command(ZDEBUG)
             .args(args)
             .current_dir(cwd)
             .env("TMPDIR", tmpdir)
@@ -498,7 +520,7 @@ fn non_git_workspace_and_relocation() {
     // Move the whole workspace, Case directory included, and verify there.
     let relocated = TempDir::new().expect("create relocated tempdir");
     copy_tree(ws.path(), relocated.path());
-    let run = Workspace::run_in(relocated.path(), &["case", "verify"]);
+    let run = Workspace::run_in(&ws.env, relocated.path(), &["case", "verify"]);
     assert_eq!(
         run.code, 0,
         "verify after relocation failed\nstderr: {}",
@@ -652,7 +674,9 @@ fn plan_reads_procedure_from_stdin() {
         "interpretations.json",
         r#"[{"when":"done","meaning":"observe"}]"#,
     );
-    let mut child = Command::new(ZDEBUG)
+    let mut child = ws
+        .env
+        .command(ZDEBUG)
         .args([
             "--json",
             "experiment",
@@ -754,11 +778,16 @@ fn case_init_rejects_plural_workspaces_flag() {
 /// A quoted leading `~` in `--case-dir` resolves against `HOME`.
 #[test]
 fn case_dir_expands_leading_tilde() {
+    // A distinct `HOME` exercises the deliberate per-child override: the
+    // tilde must resolve against the overridden directory, not the
+    // workspace root the base environment pins.
+    let env = TestEnv::new();
     let home = TempDir::new().expect("home");
     let cwd = TempDir::new().expect("cwd");
     let workspace = TempDir::new().expect("workspace");
     let workspace = workspace.path().to_string_lossy().into_owned();
     let run = Workspace::run_with_home(
+        &env,
         home.path(),
         cwd.path(),
         &[
@@ -1034,6 +1063,7 @@ fn init_verify_setup_failure_reports_case_and_recovery() {
     let root = ws.path().to_string_lossy().into_owned();
 
     let run = Workspace::run_with_tmpdir(
+        &ws.env,
         &bogus_tmp,
         ws.path(),
         &[

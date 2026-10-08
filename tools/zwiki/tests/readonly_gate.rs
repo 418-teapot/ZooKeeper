@@ -5,55 +5,15 @@
 //! Uses `env!("CARGO_BIN_EXE_zwiki")` which cargo sets for integration
 //! tests, guaranteeing a freshly-built binary (no stale-binary flakiness).
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::Command;
+use ztest::temp_dir;
+
+pub mod common;
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-fn temp_dir(name: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join("zwiki-inttest").join(name);
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).expect("temp_dir");
-    dir
-}
-
-/// Create a minimal bundle tar.gz at `dir/test-bundle.tar.gz`.
-fn make_test_bundle_tar(dir: &Path) -> PathBuf {
-    std::fs::write(
-        dir.join("bundle.toml"),
-        r#"[package]
-name = "test-bundle"
-version = "0.1.0"
-okf_version = "0.1"
-
-[export]
-include = ["*.md"]
-"#,
-    )
-    .unwrap();
-    std::fs::write(dir.join("index.md"), "---\ntitle: Index\n---\n# Index\n")
-        .unwrap();
-    std::fs::create_dir_all(dir.join("logs")).unwrap();
-    std::fs::write(dir.join("logs/.gitkeep"), "").unwrap();
-    std::fs::write(dir.join("doc.md"), "# Doc\n").unwrap();
-
-    let tar_path = dir.join("test-bundle.tar.gz");
-    let file = std::fs::File::create(&tar_path).unwrap();
-    let gz =
-        flate2::write::GzEncoder::new(file, flate2::Compression::default());
-    let mut archive = tar::Builder::new(gz);
-    archive
-        .append_path_with_name(dir.join("bundle.toml"), "bundle.toml")
-        .unwrap();
-    archive.append_path_with_name(dir.join("index.md"), "index.md").unwrap();
-    archive.append_path_with_name(dir.join("doc.md"), "doc.md").unwrap();
-    archive.append_dir("logs", dir.join("logs")).unwrap();
-    let gz = archive.into_inner().unwrap();
-    gz.finish().unwrap();
-    tar_path
-}
 
 /// Run `zwiki --root <tar>` with `extra_args`; assert exit != 0 and
 /// stderr contains Chinese rejection message.
@@ -95,8 +55,7 @@ fn test_readonly_root_rejects_write_commands() {
         bin.display()
     );
 
-    let tmp = temp_dir("ro_write_gate");
-    let tar_path = make_test_bundle_tar(&tmp);
+    let tar_path = common::make_bundle_tar("ro_write_gate", "# Doc\n");
 
     // --- page set ---
     assert_write_rejected(

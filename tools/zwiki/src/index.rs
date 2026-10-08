@@ -335,16 +335,8 @@ pub fn regenerate_all_indexes(root: &Path, suppress_eprint: bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::bundle::testutil::temp_dir;
     use std::fs;
-    use std::path::PathBuf;
-
-    fn temp_dir(name: &str) -> PathBuf {
-        let dir =
-            std::env::temp_dir().join("zwiki-test").join("index").join(name);
-        let _ = fs::remove_dir_all(&dir);
-        fs::create_dir_all(&dir).expect("failed to create temp dir");
-        dir
-    }
 
     fn write(path: &Path, text: &str) {
         if let Some(parent) = path.parent() {

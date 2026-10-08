@@ -125,6 +125,7 @@ pub fn collect_stale_pairs(
 
 #[cfg(test)]
 mod tests {
+    use crate::bundle::testutil::temp_dir;
     use std::fs;
     use std::path::PathBuf;
 
@@ -135,13 +136,6 @@ mod tests {
     // -------------------------------------------------------------------
     // Helpers
     // -------------------------------------------------------------------
-
-    fn temp_dir(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join("zwiki-test-verify").join(name);
-        let _ = fs::remove_dir_all(&dir);
-        fs::create_dir_all(&dir).expect("failed to create temp dir");
-        dir
-    }
 
     fn write(path: &PathBuf, text: &str) {
         if let Some(parent) = path.parent() {

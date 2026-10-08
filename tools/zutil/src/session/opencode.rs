@@ -1168,10 +1168,6 @@ mod tests {
     use super::*;
     use crate::test_db::{create_common_tables, create_part_table};
     use std::fs;
-    use std::sync::Mutex;
-
-    /// Mutex to serialize DB-creating tests (they share a temp file name).
-    static DB_MUTEX: Mutex<()> = Mutex::new(());
 
     /// Create a temporary directory holding an `opencode.db` with
     /// session/message/part fixtures for `ses-001` and its child
@@ -1179,10 +1175,7 @@ mod tests {
     /// test.
     fn create_test_db() -> String {
         use crate::test_db::{create_common_tables, create_part_table};
-        let dir = std::env::temp_dir()
-            .join(format!("zutil_opencode_test_{}", std::process::id()));
-        let _ = fs::remove_dir_all(&dir);
-        fs::create_dir_all(&dir).expect("create fixture dir");
+        let dir = ztest::temp_dir("zutil-opencode-test");
 
         let conn =
             Connection::open(dir.join("opencode.db")).expect("open test db");
@@ -1388,8 +1381,6 @@ mod tests {
 
     #[test]
     fn test_list_includes_children() {
-        let _lock =
-            DB_MUTEX.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let db_path = create_test_db();
         let provider = OpenCodeSessionProvider::with_data_dir(db_path.clone());
 
@@ -1415,8 +1406,6 @@ mod tests {
 
     #[test]
     fn test_open_translates_message_tool_usage() {
-        let _lock =
-            DB_MUTEX.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let db_path = create_test_db();
         let provider = OpenCodeSessionProvider::with_data_dir(db_path.clone());
 
@@ -1479,8 +1468,6 @@ mod tests {
 
     #[test]
     fn test_open_child_session_has_empty_events() {
-        let _lock =
-            DB_MUTEX.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let db_path = create_test_db();
         let provider = OpenCodeSessionProvider::with_data_dir(db_path.clone());
 
@@ -1493,8 +1480,6 @@ mod tests {
 
     #[test]
     fn test_open_prefix_resolution_and_errors() {
-        let _lock =
-            DB_MUTEX.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let db_path = create_test_db();
         let provider = OpenCodeSessionProvider::with_data_dir(db_path.clone());
 
@@ -1524,8 +1509,6 @@ mod tests {
 
     #[test]
     fn test_search_title_and_content() {
-        let _lock =
-            DB_MUTEX.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let db_path = create_test_db();
         let provider = OpenCodeSessionProvider::with_data_dir(db_path.clone());
 
@@ -1553,10 +1536,7 @@ mod tests {
 
     #[test]
     fn test_list_missing_db_is_empty() {
-        let dir = std::env::temp_dir()
-            .join(format!("zutil_opencode_empty_{}", std::process::id()));
-        let _ = fs::remove_dir_all(&dir);
-        fs::create_dir_all(&dir).expect("create empty dir");
+        let dir = ztest::temp_dir("zutil-opencode-empty");
 
         let provider =
             OpenCodeSessionProvider::with_data_dir(dir.to_string_lossy());
@@ -1580,9 +1560,7 @@ timestamp=2025-01-09T12:36:00Z level=info message="evaluated" session_id=ses-001
 
     #[test]
     fn test_host_events_parses_and_filters_by_session() {
-        let dir = std::env::temp_dir()
-            .join(format!("zutil_opencode_log_{}", std::process::id()));
-        let _ = fs::remove_dir_all(&dir);
+        let dir = ztest::temp_dir("zutil-opencode-log");
         write_log_fixture(&dir);
         let provider =
             OpenCodeSessionProvider::with_data_dir(dir.to_string_lossy());
@@ -1626,10 +1604,7 @@ timestamp=2025-01-09T12:36:00Z level=info message="evaluated" session_id=ses-001
 
     #[test]
     fn test_host_events_missing_log_is_none() {
-        let dir = std::env::temp_dir()
-            .join(format!("zutil_opencode_nolog_{}", std::process::id()));
-        let _ = fs::remove_dir_all(&dir);
-        fs::create_dir_all(&dir).expect("create empty dir");
+        let dir = ztest::temp_dir("zutil-opencode-nolog");
 
         let provider =
             OpenCodeSessionProvider::with_data_dir(dir.to_string_lossy());
@@ -1653,10 +1628,7 @@ timestamp=2025-01-09T12:36:00Z level=info message="evaluated" session_id=ses-001
     fn test_with_db_path_binds_explicit_file_only() {
         // Two databases with different session ids; an explicit-path
         // provider must see only its own file, never the sibling.
-        let dir = std::env::temp_dir()
-            .join(format!("zutil_opencode_dbpath_{}", std::process::id()));
-        let _ = fs::remove_dir_all(&dir);
-        fs::create_dir_all(&dir).expect("create fixture dir");
+        let dir = ztest::temp_dir("zutil-opencode-dbpath");
         let first = dir.join("first.db");
         let second = dir.join("second.db");
         for (path, id) in [(&first, "ses-first"), (&second, "ses-second")] {
@@ -1685,8 +1657,6 @@ timestamp=2025-01-09T12:36:00Z level=info message="evaluated" session_id=ses-001
 
     #[test]
     fn test_find_events_matches_message_and_tool_prefixes() {
-        let _lock =
-            DB_MUTEX.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let db_path = create_test_db();
         let provider = OpenCodeSessionProvider::with_data_dir(db_path.clone());
 
@@ -1752,8 +1722,6 @@ timestamp=2025-01-09T12:36:00Z level=info message="evaluated" session_id=ses-001
 
     #[test]
     fn test_find_events_scopes_to_recent_sessions() {
-        let _lock =
-            DB_MUTEX.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let db_path = create_test_db();
         let provider = OpenCodeSessionProvider::with_data_dir(db_path.clone());
 
@@ -1806,8 +1774,6 @@ timestamp=2025-01-09T12:36:00Z level=info message="evaluated" session_id=ses-001
 
     #[test]
     fn test_query_first_assistant_meta_picks_first_assistant() {
-        let _lock =
-            DB_MUTEX.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let db_path = create_test_db();
         let provider = OpenCodeSessionProvider::with_data_dir(db_path.clone());
 
@@ -1831,7 +1797,7 @@ timestamp=2025-01-09T12:36:00Z level=info message="evaluated" session_id=ses-001
         // The trait default still returns `None`; this just pins the
         // `Option<Vec<HostEvent>>` signature compiles for both hosts.
         let provider = crate::session::PiSessionProvider::with_data_dir(
-            std::env::temp_dir().to_string_lossy(),
+            ztest::temp_dir("zutil-pi-default-events").to_string_lossy(),
         );
         assert!(provider.host_events("ses-001").is_none());
     }

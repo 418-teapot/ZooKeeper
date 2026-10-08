@@ -732,9 +732,7 @@ mod tests {
 
     /// Create a fresh temp root with a `sessions` subdirectory.
     fn fixture_root(tag: &str) -> PathBuf {
-        let dir = std::env::temp_dir()
-            .join(format!("zutil-pi-{tag}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+        let dir = ztest::temp_dir(&format!("zutil-pi-{tag}"));
         let sessions = dir.join("sessions");
         std::fs::create_dir_all(&sessions).expect("create sessions dir");
         dir
@@ -1080,10 +1078,7 @@ mod tests {
 
     #[test]
     fn test_list_missing_sessions_dir() {
-        let dir = std::env::temp_dir()
-            .join(format!("zutil-pi-missing-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).expect("create root");
+        let dir = ztest::temp_dir("zutil-pi-missing");
         // No `sessions` subdirectory at all.
         let provider = PiSessionProvider::with_data_dir(dir.to_string_lossy());
         let metas = provider.list().expect("list on missing dir");

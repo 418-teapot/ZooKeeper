@@ -237,32 +237,15 @@ pub fn format_status_json(report: &StatusReport) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::bundle::testutil::{temp_dir, write_page};
 
     /// An empty bundle set for a plain (non-aggregated) root.
     fn no_bundles() -> wiki::BundleSet {
         wiki::BundleSet::default()
     }
-    use std::fs;
-
     // -------------------------------------------------------------------
     // Helpers
     // -------------------------------------------------------------------
-
-    fn temp_dir(name: &str) -> std::path::PathBuf {
-        let dir =
-            std::env::temp_dir().join("zwiki-test").join("status").join(name);
-        let _ = fs::remove_dir_all(&dir);
-        fs::create_dir_all(&dir).expect("failed to create temp dir");
-        dir
-    }
-
-    fn write_page(wiki_root: &Path, rel: &str, content: &str) {
-        let path = wiki_root.join(rel);
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent).expect("failed to create parent dirs");
-        }
-        fs::write(&path, content).expect("failed to write page");
-    }
 
     /// Create a page with the given properties for status testing.
     fn make_page(

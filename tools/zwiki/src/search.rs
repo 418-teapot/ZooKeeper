@@ -311,30 +311,11 @@ pub fn format_results_json(results: &[SearchResult]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::fs;
+    use crate::bundle::testutil::{temp_dir, write_page};
 
     // -------------------------------------------------------------------
     // Helpers
     // -------------------------------------------------------------------
-
-    fn temp_dir(name: &str) -> PathBuf {
-        let dir =
-            std::env::temp_dir().join("zwiki-test").join("search").join(name);
-        let _ = fs::remove_dir_all(&dir);
-        fs::create_dir_all(&dir).expect("failed to create temp dir");
-        dir
-    }
-
-    /// Write a wiki page file under `wiki_root` with the given relative
-    /// path and content.  Creates parent directories as needed.
-    fn write_page(wiki_root: &Path, rel: &str, content: &str) -> PathBuf {
-        let path = wiki_root.join(rel);
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent).expect("failed to create parent dirs");
-        }
-        fs::write(&path, content).expect("failed to write page");
-        path
-    }
 
     /// Create a `SearchEngine` for a temp wiki root, write some pages,
     /// and return the engine + root for test assertions.

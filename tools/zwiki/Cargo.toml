@@ -22,3 +22,6 @@ tempfile = "3"
 toml = "0.8"
 walkdir = "2"
 zutil = { path = "../zutil", features = ["file-lock"] }
+
+[dev-dependencies]
+ztest = { path = "../ztest" }

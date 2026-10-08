@@ -2786,6 +2786,7 @@ dependencies = [
  "shlex",
  "signal-hook",
  "tempfile",
+ "ztest",
  "zutil",
 ]
 
@@ -2879,7 +2880,7 @@ dependencies = [
  "rusqlite",
  "serde",
  "serde_json",
- "tempfile",
+ "ztest",
  "zutil",
 ]
 
@@ -2893,7 +2894,7 @@ dependencies = [
  "rusqlite",
  "serde",
  "serde_json",
- "tempfile",
+ "ztest",
  "zutil",
 ]
 
@@ -2904,7 +2905,7 @@ dependencies = [
  "clap",
  "ctrlc",
  "serde_json",
- "tempfile",
+ "ztest",
  "zutil",
 ]
 
@@ -2913,6 +2914,15 @@ name = "zmij"
 version = "1.0.21"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b8848ee67ecc8aedbaf3e4122217aff892639231befc6a1b58d29fff4c2cabaa"
+
+[[package]]
+name = "ztest"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+ "tempfile",
+ "zutil",
+]
 
 [[package]]
 name = "ztrace"
@@ -2925,6 +2935,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "tempfile",
+ "ztest",
  "zutil",
 ]
 
@@ -2940,6 +2951,7 @@ dependencies = [
  "rusqlite",
  "serde_json",
  "shlex",
+ "ztest",
 ]
 
 [[package]]
@@ -2972,5 +2984,6 @@ dependencies = [
  "tempfile",
  "toml",
  "walkdir",
+ "ztest",
  "zutil",
 ]

@@ -411,23 +411,12 @@ mod tests {
     use super::*;
     use crate::test_db;
     use std::fs;
-    use std::sync::Mutex;
 
-    /// Mutex to serialize DB-creating tests (all use the same temp file name).
-    static DB_MUTEX: Mutex<()> = Mutex::new(());
-
-    /// Mutex for tests sharing the two-DB temp directory name.
-    static MULTIDB_MUTEX: Mutex<()> = Mutex::new(());
-
-    /// Helper: create a temporary `SQLite` database with session fixtures.
-    /// Returns the file path. Caller should delete it after the test.
+    /// Helper: create a `SQLite` database with session fixtures inside a
+    /// fresh temp directory. Returns the file path. Caller should delete
+    /// it after the test.
     fn create_test_db() -> String {
-        let dir = std::env::temp_dir();
-        let path = dir.join(format!(
-            "zutil_resolve_session_test_{}.db",
-            std::process::id()
-        ));
-        let _ = fs::remove_file(&path);
+        let path = ztest::temp_dir("zutil-resolve-session").join("session.db");
 
         let conn = Connection::open(&path).expect("open test db");
         conn.execute_batch(
@@ -476,18 +465,13 @@ mod tests {
     /// Create a temp dir holding two `opencode*.db` fixtures. Returns the
     /// dir path; the caller removes it after the test.
     fn create_two_db_dir_tmp(db1_ids: &[&str], db2_ids: &[&str]) -> String {
-        let dir = std::env::temp_dir()
-            .join(format!("zutil_multidb_{}.db", std::process::id()));
-        let _ = fs::remove_dir_all(&dir);
-        fs::create_dir_all(&dir).expect("create fixture dir");
+        let dir = ztest::temp_dir("zutil-two-db");
         test_db::create_two_db_dir(&dir, db1_ids, db2_ids);
         dir.to_string_lossy().to_string()
     }
 
     #[test]
     fn test_resolve_session_id_exact_match() {
-        let _lock =
-            DB_MUTEX.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let db_path = create_test_db();
         let target = DbTarget::Path(db_path.clone());
         let result = resolve_session_id("ses-abc123", &target);
@@ -497,8 +481,6 @@ mod tests {
 
     #[test]
     fn test_resolve_session_id_prefix_unique() {
-        let _lock =
-            DB_MUTEX.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let db_path = create_test_db();
         let target = DbTarget::Path(db_path.clone());
         // "ses-def" only matches ses-def456
@@ -509,8 +491,6 @@ mod tests {
 
     #[test]
     fn test_resolve_session_id_no_match() {
-        let _lock =
-            DB_MUTEX.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let db_path = create_test_db();
         let target = DbTarget::Path(db_path.clone());
         let result = resolve_session_id("nonexistent", &target);
@@ -527,8 +507,6 @@ mod tests {
 
     #[test]
     fn test_resolve_session_id_prefix_case_sensitive() {
-        let _lock =
-            DB_MUTEX.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let db_path = create_test_db();
         let target = DbTarget::Path(db_path.clone());
         // SQLite LIKE is case-insensitive by default for ASCII,
@@ -546,8 +524,6 @@ mod tests {
 
     #[test]
     fn test_resolve_session_id_empty_string_returns_none() {
-        let _lock =
-            DB_MUTEX.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let db_path = create_test_db();
         let target = DbTarget::Path(db_path.clone());
         // Empty string would match ALL sessions with LIKE '%';
@@ -561,9 +537,6 @@ mod tests {
 
     #[test]
     fn test_aggregate_resolve_finds_sessions_in_both_dbs() {
-        let _lock = MULTIDB_MUTEX
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let dir = create_two_db_dir_tmp(
             &["ses-abc123", "ses-def456", "ses-abc789"],
             &["ses-xyz001", "ses-xyz002"],
@@ -591,9 +564,6 @@ mod tests {
 
     #[test]
     fn test_aggregate_cross_db_prefix_ambiguous() {
-        let _lock = MULTIDB_MUTEX
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
         // "ses-abc" appears in both DBs: abc123/abc789 (first), abc999 (second).
         let dir = create_two_db_dir_tmp(
             &["ses-abc123", "ses-def456", "ses-abc789"],
@@ -620,9 +590,6 @@ mod tests {
 
     #[test]
     fn test_aggregate_exact_match_same_id_in_both_dbs() {
-        let _lock = MULTIDB_MUTEX
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
         // The same session ID exists in both databases: the merged view
         // carries both DBs' rows, but the exact match must still resolve
         // to the single shared ID.
@@ -650,9 +617,6 @@ mod tests {
 
     #[test]
     fn test_aggregate_query_sessions_where_merged() {
-        let _lock = MULTIDB_MUTEX
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let dir = create_two_db_dir_tmp(
             &["ses-abc123", "ses-def456", "ses-abc789"],
             &["ses-xyz001", "ses-xyz002"],
@@ -746,13 +710,7 @@ mod tests {
 
     #[test]
     fn test_aggregate_merges_by_column_name_across_orders() {
-        let _lock = MULTIDB_MUTEX
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let dir = std::env::temp_dir()
-            .join(format!("zutil_order_{}.db", std::process::id()));
-        let _ = fs::remove_dir_all(&dir);
-        fs::create_dir_all(&dir).expect("create fixture dir");
+        let dir = ztest::temp_dir("zutil-order");
 
         // Main DB: modern order (title early, agent/directory near front).
         create_reordered_session_db(
@@ -832,13 +790,7 @@ mod tests {
 
     #[test]
     fn test_aggregate_merge_view_nulls_missing_aux_column() {
-        let _lock = MULTIDB_MUTEX
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let dir = std::env::temp_dir()
-            .join(format!("zutil_nullfill_{}.db", std::process::id()));
-        let _ = fs::remove_dir_all(&dir);
-        fs::create_dir_all(&dir).expect("create fixture dir");
+        let dir = ztest::temp_dir("zutil-nullfill");
 
         // Main DB has the full session column set.
         create_reordered_session_db(
@@ -893,9 +845,6 @@ mod tests {
 
     #[test]
     fn test_aggregate_merge_views_cover_message_and_part() {
-        let _lock = MULTIDB_MUTEX
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let dir = create_two_db_dir_tmp(
             &["ses-abc123", "ses-def456"],
             &["ses-xyz001", "ses-xyz002"],
@@ -917,13 +866,7 @@ mod tests {
 
     #[test]
     fn test_aggregate_empty_dir_like_missing_db() {
-        let _lock = MULTIDB_MUTEX
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let dir = std::env::temp_dir()
-            .join(format!("zutil_multidb_{}.db", std::process::id()));
-        let _ = fs::remove_dir_all(&dir);
-        fs::create_dir_all(&dir).expect("create empty fixture dir");
+        let dir = ztest::temp_dir("zutil-empty-dir");
         let target = DbTarget::Aggregate(dir.to_string_lossy().to_string());
 
         // Zero DBs found behaves like a missing database.
@@ -937,9 +880,6 @@ mod tests {
 
     #[test]
     fn test_aggregate_single_db_dir_works() {
-        let _lock = MULTIDB_MUTEX
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let dir = create_two_db_dir_tmp(&["ses-abc123", "ses-def456"], &[]);
         let target = DbTarget::Aggregate(dir.clone());
 
@@ -953,13 +893,7 @@ mod tests {
 
     #[test]
     fn test_discover_databases_sorted_and_filtered() {
-        let _lock = MULTIDB_MUTEX
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let dir = std::env::temp_dir()
-            .join(format!("zutil_multidb_{}.db", std::process::id()));
-        let _ = fs::remove_dir_all(&dir);
-        fs::create_dir_all(&dir).expect("create fixture dir");
+        let dir = ztest::temp_dir("zutil-discover");
         for name in [
             "opencode.db",
             "opencode-stable.db",
@@ -997,13 +931,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn test_discover_databases_follows_symlinks() {
-        let _lock = MULTIDB_MUTEX
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let dir = std::env::temp_dir()
-            .join(format!("zutil_multidb_{}.db", std::process::id()));
-        let _ = fs::remove_dir_all(&dir);
-        fs::create_dir_all(&dir).expect("create fixture dir");
+        let dir = ztest::temp_dir("zutil-discover-symlink");
         fs::write(dir.join("opencode.db"), b"x").expect("write fixture file");
         // A symlinked opencode*.db must be discovered too (DirEntry
         // file_type does not follow symlinks; path-based is_file does).

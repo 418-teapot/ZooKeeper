@@ -5,6 +5,7 @@
 #![warn(clippy::nursery)]
 
 use std::path::Path;
+use std::process::{Command, Stdio};
 
 use chrono::TimeZone;
 use serde_json::Value;
@@ -35,6 +36,21 @@ pub fn jq_path() -> String {
     } else {
         "jq".to_string()
     }
+}
+
+/// Return `true` when the `jq` executable resolved by [`jq_path`] runs
+/// successfully.
+///
+/// This is the single jq availability check: callers (including tests
+/// that skip jq-dependent cases) must not probe `jq` themselves.
+#[must_use]
+pub fn jq_installed() -> bool {
+    Command::new(jq_path())
+        .arg("--version")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .is_ok_and(|status| status.success())
 }
 
 /// Expand a leading `~` or `~/` to the user's home directory.
@@ -653,11 +669,7 @@ mod tests {
 
     /// Create a fresh temp dir for `resolve_session_path` tests.
     fn session_resolve_dir(tag: &str) -> std::path::PathBuf {
-        let dir = std::env::temp_dir()
-            .join(format!("zutil-resolve-{tag}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        dir
+        ztest::temp_dir(&format!("zutil-resolve-{tag}"))
     }
 
     #[test]

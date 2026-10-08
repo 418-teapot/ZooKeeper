@@ -168,9 +168,7 @@ mod tests {
 
     #[test]
     fn test_write_atomic_roundtrip() {
-        let dir = std::env::temp_dir().join("zutil-test-write-atomic");
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = ztest::temp_dir("zutil-write-atomic");
 
         let path = dir.join("test.txt");
         let content = "hello atomic world";
@@ -192,9 +190,7 @@ mod tests {
 
     #[test]
     fn test_write_atomic_no_extension() {
-        let dir = std::env::temp_dir().join("zutil-test-write-atomic-noext");
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = ztest::temp_dir("zutil-write-atomic-noext");
 
         let path = dir.join("noextfile");
         write_atomic(&path, "content").unwrap();
@@ -212,9 +208,7 @@ mod tests {
 
     #[test]
     fn test_write_atomic_bytes_roundtrip() {
-        let dir = std::env::temp_dir().join("zutil-test-write-atomic-bytes");
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = ztest::temp_dir("zutil-write-atomic-bytes");
 
         let path = dir.join("data.bin");
         let content = b"\x00\x01\x02\xff\xfe";
@@ -234,9 +228,7 @@ mod tests {
     #[cfg(feature = "file-lock")]
     #[test]
     fn test_acquire_file_lock_creates_file() {
-        let dir = std::env::temp_dir().join("zutil-test-file-lock");
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = ztest::temp_dir("zutil-file-lock");
 
         let lock_path = dir.join(".test.flock");
 
@@ -257,10 +249,7 @@ mod tests {
     #[cfg(feature = "file-lock")]
     #[test]
     fn test_try_acquire_file_lock_conflict() {
-        let dir = std::env::temp_dir()
-            .join(format!("zutil-test-try-lock-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = ztest::temp_dir("zutil-try-lock");
 
         let lock_path = dir.join(".test-try.flock");
 
@@ -283,9 +272,7 @@ mod tests {
     #[cfg(feature = "file-lock")]
     #[test]
     fn test_with_file_lock_runs_closure() {
-        let dir = std::env::temp_dir().join("zutil-test-with-file-lock");
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = ztest::temp_dir("zutil-with-file-lock");
 
         let lock_path = dir.join(".test2.flock");
         let mut flag = false;

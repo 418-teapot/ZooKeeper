@@ -333,9 +333,7 @@ mod tests {
         tag: &str,
         sessions: &[(&str, i64, Option<&str>)],
     ) -> PathBuf {
-        let dir = std::env::temp_dir()
-            .join(format!("zutil-resolve-pi-{tag}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+        let dir = ztest::temp_dir(&format!("zutil-resolve-pi-{tag}"));
         let root = dir.join("sessions");
         std::fs::create_dir_all(&root).expect("create pi sessions dir");
         for (i, (id, started_at, text)) in sessions.iter().enumerate() {
@@ -365,10 +363,7 @@ mod tests {
         tag: &str,
         sessions: &[(&str, i64, Option<&str>)],
     ) -> PathBuf {
-        let dir = std::env::temp_dir()
-            .join(format!("zutil-resolve-oc-{tag}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).expect("create oc fixture dir");
+        let dir = ztest::temp_dir(&format!("zutil-resolve-oc-{tag}"));
         let conn =
             Connection::open(dir.join("opencode.db")).expect("open oc db");
         create_common_tables(&conn);
@@ -749,10 +744,7 @@ mod tests {
     /// after the test.
     #[cfg(feature = "db-helpers")]
     fn oc_message_fixture(tag: &str) -> PathBuf {
-        let dir = std::env::temp_dir()
-            .join(format!("zutil-resolve-find-{tag}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).expect("create oc fixture dir");
+        let dir = ztest::temp_dir(&format!("zutil-resolve-find-{tag}"));
         let conn =
             Connection::open(dir.join("opencode.db")).expect("open oc db");
         create_common_tables(&conn);

@@ -330,7 +330,7 @@ pub fn run_all(root: &Path) -> LintResults {
     let pages: Vec<Page> = cache.values().cloned().collect();
     let bundles = wiki::BundleSet::discover(root);
 
-    let reference_date = chrono::Local::now().date_naive();
+    let reference_date = chrono::Utc::now().date_naive();
     let freshness_issues =
         check_freshness(&pages, root, &bundles, reference_date);
 
@@ -350,6 +350,7 @@ pub fn run_all(root: &Path) -> LintResults {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::bundle::testutil::{setup_wiki, temp_dir};
 
     use serde_json::Value;
 
@@ -363,13 +364,6 @@ mod tests {
     // -------------------------------------------------------------------
     // Helpers
     // -------------------------------------------------------------------
-
-    fn temp_dir(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join("zwiki-test-lint").join(name);
-        let _ = fs::remove_dir_all(&dir);
-        fs::create_dir_all(&dir).expect("failed to create temp dir");
-        dir
-    }
 
     fn write(path: &Path, text: &str) -> PathBuf {
         if let Some(parent) = path.parent() {
@@ -392,43 +386,6 @@ mod tests {
             body,
             raw: content.to_string(),
         }
-    }
-
-    /// Create a temp wiki directory and return (`wiki_dir`, pages, cache).
-    fn setup_wiki(
-        dir_name: &str,
-        files: &[(&str, &str)],
-    ) -> (PathBuf, Vec<Page>, HashMap<String, Page>) {
-        let dir = temp_dir(dir_name);
-        for (rel_path, content) in files {
-            let path = dir.join(rel_path);
-            if let Some(parent) = path.parent() {
-                fs::create_dir_all(parent).ok();
-            }
-            fs::write(&path, content).unwrap();
-        }
-
-        // Build pages and cache from discovered files.
-        let mut pages: Vec<Page> = Vec::new();
-        let mut cache: HashMap<String, Page> = HashMap::new();
-
-        for (rel_path, content) in files {
-            let path = dir.join(rel_path);
-            let frontmatter = wiki::parse_frontmatter(content);
-            let body = wiki::strip_frontmatter(content);
-            let rel = rel_path.to_string();
-            let page = Page {
-                path,
-                rel: rel.clone(),
-                frontmatter,
-                body,
-                raw: content.to_string(),
-            };
-            cache.insert(rel.clone(), page.clone());
-            pages.push(page);
-        }
-
-        (dir, pages, cache)
     }
 
     // =======================================================================

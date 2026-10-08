@@ -458,7 +458,7 @@ mod tests {
     use crate::bundle::manifest::BundleManifest;
     use crate::bundle::manifest::ExportSection;
     use crate::bundle::manifest::PackageSection;
-    use std::path::PathBuf;
+    use crate::bundle::testutil::temp_dir;
 
     fn valid_manifest() -> BundleManifest {
         BundleManifest {
@@ -474,13 +474,6 @@ mod tests {
                 exclude: Vec::new(),
             },
         }
-    }
-
-    fn temp_dir(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join("zwiki-test").join(name);
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).expect("failed to create temp dir");
-        dir
     }
 
     #[test]

@@ -1,16 +1,10 @@
 //! Integration test: commands that print large output must exit cleanly when
 //! the reader closes the pipe early (EPIPE) instead of panicking.
 
-use std::path::PathBuf;
 use std::process::{Command, Stdio};
+use ztest::temp_dir;
 
-/// Create a fresh temporary directory for a broken-pipe scenario.
-fn temp_dir(name: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join("zwiki-broken-pipe").join(name);
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).expect("create temp dir");
-    dir
-}
+pub mod common;
 
 /// Run `zwiki` with `args`, close the stdout read end immediately, and assert
 /// the process exits cleanly without a panic on stderr.
@@ -52,7 +46,7 @@ fn template_exits_cleanly_on_broken_pipe() {
 #[test]
 fn check_exits_cleanly_on_broken_pipe() {
     let root = temp_dir("check");
-    std::fs::write(root.join("bundle.toml"), ".").unwrap();
+    common::write_bundle_manifest(&root);
     assert_clean_broken_pipe(&[
         "--root",
         root.to_string_lossy().as_ref(),
@@ -63,7 +57,7 @@ fn check_exits_cleanly_on_broken_pipe() {
 #[test]
 fn page_show_exits_cleanly_on_broken_pipe() {
     let root = temp_dir("page_show");
-    std::fs::write(root.join("bundle.toml"), ".").unwrap();
+    common::write_bundle_manifest(&root);
     let concepts = root.join("concepts");
     std::fs::create_dir_all(&concepts).unwrap();
     std::fs::write(

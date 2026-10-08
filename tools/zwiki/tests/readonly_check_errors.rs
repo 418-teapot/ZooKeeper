@@ -9,35 +9,13 @@
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use ztest::temp_dir;
+
+pub mod common;
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-fn temp_dir(name: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join("zwiki-inttest").join(name);
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).expect("temp_dir");
-    dir
-}
-
-/// Build a tar.gz at `tar_path` containing only the given `entries`.
-/// Each entry is a `(archive_name, bytes)` pair.
-fn write_tar(tar_path: &Path, entries: &[(&str, &[u8])]) {
-    let file = std::fs::File::create(tar_path).unwrap();
-    let gz =
-        flate2::write::GzEncoder::new(file, flate2::Compression::default());
-    let mut archive = tar::Builder::new(gz);
-    for (name, data) in entries {
-        let mut header = tar::Header::new_gnu();
-        header.set_entry_type(tar::EntryType::Regular);
-        header.set_mode(0o644);
-        header.set_size(data.len() as u64);
-        archive.append_data(&mut header, name, *data).unwrap();
-    }
-    let gz = archive.into_inner().unwrap();
-    gz.finish().unwrap();
-}
 
 /// Run `zwiki --root <tar> check` and assert exit != 0 and stderr or
 /// stdout contains `needle`.
@@ -66,7 +44,7 @@ fn test_check_missing_bundle_toml() {
 
     // Create a tar.gz that has index.md but NO bundle.toml.
     let tar = tmp.join("bundle.tar.gz");
-    write_tar(
+    common::write_tar(
         &tar,
         &[("index.md", b"---\ntitle: X\n---\n# X\n"), ("doc.md", b"# Doc\n")],
     );
@@ -81,7 +59,7 @@ fn test_check_invalid_manifest() {
 
     // Create a tar.gz with a bundle.toml that has invalid content.
     let tar = tmp.join("bundle.tar.gz");
-    write_tar(
+    common::write_tar(
         &tar,
         &[
             ("bundle.toml", b"[package]\nname = \"\"\nversion = \"0.1\"\n"),
@@ -100,7 +78,7 @@ fn test_check_missing_index_md() {
 
     // Create a tar.gz with bundle.toml but NO index.md.
     let tar = tmp.join("bundle.tar.gz");
-    write_tar(
+    common::write_tar(
         &tar,
         &[(
             "bundle.toml",

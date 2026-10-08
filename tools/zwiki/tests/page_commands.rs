@@ -6,27 +6,19 @@
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use ztest::temp_dir;
+
+pub mod common;
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
-fn temp_dir(name: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join("zwiki-inttest").join(name);
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).expect("temp_dir");
-    dir
-}
-
 /// Create a minimal writable wiki root at `dir` with a few pages.
 fn make_wiki(dir: &Path) {
     std::fs::create_dir_all(dir).unwrap();
     // Bundle manifest marks this as a writable bundle source.
-    std::fs::write(
-        dir.join("bundle.toml"),
-        "[package]\nname = \"test-wiki\"\nversion = \"0.1.0\"\n\n[export]\ninclude = [\"**/*\"]\n",
-    )
-    .unwrap();
+    common::write_bundle_manifest(dir);
     // Domain subdirectories.
     for sub in &["concepts", "entities", "sources/adr", "analysis", "syntheses"]
     {
@@ -46,45 +38,9 @@ fn make_wiki(dir: &Path) {
     .unwrap();
 }
 
-/// Create a minimal tar.gz bundle (read-only root).
-fn make_readonly_bundle(dir: &Path) -> PathBuf {
-    std::fs::write(
-        dir.join("bundle.toml"),
-        r#"[package]
-name = "test-bundle"
-version = "0.1.0"
-okf_version = "0.1"
-
-[export]
-include = ["*.md"]
-"#,
-    )
-    .unwrap();
-    std::fs::write(dir.join("index.md"), "---\ntitle: Index\n---\n# Index\n")
-        .unwrap();
-    std::fs::create_dir_all(dir.join("logs")).unwrap();
-    std::fs::write(dir.join("logs/.gitkeep"), "").unwrap();
-    std::fs::write(
-        dir.join("doc.md"),
-        "---\ntitle: Doc\ntype: concept\n---\n\n# Doc\n",
-    )
-    .unwrap();
-
-    let tar_path = dir.join("test-bundle.tar.gz");
-    let file = std::fs::File::create(&tar_path).unwrap();
-    let gz =
-        flate2::write::GzEncoder::new(file, flate2::Compression::default());
-    let mut archive = tar::Builder::new(gz);
-    archive
-        .append_path_with_name(dir.join("bundle.toml"), "bundle.toml")
-        .unwrap();
-    archive.append_path_with_name(dir.join("index.md"), "index.md").unwrap();
-    archive.append_path_with_name(dir.join("doc.md"), "doc.md").unwrap();
-    archive.append_dir("logs", dir.join("logs")).unwrap();
-    let gz = archive.into_inner().unwrap();
-    gz.finish().unwrap();
-    tar_path
-}
+/// `doc.md` on the read-only root, carrying `title: Doc` frontmatter so
+/// `page show --property title` resolves against it.
+const DOC_MD: &str = "---\ntitle: Doc\ntype: concept\n---\n\n# Doc\n";
 
 /// Assert that a zwiki command succeeds (exit 0).
 fn assert_ok(bin: &Path, args: &[&str], label: &str) {
@@ -512,8 +468,7 @@ fn test_page_show_nonexistent_page_error() {
 #[test]
 fn test_readonly_root_rejects_page_set() {
     let bin = PathBuf::from(env!("CARGO_BIN_EXE_zwiki"));
-    let tmp = temp_dir("ro_page_set");
-    let tar_path = make_readonly_bundle(&tmp);
+    let tar_path = common::make_bundle_tar("ro_page_set", DOC_MD);
 
     assert_rejected(
         &bin,
@@ -533,8 +488,7 @@ fn test_readonly_root_rejects_page_set() {
 #[test]
 fn test_readonly_root_rejects_page_unset() {
     let bin = PathBuf::from(env!("CARGO_BIN_EXE_zwiki"));
-    let tmp = temp_dir("ro_page_unset");
-    let tar_path = make_readonly_bundle(&tmp);
+    let tar_path = common::make_bundle_tar("ro_page_unset", DOC_MD);
 
     assert_rejected(
         &bin,
@@ -553,8 +507,7 @@ fn test_readonly_root_rejects_page_unset() {
 #[test]
 fn test_readonly_root_rejects_page_create() {
     let bin = PathBuf::from(env!("CARGO_BIN_EXE_zwiki"));
-    let tmp = temp_dir("ro_page_create");
-    let tar_path = make_readonly_bundle(&tmp);
+    let tar_path = common::make_bundle_tar("ro_page_create", DOC_MD);
 
     assert_rejected(
         &bin,
@@ -577,8 +530,7 @@ fn test_readonly_root_rejects_page_create() {
 #[test]
 fn test_readonly_root_rejects_page_move() {
     let bin = PathBuf::from(env!("CARGO_BIN_EXE_zwiki"));
-    let tmp = temp_dir("ro_page_move");
-    let tar_path = make_readonly_bundle(&tmp);
+    let tar_path = common::make_bundle_tar("ro_page_move", DOC_MD);
 
     assert_rejected(
         &bin,
@@ -881,8 +833,7 @@ fn test_page_show_cwd_relative_path_with_root_dir_component() {
 #[test]
 fn test_readonly_root_allows_page_show() {
     let bin = PathBuf::from(env!("CARGO_BIN_EXE_zwiki"));
-    let tmp = temp_dir("ro_page_show");
-    let tar_path = make_readonly_bundle(&tmp);
+    let tar_path = common::make_bundle_tar("ro_page_show", DOC_MD);
 
     // page show is read-only and should work on readonly root.
     let output = Command::new(&bin)

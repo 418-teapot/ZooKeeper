@@ -11,7 +11,12 @@ use std::process::Command;
 
 use rusqlite::Connection;
 use serde_json::{Value, json};
-use tempfile::TempDir;
+use ztest::TestEnv;
+use ztest::parse_stdout_json;
+use ztest::pi::{
+    assistant_message, data_dir as pi_data_dir,
+    session_lines as pi_session_lines, tool_result_message, user_message,
+};
 
 /// Path to the `zinspect` binary, set by `cargo test`.
 const ZINSPECT_BIN: &str = env!("CARGO_BIN_EXE_zinspect");
@@ -26,29 +31,24 @@ const PI_UUID: &str = "01a04bc0-fa14-76d5-95ec-a8d5ee80f706";
 ///
 /// The fixture is alive for the duration of the test (drop = cleanup).
 struct TestFixture {
-    /// Keeps the temp dir alive until the test ends.
-    _db_dir: TempDir,
-    /// Keeps the fake HOME alive until the test ends.
-    _home_dir: TempDir,
+    /// Hermetic environment; its HOME backs the fake `~/.zoo/log/` and its
+    /// opencode data dir holds the fixture DB.
+    env: TestEnv,
     /// Absolute path to the SQLite database file.
     db_path: String,
-    /// Absolute path to the fake HOME directory.
-    home_path: String,
 }
 
 impl TestFixture {
     /// Create a new fixture with a populated database and log files.
     fn new() -> Self {
-        let db_dir = TempDir::new().expect("create temp dir for db");
-        let home_dir = TempDir::new().expect("create temp dir for home");
+        let env = TestEnv::new();
 
         // Create log directory structure: ~/.zoo/log/
-        let log_dir = home_dir.path().join(".zoo").join("log");
+        let log_dir = env.zoo_log_dir();
         fs::create_dir_all(&log_dir).expect("create log dir");
 
-        let db_path = db_dir.path().join("opencode.db");
+        let db_path = env.opencode_data().join("opencode.db");
         let db_path_str = db_path.to_string_lossy().to_string();
-        let home_path_str = home_dir.path().to_string_lossy().to_string();
 
         Self::create_db(&db_path);
         Self::create_log_file(&log_dir.join("opencode-ses-001.log"), "ses-001");
@@ -57,19 +57,17 @@ impl TestFixture {
         Self::create_log_file(&log_dir.join("pi-ses-002.log"), "ses-002");
         Self::create_log_file(&log_dir.join("opencode-ses-003.log"), "ses-003");
 
-        Self {
-            _db_dir: db_dir,
-            _home_dir: home_dir,
-            db_path: db_path_str,
-            home_path: home_path_str,
-        }
+        Self { env, db_path: db_path_str }
     }
 
-    /// Build a `Command` that runs `zinspect` with HOME pointing at the
-    /// fixture's temp home directory and `--db` set to the fixture's database.
+    /// Build a `Command` that runs `zinspect` against the fixture database.
+    ///
+    /// The harness pins HOME (so log resolution cannot glob a real
+    /// `~/.zoo/log`) and `COLUMNS` (so table output does not depend on the
+    /// terminal running the tests).
     fn zinspect(&self) -> Command {
-        let mut cmd = Command::new(ZINSPECT_BIN);
-        cmd.env("HOME", &self.home_path).args(["--db", &self.db_path]);
+        let mut cmd = self.env.command(ZINSPECT_BIN);
+        cmd.args(["--db", &self.db_path]);
         cmd
     }
 
@@ -78,87 +76,31 @@ impl TestFixture {
     fn create_db(path: &Path) {
         let conn = Connection::open(path).expect("open test db");
 
-        // Session table (same schema as zutil::test_db::create_common_tables)
-        conn.execute_batch(
-            "CREATE TABLE session (
-                id TEXT PRIMARY KEY,
-                parent_id TEXT,
-                title TEXT,
-                slug TEXT,
-                agent TEXT,
-                directory TEXT,
-                model TEXT,
-                time_created INTEGER,
-                time_updated INTEGER,
-                cost REAL,
-                tokens_input REAL,
-                tokens_output REAL,
-                tokens_reasoning REAL,
-                tokens_cache_read REAL,
-                tokens_cache_write REAL
-            );
-            CREATE TABLE message (
-                id TEXT PRIMARY KEY,
-                session_id TEXT NOT NULL,
-                time_created INTEGER,
-                data TEXT
-            );
-            CREATE TABLE part (
-                id TEXT PRIMARY KEY,
-                message_id TEXT NOT NULL,
-                session_id TEXT NOT NULL,
-                time_created INTEGER,
-                time_updated INTEGER,
-                data TEXT
-            );",
-        )
-        .expect("create tables");
+        zutil::test_db::create_common_tables(&conn);
+        zutil::test_db::create_part_table(&conn);
 
         // ── ses-001 ───────────────────────────────────────────────────────
-        conn.execute(
-            "INSERT INTO session VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15)",
-            rusqlite::params![
-                "ses-001",
-                Option::<&str>::None,
-                "auth middleware debug",
-                "auth-middleware-debug",
-                "beaver",
-                "/app",
-                r#"{"name":"deepseek-v4"}"#,
-                1_715_000_000_000_i64,  // time_created
-                1_715_000_100_000_i64,  // time_updated
-                0.012,                  // cost
-                500.0,                  // tokens_input
-                300.0,                  // tokens_output
-                0.0,                    // tokens_reasoning
-                0.0,                    // tokens_cache_read
-                0.0,                    // tokens_cache_write
-            ],
-        )
-        .expect("insert ses-001");
+        zutil::test_db::seed_common_sessions(&conn);
 
         // Message for ses-001 (user turn)
-        conn.execute(
-            "INSERT INTO message VALUES (?1,?2,?3,?4)",
-            rusqlite::params![
-                "msg-001",
-                "ses-001",
-                1_715_000_010_000_i64,
-                r#"{"role":"user","agent":"beaver"}"#,
-            ],
-        )
-        .expect("insert msg-001");
+        zutil::test_db::insert_message(
+            &conn,
+            "msg-001",
+            "ses-001",
+            1_715_000_010_000,
+            r#"{"role":"user","agent":"beaver"}"#,
+        );
 
         // Message for ses-001 (assistant turn with time info and a
         // structured `model` — the first assistant message decides the
         // session-level model).
-        conn.execute(
-            "INSERT INTO message VALUES (?1,?2,?3,?4)",
-            rusqlite::params![
-                "msg-002", "ses-001", 1_715_000_020_000_i64,
-                r#"{"role":"assistant","agent":"beaver","model":{"providerID":"openai","modelID":"gpt-4o"},"time":{"created":1715000020000,"completed":1715000090000}}"#,
-            ],
-        ).expect("insert msg-002");
+        zutil::test_db::insert_message(
+            &conn,
+            "msg-002",
+            "ses-001",
+            1_715_000_020_000,
+            r#"{"role":"assistant","agent":"beaver","model":{"providerID":"openai","modelID":"gpt-4o"},"time":{"created":1715000020000,"completed":1715000090000}}"#,
+        );
 
         // Part: step-finish for msg-001 (step 1)
         conn.execute(
@@ -209,39 +151,14 @@ impl TestFixture {
         ).expect("insert part-004 (tool)");
 
         // ── ses-002 ───────────────────────────────────────────────────────
-        conn.execute(
-            "INSERT INTO session VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15)",
-            rusqlite::params![
-                "ses-002",
-                Option::<&str>::None,
-                "DB migration from v2 to v3",
-                "db-migration-v2-v3",
-                "lynx",
-                "/db",
-                r#"{"name":"deepseek-v4"}"#,
-                1_715_000_200_000_i64,
-                1_715_000_300_000_i64,
-                0.008,
-                200.0,
-                100.0,
-                50.0,
-                0.0,
-                0.0,
-            ],
-        )
-        .expect("insert ses-002");
-
         // Message for ses-002
-        conn.execute(
-            "INSERT INTO message VALUES (?1,?2,?3,?4)",
-            rusqlite::params![
-                "msg-003",
-                "ses-002",
-                1_715_000_210_000_i64,
-                r#"{"role":"user","agent":"lynx"}"#,
-            ],
-        )
-        .expect("insert msg-003");
+        zutil::test_db::insert_message(
+            &conn,
+            "msg-003",
+            "ses-002",
+            1_715_000_210_000,
+            r#"{"role":"user","agent":"lynx"}"#,
+        );
 
         // Part: step-finish for msg-003
         conn.execute(
@@ -256,39 +173,36 @@ impl TestFixture {
         ).expect("insert part-005 (step-finish)");
 
         // ── ses-003 (pruning-heavy session) ────────────────────────────────
-        conn.execute(
-            "INSERT INTO session VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15)",
-            rusqlite::params![
-                "ses-003",
-                Option::<&str>::None,
-                "context pruning reclamation",
-                "context-pruning",
-                "beaver",
-                "/app",
-                r#"{"name":"deepseek-v4"}"#,
-                1_715_000_400_000_i64,  // time_created
-                1_715_000_500_000_i64,  // time_updated (newest → first in multi-session ordering)
-                0.02,                   // cost
-                400.0,                  // tokens_input
-                200.0,                  // tokens_output
-                0.0,                    // tokens_reasoning
-                0.0,                    // tokens_cache_read
-                0.0,                    // tokens_cache_write
-            ],
-        )
-        .expect("insert ses-003");
+        zutil::test_db::insert_session(
+            &conn,
+            &zutil::test_db::SessionRow {
+                id: "ses-003",
+                parent_id: None,
+                title: "context pruning reclamation",
+                slug: "context-pruning",
+                agent: "beaver",
+                directory: "/app",
+                model: r#"{"name":"deepseek-v4"}"#,
+                time_created: 1_715_000_400_000,
+                // Newest update → first in multi-session ordering.
+                time_updated: 1_715_000_500_000,
+                cost: 0.02,
+                tokens_input: 400.0,
+                tokens_output: 200.0,
+                tokens_reasoning: 0.0,
+                tokens_cache_read: 0.0,
+                tokens_cache_write: 0.0,
+            },
+        );
 
         // Message for ses-003
-        conn.execute(
-            "INSERT INTO message VALUES (?1,?2,?3,?4)",
-            rusqlite::params![
-                "msg-004",
-                "ses-003",
-                1_715_000_410_000_i64,
-                r#"{"role":"user","agent":"beaver"}"#,
-            ],
-        )
-        .expect("insert msg-004");
+        zutil::test_db::insert_message(
+            &conn,
+            "msg-004",
+            "ses-003",
+            1_715_000_410_000,
+            r#"{"role":"user","agent":"beaver"}"#,
+        );
 
         // Part: step-finish for msg-004. Gives ses-003 step data so the
         // single-session pruning branch does not print the "No step-finish
@@ -350,7 +264,9 @@ impl TestFixture {
 
 #[test]
 fn test_help_exits_0() {
-    let output = Command::new(ZINSPECT_BIN)
+    let env = TestEnv::new();
+    let output = env
+        .command(ZINSPECT_BIN)
         .arg("--help")
         .output()
         .expect("failed to run zinspect --help");
@@ -365,7 +281,9 @@ fn test_help_exits_0() {
 
 #[test]
 fn test_stats_help_exits_0() {
-    let output = Command::new(ZINSPECT_BIN)
+    let env = TestEnv::new();
+    let output = env
+        .command(ZINSPECT_BIN)
         .args(["stats", "--help"])
         .output()
         .expect("failed to run zinspect stats --help");
@@ -378,7 +296,9 @@ fn test_stats_help_exits_0() {
 
 #[test]
 fn test_timeline_help_exits_0() {
-    let output = Command::new(ZINSPECT_BIN)
+    let env = TestEnv::new();
+    let output = env
+        .command(ZINSPECT_BIN)
         .args(["timeline", "--help"])
         .output()
         .expect("failed to run zinspect timeline --help");
@@ -391,7 +311,9 @@ fn test_timeline_help_exits_0() {
 
 #[test]
 fn test_impact_help_exits_0() {
-    let output = Command::new(ZINSPECT_BIN)
+    let env = TestEnv::new();
+    let output = env
+        .command(ZINSPECT_BIN)
         .args(["impact", "--help"])
         .output()
         .expect("failed to run zinspect impact --help");
@@ -404,7 +326,9 @@ fn test_impact_help_exits_0() {
 
 #[test]
 fn test_no_subcommand_exits_1() {
-    let output = Command::new(ZINSPECT_BIN)
+    let env = TestEnv::new();
+    let output = env
+        .command(ZINSPECT_BIN)
         .output()
         .expect("failed to run zinspect with no args");
     assert_eq!(
@@ -416,7 +340,9 @@ fn test_no_subcommand_exits_1() {
 
 #[test]
 fn test_stats_no_session_exits_1() {
-    let output = Command::new(ZINSPECT_BIN)
+    let env = TestEnv::new();
+    let output = env
+        .command(ZINSPECT_BIN)
         .arg("stats")
         .output()
         .expect("failed to run zinspect stats with no session");
@@ -434,7 +360,9 @@ fn test_stats_no_session_exits_1() {
 
 #[test]
 fn test_stats_invalid_session_exits_2() {
-    let output = Command::new(ZINSPECT_BIN)
+    let env = TestEnv::new();
+    let output = env
+        .command(ZINSPECT_BIN)
         .args(["stats", "nonexistent-session-xyz-123"])
         .output()
         .expect("failed to run zinspect stats with invalid session");
@@ -453,7 +381,9 @@ fn test_stats_invalid_session_exits_2() {
 
 #[test]
 fn test_timeline_invalid_session_exits_2() {
-    let output = Command::new(ZINSPECT_BIN)
+    let env = TestEnv::new();
+    let output = env
+        .command(ZINSPECT_BIN)
         .args(["timeline", "nonexistent-session-xyz-123"])
         .output()
         .expect("failed to run zinspect timeline with invalid session");
@@ -467,7 +397,9 @@ fn test_timeline_invalid_session_exits_2() {
 
 #[test]
 fn test_impact_with_json_output_is_valid_json() {
-    let output = Command::new(ZINSPECT_BIN)
+    let env = TestEnv::new();
+    let output = env
+        .command(ZINSPECT_BIN)
         .args([
             "impact",
             "--sessions",
@@ -494,7 +426,9 @@ fn test_impact_with_json_output_is_valid_json() {
 
 #[test]
 fn test_stats_sessions_no_db_is_valid_json() {
-    let output = Command::new(ZINSPECT_BIN)
+    let env = TestEnv::new();
+    let output = env
+        .command(ZINSPECT_BIN)
         .args([
             "stats",
             "--sessions",
@@ -983,7 +917,9 @@ fn test_impact_single_session_custom_window() {
 #[test]
 fn test_impact_no_hooks_empty_db() {
     // No sessions in the DB at all → should print warning
-    let output = Command::new(ZINSPECT_BIN)
+    let env = TestEnv::new();
+    let output = env
+        .command(ZINSPECT_BIN)
         .args([
             "impact",
             "--sessions",
@@ -1008,8 +944,11 @@ fn test_impact_no_hooks_empty_db() {
 
 #[test]
 fn test_impact_no_hooks_empty_db_table() {
-    // No sessions in the DB at all → should print warning (table path)
-    let output = Command::new(ZINSPECT_BIN)
+    // No sessions in the DB at all → should print warning (table path).
+    // The harness HOME keeps log resolution off the real `~/.zoo/log`.
+    let env = TestEnv::new();
+    let output = env
+        .command(ZINSPECT_BIN)
         .args([
             "impact",
             "--sessions",
@@ -1289,33 +1228,31 @@ fn test_stats_multi_session_pruning_table() {
 
 // ── Default aggregation across multiple databases ───────────────────────────
 
-/// Build a temp data dir with both fixture DBs and a temp HOME, and
-/// return (dir, home_dir) so the test can set both env vars.
-fn two_db_env() -> (TempDir, String) {
-    let dir = TempDir::new().expect("create temp data dir");
-    let home = TempDir::new().expect("create temp home dir");
-    TestFixture::create_db(&dir.path().join("opencode.db"));
-    zutil::test_db::create_second_db(&dir.path().join("opencode-stable.db"));
+/// Build a hermetic environment with both fixture DBs and an empty log
+/// directory, ready for an aggregation test that passes no `--db`.
+fn two_db_env() -> TestEnv {
+    let env = TestEnv::new();
+    TestFixture::create_db(&env.opencode_data().join("opencode.db"));
+    zutil::test_db::create_second_db(
+        &env.opencode_data().join("opencode-stable.db"),
+    );
 
-    // The aggregate fixture has no JSONL logs for ses-900; seed a log dir
-    // so log resolution returns empty events instead of globbing the real
-    // home directory.
-    let _ = fs::create_dir_all(home.path().join(".zoo").join("log"));
+    // The aggregate fixture has no JSONL logs for ses-900; seed an empty
+    // log dir so log resolution returns empty events instead of globbing
+    // the real home directory.
+    let _ = fs::create_dir_all(env.zoo_log_dir());
 
-    let home_dir = home.path().to_string_lossy().to_string();
-    (dir, home_dir)
+    env
 }
 
 #[test]
 fn test_stats_default_aggregates_two_databases() {
-    let (dir, home) = two_db_env();
-    let data_dir = dir.path().to_string_lossy().to_string();
+    let env = two_db_env();
 
     // No --db: the session living only in the second DB must appear in
     // the multi-session stats query.
-    let output = Command::new(ZINSPECT_BIN)
-        .env("ZOO_OPENCODE_DATA_DIR", &data_dir)
-        .env("HOME", &home)
+    let output = env
+        .command(ZINSPECT_BIN)
         .args(["stats", "--sessions", "5", "--json", "--no-color"])
         .output()
         .expect("failed to run zinspect stats --sessions 5 (default)");
@@ -1345,12 +1282,12 @@ fn test_stats_default_aggregates_two_databases() {
 
 #[test]
 fn test_stats_explicit_db_only_sees_that_db() {
-    let (dir, home) = two_db_env();
-    let data_dir = dir.path().to_string_lossy().to_string();
+    let env = two_db_env();
+    let data_dir = env.opencode_data().to_string_lossy().to_string();
 
     // First DB only: ses-900 must be absent from the stats query.
-    let output = Command::new(ZINSPECT_BIN)
-        .env("HOME", &home)
+    let output = env
+        .command(ZINSPECT_BIN)
         .args([
             "--db",
             &format!("{data_dir}/opencode.db"),
@@ -1382,8 +1319,8 @@ fn test_stats_explicit_db_only_sees_that_db() {
     );
 
     // Second DB only: exactly the ses-900 row.
-    let output = Command::new(ZINSPECT_BIN)
-        .env("HOME", &home)
+    let output = env
+        .command(ZINSPECT_BIN)
         .args([
             "--db",
             &format!("{data_dir}/opencode-stable.db"),
@@ -1414,115 +1351,18 @@ fn test_stats_explicit_db_only_sees_that_db() {
 
 // ── pi host tests ───────────────────────────────────────────────────────────
 
-/// Write one pi session file per entry `(id, lines)` under
-/// `<root>/sessions/<cwd-dir>/<id>.jsonl`, the layout the pi provider
-/// scans.
-fn pi_data_dir(root: &Path, sessions: &[(&str, &[String])]) {
-    for (id, lines) in sessions {
-        let cwd = root.join("sessions").join("--cwd--");
-        fs::create_dir_all(&cwd).expect("create pi cwd dir");
-        fs::write(cwd.join(format!("{id}.jsonl")), lines.join("\n"))
-            .expect("write pi session file");
-    }
-}
-
-/// One pi session file's JSONL lines: the session header plus message
-/// records (in stream order).
-fn pi_session_lines(
-    id: &str,
-    header_ts: i64,
-    messages: &[Value],
-) -> Vec<String> {
-    let mut lines = vec![
-        json!({
-            "type": "session", "version": 3, "id": id,
-            "timestamp": zutil::epoch_ms_to_iso(header_ts), "cwd": "/w",
-        })
-        .to_string(),
-    ];
-    for msg in messages {
-        lines.push(msg.to_string());
-    }
-    lines
-}
-
-/// A pi `message` record with a user role.
-fn user_message(id: &str, ts: i64, text: &str) -> Value {
-    json!({
-        "type": "message", "id": id, "timestamp": zutil::epoch_ms_to_iso(ts),
-        "message": {
-            "role": "user",
-            "content": [{"type": "text", "text": text}],
-        },
-    })
-}
-
-/// A pi `message` record with an assistant role carrying `usage` and an
-/// optional tool call.
-fn assistant_message(
-    id: &str,
-    ts: i64,
-    text: &str,
-    usage: Value,
-    tool: Option<(&str, &str)>,
-) -> Value {
-    let content = json!([{"type": "text", "text": text}]);
-    let mut body = json!({
-        "role": "assistant",
-        "content": content,
-        "usage": usage,
-        "timestamp": ts,
-    });
-    if let Some((call_id, name)) = tool {
-        body["content"] = json!([
-            {"type": "text", "text": text},
-            {"type": "toolCall", "id": call_id, "name": name,
-             "arguments": {"x": 1}},
-        ]);
-    }
-    json!({
-        "type": "message", "id": id, "timestamp": zutil::epoch_ms_to_iso(ts),
-        "message": body,
-    })
-}
-
-/// A pi `message` record with a toolResult role.
-fn tool_result_message(
-    id: &str,
-    ts: i64,
-    call_id: &str,
-    name: &str,
-    text: &str,
-) -> Value {
-    json!({
-        "type": "message", "id": id, "timestamp": zutil::epoch_ms_to_iso(ts),
-        "message": {
-            "role": "toolResult", "toolCallId": call_id, "toolName": name,
-            "content": [{"type": "text", "text": text}],
-            "isError": false, "timestamp": ts,
-        },
-    })
-}
-
-/// Write a `pi-<sid>.log` zoo log fixture under `<home>/.zoo/log`.
-fn write_pi_zoo_log(home: &Path, sid: &str, events: &[Value]) {
-    let log_dir = home.join(".zoo").join("log");
+/// Write a `pi-<sid>.log` zoo log fixture under the env's `~/.zoo/log`.
+fn write_pi_zoo_log(env: &TestEnv, sid: &str, events: &[Value]) {
+    let log_dir = env.zoo_log_dir();
     fs::create_dir_all(&log_dir).expect("create zoo log dir");
     let content: Vec<String> = events.iter().map(Value::to_string).collect();
     fs::write(log_dir.join(format!("pi-{sid}.log")), content.join("\n"))
         .expect("write pi zoo log");
 }
 
-/// Parse the command's stdout as JSON.
-fn parse_stdout_json(output: &std::process::Output) -> Value {
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    serde_json::from_str(stdout.trim()).expect("stdout should be valid JSON")
-}
-
 #[test]
 fn test_stats_pi_single_session_token_aggregation() {
-    let home = TempDir::new().expect("temp home");
-    let pi_root = TempDir::new().expect("temp pi root");
+    let env = TestEnv::new();
 
     let lines = pi_session_lines(
         PI_UUID,
@@ -1532,27 +1372,27 @@ fn test_stats_pi_single_session_token_aggregation() {
                 "m1",
                 1_715_000_010_000,
                 "first",
-                json!({
+                Some(json!({
                     "input": 7725, "output": 141, "cacheRead": 0,
                     "cacheWrite": 0, "cost": {"total": 0.001},
-                }),
+                })),
                 None,
             ),
             assistant_message(
                 "m2",
                 1_715_000_020_000,
                 "second",
-                json!({
+                Some(json!({
                     "input": 100, "output": 200, "cacheRead": 300,
                     "cacheWrite": 400, "cost": {"total": 0.002},
-                }),
+                })),
                 None,
             ),
         ],
     );
-    pi_data_dir(pi_root.path(), &[(PI_UUID, &lines)]);
+    pi_data_dir(env.pi_data(), &[(PI_UUID, &lines)]);
     write_pi_zoo_log(
-        home.path(),
+        &env,
         PI_UUID,
         &[json!({
             "hook": "subagent-prompt", "event": "validate", "level": "info",
@@ -1560,9 +1400,8 @@ fn test_stats_pi_single_session_token_aggregation() {
         })],
     );
 
-    let output = Command::new(ZINSPECT_BIN)
-        .env("HOME", home.path())
-        .env("ZOO_PI_DATA_DIR", pi_root.path())
+    let output = env
+        .command(ZINSPECT_BIN)
         .args(["stats", PI_UUID, "--tokens", "--json", "--no-color"])
         .output()
         .expect("failed to run zinspect stats <uuid> --tokens --json");
@@ -1583,12 +1422,10 @@ fn test_stats_pi_single_session_token_aggregation() {
 
 #[test]
 fn test_stats_sessions_merges_both_hosts() {
-    let home = TempDir::new().expect("temp home");
-    let oc_dir = TempDir::new().expect("temp oc dir");
-    let pi_root = TempDir::new().expect("temp pi root");
+    let env = TestEnv::new();
 
     // OpenCode fixture: three root sessions with step-finish usage.
-    TestFixture::create_db(&oc_dir.path().join("opencode.db"));
+    TestFixture::create_db(&env.opencode_data().join("opencode.db"));
 
     // pi fixture: two sessions at interleaved start times.
     let pi_1 = "01a04bc0-fa14-76d5-95ec-b9e6f11a2233";
@@ -1600,10 +1437,10 @@ fn test_stats_sessions_merges_both_hosts() {
             "m1",
             1_715_000_310_000,
             "one",
-            json!({
+            Some(json!({
                 "input": 10, "output": 20, "cacheRead": 0, "cacheWrite": 0,
                 "cost": {"total": 0.0005},
-            }),
+            })),
             None,
         )],
     );
@@ -1614,19 +1451,17 @@ fn test_stats_sessions_merges_both_hosts() {
             "m1",
             1_715_000_510_000,
             "two",
-            json!({
+            Some(json!({
                 "input": 30, "output": 40, "cacheRead": 0, "cacheWrite": 0,
                 "cost": {"total": 0.001},
-            }),
+            })),
             None,
         )],
     );
-    pi_data_dir(pi_root.path(), &[(pi_1, &lines_1), (pi_2, &lines_2)]);
+    pi_data_dir(env.pi_data(), &[(pi_1, &lines_1), (pi_2, &lines_2)]);
 
-    let output = Command::new(ZINSPECT_BIN)
-        .env("HOME", home.path())
-        .env("ZOO_OPENCODE_DATA_DIR", oc_dir.path())
-        .env("ZOO_PI_DATA_DIR", pi_root.path())
+    let output = env
+        .command(ZINSPECT_BIN)
         .args(["stats", "--sessions", "5", "--json", "--no-color"])
         .output()
         .expect("failed to run zinspect stats --sessions 5");
@@ -1666,8 +1501,7 @@ fn test_stats_sessions_merges_both_hosts() {
 
 #[test]
 fn test_impact_pi_session_tool_counts() {
-    let home = TempDir::new().expect("temp home");
-    let pi_root = TempDir::new().expect("temp pi root");
+    let env = TestEnv::new();
 
     // Two bash calls: use at T2/T5, results at T3/T6.
     let lines = pi_session_lines(
@@ -1679,10 +1513,10 @@ fn test_impact_pi_session_tool_counts() {
                 "m2",
                 1_715_000_010_000,
                 "calling bash",
-                json!({
+                Some(json!({
                     "input": 100, "output": 50, "cacheRead": 0,
                     "cacheWrite": 0, "cost": {"total": 0.001},
-                }),
+                })),
                 Some(("call-1", "bash")),
             ),
             tool_result_message(
@@ -1696,10 +1530,10 @@ fn test_impact_pi_session_tool_counts() {
                 "m5",
                 1_715_000_020_000,
                 "calling bash again",
-                json!({
+                Some(json!({
                     "input": 200, "output": 100, "cacheRead": 30,
                     "cacheWrite": 40, "cost": {"total": 0.002},
-                }),
+                })),
                 Some(("call-2", "bash")),
             ),
             tool_result_message(
@@ -1711,9 +1545,9 @@ fn test_impact_pi_session_tool_counts() {
             ),
         ],
     );
-    pi_data_dir(pi_root.path(), &[(PI_UUID, &lines)]);
+    pi_data_dir(env.pi_data(), &[(PI_UUID, &lines)]);
     write_pi_zoo_log(
-        home.path(),
+        &env,
         PI_UUID,
         &[json!({
             "hook": "subagent-prompt", "event": "validate", "level": "info",
@@ -1721,9 +1555,8 @@ fn test_impact_pi_session_tool_counts() {
         })],
     );
 
-    let output = Command::new(ZINSPECT_BIN)
-        .env("HOME", home.path())
-        .env("ZOO_PI_DATA_DIR", pi_root.path())
+    let output = env
+        .command(ZINSPECT_BIN)
         .args(["impact", PI_UUID, "--json", "--no-color"])
         .output()
         .expect("failed to run zinspect impact <uuid> --json");

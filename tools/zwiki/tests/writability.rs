@@ -3,24 +3,11 @@
 //! bundle copies reject writes, and `domain create` scaffolds a
 //! complete domain.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::Command;
+use ztest::temp_dir;
 
-fn temp_dir(name: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join("zwiki-inttest").join(name);
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).expect("temp_dir");
-    dir
-}
-
-/// Mark `dir` as a bundle source by writing a minimal `bundle.toml`.
-fn write_bundle_manifest(dir: &Path) {
-    std::fs::write(
-        dir.join("bundle.toml"),
-        "[package]\nname = \"test-wiki\"\nversion = \"0.1.0\"\n\n[export]\ninclude = [\"**/*\"]\n",
-    )
-    .unwrap();
-}
+pub mod common;
 
 fn zwiki() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_zwiki"))
@@ -79,7 +66,7 @@ fn test_installed_bundle_root_rejects_write_with_bundle_name() {
     std::fs::write(root.join("zwiki.lock"), "bundles = []\n").unwrap();
     let bundle = root.join("core");
     std::fs::create_dir_all(bundle.join("concepts")).unwrap();
-    write_bundle_manifest(&bundle);
+    common::write_bundle_manifest(&bundle);
     let bundle_arg = bundle.to_string_lossy().to_string();
 
     let (success, stderr) = run(&[
@@ -145,7 +132,7 @@ fn test_write_root_with_store_lock_rejected() {
 #[test]
 fn test_domain_create_scaffolds_full_domain() {
     let root = temp_dir("domain_create");
-    write_bundle_manifest(&root);
+    common::write_bundle_manifest(&root);
     let root_arg = root.to_string_lossy().to_string();
 
     let output = Command::new(zwiki())
@@ -185,7 +172,7 @@ fn test_domain_create_scaffolds_full_domain() {
 #[test]
 fn test_domain_create_registers_root_index_entry() {
     let root = temp_dir("domain_create_root_index");
-    write_bundle_manifest(&root);
+    common::write_bundle_manifest(&root);
     // A pre-existing domain with an authored title and description.
     std::fs::create_dir_all(root.join("alpha")).unwrap();
     std::fs::write(
@@ -219,10 +206,10 @@ fn test_domain_create_registers_root_index_entry() {
 #[test]
 fn test_aggregate_root_rejects_page_write_inside_bundle() {
     let root = temp_dir("agg_root_page_gate");
-    write_bundle_manifest(&root);
+    common::write_bundle_manifest(&root);
     let bundle = root.join("core");
     std::fs::create_dir_all(&bundle).unwrap();
-    write_bundle_manifest(&bundle);
+    common::write_bundle_manifest(&bundle);
     let bundle_concepts = bundle.join("concepts");
     std::fs::create_dir_all(&bundle_concepts).unwrap();
     let page_path = bundle_concepts.join("page.md");
@@ -282,7 +269,7 @@ fn test_aggregate_root_rejects_page_write_inside_bundle() {
 #[test]
 fn test_domain_create_rejects_reserved_logs() {
     let root = temp_dir("domain_create_logs_reserved");
-    write_bundle_manifest(&root);
+    common::write_bundle_manifest(&root);
     let root_arg = root.to_string_lossy().to_string();
 
     let output = Command::new(zwiki())
@@ -311,6 +298,9 @@ fn test_bundle_install_places_content_directly_in_store() {
         "[package]\nname = \"test-install-bundle\"\nversion = \"1.0.0\"\n\n[export]\ninclude = [\"**/*\"]\n",
     )
     .unwrap();
+    // Use Utc to match the lint's reference date (`chrono::Utc::now()`):
+    // both sides share one clock, so a real UTC timestamp carries the same
+    // date and cannot flip staleness across midnight.
     let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
     let doc = "---\ntitle: Doc\ntype: concept\ntimestamp: {{timestamp}}\ntags: []\nstatus: draft\nlast_validated: {{timestamp}}\ntimeliness: current\n---\n\n# Doc Content\n\nThis document has enough text to pass the health and lint checks that zwiki runs during bundle installation. It contains well over one hundred characters.\n"
         .replace("{{timestamp}}", &now);

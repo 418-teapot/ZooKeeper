@@ -637,6 +637,7 @@ pub fn raw_multi_tar_gz(entries: &[(&str, &[u8])]) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::bundle::testutil::temp_dir;
     use flate2::read::GzDecoder;
 
     #[test]
@@ -924,12 +925,5 @@ include = ["pages/**/*.md"]
             entries.contains(&"pages/world.md".to_string()),
             "archive should contain pages/world.md: {entries:?}"
         );
-    }
-
-    fn temp_dir(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join("zwiki-test").join(name);
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).expect("failed to create temp dir");
-        dir
     }
 }

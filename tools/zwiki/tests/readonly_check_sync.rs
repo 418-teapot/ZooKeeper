@@ -6,13 +6,9 @@
 
 use std::path::PathBuf;
 use std::process::Command;
+use ztest::temp_dir;
 
-fn temp_dir(name: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join("zwiki-inttest").join(name);
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).expect("temp_dir");
-    dir
-}
+pub mod common;
 
 fn page(title: &str, body: &str) -> String {
     format!(
@@ -22,18 +18,13 @@ fn page(title: &str, body: &str) -> String {
     )
 }
 
-/// Mark `dir` as a bundle by writing a minimal `bundle.toml`.
-fn write_bundle_manifest(dir: &std::path::Path) {
-    std::fs::write(dir.join("bundle.toml"), ".").unwrap();
-}
-
 #[test]
 fn test_check_on_store_root_skips_derived_sync() {
     let base = temp_dir("check_bundles_readonly");
     std::fs::write(base.join("zwiki.lock"), "bundles = []\n").unwrap();
     let bundle = base.join("core");
     std::fs::create_dir_all(&bundle).unwrap();
-    write_bundle_manifest(&bundle);
+    common::write_bundle_manifest(&bundle);
 
     let page_b = page("Page B", "Body of page B.");
     std::fs::write(bundle.join("page_b.md"), &page_b).unwrap();
@@ -70,7 +61,7 @@ fn test_check_on_store_root_json_marks_sync_skipped() {
     std::fs::write(base.join("zwiki.lock"), "bundles = []\n").unwrap();
     let bundle = base.join("core");
     std::fs::create_dir_all(&bundle).unwrap();
-    write_bundle_manifest(&bundle);
+    common::write_bundle_manifest(&bundle);
     std::fs::write(bundle.join("page.md"), page("P", "Some body text."))
         .unwrap();
 
@@ -95,7 +86,7 @@ fn test_aggregate_root_check_skips_bundle_pages() {
     let base = temp_dir("aggregate_readonly_pages");
     let bundle = base.join("core").join("concepts");
     std::fs::create_dir_all(&bundle).unwrap();
-    write_bundle_manifest(&base.join("core"));
+    common::write_bundle_manifest(&base.join("core"));
 
     // Both bundle pages are link targets/sources the derived-metadata sync
     // would rewrite on a writable root.
@@ -209,7 +200,7 @@ fn walk(
 #[test]
 fn test_check_json_suppresses_sync_warnings() {
     let root = temp_dir("check_json_no_warnings");
-    write_bundle_manifest(&root);
+    common::write_bundle_manifest(&root);
     std::fs::create_dir_all(root.join("concepts")).unwrap();
     // The link target has no `## Details` / `## References` anchor, so a
     // plain check warns that the Backlinks section cannot be inserted.

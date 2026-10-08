@@ -2,13 +2,15 @@
 
 #![cfg(test)]
 
-use std::path::PathBuf;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 
 use clap::Parser;
 
 use crate::bundle::args::BundleCommand;
 use crate::bundle::lock;
 use crate::bundle::manifest;
+use crate::wiki::{self, Page};
 
 /// Helper to parse `BundleCommand` subcommands in tests.
 #[derive(Parser)]
@@ -24,13 +26,44 @@ pub fn w(path: PathBuf, content: &str) {
     std::fs::write(path, content).unwrap();
 }
 
-/// Create a temp directory for testing.
-pub fn temp_dir(name: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join("zwiki-test").join(name);
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).expect("failed to create temp dir");
-    dir
+/// Write a wiki page at `wiki_root/rel`, creating parent directories, and
+/// return its full path.
+pub fn write_page(wiki_root: &Path, rel: &str, content: &str) -> PathBuf {
+    let path = wiki_root.join(rel);
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).expect("failed to create parent dirs");
+    }
+    std::fs::write(&path, content).expect("failed to write page");
+    path
 }
+
+/// Create a temp wiki root holding `files` and return it with the parsed
+/// pages and a rel-path index of them.
+pub fn setup_wiki(
+    dir_name: &str,
+    files: &[(&str, &str)],
+) -> (PathBuf, Vec<Page>, HashMap<String, Page>) {
+    let dir = temp_dir(dir_name);
+    let mut pages = Vec::new();
+    let mut cache = HashMap::new();
+    for (rel, content) in files {
+        let path = write_page(&dir, rel, content);
+        let page = Page {
+            path,
+            rel: (*rel).to_string(),
+            frontmatter: wiki::parse_frontmatter(content),
+            body: wiki::strip_frontmatter(content),
+            raw: (*content).to_string(),
+        };
+        cache.insert((*rel).to_string(), page.clone());
+        pages.push(page);
+    }
+    (dir, pages, cache)
+}
+
+// Re-export the shared unique-temp-dir helper so existing
+// `use crate::bundle::testutil::temp_dir;` imports keep working.
+pub use ztest::temp_dir;
 
 /// Build a valid bundle manifest with the given name.
 pub fn valid_manifest_with_name(name: &str) -> manifest::BundleManifest {

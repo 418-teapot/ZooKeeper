@@ -496,34 +496,21 @@ mod tests {
 
     /// Create a temporary JSONL log file with sample `ZooKeeper` log
     /// entries. Returns the file path.
-    use std::sync::atomic::{AtomicUsize, Ordering};
-
-    static LOG_COUNTER: AtomicUsize = AtomicUsize::new(0);
-
     fn create_mock_log() -> String {
-        let dir = std::env::temp_dir();
-        let n = LOG_COUNTER.fetch_add(1, Ordering::SeqCst);
-        let path =
-            dir.join(format!("zlog_test_{}_{}.log", std::process::id(), n));
-        let _ = fs::remove_file(&path);
+        let path = ztest::temp_dir("zlog-mock-log").join("log.jsonl");
         let content = r#"
-{"hook":"subagent-prompt","level":"info","event":"trigger","ts":"2025-01-09T12:00:00Z"}
-{"hook":"json-error-nudge","level":"warn","event":"trigger","ts":"2025-01-09T12:01:00Z"}
-{"hook":"direct-work-nudge","level":"info","event":"trigger","ts":"2025-01-09T12:02:00Z"}
-{"hook":"post-subagent-nudge","level":"info","event":"trigger","ts":"2025-01-09T12:03:00Z"}
+{"hook":"subagent-prompt","level":"info","event":"trigger","timestamp":"2025-01-09T12:00:00Z"}
+{"hook":"json-error-nudge","level":"warn","event":"trigger","timestamp":"2025-01-09T12:01:00Z"}
+{"hook":"direct-work-nudge","level":"info","event":"trigger","timestamp":"2025-01-09T12:02:00Z"}
+{"hook":"post-subagent-nudge","level":"info","event":"trigger","timestamp":"2025-01-09T12:03:00Z"}
 "#.trim();
         fs::write(&path, content).expect("write mock log");
         path.to_str().unwrap().to_string()
     }
 
-    /// Returns true if jq is installed and executable.
+    /// Thin wrapper over [`zutil::jq_installed`].
     fn jq_installed() -> bool {
-        Command::new(jq_path())
-            .arg("--version")
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
-            .is_ok_and(|s| s.success())
+        zutil::jq_installed()
     }
 
     #[test]

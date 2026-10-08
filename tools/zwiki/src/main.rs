@@ -1907,6 +1907,7 @@ fn cmd_aggregate(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::bundle::testutil::temp_dir;
 
     #[test]
     fn test_help_exits_ok() {
@@ -1996,9 +1997,7 @@ mod tests {
 
     #[test]
     fn test_bundle_path_helpers() {
-        let base =
-            std::env::temp_dir().join("zwiki-test").join("bundle_helpers");
-        let _ = std::fs::remove_dir_all(&base);
+        let base = temp_dir("bundle_helpers");
         let store = base.join("store");
         let bundle_root = store.join("myteam");
         std::fs::create_dir_all(&bundle_root).unwrap();
@@ -3106,13 +3105,6 @@ mod tests {
     // -------------------------------------------------------------------
     // dispatch_check_no_arg_inner
     // -------------------------------------------------------------------
-
-    fn temp_dir(name: &str) -> std::path::PathBuf {
-        let dir = std::env::temp_dir().join("zwiki-test-main").join(name);
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).expect("failed to create temp dir");
-        dir
-    }
 
     /// Page template with full frontmatter and sufficient body text (>100 chars)
     /// to pass health and lint checks when stamped with the current time.

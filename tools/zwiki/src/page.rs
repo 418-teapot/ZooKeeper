@@ -65,7 +65,7 @@ fn type_to_dir(page_type: &str) -> Option<&'static str> {
 
 /// Apply template substitutions: timestamp, status, title placeholders.
 fn apply_template(content: &str, title: &str) -> String {
-    let today = chrono::Local::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
+    let today = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
 
     // 1. Timestamp placeholder
     let re_ts = Regex::new(r"(?m)^timestamp: YYYY-MM-DDTHH:mm:ssZ$")
@@ -311,19 +311,12 @@ pub fn read_outline(path: &Path) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::bundle::testutil::temp_dir;
     use std::fs;
 
     // -------------------------------------------------------------------
     // Helpers
     // -------------------------------------------------------------------
-
-    fn temp_dir(name: &str) -> PathBuf {
-        let dir =
-            std::env::temp_dir().join("zwiki-test").join("page").join(name);
-        let _ = fs::remove_dir_all(&dir);
-        fs::create_dir_all(&dir).expect("failed to create temp dir");
-        dir
-    }
 
     /// Run a closure with a temp directory laid out as a bundle source with
     /// the domain subdirectory structure for all valid domains.
