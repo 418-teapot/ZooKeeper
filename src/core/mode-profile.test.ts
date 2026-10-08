@@ -13,8 +13,8 @@ import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, it } from "node:test";
+import { withMissingModeFile, withModeFile } from "../testkits/mode-file.js";
 import { _getBufferForTesting, _resetForTesting } from "../utils/logger.js";
-import { withMissingModeFile, withModeFile } from "../utils/mode-file.js";
 import { parseModeProfile } from "./config-parse.js";
 
 afterEach(() => {

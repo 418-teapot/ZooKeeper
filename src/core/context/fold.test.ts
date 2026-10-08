@@ -9,64 +9,23 @@
  * branch, empty-history and no-block pass-through, hidden-message
  * visibility, unit-granular folding (call/result units; a block whose
  * boundary falls inside a unit does not fold), and fold purity.
- * Fixtures are built through the lens testkit; block hashes come from
+ * Fixtures are built through the shared testing helpers; block hashes come from
  * `computeSpanHash`.
  */
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { fold } from "./fold.js";
-import type { HostMessage } from "./lens.js";
 import {
   makeAssistantMsg,
+  makeBlock,
   makeMsg,
+  makeState,
   makeToolResultMsg,
+  makeTranscript,
   projectMessages,
   setRegionText,
-} from "./lens-testkit.js";
-import { computeSpanHash } from "./spanhash.js";
-import type { Block, SessionState } from "./state.js";
-
-// ---------------------------------------------------------------------------
-// Fixtures
-// ---------------------------------------------------------------------------
-
-/** A fresh empty session state. */
-function makeState(): SessionState {
-  return { blocks: new Map(), marks: new Map() };
-}
-
-/** Alternating user/assistant messages, enough for multi-block spans. */
-function makeTranscript(count: number): HostMessage[] {
-  const msgs: HostMessage[] = [];
-  for (let i = 0; i < count; i++) {
-    msgs.push(
-      i % 2 === 0
-        ? makeMsg("user", [`prompt ${i}`])
-        : makeAssistantMsg({ text: `reply ${i}` }),
-    );
-  }
-  return msgs;
-}
-
-/** An active block over `[start, end)` with the current span hash. */
-function makeBlock(
-  history: HostMessage[],
-  start: number,
-  end: number,
-  overrides: Partial<Block> = {},
-): Block {
-  return {
-    start,
-    end,
-    summary: `summary [${start}, ${end})`,
-    spanHash: computeSpanHash(projectMessages(history), start, end),
-    status: "active",
-    compressedTokens: 100,
-    summaryTokens: 10,
-    createdAt: 1000,
-    ...overrides,
-  };
-}
+} from "../../testkits/context.js";
+import { fold } from "./fold.js";
+import type { HostMessage } from "./lens.js";
 
 // ---------------------------------------------------------------------------
 // 1. Basic folding

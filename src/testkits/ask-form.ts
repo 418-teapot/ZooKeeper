@@ -19,16 +19,17 @@ import type {
   AskDialogOutcome,
   AskDialogThemeLike,
   AskDialogTuiLike,
-} from "./tui/ask-dialog.js";
+} from "../adapters/pi/tui/ask-dialog.js";
+import { makeTheme, stubTui } from "./theme.js";
 
 /** A TUI that swallows render requests. */
 export function fakeTui(): AskDialogTuiLike {
-  return { requestRender() {}, terminal: { rows: 24, columns: 80 } };
+  return { ...stubTui(), terminal: { rows: 24, columns: 80 } };
 }
 
 /** An identity theme — no ANSI, so the assembled text matches literally. */
 export function fakeTheme(): AskDialogThemeLike {
-  return { fg: (_color, text) => text, bold: (text) => text };
+  return makeTheme({ fg: (_color, text) => text });
 }
 
 /** A `ui.custom` surface that mounts the real dialog and exposes it. */

@@ -11,11 +11,11 @@
  */
 import assert from "node:assert/strict";
 import { mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, it } from "node:test";
 import type { ActiveSet, Deps } from "./core/slots.js";
 import { discoverSkillUnits } from "./registry.js";
+import { makeTmpDir } from "./testkits/tmp.js";
 
 /** Minimal typed create() arguments; skill units ignore both. */
 const DEPS: Deps = {
@@ -37,12 +37,10 @@ const ACTIVE_SET: ActiveSet = {
 // Temporary directory helpers
 // ---------------------------------------------------------------------------
 
-let _counter = 0;
 const dirs: string[] = [];
 
 function tmpDir(): string {
-  const dir = join(tmpdir(), `zoo-registry-test-${Date.now()}-${_counter++}`);
-  mkdirSync(dir, { recursive: true });
+  const dir = makeTmpDir("zoo-registry-test");
   dirs.push(dir);
   return dir;
 }

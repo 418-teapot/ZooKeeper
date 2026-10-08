@@ -14,9 +14,10 @@ import {
   utimesSync,
   writeFileSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
+import { writePlanFile } from "../testkits/plans.js";
+import { makeTmpDir } from "../testkits/tmp.js";
 import {
   allTodosDone,
   buildConfirmText,
@@ -33,12 +34,8 @@ import {
 // Test helpers
 // ---------------------------------------------------------------------------
 
-let _tmpCounter = 0;
-
 function tmpDir(): string {
-  const dir = join(tmpdir(), `zoo-plan-test-${Date.now()}-${_tmpCounter++}`);
-  mkdirSync(dir, { recursive: true });
-  return dir;
+  return makeTmpDir("zoo-plan-test");
 }
 
 function cleanup(dir: string): void {
@@ -47,23 +44,6 @@ function cleanup(dir: string): void {
   } catch {
     // ignore
   }
-}
-
-/** Create a plan file under a baseDir's .zoo/plans/ directory. */
-function createPlanFile(
-  baseDir: string,
-  filename: string,
-  status: string,
-  slug?: string,
-): string {
-  const dir = join(baseDir, ".zoo", "plans");
-  mkdirSync(dir, { recursive: true });
-  const planPath = join(dir, filename);
-  writeFileSync(
-    planPath,
-    `---\nstatus: ${status}${slug ? `\nslug: ${slug}` : ""}\n---\n# ${filename}\n`,
-  );
-  return planPath;
 }
 
 // ---------------------------------------------------------------------------
@@ -147,11 +127,11 @@ describe("findPlanByStatus", () => {
 
   it("finds a plan with matching status", () => {
     const base = tmpDir();
-    const planPath = createPlanFile(
+    const planPath = writePlanFile(
       base,
       "my-plan.md",
-      "planning-done",
-      "my-plan",
+      { status: "planning-done", slug: "my-plan" },
+      "# my-plan.md",
     );
 
     const plan = findPlanByStatus(base, "planning-done");
@@ -165,17 +145,17 @@ describe("findPlanByStatus", () => {
 
   it("returns the NEWEST plan when multiple match (mtime-desc)", () => {
     const base = tmpDir();
-    const olderPath = createPlanFile(
+    const olderPath = writePlanFile(
       base,
       "older.md",
-      "planning-done",
-      "older",
+      { status: "planning-done", slug: "older" },
+      "# older.md",
     );
-    const newerPath = createPlanFile(
+    const newerPath = writePlanFile(
       base,
       "newer.md",
-      "planning-done",
-      "newer",
+      { status: "planning-done", slug: "newer" },
+      "# newer.md",
     );
 
     // Set deterministic mtimes: older first, newer second.
@@ -198,7 +178,12 @@ describe("findPlanByStatus", () => {
 
   it("returns null when no plan matches the target status", () => {
     const base = tmpDir();
-    createPlanFile(base, "executing-plan.md", "executing", "exec-plan");
+    writePlanFile(
+      base,
+      "executing-plan.md",
+      { status: "executing", slug: "exec-plan" },
+      "# executing-plan.md",
+    );
 
     const plan = findPlanByStatus(base, "planning-done");
     assert.strictEqual(plan, null);
@@ -208,7 +193,12 @@ describe("findPlanByStatus", () => {
 
   it("uses filename as slug fallback when frontmatter lacks slug", () => {
     const base = tmpDir();
-    const _planPath = createPlanFile(base, "fallback-slug.md", "planning-done");
+    const _planPath = writePlanFile(
+      base,
+      "fallback-slug.md",
+      { status: "planning-done" },
+      "# fallback-slug.md",
+    );
 
     const plan = findPlanByStatus(base, "planning-done");
     assert.notStrictEqual(plan, null);
@@ -222,7 +212,12 @@ describe("findPlanByStatus", () => {
     const plansDirPath = join(base, ".zoo", "plans");
     mkdirSync(plansDirPath, { recursive: true });
     writeFileSync(join(plansDirPath, "readme.txt"), "not a plan");
-    const planPath = createPlanFile(base, "real-plan.md", "planning-done");
+    const planPath = writePlanFile(
+      base,
+      "real-plan.md",
+      { status: "planning-done" },
+      "# real-plan.md",
+    );
 
     const plan = findPlanByStatus(base, "planning-done");
     assert.notStrictEqual(plan, null);
@@ -242,7 +237,12 @@ describe("findPlanByStatus", () => {
     mkdirSync(join(plansDirPath, "bad.md"), { recursive: true });
 
     // Create a real readable plan with the target status.
-    const realPath = createPlanFile(base, "real.md", "planning-done", "real");
+    const realPath = writePlanFile(
+      base,
+      "real.md",
+      { status: "planning-done", slug: "real" },
+      "# real.md",
+    );
 
     const plan = findPlanByStatus(base, "planning-done");
     assert.notStrictEqual(plan, null);

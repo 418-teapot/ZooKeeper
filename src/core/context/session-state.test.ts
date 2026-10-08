@@ -10,16 +10,16 @@
  * counting wrapper observes store load/save traffic.
  */
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { rmSync } from "node:fs";
 import { after, describe, it } from "node:test";
+import { makeMark } from "../../testkits/context.js";
+import { makeTmpDir } from "../../testkits/tmp.js";
 import {
   createSessionStateManager,
   type SessionStateManager,
   type SessionStateManagerOptions,
 } from "./session-state.js";
-import { type Block, type Mark, markKey } from "./state.js";
+import { type Block, markKey } from "./state.js";
 import { createStateStore, type StateStore } from "./store.js";
 
 // ---------------------------------------------------------------------------
@@ -37,18 +37,6 @@ function makeBlock(overrides: Partial<Block> = {}): Block {
     compressedTokens: 100,
     summaryTokens: 20,
     createdAt: 1000,
-    ...overrides,
-  };
-}
-
-/** A pending mark fixture. */
-function makeMark(overrides: Partial<Mark> = {}): Mark {
-  return {
-    anchorOrdinal: 0,
-    content: "tool output",
-    contentTokens: 50,
-    effective: false,
-    markedAt: 2000,
     ...overrides,
   };
 }
@@ -102,7 +90,7 @@ function makeManager(
 // ---------------------------------------------------------------------------
 
 describe("load-once caching", () => {
-  const dir = mkdtempSync(join(tmpdir(), "zoo-session-state-"));
+  const dir = makeTmpDir("zoo-session-state");
   after(() => rmSync(dir, { recursive: true, force: true }));
 
   it("returns the same object reference across repeated gets", () => {
@@ -137,7 +125,7 @@ describe("load-once caching", () => {
 // ---------------------------------------------------------------------------
 
 describe("explicit save write-back", () => {
-  const dir = mkdtempSync(join(tmpdir(), "zoo-session-state-"));
+  const dir = makeTmpDir("zoo-session-state");
   after(() => rmSync(dir, { recursive: true, force: true }));
 
   it("persists in-place mutations on save", () => {
@@ -184,7 +172,7 @@ describe("explicit save write-back", () => {
 // ---------------------------------------------------------------------------
 
 describe("TTL eviction", () => {
-  const dir = mkdtempSync(join(tmpdir(), "zoo-session-state-"));
+  const dir = makeTmpDir("zoo-session-state");
   after(() => rmSync(dir, { recursive: true, force: true }));
 
   it("evicts an idle entry after ttlMs, saving it to the store first", () => {
@@ -262,7 +250,7 @@ describe("TTL eviction", () => {
 // ---------------------------------------------------------------------------
 
 describe("_resetForTesting", () => {
-  const dir = mkdtempSync(join(tmpdir(), "zoo-session-state-"));
+  const dir = makeTmpDir("zoo-session-state");
   after(() => rmSync(dir, { recursive: true, force: true }));
 
   it("drops the whole cache without saving", () => {
@@ -295,7 +283,7 @@ describe("_resetForTesting", () => {
 // ---------------------------------------------------------------------------
 
 describe("explicit evict", () => {
-  const dir = mkdtempSync(join(tmpdir(), "zoo-session-state-"));
+  const dir = makeTmpDir("zoo-session-state");
   after(() => rmSync(dir, { recursive: true, force: true }));
 
   it("drops the in-memory entry without writing back to the store", () => {
@@ -374,7 +362,7 @@ function state_blocks_set(
 // ---------------------------------------------------------------------------
 
 describe("repeated gets never produce duplicate state", () => {
-  const dir = mkdtempSync(join(tmpdir(), "zoo-session-state-"));
+  const dir = makeTmpDir("zoo-session-state");
   after(() => rmSync(dir, { recursive: true, force: true }));
 
   it("N gets of the same session yield one object and one load", () => {

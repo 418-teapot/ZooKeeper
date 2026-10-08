@@ -10,15 +10,15 @@
  */
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { canon } from "./canon.js";
-import type { HostMessage } from "./lens.js";
 import {
   makeAssistantMsg,
   makeMsg,
   makeToolMsg,
   projectMessages,
   setRegionText,
-} from "./lens-testkit.js";
+} from "../../testkits/context.js";
+import { canon } from "./canon.js";
+import type { HostMessage } from "./lens.js";
 import {
   PRUNED_TOOL_ERROR_INPUT_REPLACEMENT,
   PRUNED_TOOL_OUTPUT_REPLACEMENT,

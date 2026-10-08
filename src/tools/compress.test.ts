@@ -37,7 +37,7 @@ import {
 } from "../core/context/runtime.js";
 import type { Block, SessionState } from "../core/context/state.js";
 import { numberView } from "../core/context/view-refs.js";
-import { buildPlugin } from "../opencode.js";
+import { makePlugin, POLY_ZOO } from "../testkits/config.js";
 import { _resetForTesting } from "../utils/logger.js";
 import {
   type CompressToolDefinition,
@@ -57,44 +57,6 @@ afterEach(() => {
   _resetContextStateManagerForTesting();
   _resetForTesting();
 });
-
-// ---------------------------------------------------------------------------
-// Poly profile fixture
-// ---------------------------------------------------------------------------
-
-/**
- * A zoo config with the poly profile, mirroring config.toml's
- * `[zoo.context.compress]` values so the flow tests keep their thresholds
- * (protectedMessages=20, thresholdTokens=2000, protectedTokens=20000,
- * maxRanges=8).
- */
-const POLY_ZOO: Record<string, unknown> = {
-  context: {
-    protected_messages: 20,
-    released_percent: 10,
-    dedup: { threshold_context: 100000, protected_tools: [] },
-    purge_errors: {
-      threshold_context: 100000,
-      protected_tools: [],
-    },
-    compress: {
-      threshold_tokens: 2000,
-      protected_tokens: 20000,
-      max_ranges: 8,
-    },
-    decompress: { max_fill_percent: 90 },
-  },
-  mode: {
-    poly: {
-      tools: ["compress", "decompress"],
-    },
-  },
-};
-
-/** Build a plugin wired to the poly profile (tools: compress + decompress). */
-function makePlugin(client: unknown = {}): Promise<Record<string, any>> {
-  return buildPlugin({ client }, POLY_ZOO) as Promise<Record<string, any>>;
-}
 
 // ---------------------------------------------------------------------------
 // Helpers

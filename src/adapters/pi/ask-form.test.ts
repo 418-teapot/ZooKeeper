@@ -17,9 +17,9 @@
 
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
+import { fakeTheme, fakeTui, formHarness } from "../../testkits/ask-form.js";
 import { parseAskArgs } from "../../tools/ask.js";
 import { presentAskForm } from "./ask-form.js";
-import { fakeTheme, fakeTui, formHarness } from "./ask-form-harness.js";
 import type { AskDialogComponent, AskDialogOutcome } from "./tui/ask-dialog.js";
 
 // ---------------------------------------------------------------------------

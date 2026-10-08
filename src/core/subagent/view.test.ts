@@ -11,6 +11,7 @@
  * per-tool-kind one-line summaries, and counters derived from facts.
  */
 import assert from "node:assert/strict";
+import { homedir } from "node:os";
 import { afterEach, describe, it } from "node:test";
 import { SPINNER_FRAMES, TREE_BRANCH, TREE_LAST } from "../display.js";
 import {
@@ -617,7 +618,9 @@ describe("summarizeToolCall", () => {
   });
 
   it("renders read/write/edit as `<name> <path>` with $HOME collapsed to ~", () => {
-    const home = process.env.HOME ?? "";
+    // Match the product's home source (os.homedir()) so the assertion does
+    // not depend on how HOME is set in the test environment.
+    const home = homedir();
     assert.equal(
       summarizeToolCall("read", { file_path: `${home}/src/a.ts` }, 80),
       "read ~/src/a.ts",

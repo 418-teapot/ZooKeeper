@@ -21,75 +21,35 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import type { HostMessage, TextRegion } from "../../core/context/lens.js";
-import { makeMsg } from "../../core/context/lens-testkit.js";
 import { estimateMessageHeuristic } from "../../core/context/measure.js";
 import {
   PRUNED_TOOL_ERROR_INPUT_REPLACEMENT,
   PRUNED_TOOL_OUTPUT_REPLACEMENT,
 } from "../../core/context/message-parts.js";
+import { makeMsg } from "../../testkits/context.js";
+import {
+  assistantMessage,
+  imagePart,
+  textPart,
+  thinkingPart,
+  toolCallPart,
+  toolResultMessage,
+  userMessage,
+} from "../../testkits/pi-messages.js";
 import { history, isInjectableRegion, type WritableRegion } from "./history.js";
 import type {
   PiAgentMessage,
-  PiAssistantMessage,
   PiBashExecutionMessage,
   PiBranchSummaryMessage,
   PiCompactionSummaryMessage,
   PiContentPart,
   PiCustomMessage,
   PiToolCallPart,
-  PiToolResultMessage,
-  PiUserMessage,
 } from "./types.js";
 
 // ---------------------------------------------------------------------------
 // Fixture helpers
 // ---------------------------------------------------------------------------
-
-function textPart(text: string): { type: "text"; text: string } {
-  return { type: "text", text };
-}
-
-function imagePart(
-  data = "base64",
-  mimeType = "image/png",
-): { type: "image"; data: string; mimeType: string } {
-  return { type: "image", data, mimeType };
-}
-
-function thinkingPart(thinking: string): {
-  type: "thinking";
-  thinking: string;
-} {
-  return { type: "thinking", thinking };
-}
-
-function toolCallPart(
-  id: string,
-  name: string,
-  args: Record<string, unknown>,
-): PiToolCallPart {
-  return { type: "toolCall", id, name, arguments: args };
-}
-
-function userMessage(content: PiUserMessage["content"]): PiUserMessage {
-  return { role: "user", content };
-}
-
-function assistantMessage(
-  content: PiAssistantMessage["content"],
-  usage?: PiAssistantMessage["usage"],
-): PiAssistantMessage {
-  return { role: "assistant", content, usage };
-}
-
-function toolResultMessage(
-  toolCallId: string,
-  toolName: string,
-  content: PiToolResultMessage["content"],
-  isError = false,
-): PiToolResultMessage {
-  return { role: "toolResult", toolCallId, toolName, content, isError };
-}
 
 function compactionSummaryMessage(
   summary: string,

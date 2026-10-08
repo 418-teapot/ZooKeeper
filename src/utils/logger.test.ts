@@ -11,7 +11,8 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, it } from "node:test";
-
+import { restoreEnv, saveEnv } from "../testkits/env.js";
+import { makeTmpDir } from "../testkits/tmp.js";
 import {
   _flushForTesting,
   _getBufferForTesting,
@@ -26,7 +27,7 @@ import {
 // ---------------------------------------------------------------------------
 
 function tmpDir(): string {
-  return fs.mkdtempSync(path.join(os.tmpdir(), "zoo-logger-test-"));
+  return makeTmpDir("zoo-logger-test");
 }
 
 function countLines(filePath: string): number {
@@ -46,16 +47,12 @@ describe("logger", () => {
   beforeEach(() => {
     _resetForTesting();
     testDir = tmpDir();
-    origZooDebug = process.env.ZOO_DEBUG;
+    origZooDebug = saveEnv("ZOO_DEBUG");
     delete process.env.ZOO_DEBUG;
   });
 
   afterEach(() => {
-    if (origZooDebug !== undefined) {
-      process.env.ZOO_DEBUG = origZooDebug;
-    } else {
-      delete process.env.ZOO_DEBUG;
-    }
+    restoreEnv("ZOO_DEBUG", origZooDebug);
     _resetForTesting();
     try {
       fs.rmSync(testDir, { recursive: true, force: true });

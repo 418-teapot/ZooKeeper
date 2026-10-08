@@ -7,10 +7,11 @@
  */
 
 import assert from "node:assert/strict";
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { describe, it } from "node:test";
+import { cleanupPlanDir, writePlanFile } from "../testkits/plans.js";
+import { makeTmpDir } from "../testkits/tmp.js";
 import { _getBufferForTesting } from "../utils/logger.js";
 import { checkPlanProgress, checkTodoProgress } from "./checks.js";
 import type { TodoSource } from "./client/todo.js";
@@ -27,42 +28,7 @@ let _counter = 0;
 // ---------------------------------------------------------------------------
 
 function tmpDir(): string {
-  const dir = join(tmpdir(), `zoo-checks-test-${Date.now()}-${_counter++}`);
-  mkdirSync(dir, { recursive: true });
-  return dir;
-}
-
-/**
- * Write a plan file under a baseDir's .zoo/plans/ (flat, no sessionID
- * subdirectory).
- */
-function writePlanFile(
-  baseDir: string,
-  filename: string,
-  frontmatter: Record<string, string>,
-  body: string,
-): void {
-  const fmLines = Object.entries(frontmatter)
-    .map(([k, v]) => `${k}: ${v}`)
-    .join("\n");
-  const content = `---\n${fmLines}\n---\n\n${body}`;
-  const dir = join(baseDir, ".zoo", "plans");
-  mkdirSync(dir, { recursive: true });
-  writeFileSync(join(dir, filename), content, "utf-8");
-}
-
-/**
- * Remove a baseDir's .zoo/plans/ directory recursively.
- */
-function cleanupPlanDir(baseDir: string): void {
-  try {
-    rmSync(join(baseDir, ".zoo", "plans"), {
-      recursive: true,
-      force: true,
-    });
-  } catch {
-    // ignore
-  }
+  return makeTmpDir("zoo-checks-test");
 }
 
 // ---------------------------------------------------------------------------

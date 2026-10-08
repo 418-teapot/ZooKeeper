@@ -24,7 +24,6 @@
  */
 import assert from "node:assert/strict";
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, it } from "node:test";
 import {
@@ -35,6 +34,7 @@ import {
   startRun,
   topLevelRuns,
 } from "../../core/subagent/registry.js";
+import { makeTmpDir } from "../../testkits/tmp.js";
 import {
   _getBufferForTesting,
   _resetForTesting,
@@ -46,16 +46,11 @@ import {
   rebuildSubagentRuns,
 } from "./subagent-scan.js";
 
-let _tmpCounter = 0;
 const _tmpDirs: string[] = [];
 
 /** Create a fresh temp fixture directory tracked for cleanup. */
 function makeFixtureDir(): string {
-  const dir = join(
-    tmpdir(),
-    `zoo-subagent-scan-${Date.now()}-${_tmpCounter++}`,
-  );
-  mkdirSync(dir, { recursive: true });
+  const dir = makeTmpDir("zoo-subagent-scan");
   _tmpDirs.push(dir);
   return dir;
 }

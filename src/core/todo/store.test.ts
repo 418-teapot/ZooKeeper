@@ -12,7 +12,7 @@
 
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import type { TodoPhase } from "./types.js";
+import { phase } from "../../testkits/todo.js";
 
 let fetchCount = 0;
 
@@ -22,17 +22,6 @@ function source(candidates: readonly unknown[]) {
   return async (_sessionId: string) => {
     fetchCount += 1;
     return candidates;
-  };
-}
-
-/** Build a phase object from [content, status] pairs. */
-function phase(name: string, ...tasks: Array<[string, string]>): TodoPhase {
-  return {
-    name,
-    tasks: tasks.map(([content, status]) => ({
-      content,
-      status,
-    })) as TodoPhase["tasks"],
   };
 }
 

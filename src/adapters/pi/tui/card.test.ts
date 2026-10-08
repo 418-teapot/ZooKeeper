@@ -25,6 +25,7 @@ import {
   startRun,
   updateRun,
 } from "../../../core/subagent/registry.js";
+import { makeTheme } from "../../../testkits/theme.js";
 import { resetHydration, waitForHydration } from "../hydrate.js";
 import { type PiRenderContextLike, renderCall, renderResult } from "./card.js";
 import { hueToPiColor } from "./theme.js";
@@ -36,14 +37,7 @@ interface Renderable {
   render(width: number): string[];
 }
 
-const THEME = {
-  fg: (style: string, text: string) => `<${style}>${text}</${style}>`,
-  bg: (style: string, text: string) => `[${style}]${text}[/${style}]`,
-  bold: (text: string) => text,
-  italic: (text: string) => text,
-  underline: (text: string) => text,
-  strikethrough: (text: string) => text,
-};
+const THEME = makeTheme();
 
 /** Render a component tree at width 80 and strip the test theme tags. */
 function renderComponent(component: unknown, width: number): string[] {

@@ -16,6 +16,7 @@
  */
 import assert from "node:assert/strict";
 import { afterEach, beforeEach, describe, it } from "node:test";
+import { restoreEnv, saveEnv } from "../../testkits/env.js";
 import { _getBufferForTesting, _resetForTesting } from "../../utils/logger.js";
 import type { SettledContribution, SettleRequest } from "../slots.js";
 import type { Decision } from "./engine.js";
@@ -24,13 +25,12 @@ import { createLoopEngine } from "./engine.js";
 let origDebug: string | undefined;
 
 beforeEach(() => {
-  origDebug = process.env.ZOO_DEBUG;
+  origDebug = saveEnv("ZOO_DEBUG");
   process.env.ZOO_DEBUG = "1";
 });
 
 afterEach(() => {
-  if (origDebug === undefined) delete process.env.ZOO_DEBUG;
-  else process.env.ZOO_DEBUG = origDebug;
+  restoreEnv("ZOO_DEBUG", origDebug);
   _resetForTesting();
 });
 

@@ -18,9 +18,9 @@
  */
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
+import { makeMsg, makeState } from "../../testkits/context.js";
 import { COMPRESS_USAGE_POINTER } from "../prompts.js";
 import type { BlockSpan, HostMessage, ViewItem } from "./lens.js";
-import { makeMsg } from "./lens-testkit.js";
 import {
   computeEligibility,
   creditReclaim,
@@ -30,7 +30,6 @@ import {
   type NudgeInjectOptions,
   readLevel,
 } from "./nudge.js";
-import type { SessionState } from "./state.js";
 import type { NumberedItem } from "./view-refs.js";
 import { numberView } from "./view-refs.js";
 
@@ -129,17 +128,6 @@ function lensNudgeMessages(
   ];
 }
 
-/**
- * Create a fresh session state with an optional nudge watermark.
- */
-function makeNewState(lastAnchor?: number): SessionState {
-  const state: SessionState = { blocks: new Map(), marks: new Map() };
-  if (lastAnchor !== undefined) {
-    state.nudges = { lastNudgeTokens: lastAnchor };
-  }
-  return state;
-}
-
 // ---------------------------------------------------------------------------
 // evaluateNudge — gates and watermark persistence
 // ---------------------------------------------------------------------------
@@ -150,7 +138,7 @@ describe("evaluateNudge gates", () => {
       makeMsg("user", ["hello"]),
       makeMsg("assistant", ["streaming"], { usage: { output: 0 } }),
     ];
-    const state = makeNewState(140000);
+    const state = makeState(140000);
     const text = evaluateNudge(
       state,
       streaming,
@@ -163,7 +151,7 @@ describe("evaluateNudge gates", () => {
 
   it("returns null and leaves the watermark untouched for an absent config", () => {
     const messages = lensNudgeMessages(150000);
-    const state = makeNewState(140000);
+    const state = makeState(140000);
     const text = evaluateNudge(state, messages, undefined, {
       ...parityOpts(messages),
     });
@@ -176,7 +164,7 @@ describe("evaluateNudge gates", () => {
     const malformed: NudgeConfig = { ...NUDGE_CONFIG, growthTokens: "5" };
     for (const config of [inverted, malformed]) {
       const messages = lensNudgeMessages(150000);
-      const state = makeNewState(140000);
+      const state = makeState(140000);
       const text = evaluateNudge(state, messages, config, {
         ...parityOpts(messages),
       });
@@ -187,7 +175,7 @@ describe("evaluateNudge gates", () => {
 
   it("persists the anchor but injects nothing when no window is eligible", () => {
     // protectedMessages covers the whole view → empty window.
-    const state = makeNewState();
+    const state = makeState();
     const opts = (messages: HostMessage[]): NudgeInjectOptions => ({
       ...injectOpts(messages),
       protectedMessages: 100,
@@ -212,7 +200,7 @@ describe("evaluateNudge gates", () => {
   });
 
   it("persists the anchor but injects nothing when a layer is unconfigured", () => {
-    const state = makeNewState();
+    const state = makeState();
     const opts = (messages: HostMessage[]): NudgeInjectOptions => ({
       ...injectOpts(messages),
       protectedMessages: undefined,
@@ -239,7 +227,7 @@ describe("evaluateNudge gates", () => {
   it("keeps the text-only assistant gate (no usage at all)", () => {
     // A text-only assistant without usage is not completed either.
     const plain = [makeMsg("user", ["hello"]), makeMsg("assistant", ["ok"])];
-    const state = makeNewState(140000);
+    const state = makeState(140000);
     const text2 = evaluateNudge(state, plain, NUDGE_CONFIG, {
       ...parityOpts(plain),
     });
@@ -254,7 +242,7 @@ describe("evaluateNudge gates", () => {
 
 describe("nudge text assembly", () => {
   it("assembles the gentle reminder from the shared templates", () => {
-    const state = makeNewState();
+    const state = makeState();
     const baseline = lensNudgeMessages(140000);
     assert.equal(
       evaluateNudge(state, baseline, NUDGE_CONFIG, injectOpts(baseline)),
@@ -295,7 +283,7 @@ describe("nudge text assembly", () => {
   });
 
   it("assembles the urgent reminder from the shared templates", () => {
-    const state = makeNewState();
+    const state = makeState();
     const baseline = lensNudgeMessages(140000);
     evaluateNudge(state, baseline, NUDGE_CONFIG, injectOpts(baseline));
     const urgent = lensNudgeMessages(165000);
@@ -584,7 +572,7 @@ describe("reclaim credit (water level)", () => {
   }
 
   it("books positive reclaims and accumulates repeated compressions", () => {
-    const state = makeNewState();
+    const state = makeState();
     creditReclaim(state, 100);
     creditReclaim(state, 40);
     assert.equal(state.nudges?.pendingReclaimTokens, 140);
@@ -597,7 +585,7 @@ describe("reclaim credit (water level)", () => {
   });
 
   it("drops the water level the moment the reclaim lands", () => {
-    const state = makeNewState(150000);
+    const state = makeState(150000);
     creditReclaim(state, 40000);
     // Measured usage still says 150K; the booked reclaim is what the
     // view actually costs, and it is below the gentle threshold (120K).
@@ -619,7 +607,7 @@ describe("reclaim credit (water level)", () => {
   });
 
   it("keeps the discount while the measurement is the same one", () => {
-    const state = makeNewState(150000);
+    const state = makeState(150000);
     creditReclaim(state, 40000);
     evaluateNudge(state, viewAt(150000), NUDGE_CONFIG, {
       ...parityOpts(viewAt(150000)),
@@ -633,7 +621,7 @@ describe("reclaim credit (water level)", () => {
   });
 
   it("consumes the credit once a newer measurement reflects the reclaim", () => {
-    const state = makeNewState(150000);
+    const state = makeState(150000);
     creditReclaim(state, 40000);
     evaluateNudge(state, viewAt(150000), NUDGE_CONFIG, {
       ...parityOpts(viewAt(150000)),
@@ -668,7 +656,7 @@ describe("reclaim credit (water level)", () => {
   });
 
   it("reports the discounted level in the reminder text", () => {
-    const state = makeNewState(140000);
+    const state = makeState(140000);
     creditReclaim(state, 10000);
     // Measured 150K − credited 10K = 140K level: no growth over the
     // anchor, so nothing fires while the credit holds.
@@ -691,7 +679,7 @@ describe("reclaim credit (water level)", () => {
   });
 
   it("never lets the discount report a negative level", () => {
-    const state = makeNewState(150000);
+    const state = makeState(150000);
     creditReclaim(state, 400000);
     const messages = viewAt(150000);
     assert.equal(readLevel(state, 150000), 0);

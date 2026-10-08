@@ -16,6 +16,11 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
+  makeState,
+  makeTranscript,
+  projectMessages,
+} from "../../testkits/context.js";
+import {
   applyDecompress,
   evaluateGate,
   recallOutput,
@@ -24,36 +29,12 @@ import {
 } from "./decompress.js";
 import { fold } from "./fold.js";
 import type { HostMessage } from "./lens.js";
-import { makeAssistantMsg, makeMsg, projectMessages } from "./lens-testkit.js";
 import { computeSpanHash } from "./spanhash.js";
-import {
-  type Block,
-  hasActiveOverlap,
-  RECALL_MAX_CHARS,
-  type SessionState,
-} from "./state.js";
+import { type Block, hasActiveOverlap, RECALL_MAX_CHARS } from "./state.js";
 
 // ---------------------------------------------------------------------------
 // Fixtures
 // ---------------------------------------------------------------------------
-
-/** A fresh empty session state (new Block model). */
-function makeState(): SessionState {
-  return { blocks: new Map(), marks: new Map() };
-}
-
-/** Alternating user/assistant messages, enough for multi-block spans. */
-function makeTranscript(count: number): HostMessage[] {
-  const msgs: HostMessage[] = [];
-  for (let i = 0; i < count; i++) {
-    msgs.push(
-      i % 2 === 0
-        ? makeMsg("user", [`prompt ${i}`])
-        : makeAssistantMsg({ text: `reply ${i}` }),
-    );
-  }
-  return msgs;
-}
 
 /** An active block over `[start, end)` with the current span hash. */
 function makeBlock(

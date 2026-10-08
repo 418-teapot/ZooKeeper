@@ -7,10 +7,10 @@
  * untouched), and the handoff must be re-runnable afterwards.
  */
 import assert from "node:assert/strict";
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { readFileSync, rmSync } from "node:fs";
 import { afterEach, beforeEach, describe, it } from "node:test";
+import { cleanupPlan, createPlanFile } from "../testkits/plans.js";
+import { makeTmpDir } from "../testkits/tmp.js";
 import { _resetForTesting, initLogger } from "../utils/logger.js";
 import { executeHandoff, type HandoffTarget } from "./handoff.js";
 
@@ -18,12 +18,8 @@ import { executeHandoff, type HandoffTarget } from "./handoff.js";
 // Test helpers
 // ---------------------------------------------------------------------------
 
-let _tmpCounter = 0;
-
 function tmpDir(): string {
-  const dir = join(tmpdir(), `zoo-handoff-test-${Date.now()}-${_tmpCounter++}`);
-  mkdirSync(dir, { recursive: true });
-  return dir;
+  return makeTmpDir("zoo-handoff-test");
 }
 
 let _loggerDir: string;
@@ -42,30 +38,6 @@ afterEach(() => {
     // ignore
   }
 });
-
-/**
- * Create a flat plan file under `<baseDir>/.zoo/plans/` matching the
- * workspace-relative path model.
- */
-function createPlanFile(status: string): { planPath: string; baseDir: string } {
-  const baseDir = tmpDir();
-  const dir = join(baseDir, ".zoo", "plans");
-  mkdirSync(dir, { recursive: true });
-  const planPath = join(dir, "test-plan.md");
-  writeFileSync(
-    planPath,
-    `---\nstatus: ${status}\nslug: test-plan\n---\n# Test Plan\n`,
-  );
-  return { planPath, baseDir };
-}
-
-function cleanupPlan(planPath: string): void {
-  try {
-    rmSync(planPath, { recursive: true, force: true });
-  } catch {
-    // ignore
-  }
-}
 
 /** A fake handoff target recording the exact order of its method calls. */
 function fakeHandoffTarget(overrides?: {

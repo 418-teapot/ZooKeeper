@@ -16,6 +16,7 @@ import { describe, it } from "node:test";
 import type { Deps } from "../../core/slots.js";
 import type { TodoStateStore } from "../../core/todo/store.js";
 import type { TodoPhase } from "../../core/todo/types.js";
+import { fakeStore } from "../../testkits/hooks.js";
 import { CONTINUATION_PROMPT } from "./decide.js";
 import { unit } from "./index.js";
 
@@ -49,21 +50,6 @@ const MIXED_PHASES: TodoPhase[] = [
     ],
   },
 ];
-
-/**
- * Build a store-shaped fake serving the given phases on every read.
- *
- * @param phases - Phases the store hands out.
- * @returns A `TodoStateStore`-shaped object.
- */
-function fakeStore(phases: TodoPhase[]): TodoStateStore {
-  return {
-    get: async () => phases,
-    set: () => {},
-    invalidate: () => {},
-    serialize: <T>(fn: () => Promise<T>) => fn(),
-  };
-}
 
 /** Assemble a partial deps object for unit-level tests. */
 function makeDeps(partial: Record<string, unknown>): Deps {

@@ -10,12 +10,13 @@
  */
 
 import assert from "node:assert/strict";
-import type { ToolHost } from "../../core/client/tool-host.js";
-import { sessionAgentRegistry } from "../../core/session-agent.js";
-import { _resetForTesting as resetIdentityForTesting } from "../../core/subagent/identity.js";
-import { resetRegistry } from "../../core/subagent/registry.js";
-import { _resetForTesting } from "../../utils/logger.js";
-import { _resetPendingSwitchOpsForTesting } from "./switch-host.js";
+import { _resetPendingSwitchOpsForTesting } from "../adapters/pi/switch-host.js";
+import type { ToolHost } from "../core/client/tool-host.js";
+import { sessionAgentRegistry } from "../core/session-agent.js";
+import { _resetForTesting as resetIdentityForTesting } from "../core/subagent/identity.js";
+import { resetRegistry } from "../core/subagent/registry.js";
+import { _resetForTesting } from "../utils/logger.js";
+import { colorTag, makeTheme, stubTui } from "./theme.js";
 
 /** The poly profile (mirrors the `[zoo.mode.poly]` lists). */
 export const POLY_PROFILE = {
@@ -209,12 +210,10 @@ export function fakePiToolHost(): ToolHost {
 }
 
 /** A theme stub that wraps each colorized string in `<color>` tags. */
-export const WIDGET_THEME = {
-  fg: (color: string, text: string) => `<${color}>${text}</${color}>`,
-};
+export const WIDGET_THEME = makeTheme({ fg: colorTag });
 
 /** A minimal TUI stub (rendering needs no focus inspection). */
-export const WIDGET_TUI = { requestRender: () => {} };
+export const WIDGET_TUI = stubTui();
 
 /**
  * Render the registered `zoo` widget through the recorded factory.

@@ -30,6 +30,8 @@ import {
 } from "../../core/context/release.js";
 import { computeSpanHash } from "../../core/context/spanhash.js";
 import { markKey, type SessionState } from "../../core/context/state.js";
+import { makeState } from "../../testkits/context.js";
+import { toolPart } from "../../testkits/opencode-messages.js";
 import { history } from "./history.js";
 import { applyEdits, render, renderView } from "./render.js";
 import type { ContextMessageEntry } from "./types.js";
@@ -66,29 +68,6 @@ function text(text: string): Record<string, unknown> {
 /** Build a reasoning part. */
 function reasoning(text: string): Record<string, unknown> {
   return { type: "reasoning", text };
-}
-
-/** Build a tool part with string input/output. */
-function toolPart(
-  tool: string,
-  input: string,
-  output: string,
-  status?: string,
-): Record<string, unknown> {
-  return {
-    type: "tool",
-    tool,
-    state: {
-      input,
-      output,
-      ...(status ? { status } : {}),
-    },
-  };
-}
-
-/** A fresh empty lens session state. */
-function makeNewState(): SessionState {
-  return { blocks: new Map(), marks: new Map() };
 }
 
 /**
@@ -154,7 +133,7 @@ function runRound(
 ): ContextMessageEntry[] {
   const entries = buildEntries();
   const snapshot = history(entries);
-  const state = makeNewState();
+  const state = makeState();
   seed(state, snapshot);
   const edits = computeEdits(state, snapshot.messages, options);
   const items = fold(snapshot, state).items;
@@ -344,7 +323,7 @@ describe("render behavior", () => {
       entry("assistant", "a1", [reasoning("旧推理")]),
     ];
     const snapshot = history(entries);
-    const state = makeNewState();
+    const state = makeState();
     const edits: RegionEdit[] = [
       { messageOrdinal: 1, regionIndex: 0, text: "新推理" },
     ];
@@ -364,7 +343,7 @@ describe("render behavior", () => {
         toolPart("bash", "ls", LONG_OUTPUT),
       ]),
     ];
-    const state = makeNewState();
+    const state = makeState();
     seedMark(state, 1, 2, true, 100);
     const snapshot = history(entries);
     const edits = computeEdits(state, snapshot.messages, {
@@ -387,7 +366,7 @@ describe("render behavior", () => {
   it("skips edits whose anchor cannot be resolved", () => {
     const entries = [entry("user", "u0", [text("开场")])];
     const snapshot = history(entries);
-    const state = makeNewState();
+    const state = makeState();
     const edits: RegionEdit[] = [
       { messageOrdinal: 9, regionIndex: 0, text: "x" }, // vanished message
       { messageOrdinal: 0, regionIndex: 5, text: "y" }, // out-of-range region
@@ -406,7 +385,7 @@ describe("render behavior", () => {
       entry("assistant", "a4", [text("回答三")]),
     ];
     const snapshot = history(entries);
-    const state = makeNewState();
+    const state = makeState();
     seedBlock(state, snapshot, 1, 1, 3, "第一段", "摘要正文");
     render(entries, fold(snapshot, state).items, [], state);
 

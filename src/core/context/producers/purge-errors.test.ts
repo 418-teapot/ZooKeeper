@@ -18,16 +18,18 @@
  */
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { canon } from "../canon.js";
-import type { HostMessage } from "../lens.js";
 import {
+  lensMsg,
   makeAssistantMsg,
   makeMsg,
+  makeState,
   makeToolMsg,
   makeToolResultMsg,
   projectMessages,
   setRegionText,
-} from "../lens-testkit.js";
+} from "../../../testkits/context.js";
+import { canon } from "../canon.js";
+import type { HostMessage } from "../lens.js";
 import {
   estimateTokenCount,
   measureMessages,
@@ -81,23 +83,6 @@ function errCall(
   status = "error",
 ): CallSpec {
   return { tool, input, output, status };
-}
-
-/** Build the lens assistant message for the given calls. */
-function lensMsg(calls: CallSpec[]): HostMessage {
-  return makeAssistantMsg({
-    toolCalls: calls.map((call) => ({
-      name: call.tool,
-      input: call.input,
-      output: call.output,
-      status: call.status,
-    })),
-  });
-}
-
-/** A fresh empty lens session state. */
-function makeNewState(): SessionState {
-  return { blocks: new Map(), marks: new Map() };
 }
 
 /**
@@ -169,7 +154,7 @@ function runOpen(
   messages: HostMessage[],
   overrides: Partial<PurgeErrorsProducerOptions> = {},
 ): { keys: string[]; tokens: number } {
-  const state = makeNewState();
+  const state = makeState();
   const result = runPurgeErrors(
     state,
     projectMessages(messages),
@@ -185,7 +170,7 @@ function runOpen(
 describe("purge semantics", () => {
   it("marks an error-status call's input region and returns pending marks", () => {
     const lens = [lensMsg([errCall()])];
-    const state = makeNewState();
+    const state = makeState();
     const result = runPurgeErrors(
       state,
       projectMessages(lens),
@@ -219,7 +204,7 @@ describe("purge semantics", () => {
 
   it("skips calls already marked (re-runs are idempotent)", () => {
     const lens = [lensMsg([errCall()])];
-    const state = makeNewState();
+    const state = makeState();
     assert.equal(
       runPurgeErrors(state, projectMessages(lens), purgeOptions(lens)).created,
       1,
@@ -336,7 +321,7 @@ describe("purge semantics", () => {
 
 describe("lens-specific gating semantics", () => {
   it("fail-safe: undefined protectedStartOrdinal skips with zero side effects", () => {
-    const state = makeNewState();
+    const state = makeState();
     const lens = [lensMsg([errCall()])];
     const result = runPurgeErrors(state, projectMessages(lens), {
       minMessages: 0,
@@ -351,7 +336,7 @@ describe("lens-specific gating semantics", () => {
     const atTwenty = Array.from({ length: 20 }, () =>
       makeToolMsg("bash", LONG_INPUT, LONG_OUTPUT, { status: "error" }),
     );
-    const state20 = makeNewState();
+    const state20 = makeState();
     const r20 = runPurgeErrors(state20, projectMessages(atTwenty), {
       contextLimit: MODEL_LIMIT,
       thresholdContext: 0,
@@ -364,7 +349,7 @@ describe("lens-specific gating semantics", () => {
       ...atTwenty,
       makeToolMsg("bash", LONG_INPUT, LONG_OUTPUT, { status: "error" }),
     ];
-    const state21 = makeNewState();
+    const state21 = makeState();
     const r21 = runPurgeErrors(state21, projectMessages(above), {
       contextLimit: MODEL_LIMIT,
       thresholdContext: 0,
@@ -377,7 +362,7 @@ describe("lens-specific gating semantics", () => {
     const lens = [lensMsg([errCall()])];
     const total = measureMessages(lens).total;
 
-    const below = makeNewState();
+    const below = makeState();
     const rBelow = runPurgeErrors(below, projectMessages(lens), {
       minMessages: 0,
       contextLimit: MODEL_LIMIT,
@@ -387,7 +372,7 @@ describe("lens-specific gating semantics", () => {
     assert.equal(rBelow.created, 0);
 
     // Equality opens the gate.
-    const at = makeNewState();
+    const at = makeState();
     const rAt = runPurgeErrors(at, projectMessages(lens), {
       minMessages: 0,
       contextLimit: total,
@@ -396,7 +381,7 @@ describe("lens-specific gating semantics", () => {
     });
     assert.equal(rAt.created, 1);
 
-    const above = makeNewState();
+    const above = makeState();
     const rAbove = runPurgeErrors(above, projectMessages(lens), {
       minMessages: 0,
       contextLimit: 1,
@@ -411,7 +396,7 @@ describe("lens-specific gating semantics", () => {
     const total = measureMessages(lens).total;
 
     // total / (2 * total) == 0.5 — equality with the default opens.
-    const at = makeNewState();
+    const at = makeState();
     const rAt = runPurgeErrors(at, projectMessages(lens), {
       minMessages: 0,
       contextLimit: 2 * total,
@@ -420,7 +405,7 @@ describe("lens-specific gating semantics", () => {
     assert.equal(rAt.created, 1);
 
     // total / (3 * total) < 0.5 — closed.
-    const below = makeNewState();
+    const below = makeState();
     const rBelow = runPurgeErrors(below, projectMessages(lens), {
       minMessages: 0,
       contextLimit: 3 * total,
@@ -430,7 +415,7 @@ describe("lens-specific gating semantics", () => {
   });
 
   it("context gate: undefined context limit skips (fail-closed)", () => {
-    const state = makeNewState();
+    const state = makeState();
     const lens = [lensMsg([errCall()])];
     const result = runPurgeErrors(state, projectMessages(lens), {
       minMessages: 0,
@@ -442,7 +427,7 @@ describe("lens-specific gating semantics", () => {
   });
 
   it("has no default protectedTools list", () => {
-    const state = makeNewState();
+    const state = makeState();
     const lens = [lensMsg([errCall("question")])];
     const result = runPurgeErrors(state, projectMessages(lens), {
       minMessages: 0,
@@ -460,7 +445,7 @@ describe("lens-specific gating semantics", () => {
 
 describe("lens-specific skip and mark semantics", () => {
   it("skips ordinals reported as folded or pruned via prunedOrdinals", () => {
-    const state = makeNewState();
+    const state = makeState();
     const lens = [lensMsg([errCall()]), lensMsg([errCall()])];
     const result = runPurgeErrors(state, projectMessages(lens), {
       minMessages: 0,
@@ -475,7 +460,7 @@ describe("lens-specific skip and mark semantics", () => {
   });
 
   it("hidden messages' error calls still participate", () => {
-    const state = makeNewState();
+    const state = makeState();
     const lens = [
       makeToolMsg("bash", LONG_INPUT, LONG_OUTPUT, {
         status: "error",
@@ -496,7 +481,7 @@ describe("lens-specific skip and mark semantics", () => {
 
   it("an existing mark on either region of the call suppresses the whole call", () => {
     // Pre-existing input mark.
-    const stateA = makeNewState();
+    const stateA = makeState();
     stateA.marks.set(markKey(0, 0), {
       anchorOrdinal: 0,
       regionIndex: 0,
@@ -517,7 +502,7 @@ describe("lens-specific skip and mark semantics", () => {
     assert.equal(stateA.marks.get(markKey(0, 0))?.content, "preexisting");
 
     // Pre-existing output mark (e.g. written by dedup) also suppresses.
-    const stateB = makeNewState();
+    const stateB = makeState();
     stateB.marks.set(markKey(0, 1), {
       anchorOrdinal: 0,
       regionIndex: 1,
@@ -537,7 +522,7 @@ describe("lens-specific skip and mark semantics", () => {
   });
 
   it("never writes output-region marks", () => {
-    const state = makeNewState();
+    const state = makeState();
     const lens = [lensMsg([errCall("bash", LONG_INPUT, SHORT_OUTPUT)])];
     const result = runPurgeErrors(state, projectMessages(lens), {
       minMessages: 0,
@@ -551,7 +536,7 @@ describe("lens-specific skip and mark semantics", () => {
   });
 
   it("marks anchor to the tool-input region with the input reclaim", () => {
-    const state = makeNewState();
+    const state = makeState();
     const lens = [lensMsg([errCall()])];
     runPurgeErrors(state, projectMessages(lens), {
       minMessages: 0,
@@ -573,7 +558,7 @@ describe("lens-specific skip and mark semantics", () => {
 
   it("writes pending marks with a truncated content snapshot", () => {
     const big = "x".repeat(20_000);
-    const state = makeNewState();
+    const state = makeState();
     const lens = [makeToolMsg("bash", big, LONG_OUTPUT, { status: "error" })];
     const result = runPurgeErrors(state, projectMessages(lens), {
       minMessages: 0,
@@ -622,7 +607,7 @@ describe("cross-message output lookup via the invocation table", () => {
     // invocation entry's output address (a layout scan for a
     // same-message sibling on pi would find nothing and re-mark the
     // call).
-    const state = makeNewState();
+    const state = makeState();
     seedOutputMark(state, 2, 0);
     const lens = piLensPair();
     const result = runPurgeErrors(
@@ -637,7 +622,7 @@ describe("cross-message output lookup via the invocation table", () => {
 
   it("re-runs on pi-shaped input are idempotent", () => {
     const lens = piLensPair();
-    const state = makeNewState();
+    const state = makeState();
     assert.equal(
       runPurgeErrors(state, projectMessages(lens), purgeOptions(lens)).created,
       1,
@@ -653,7 +638,7 @@ describe("cross-message output lookup via the invocation table", () => {
   });
 
   it("an output reference without a region index defaults to 0", () => {
-    const state = makeNewState();
+    const state = makeState();
     seedOutputMark(state, 2, 0);
     const lens = [
       makeMsg("user", ["do it"]),
@@ -728,7 +713,7 @@ describe("canon invariance under purge-errors", () => {
   it("end-to-end: applying the producer's marks keeps canon stable", () => {
     const lens = [makeMsg("user", ["do it"]), lensMsg([errCall()])];
     const snapshot = projectMessages(lens);
-    const state = makeNewState();
+    const state = makeState();
     const before = canon(snapshot, 1);
     const result = runPurgeErrors(state, projectMessages(lens), {
       minMessages: 0,

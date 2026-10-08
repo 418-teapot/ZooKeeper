@@ -61,6 +61,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { after, afterEach, beforeEach, describe, it } from "node:test";
 import { computeSpanHash } from "../../../core/context/spanhash.js";
+import { textPart } from "../../../testkits/opencode-messages.js";
 import { history } from "../history.js";
 import type { ContextMessageEntry } from "../types.js";
 import {
@@ -121,11 +122,6 @@ function msg(
     } as unknown as ContextMessageEntry["info"],
     parts: (parts ?? []) as unknown as ContextMessageEntry["parts"],
   };
-}
-
-/** Build a v1 text part. */
-function textPart(text: string): Record<string, unknown> {
-  return { type: "text", text };
 }
 
 /** Build a v1 tool part with the given call id, input, and output. */

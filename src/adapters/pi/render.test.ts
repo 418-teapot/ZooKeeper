@@ -18,6 +18,16 @@ import type { RegionEdit, ViewItem } from "../../core/context/lens.js";
 import { computeSpanHash } from "../../core/context/spanhash.js";
 import type { SessionState } from "../../core/context/state.js";
 import { numberView } from "../../core/context/view-refs.js";
+import { makeState } from "../../testkits/context.js";
+import {
+  assistantMessage,
+  imagePart,
+  textPart,
+  thinkingPart,
+  toolCallPart,
+  toolResultMessage,
+  userMessage,
+} from "../../testkits/pi-messages.js";
 import { history } from "./history.js";
 import { materializeSummary, render, renderView } from "./render.js";
 import type {
@@ -32,59 +42,6 @@ import type {
 // ---------------------------------------------------------------------------
 // Fixture helpers
 // ---------------------------------------------------------------------------
-
-function textPart(text: string): { type: "text"; text: string } {
-  return { type: "text", text };
-}
-
-function imagePart(
-  data = "base64",
-  mimeType = "image/png",
-): { type: "image"; data: string; mimeType: string } {
-  return { type: "image", data, mimeType };
-}
-
-function thinkingPart(thinking: string): {
-  type: "thinking";
-  thinking: string;
-} {
-  return { type: "thinking", thinking };
-}
-
-function toolCallPart(
-  id: string,
-  name: string,
-  args: Record<string, unknown>,
-): {
-  type: "toolCall";
-  id: string;
-  name: string;
-  arguments: Record<string, unknown>;
-} {
-  return { type: "toolCall", id, name, arguments: args };
-}
-
-function userMessage(content: PiUserMessage["content"]): PiUserMessage {
-  return { role: "user", content };
-}
-
-function assistantMessage(
-  content: PiAssistantMessage["content"],
-): PiAssistantMessage {
-  return { role: "assistant", content };
-}
-
-function toolResultMessage(
-  toolCallId: string,
-  toolName: string,
-  content: PiToolResultMessage["content"],
-): PiToolResultMessage {
-  return { role: "toolResult", toolCallId, toolName, content, isError: false };
-}
-
-function makeState(): SessionState {
-  return { blocks: new Map(), marks: new Map() };
-}
 
 function seedBlock(
   state: SessionState,

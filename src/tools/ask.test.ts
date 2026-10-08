@@ -27,9 +27,9 @@ import type {
   AskDialogComponent,
   AskDialogOutcome,
 } from "../adapters/pi/ask-form.js";
-import { formHarness } from "../adapters/pi/ask-form-harness.js";
 import type { AskResult, NormalizedQuestion } from "../core/ask.js";
 import type { ActiveSet, Deps } from "../core/slots.js";
+import { formHarness } from "../testkits/ask-form.js";
 import { assembleAskResults, guardAnswers, parseAskArgs, unit } from "./ask.js";
 
 // ---------------------------------------------------------------------------

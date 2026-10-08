@@ -13,6 +13,7 @@
 
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
+import { phase } from "../../testkits/todo.js";
 import type { ApplyResult } from "./apply.js";
 import { applyEntries } from "./apply.js";
 import { normalizePhases } from "./normalize.js";
@@ -33,14 +34,6 @@ import {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-/** Build a phase object from [content, status] pairs. */
-function phase(name: string, ...tasks: Array<[string, TodoStatus]>): TodoPhase {
-  return {
-    name,
-    tasks: tasks.map(([content, status]) => ({ content, status })),
-  };
-}
 
 /** Apply entries to a state; returns the full result. */
 function apply(

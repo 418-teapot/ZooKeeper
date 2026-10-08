@@ -16,6 +16,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import type { TodoPhase } from "../../../core/todo/types.js";
+import { makeTheme } from "../../../testkits/theme.js";
 import {
   buildTodoCardRenderer,
   renderCall,
@@ -30,14 +31,7 @@ interface Renderable {
 }
 
 /** Fake theme: fg wraps with the color name, strikethrough with `~`. */
-const THEME = {
-  fg: (style: string, text: string) => `<${style}>${text}</${style}>`,
-  bg: (style: string, text: string) => `[${style}]${text}[/${style}]`,
-  bold: (text: string) => text,
-  italic: (text: string) => text,
-  underline: (text: string) => text,
-  strikethrough: (text: string) => `~${text}~`,
-};
+const THEME = makeTheme({ strikethrough: (text) => `~${text}~` });
 
 /** Render a component tree at width 80, keeping the fake-theme tags. */
 function renderRaw(component: unknown, width = 80): string[] {

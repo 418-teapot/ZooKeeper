@@ -40,6 +40,21 @@ import {
   updateRun,
 } from "../../core/subagent/registry.js";
 import { createTodoStore } from "../../core/todo/store.js";
+import {
+  COLORS_RAW,
+  fakePiToolHost,
+  MODES_RAW,
+  mockApi,
+  POLY_PROFILE,
+  POLY_ZOO,
+  renderZooWidget,
+  resetPiTestState,
+  SESSION_CTX,
+  WIDGET_THEME,
+  WIDGET_TUI,
+} from "../../testkits/pi-wiring.js";
+import { stubTui } from "../../testkits/theme.js";
+import { makeTmpDir } from "../../testkits/tmp.js";
 import { validateCompressArgs } from "../../tools/compress.js";
 import {
   _flushForTesting,
@@ -55,19 +70,6 @@ import {
   buildPiHandlers,
   buildPiResolveAgent,
 } from "./wire.js";
-import {
-  COLORS_RAW,
-  fakePiToolHost,
-  MODES_RAW,
-  mockApi,
-  POLY_PROFILE,
-  POLY_ZOO,
-  renderZooWidget,
-  resetPiTestState,
-  SESSION_CTX,
-  WIDGET_THEME,
-  WIDGET_TUI,
-} from "./wiring-harness.js";
 
 afterEach(resetPiTestState);
 
@@ -1191,7 +1193,7 @@ function widgetInputCtx(
  */
 function focusedEditorTui(): unknown {
   return {
-    requestRender: () => {},
+    ...stubTui(),
     focusedComponent: {
       render: () => [],
       invalidate: () => {},
@@ -2681,7 +2683,7 @@ describe("buildPiHandlers — plugin_init load-time event", () => {
     // Init the logger so the load-time plugin_init is attributed to a
     // temp log dir instead of tripping the one-time used-before-init
     // warning (isolation pattern used across this file).
-    const logDir = fs.mkdtempSync(join(tmpdir(), "zoo-pi-log-"));
+    const logDir = makeTmpDir("zoo-pi-log");
     try {
       initLogger("pi", { logDir });
       buildPiHandlers(POLY_ZOO);
@@ -2717,7 +2719,7 @@ describe("buildPiHandlers — plugin_init load-time event", () => {
   });
 
   it("null profile → plugin_init with empty agents/skills", () => {
-    const logDir = fs.mkdtempSync(join(tmpdir(), "zoo-pi-log-"));
+    const logDir = makeTmpDir("zoo-pi-log");
     try {
       initLogger("pi", { logDir });
       buildPiHandlers({});
@@ -2737,7 +2739,7 @@ describe("buildPiHandlers — plugin_init load-time event", () => {
   });
 
   it("buffers plugin_init sessionless; flush into the first pi session's file", () => {
-    const logDir = fs.mkdtempSync(join(tmpdir(), "zoo-pi-log-"));
+    const logDir = makeTmpDir("zoo-pi-log");
     try {
       initLogger("pi", { logDir });
       buildPiHandlers(POLY_ZOO);

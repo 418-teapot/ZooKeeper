@@ -21,6 +21,7 @@ import {
   startRun,
   topLevelRuns,
 } from "../../../core/subagent/registry.js";
+import { colorTag, makeTheme } from "../../../testkits/theme.js";
 import { type FleetColumnOptions, renderFleetColumn } from "./fleet-column.js";
 
 afterEach(() => {
@@ -28,10 +29,7 @@ afterEach(() => {
 });
 
 /** A theme stub that wraps each colorized string in `<color>` tags. */
-const THEME = {
-  fg: (color: string, text: string) => `<${color}>${text}</${color}>`,
-  bg: (color: string, text: string) => `<${color}>${text}</${color}>`,
-};
+const THEME = makeTheme({ fg: colorTag, bg: colorTag });
 
 /** The colorizer stub wraps each agent name in `<c>` tags. */
 const colorizeAgent = (name: string): string => `<c>${name}</c>`;

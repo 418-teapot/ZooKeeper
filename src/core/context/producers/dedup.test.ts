@@ -16,15 +16,17 @@
  */
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import type { HostMessage } from "../lens.js";
 import {
+  lensMsg,
   makeAssistantMsg,
+  makeState,
   makeToolMsg,
   makeToolResultMsg,
   projectMessages,
-} from "../lens-testkit.js";
+} from "../../../testkits/context.js";
+import type { HostMessage } from "../lens.js";
 import { measureMessages } from "../measure.js";
-import { markKey, type SessionState } from "../state.js";
+import { markKey } from "../state.js";
 import { type DedupProducerOptions, runDedup } from "./dedup.js";
 
 // ---------------------------------------------------------------------------
@@ -63,30 +65,6 @@ function bash(
   return { tool: "bash", input, output, status };
 }
 
-/** Serialise a fixture input to the lens input-region text. */
-function inputText(input: CallSpec["input"]): string {
-  if (input == null) return "";
-  if (typeof input === "string") return input;
-  return JSON.stringify(input);
-}
-
-/** Build the lens assistant message for the given calls. */
-function lensMsg(calls: CallSpec[]): HostMessage {
-  return makeAssistantMsg({
-    toolCalls: calls.map((call) => ({
-      name: call.tool,
-      input: inputText(call.input),
-      output: call.output,
-      status: call.status,
-    })),
-  });
-}
-
-/** A fresh empty lens session state. */
-function makeNewState(): SessionState {
-  return { blocks: new Map(), marks: new Map() };
-}
-
 /**
  * Dedup options with both gates open over the given transcript (empty
  * protection window, no protected tools).
@@ -113,7 +91,7 @@ function runOpen(
   messages: HostMessage[],
   overrides: Partial<DedupProducerOptions> = {},
 ): { keys: string[]; tokens: number } {
-  const state = makeNewState();
+  const state = makeState();
   const result = runDedup(
     state,
     projectMessages(messages),
@@ -308,7 +286,7 @@ describe("dedup semantics", () => {
       lensMsg([bash({ cmd: "ls" })]),
       lensMsg([bash({ cmd: "ls" })]),
     ];
-    const state = makeNewState();
+    const state = makeState();
     assert.equal(
       runDedup(state, projectMessages(lens), dedupOptions(lens)).created,
       1,
@@ -326,7 +304,7 @@ describe("dedup semantics", () => {
 
 describe("lens-specific gating semantics", () => {
   it("fail-safe: undefined protectedStartOrdinal skips with zero side effects", () => {
-    const state = makeNewState();
+    const state = makeState();
     const lens = [
       lensMsg([bash({ cmd: "ls" })]),
       lensMsg([bash({ cmd: "ls" })]),
@@ -344,7 +322,7 @@ describe("lens-specific gating semantics", () => {
     const atTwenty = Array.from({ length: 20 }, () =>
       makeToolMsg("bash", '{"cmd":"ls"}', LONG_OUTPUT),
     );
-    const state20 = makeNewState();
+    const state20 = makeState();
     const r20 = runDedup(state20, projectMessages(atTwenty), {
       contextLimit: MODEL_LIMIT,
       thresholdContext: 0,
@@ -357,7 +335,7 @@ describe("lens-specific gating semantics", () => {
       ...atTwenty,
       makeToolMsg("bash", '{"cmd":"ls"}', LONG_OUTPUT),
     ];
-    const state21 = makeNewState();
+    const state21 = makeState();
     const r21 = runDedup(state21, projectMessages(above), {
       contextLimit: MODEL_LIMIT,
       thresholdContext: 0,
@@ -373,7 +351,7 @@ describe("lens-specific gating semantics", () => {
     ];
     const total = measureMessages(lens).total;
 
-    const below = makeNewState();
+    const below = makeState();
     const rBelow = runDedup(below, projectMessages(lens), {
       minMessages: 0,
       contextLimit: MODEL_LIMIT,
@@ -383,7 +361,7 @@ describe("lens-specific gating semantics", () => {
     assert.equal(rBelow.created, 0);
 
     // Equality opens the gate.
-    const at = makeNewState();
+    const at = makeState();
     const rAt = runDedup(at, projectMessages(lens), {
       minMessages: 0,
       contextLimit: total,
@@ -392,7 +370,7 @@ describe("lens-specific gating semantics", () => {
     });
     assert.equal(rAt.created, 1);
 
-    const above = makeNewState();
+    const above = makeState();
     const rAbove = runDedup(above, projectMessages(lens), {
       minMessages: 0,
       contextLimit: 1,
@@ -403,7 +381,7 @@ describe("lens-specific gating semantics", () => {
   });
 
   it("context gate: undefined model limit skips (fail-closed)", () => {
-    const state = makeNewState();
+    const state = makeState();
     const lens = [
       lensMsg([bash({ cmd: "ls" })]),
       lensMsg([bash({ cmd: "ls" })]),
@@ -424,7 +402,7 @@ describe("lens-specific gating semantics", () => {
 
 describe("lens-specific skip and dedup semantics", () => {
   it("default protectedTools protects 'batch'", () => {
-    const state = makeNewState();
+    const state = makeState();
     const lens = [
       makeToolMsg("batch", '{"x":1}', LONG_OUTPUT),
       makeToolMsg("batch", '{"x":1}', LONG_OUTPUT),
@@ -439,7 +417,7 @@ describe("lens-specific skip and dedup semantics", () => {
   });
 
   it("protectedTools matching is case-sensitive ('Batch' is not protected)", () => {
-    const state = makeNewState();
+    const state = makeState();
     const lens = [
       makeToolMsg("Batch", '{"x":1}', LONG_OUTPUT),
       makeToolMsg("Batch", '{"x":1}', LONG_OUTPUT),
@@ -454,7 +432,7 @@ describe("lens-specific skip and dedup semantics", () => {
   });
 
   it("'systemioprompt' is not protected by default", () => {
-    const state = makeNewState();
+    const state = makeState();
     const lens = [
       makeToolMsg("systemioprompt", '{"x":1}', LONG_OUTPUT),
       makeToolMsg("systemioprompt", '{"x":1}', LONG_OUTPUT),
@@ -469,7 +447,7 @@ describe("lens-specific skip and dedup semantics", () => {
   });
 
   it("hidden messages' tool calls still participate in dedup", () => {
-    const state = makeNewState();
+    const state = makeState();
     const lens = [
       makeToolMsg("bash", '{"cmd":"ls"}', LONG_OUTPUT, { hidden: true }),
       makeToolMsg("bash", '{"cmd":"ls"}', LONG_OUTPUT),
@@ -485,7 +463,7 @@ describe("lens-specific skip and dedup semantics", () => {
   });
 
   it("skips ordinals reported as folded or pruned via prunedOrdinals", () => {
-    const state = makeNewState();
+    const state = makeState();
     const lens = [
       lensMsg([bash({ cmd: "ls" })]),
       lensMsg([bash({ cmd: "ls" })]),
@@ -502,7 +480,7 @@ describe("lens-specific skip and dedup semantics", () => {
   });
 
   it("parse-failure inputs fall back to the raw text", () => {
-    const same = makeNewState();
+    const same = makeState();
     const lensSame = [
       makeToolMsg("bash", "not json at all", LONG_OUTPUT),
       makeToolMsg("bash", "not json at all", LONG_OUTPUT),
@@ -517,7 +495,7 @@ describe("lens-specific skip and dedup semantics", () => {
       1,
     );
 
-    const different = makeNewState();
+    const different = makeState();
     const lensDiff = [
       makeToolMsg("bash", "aaa", LONG_OUTPUT),
       makeToolMsg("bash", "bbb", LONG_OUTPUT),
@@ -535,7 +513,7 @@ describe("lens-specific skip and dedup semantics", () => {
 
   it("writes pending marks with a truncated content snapshot", () => {
     const big = "x".repeat(20_000);
-    const state = makeNewState();
+    const state = makeState();
     const lens = [
       makeToolMsg("bash", '{"cmd":"ls"}', big),
       makeToolMsg("bash", '{"cmd":"ls"}', big),
@@ -558,7 +536,7 @@ describe("lens-specific skip and dedup semantics", () => {
   });
 
   it("never overwrites an existing mark at the same key (first-write-wins)", () => {
-    const state = makeNewState();
+    const state = makeState();
     state.marks.set(markKey(0, 1), {
       anchorOrdinal: 0,
       regionIndex: 1,
@@ -585,7 +563,7 @@ describe("lens-specific skip and dedup semantics", () => {
   });
 
   it("leaves input regions untouched", () => {
-    const state = makeNewState();
+    const state = makeState();
     const lens = [
       makeAssistantMsg({
         toolCalls: [

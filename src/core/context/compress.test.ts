@@ -15,6 +15,15 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
+  makeAssistantMsg,
+  makeBlock,
+  makeMark,
+  makeMsg,
+  makeState,
+  makeToolResultMsg,
+  projectMessages,
+} from "../../testkits/context.js";
+import {
   type CompressOptions,
   type CompressRangeInput,
   compressRanges,
@@ -26,15 +35,9 @@ import {
 import { fold } from "./fold.js";
 import type { HostMessage, Projection } from "./lens.js";
 import { project } from "./lens.js";
-import {
-  makeAssistantMsg,
-  makeMsg,
-  makeToolResultMsg,
-  projectMessages,
-} from "./lens-testkit.js";
 import { estimateMessageHeuristic } from "./measure.js";
 import { computeSpanHash, validateBlock } from "./spanhash.js";
-import type { Block, Mark, SessionState } from "./state.js";
+import type { SessionState } from "./state.js";
 import { markKey } from "./state.js";
 import type { NumberedItem } from "./view-refs.js";
 import { numberView } from "./view-refs.js";
@@ -42,23 +45,6 @@ import { numberView } from "./view-refs.js";
 // ---------------------------------------------------------------------------
 // Fixtures
 // ---------------------------------------------------------------------------
-
-/** A fresh empty session state. */
-function makeState(): SessionState {
-  return { blocks: new Map(), marks: new Map() };
-}
-
-/** A mark fixture; defaults to a pending mark over a tool-output region. */
-function makeMark(overrides: Partial<Mark> = {}): Mark {
-  return {
-    anchorOrdinal: 0,
-    content: "tool output",
-    contentTokens: 50,
-    effective: false,
-    markedAt: 2000,
-    ...overrides,
-  };
-}
 
 /**
  * Alternating user/assistant text messages.
@@ -77,26 +63,6 @@ function makeTranscript(count: number): HostMessage[] {
     );
   }
   return msgs;
-}
-
-/** An active block over `[start, end)` with the current span hash. */
-function makeBlock(
-  history: HostMessage[],
-  start: number,
-  end: number,
-  overrides: Partial<Block> = {},
-): Block {
-  return {
-    start,
-    end,
-    summary: `summary [${start}, ${end})`,
-    spanHash: computeSpanHash(projectMessages(history), start, end),
-    status: "active",
-    compressedTokens: 100,
-    summaryTokens: 10,
-    createdAt: 1000,
-    ...overrides,
-  };
 }
 
 /** Number the folded view of a projection snapshot, skipping hidden messages. */

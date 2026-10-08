@@ -8,6 +8,7 @@
  */
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
+import { mockClient } from "../../testkits/hooks.js";
 import type { TodoStateStore } from "../todo/store.js";
 import type { TodoPhase } from "../todo/types.js";
 import {
@@ -20,24 +21,6 @@ import {
 // ---------------------------------------------------------------------------
 // Helper
 // ---------------------------------------------------------------------------
-
-/**
- * Build a mock TinyClient whose `session.todo` resolves to the given items.
- */
-function mockClient(
-  items: Array<{
-    content: string;
-    status: string;
-    priority: string;
-    id: string;
-  }>,
-): TinyClient {
-  return {
-    session: {
-      todo: async () => ({ data: items }),
-    },
-  };
-}
 
 /**
  * Build a mock TinyClient whose `session.todo` always rejects.

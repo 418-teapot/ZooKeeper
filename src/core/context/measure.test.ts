@@ -12,8 +12,12 @@
  */
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
+import {
+  makeAssistantMsg,
+  makeMsg,
+  makeToolMsg,
+} from "../../testkits/context.js";
 import type { HostMessage, TextRegion } from "./lens.js";
-import { makeAssistantMsg, makeMsg, makeToolMsg } from "./lens-testkit.js";
 import {
   estimateMessageHeuristic,
   estimateTokenCount,

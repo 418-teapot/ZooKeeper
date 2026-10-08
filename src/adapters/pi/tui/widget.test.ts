@@ -31,6 +31,7 @@ import {
   startRun,
 } from "../../../core/subagent/registry.js";
 import type { TodoPhase } from "../../../core/todo/types.js";
+import { colorTag, makeTheme, stubTui } from "../../../testkits/theme.js";
 import { createFleetWidget, FLEET_MAX_LINES } from "./widget.js";
 
 afterEach(() => {
@@ -82,10 +83,7 @@ function fakeTimer() {
 }
 
 /** A theme stub that wraps each colorized string in `<color>` tags. */
-const THEME = {
-  fg: (color: string, text: string) => `<${color}>${text}</${color}>`,
-  bg: (color: string, text: string) => `<${color}>${text}</${color}>`,
-};
+const THEME = makeTheme({ fg: colorTag, bg: colorTag });
 
 /** A focusable fake TUI (defaults to an empty focused editor). */
 function tuiOf(overrides: { focused?: unknown } = {}): {
@@ -100,7 +98,7 @@ function tuiOf(overrides: { focused?: unknown } = {}): {
   };
   return {
     tui: {
-      requestRender: () => {},
+      ...stubTui(),
       focusedComponent: focused,
     },
   };

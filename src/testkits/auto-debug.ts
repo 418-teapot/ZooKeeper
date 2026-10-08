@@ -21,10 +21,10 @@ import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { ZdebugExec, ZdebugExecResult } from "../../core/slots.js";
+import type { ZdebugExec, ZdebugExecResult } from "../core/slots.js";
 
 /** Repository root derived from this module's own location. */
-const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), "../../..");
+const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), "../..");
 
 /** Absolute path to the release `zdebug` binary produced by `./build.sh`. */
 export const ZDEBUG_BINARY = join(

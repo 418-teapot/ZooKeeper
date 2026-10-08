@@ -20,6 +20,7 @@ import { describe, it } from "node:test";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import { SPINNER_FRAMES } from "../../../core/display.js";
 import type { TodoPhase } from "../../../core/todo/types.js";
+import { colorTag, makeTheme } from "../../../testkits/theme.js";
 import {
   renderTodoCollapsed,
   renderTodoColumn,
@@ -27,11 +28,11 @@ import {
 } from "./todo-column.js";
 
 /** Fake theme: fg/bg wrap with the color name, strikethrough with `~`. */
-const THEME: TodoColumnThemeLike = {
-  fg: (color: string, text: string) => `<${color}>${text}</${color}>`,
-  bg: (color: string, text: string) => `<${color}>${text}</${color}>`,
-  strikethrough: (text: string) => `~${text}~`,
-};
+const THEME: TodoColumnThemeLike = makeTheme({
+  fg: colorTag,
+  bg: colorTag,
+  strikethrough: (text) => `~${text}~`,
+});
 
 /** The expanded column's row budget the tests exercise. */
 const BUDGET = 7;

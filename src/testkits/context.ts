@@ -28,8 +28,10 @@ import type {
   Role,
   TextRegion,
   TokenUsage,
-} from "./lens.js";
-import { project } from "./lens.js";
+} from "../core/context/lens.js";
+import { project } from "../core/context/lens.js";
+import { computeSpanHash } from "../core/context/spanhash.js";
+import type { Block, Mark, SessionState } from "../core/context/state.js";
 
 /**
  * Options for `makeMsg`.
@@ -334,4 +336,127 @@ export function makeToolResultMsg(output: string): HostMessage {
     hidden: false,
     regions: [new MemoryRegion("tool-output", output)],
   };
+}
+
+/**
+ * Build a fresh empty session state.
+ *
+ * When `lastAnchor` is given, the state seeds the nudge watermark's
+ * single-anchor token count; omitting it leaves the watermark unset.
+ *
+ * @param lastAnchor - Optional last-nudge token watermark.
+ * @returns The empty state.
+ */
+export function makeState(lastAnchor?: number): SessionState {
+  const state: SessionState = { blocks: new Map(), marks: new Map() };
+  if (lastAnchor !== undefined) {
+    state.nudges = { lastNudgeTokens: lastAnchor };
+  }
+  return state;
+}
+
+/**
+ * Alternating user/assistant messages, enough for multi-block spans.
+ *
+ * @param count - The number of messages to build.
+ * @returns The transcript.
+ */
+export function makeTranscript(count: number): HostMessage[] {
+  const msgs: HostMessage[] = [];
+  for (let i = 0; i < count; i++) {
+    msgs.push(
+      i % 2 === 0
+        ? makeMsg("user", [`prompt ${i}`])
+        : makeAssistantMsg({ text: `reply ${i}` }),
+    );
+  }
+  return msgs;
+}
+
+/**
+ * Build a mark fixture: a pending mark over a tool-output region.
+ *
+ * @param overrides - Fields overriding the defaults.
+ * @returns The mark.
+ */
+export function makeMark(overrides: Partial<Mark> = {}): Mark {
+  return {
+    anchorOrdinal: 0,
+    content: "tool output",
+    contentTokens: 50,
+    effective: false,
+    markedAt: 2000,
+    ...overrides,
+  };
+}
+
+/**
+ * Build an active block over `[start, end)` with the current span hash.
+ *
+ * @param history - The transcript the span hash is computed over.
+ * @param start - Inclusive start ordinal.
+ * @param end - Exclusive end ordinal.
+ * @param overrides - Fields overriding the defaults.
+ * @returns The block.
+ */
+export function makeBlock(
+  history: HostMessage[],
+  start: number,
+  end: number,
+  overrides: Partial<Block> = {},
+): Block {
+  return {
+    start,
+    end,
+    summary: `summary [${start}, ${end})`,
+    spanHash: computeSpanHash(projectMessages(history), start, end),
+    status: "active",
+    compressedTokens: 100,
+    summaryTokens: 10,
+    createdAt: 1000,
+    ...overrides,
+  };
+}
+
+/**
+ * One tool call in a `lensMsg` fixture message.
+ */
+export interface LensCallSpec {
+  /** Tool name. */
+  tool: string;
+  /** Tool input; an object is serialised to its JSON text form. */
+  input: Record<string, unknown> | string | null;
+  /** Tool output text. */
+  output: string;
+  /** Host-verbatim call status. */
+  status?: string;
+}
+
+/**
+ * Serialise a fixture input to the lens input-region text.
+ *
+ * @param input - The fixture input.
+ * @returns The region text.
+ */
+function lensInputText(input: LensCallSpec["input"]): string {
+  if (input == null) return "";
+  if (typeof input === "string") return input;
+  return JSON.stringify(input);
+}
+
+/**
+ * Build the lens assistant message for the given tool calls.
+ *
+ * @param calls - The tool calls, in order.
+ * @returns The assistant message.
+ */
+export function lensMsg(calls: LensCallSpec[]): HostMessage {
+  return makeAssistantMsg({
+    toolCalls: calls.map((call) => ({
+      name: call.tool,
+      input: lensInputText(call.input),
+      output: call.output,
+      status: call.status,
+    })),
+  });
 }

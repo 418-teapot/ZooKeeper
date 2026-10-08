@@ -14,13 +14,12 @@ import assert from "node:assert/strict";
 import { afterEach, describe, it } from "node:test";
 import type { ActiveSet, Deps } from "../core/slots.js";
 import type { HtmlConverter } from "../core/webfetch/pipeline.js";
+import { installFetchMock, restoreFetch } from "../testkits/fetch.js";
 import { createFetchTool, unit as fetchUnit } from "./fetch.js";
 
 // ---------------------------------------------------------------------------
 // Harness
 // ---------------------------------------------------------------------------
-
-const originalFetch = globalThis.fetch;
 
 /** An identity converter — the pipeline's output then equals the body. */
 const identity: HtmlConverter = (html) => html;
@@ -32,15 +31,7 @@ function deps(loadHtmlConverter?: () => HtmlConverter | null): Deps {
 
 /** Replace `globalThis.fetch` with a recorded fake. */
 function mockFetch(handler: (url: string) => Response): void {
-  globalThis.fetch = ((input: Parameters<typeof fetch>[0]) => {
-    const url =
-      typeof input === "string"
-        ? input
-        : input instanceof URL
-          ? input.toString()
-          : input.url;
-    return Promise.resolve(handler(url));
-  }) as typeof fetch;
+  installFetchMock(handler);
 }
 
 /** A single-line HTML response with the given content type. */
@@ -68,7 +59,7 @@ async function assertArgError(
 }
 
 afterEach(() => {
-  globalThis.fetch = originalFetch;
+  restoreFetch();
 });
 
 // ---------------------------------------------------------------------------

@@ -30,7 +30,6 @@ import assert from "node:assert/strict";
 import { afterEach, describe, it } from "node:test";
 import { canon } from "../../core/context/canon.js";
 import type { HostMessage, TextRegion } from "../../core/context/lens.js";
-import { makeMsg } from "../../core/context/lens-testkit.js";
 import {
   estimateMessageHeuristic,
   measureMessages,
@@ -40,6 +39,8 @@ import {
   PRUNED_TOOL_OUTPUT_REPLACEMENT,
 } from "../../core/context/message-parts.js";
 import { computeSpanHash } from "../../core/context/spanhash.js";
+import { makeMsg } from "../../testkits/context.js";
+import { textPart, toolPart } from "../../testkits/opencode-messages.js";
 import { _resetForTesting } from "../../utils/logger.js";
 import { history, isInjectableRegion, type WritableRegion } from "./history.js";
 import {
@@ -77,39 +78,10 @@ interface ToolPartShape {
 }
 
 /**
- * Build a text part.
- */
-function textPart(text: string, ignored?: boolean): Record<string, unknown> {
-  return { type: "text", text, ...(ignored ? { ignored: true } : {}) };
-}
-
-/**
  * Build a reasoning part.
  */
 function reasoningPart(text: string): Record<string, unknown> {
   return { type: "reasoning", text };
-}
-
-/**
- * Build a tool part with optional status and call identifier.
- */
-function toolPart(
-  tool: string,
-  input: unknown,
-  output: unknown,
-  status?: string,
-  callID?: string,
-): Record<string, unknown> {
-  return {
-    type: "tool",
-    tool,
-    ...(callID ? { callID } : {}),
-    state: {
-      input,
-      output,
-      ...(status ? { status } : {}),
-    },
-  };
 }
 
 /**

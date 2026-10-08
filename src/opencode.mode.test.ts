@@ -24,8 +24,8 @@ import { JSON_ERROR_REMINDER } from "./hooks/json-error-nudge";
 import { VERIFY_REMINDER } from "./hooks/post-subagent-nudge";
 import { SUBAGENT_PROMPT_HINT } from "./hooks/subagent-prompt";
 import { buildPlugin, zookeeper } from "./opencode.js";
+import { withModeFile } from "./testkits/mode-file.js";
 import { _getBufferForTesting, _resetForTesting } from "./utils/logger.js";
-import { withModeFile } from "./utils/mode-file.js";
 
 // ---------------------------------------------------------------------------
 // Fixtures

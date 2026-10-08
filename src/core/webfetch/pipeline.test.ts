@@ -8,15 +8,15 @@
 import assert from "node:assert/strict";
 import {
   existsSync,
-  mkdtempSync,
   readFileSync,
   rmSync,
   utimesSync,
   writeFileSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, it } from "node:test";
+import { installFetchMock, restoreFetch } from "../../testkits/fetch.js";
+import { makeTmpDir } from "../../testkits/tmp.js";
 import {
   type FetchWebContentResult,
   fetchWebContent,
@@ -30,7 +30,6 @@ import {
 
 type FetchInput = Parameters<typeof fetch>[0];
 
-const originalFetch = globalThis.fetch;
 const tempDirs: string[] = [];
 let calls: string[] = [];
 
@@ -38,17 +37,7 @@ let calls: string[] = [];
  * Install a fake `fetch` that records every requested URL.
  */
 function mockFetch(handler: (url: string) => Response): void {
-  calls = [];
-  globalThis.fetch = ((input: FetchInput) => {
-    const url =
-      typeof input === "string"
-        ? input
-        : input instanceof URL
-          ? input.toString()
-          : input.url;
-    calls.push(url);
-    return Promise.resolve(handler(url));
-  }) as typeof fetch;
+  calls = installFetchMock(handler).calls;
 }
 
 /**
@@ -70,7 +59,7 @@ function makeResponse(
  * Create a temp directory registered for cleanup after the test.
  */
 function makeTempDir(): string {
-  const dir = mkdtempSync(join(tmpdir(), "zoo-fetch-test-"));
+  const dir = makeTmpDir("zoo-fetch-test");
   tempDirs.push(dir);
   return dir;
 }
@@ -114,7 +103,7 @@ const mockTruncate: TruncateHeadFn = (content) => {
 };
 
 afterEach(() => {
-  globalThis.fetch = originalFetch;
+  restoreFetch();
   while (tempDirs.length > 0) {
     const dir = tempDirs.pop();
     if (dir) rmSync(dir, { recursive: true, force: true });

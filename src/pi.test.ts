@@ -7,16 +7,16 @@
 import assert from "node:assert/strict";
 import { afterEach, describe, it } from "node:test";
 import { initTheme } from "@earendil-works/pi-coding-agent";
+import { JSON_ERROR_REMINDER_MARKER } from "./core/prompts.js";
+import { zookeeperPi } from "./pi.js";
+import { withModeFile } from "./testkits/mode-file.js";
 import {
   joinedText,
   mockApi,
   resetPiTestState,
   SESSION_CTX,
-} from "./adapters/pi/wiring-harness.js";
-import { JSON_ERROR_REMINDER_MARKER } from "./core/prompts.js";
-import { zookeeperPi } from "./pi.js";
+} from "./testkits/pi-wiring.js";
 import { _getBufferForTesting } from "./utils/logger.js";
-import { withModeFile } from "./utils/mode-file.js";
 
 afterEach(resetPiTestState);
 

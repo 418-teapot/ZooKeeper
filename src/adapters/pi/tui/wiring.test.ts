@@ -14,6 +14,7 @@ import { afterEach, describe, it } from "node:test";
 import { resetRegistry, startRun } from "../../../core/subagent/registry.js";
 import type { TodoStateStore } from "../../../core/todo/store.js";
 import type { TodoPhase } from "../../../core/todo/types.js";
+import { makeTheme, stubTui } from "../../../testkits/theme.js";
 import type { FleetTuiLike } from "./widget.js";
 import { createFleetWiring, type FleetWiringDeps } from "./wiring.js";
 
@@ -54,11 +55,13 @@ function fakeStore(
   return { store, gets };
 }
 
+/** An identity theme — the passthrough text keeps assertions literal. */
+const THEME = makeTheme({ fg: (_color: string, text: string) => text });
+
 /** A TUI stub with a focused empty editor so the widget's keys activate. */
-const THEME = { fg: (_color: string, text: string) => text };
 function focusedTui(): FleetTuiLike {
   return {
-    requestRender: () => {},
+    ...stubTui(),
     focusedComponent: {
       render: () => [],
       invalidate: () => {},

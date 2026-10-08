@@ -26,14 +26,15 @@ import assert from "node:assert/strict";
 import { afterEach, beforeEach, describe, it } from "node:test";
 import { sessionAgentRegistry } from "../../core/session-agent.js";
 import { buildPlugin } from "../../opencode.js";
-import { _getBufferForTesting, _resetForTesting } from "../../utils/logger.js";
-import { CONTINUATION_PROMPT } from "../todo-continuation/decide.js";
 import {
   type CaseFixture,
   createCaseFixture,
   requireZdebugBinary,
   zdebugExec,
-} from "./e2e-fixture.js";
+} from "../../testkits/auto-debug.js";
+import { restoreEnv, saveEnv } from "../../testkits/env.js";
+import { _getBufferForTesting, _resetForTesting } from "../../utils/logger.js";
+import { CONTINUATION_PROMPT } from "../todo-continuation/decide.js";
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -848,14 +849,13 @@ describe("session.idle — auto-debug end to end", () => {
 
   // The strategy's silence reason is only observable at debug level.
   beforeEach(() => {
-    origDebug = process.env.ZOO_DEBUG;
+    origDebug = saveEnv("ZOO_DEBUG");
     process.env.ZOO_DEBUG = "1";
     // Fail loudly, never skip, when the release binary is missing.
     requireZdebugBinary();
   });
   afterEach(() => {
-    if (origDebug === undefined) delete process.env.ZOO_DEBUG;
-    else process.env.ZOO_DEBUG = origDebug;
+    restoreEnv("ZOO_DEBUG", origDebug);
   });
 
   /** The auto-debug strategy's silence reason for the last settle. */

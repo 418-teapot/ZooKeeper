@@ -19,11 +19,14 @@
  */
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
+import {
+  makeBlock,
+  makeState,
+  makeTranscript,
+  projectMessages,
+} from "../../testkits/context.js";
 import { fold } from "./fold.js";
-import type { HostMessage, ViewItem } from "./lens.js";
-import { makeAssistantMsg, makeMsg, projectMessages } from "./lens-testkit.js";
-import { computeSpanHash } from "./spanhash.js";
-import type { Block, SessionState } from "./state.js";
+import type { ViewItem } from "./lens.js";
 import {
   formatSummaryLabel,
   itemAtOrdinal,
@@ -37,44 +40,6 @@ import {
 // ---------------------------------------------------------------------------
 // Fixtures
 // ---------------------------------------------------------------------------
-
-/** A fresh empty session state. */
-function makeState(): SessionState {
-  return { blocks: new Map(), marks: new Map() };
-}
-
-/** Alternating user/assistant messages, enough for multi-block spans. */
-function makeTranscript(count: number): HostMessage[] {
-  const msgs: HostMessage[] = [];
-  for (let i = 0; i < count; i++) {
-    msgs.push(
-      i % 2 === 0
-        ? makeMsg("user", [`prompt ${i}`])
-        : makeAssistantMsg({ text: `reply ${i}` }),
-    );
-  }
-  return msgs;
-}
-
-/** An active block over `[start, end)` with the current span hash. */
-function makeBlock(
-  history: HostMessage[],
-  start: number,
-  end: number,
-  overrides: Partial<Block> = {},
-): Block {
-  return {
-    start,
-    end,
-    summary: `summary [${start}, ${end})`,
-    spanHash: computeSpanHash(projectMessages(history), start, end),
-    status: "active",
-    compressedTokens: 100,
-    summaryTokens: 10,
-    createdAt: 1000,
-    ...overrides,
-  };
-}
 
 /** A view in which no message is hidden. */
 const noneHidden = (): boolean => false;

@@ -9,12 +9,12 @@
  * delivery failure leaves the plan file untouched.
  */
 import assert from "node:assert/strict";
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { readFileSync, rmSync } from "node:fs";
 import { afterEach, beforeEach, describe, it } from "node:test";
 import { executeHandoff } from "../../core/handoff.js";
 import { buildConfirmText } from "../../core/plan.js";
+import { cleanupPlan, createPlanFile } from "../../testkits/plans.js";
+import { makeTmpDir } from "../../testkits/tmp.js";
 import { _resetForTesting, initLogger } from "../../utils/logger.js";
 import {
   createOpenCodeHandoffTarget,
@@ -25,15 +25,8 @@ import {
 // Test helpers
 // ---------------------------------------------------------------------------
 
-let _tmpCounter = 0;
-
 function tmpDir(): string {
-  const dir = join(
-    tmpdir(),
-    `zoo-handoff-target-oc-${Date.now()}-${_tmpCounter++}`,
-  );
-  mkdirSync(dir, { recursive: true });
-  return dir;
+  return makeTmpDir("zoo-handoff-target-oc");
 }
 
 let _loggerDir: string;
@@ -55,26 +48,6 @@ afterEach(() => {
 
 /** Fixture default primary — a made-up name, never a real agent. */
 const DEFAULT_PRIMARY = "alpha";
-
-function createPlanFile(status: string): { planPath: string; baseDir: string } {
-  const baseDir = tmpDir();
-  const dir = join(baseDir, ".zoo", "plans");
-  mkdirSync(dir, { recursive: true });
-  const planPath = join(dir, "test-plan.md");
-  writeFileSync(
-    planPath,
-    `---\nstatus: ${status}\nslug: test-plan\n---\n# Test Plan\n`,
-  );
-  return { planPath, baseDir };
-}
-
-function cleanupPlan(planPath: string): void {
-  try {
-    rmSync(planPath, { recursive: true, force: true });
-  } catch {
-    // ignore
-  }
-}
 
 /** A fake OpenCode PlanClient with recorded calls. */
 function makeClient(overrides?: Partial<PlanClient>): {

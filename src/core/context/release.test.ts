@@ -15,13 +15,15 @@
  */
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import type { HostMessage } from "./lens.js";
 import {
+  lensMsg,
   makeAssistantMsg,
+  makeState,
   makeToolMsg,
   projectMessages,
   setRegionText,
-} from "./lens-testkit.js";
+} from "../../testkits/context.js";
+import type { HostMessage } from "./lens.js";
 import {
   PRUNED_TOOL_ERROR_INPUT_REPLACEMENT,
   PRUNED_TOOL_OUTPUT_REPLACEMENT,
@@ -63,23 +65,6 @@ function bashCall(
   status?: string,
 ): CallSpec {
   return { tool: "bash", input, output, status };
-}
-
-/** Build the lens assistant message for the same calls. */
-function lensMsg(calls: CallSpec[]): HostMessage {
-  return makeAssistantMsg({
-    toolCalls: calls.map((call) => ({
-      name: call.tool,
-      input: call.input,
-      output: call.output,
-      status: call.status,
-    })),
-  });
-}
-
-/** A fresh empty lens session state. */
-function makeNewState(): SessionState {
-  return { blocks: new Map(), marks: new Map() };
 }
 
 /**
@@ -172,7 +157,7 @@ function releasePhase(
 
 describe("derived stats", () => {
   it("pendingCount counts non-effective marks only", () => {
-    const state = makeNewState();
+    const state = makeState();
     assert.equal(pendingCount(state), 0);
     rawSeed(state, 0, 1, 100, false);
     rawSeed(state, 1, 1, 50, true);
@@ -181,7 +166,7 @@ describe("derived stats", () => {
   });
 
   it("pendingTokens sums non-effective contentTokens", () => {
-    const state = makeNewState();
+    const state = makeState();
     rawSeed(state, 0, 1, 100, false);
     rawSeed(state, 1, 1, 50, true);
     rawSeed(state, 2, 1, 30, false);
@@ -189,7 +174,7 @@ describe("derived stats", () => {
   });
 
   it("reclaimedTokens sums effective contentTokens", () => {
-    const state = makeNewState();
+    const state = makeState();
     rawSeed(state, 0, 1, 100, false);
     rawSeed(state, 1, 1, 50, true);
     rawSeed(state, 2, 1, 30, true);
@@ -213,7 +198,7 @@ describe("release decisions (lens)", () => {
     pendingViewChange: boolean,
   ): { result: ReleaseResult; markAt: (m: number) => Mark | undefined } {
     const lens = [lensMsg([bashCall()]), lensMsg([bashCall()])];
-    const state = makeNewState();
+    const state = makeState();
     seedLensMark(state, 0, 0, "output", tokens[0], false);
     seedLensMark(state, 1, 0, "output", tokens[1], false);
     const result = releasePhase(state, lens, {
@@ -308,7 +293,7 @@ describe("release decisions (lens)", () => {
 
   it("effective output marks write the output placeholder text", () => {
     const lens = [lensMsg([bashCall("ls", LONG_OUTPUT)])];
-    const state = makeNewState();
+    const state = makeState();
     seedLensMark(state, 0, 0, "output", 100, true);
     releasePhase(state, lens, {
       promptTokens: 100_000,
@@ -320,7 +305,7 @@ describe("release decisions (lens)", () => {
 
   it("effective error-input marks write the error-input placeholder text", () => {
     const lens = [lensMsg([bashCall("ls", "boom", "error")])];
-    const state = makeNewState();
+    const state = makeState();
     seedLensMark(state, 0, 0, "input", 100, true);
     releasePhase(state, lens, {
       promptTokens: 100_000,
@@ -333,7 +318,7 @@ describe("release decisions (lens)", () => {
   it("two-turn flow: marks land pending, then flip and apply", () => {
     const promptTokens = 100_000;
     const releasedPercent = 0;
-    const state = makeNewState();
+    const state = makeState();
 
     // Turn 1: two identical calls — dedup marks the older output.
     const turn1 = [lensMsg([bashCall("ls"), bashCall("ls")])];
@@ -381,7 +366,7 @@ describe("release decisions (lens)", () => {
 
 describe("two-turn lifecycle", () => {
   it("turn N pending stays invisible; turn N+1 flips and applies", () => {
-    const state = makeNewState();
+    const state = makeState();
     const lens = [makeToolMsg("bash", '{"cmd":"ls"}', LONG_OUTPUT)];
 
     // Turn N: the release phase runs before the producers, so nothing is
@@ -414,7 +399,7 @@ describe("two-turn lifecycle", () => {
   });
 
   it("pre-seeded effective mark applies in the same release call", () => {
-    const state = makeNewState();
+    const state = makeState();
     const lens = [makeToolMsg("bash", '{"cmd":"ls"}', LONG_OUTPUT)];
     rawSeed(state, 0, 1, 100, true);
     // promptTokens 0 and no bypass — the gate is closed, but the apply
@@ -435,7 +420,7 @@ describe("two-turn lifecycle", () => {
 
 describe("releasedPercent gate", () => {
   it("undefined skips entirely — pending retained across calls", () => {
-    const state = makeNewState();
+    const state = makeState();
     const lens = [makeToolMsg("bash", '{"cmd":"ls"}', LONG_OUTPUT)];
     seedLensMark(state, 0, 0, "output", 100, false);
     const r = releasePhase(state, lens, {
@@ -449,7 +434,7 @@ describe("releasedPercent gate", () => {
   });
 
   it("0 releases immediately when pending exists", () => {
-    const state = makeNewState();
+    const state = makeState();
     const lens = [makeToolMsg("bash", '{"cmd":"ls"}', LONG_OUTPUT)];
     seedLensMark(state, 0, 0, "output", 100, false);
     const r = releasePhase(state, lens, {
@@ -463,7 +448,7 @@ describe("releasedPercent gate", () => {
   });
 
   it("below threshold retains pending; marks accumulate across calls", () => {
-    const state = makeNewState();
+    const state = makeState();
     const lens = [makeToolMsg("bash", '{"cmd":"ls"}', LONG_OUTPUT)];
     seedLensMark(state, 0, 0, "output", 100, false);
     const r1 = releasePhase(state, lens, {
@@ -484,7 +469,7 @@ describe("releasedPercent gate", () => {
   });
 
   it("equality at the threshold opens the gate", () => {
-    const state = makeNewState();
+    const state = makeState();
     const lens = [makeToolMsg("bash", '{"cmd":"ls"}', LONG_OUTPUT)];
     seedLensMark(state, 0, 0, "output", 3000, false);
     seedLensMark(state, 0, 1, "output", 2000, false);
@@ -504,7 +489,7 @@ describe("releasedPercent gate", () => {
 
 describe("pendingViewChange bypass", () => {
   it("forces release below the threshold", () => {
-    const state = makeNewState();
+    const state = makeState();
     const lens = [makeToolMsg("bash", '{"cmd":"ls"}', LONG_OUTPUT)];
     seedLensMark(state, 0, 0, "output", 100, false);
     const r = releasePhase(state, lens, {
@@ -519,7 +504,7 @@ describe("pendingViewChange bypass", () => {
   });
 
   it("forces release with releasedPercent undefined", () => {
-    const state = makeNewState();
+    const state = makeState();
     const lens = [makeToolMsg("bash", '{"cmd":"ls"}', LONG_OUTPUT)];
     seedLensMark(state, 0, 0, "output", 100, false);
     const r = releasePhase(state, lens, {
@@ -532,7 +517,7 @@ describe("pendingViewChange bypass", () => {
   });
 
   it("forces release with promptTokens 0", () => {
-    const state = makeNewState();
+    const state = makeState();
     const lens = [makeToolMsg("bash", '{"cmd":"ls"}', LONG_OUTPUT)];
     seedLensMark(state, 0, 0, "output", 100, false);
     const r = releasePhase(state, lens, {
@@ -545,7 +530,7 @@ describe("pendingViewChange bypass", () => {
   });
 
   it("after the caller clears the flag, subsequent turns batch normally", () => {
-    const state = makeNewState();
+    const state = makeState();
     const lens = [makeToolMsg("bash", '{"cmd":"ls"}', LONG_OUTPUT)];
     seedLensMark(state, 0, 0, "output", 100, false);
 
@@ -577,7 +562,7 @@ describe("pendingViewChange bypass", () => {
 
 describe("defensive anchors", () => {
   it("vanished anchor message — flip still happens, apply skipped", () => {
-    const state = makeNewState();
+    const state = makeState();
     const lens = [makeToolMsg("bash", '{"cmd":"ls"}', LONG_OUTPUT)];
     // Anchor ordinal 3 does not exist in a one-message transcript.
     rawSeed(state, 3, 1, 100, false);
@@ -593,7 +578,7 @@ describe("defensive anchors", () => {
   });
 
   it("out-of-range region index — apply skipped, flip happens", () => {
-    const state = makeNewState();
+    const state = makeState();
     const lens = [makeToolMsg("bash", '{"cmd":"ls"}', LONG_OUTPUT)];
     // The message has exactly two regions; region 5 does not exist.
     rawSeed(state, 0, 5, 100, false);
@@ -607,7 +592,7 @@ describe("defensive anchors", () => {
   });
 
   it("mark without a region index — flips, apply skipped", () => {
-    const state = makeNewState();
+    const state = makeState();
     const lens = [makeToolMsg("bash", '{"cmd":"ls"}', LONG_OUTPUT)];
     state.marks.set("7", {
       anchorOrdinal: 0,
@@ -627,7 +612,7 @@ describe("defensive anchors", () => {
   });
 
   it("already-replaced region — re-apply is stable", () => {
-    const state = makeNewState();
+    const state = makeState();
     const lens = [
       makeToolMsg("bash", '{"cmd":"ls"}', PRUNED_TOOL_OUTPUT_REPLACEMENT),
     ];
@@ -645,7 +630,7 @@ describe("defensive anchors", () => {
   });
 
   it("repeated release is idempotent — no double counting, texts stable", () => {
-    const state = makeNewState();
+    const state = makeState();
     const lens = [
       makeAssistantMsg({
         toolCalls: [

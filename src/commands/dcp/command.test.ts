@@ -14,17 +14,17 @@ import assert from "node:assert/strict";
 import { afterEach, describe, it } from "node:test";
 import type { ToolHost } from "../../core/client/tool-host.js";
 import { type HostMessage, project } from "../../core/context/lens.js";
-import {
-  makeAssistantMsg,
-  makeMsg,
-  projectMessages,
-} from "../../core/context/lens-testkit.js";
 import { publishRoundView } from "../../core/context/round-view.js";
 import {
   _resetContextStateManagerForTesting,
   getContextStateManager,
   getRuntimeFlaggedState,
 } from "../../core/context/runtime.js";
+import {
+  makeAssistantMsg,
+  makeMsg,
+  projectMessages,
+} from "../../testkits/context.js";
 import { _resetForTesting } from "../../utils/logger.js";
 import { handleDcpCommand } from "./command.js";
 

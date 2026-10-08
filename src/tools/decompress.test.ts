@@ -23,7 +23,6 @@ import type { ToolHost } from "../core/client/tool-host.js";
 import { parseContextConfig } from "../core/config-parse.js";
 import type { ContextPruningConfig } from "../core/config-types.js";
 import type { HostMessage, Projection } from "../core/context/lens.js";
-import { projectMessages } from "../core/context/lens-testkit.js";
 import {
   _resetForTesting as _resetModelLimitsForTesting,
   setModelLimit,
@@ -39,7 +38,8 @@ import {
   type Block,
   RECALL_MAX_CHARS,
 } from "../core/context/state.js";
-import { buildPlugin } from "../opencode.js";
+import { makePlugin, POLY_ZOO } from "../testkits/config.js";
+import { projectMessages } from "../testkits/context.js";
 import { _resetForTesting } from "../utils/logger.js";
 import { createDecompressTool, unit as decompressUnit } from "./decompress.js";
 
@@ -56,43 +56,6 @@ afterEach(() => {
   _resetModelLimitsForTesting();
   _resetForTesting();
 });
-
-// ---------------------------------------------------------------------------
-// Poly profile fixture
-// ---------------------------------------------------------------------------
-
-/**
- * A zoo config with the poly profile, mirroring config.toml's
- * `[zoo.context.decompress]` values so the flow tests keep their
- * `max_fill_percent = 90` gate.
- */
-const POLY_ZOO: Record<string, unknown> = {
-  context: {
-    protected_messages: 20,
-    released_percent: 10,
-    dedup: { threshold_context: 100000, protected_tools: [] },
-    purge_errors: {
-      threshold_context: 100000,
-      protected_tools: [],
-    },
-    compress: {
-      threshold_tokens: 2000,
-      protected_tokens: 20000,
-      max_ranges: 8,
-    },
-    decompress: { max_fill_percent: 90 },
-  },
-  mode: {
-    poly: {
-      tools: ["compress", "decompress"],
-    },
-  },
-};
-
-/** Build a plugin wired to the poly profile (tools: compress + decompress). */
-function makePlugin(client: unknown = {}): Promise<Record<string, any>> {
-  return buildPlugin({ client }, POLY_ZOO) as Promise<Record<string, any>>;
-}
 
 // ---------------------------------------------------------------------------
 // Helpers

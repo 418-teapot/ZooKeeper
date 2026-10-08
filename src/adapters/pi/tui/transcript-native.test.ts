@@ -23,6 +23,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { initTheme } from "@earendil-works/pi-coding-agent";
 import { createRunLog } from "../../../core/subagent/run-log.js";
+import { colorTag, makeTheme, stubTui } from "../../../testkits/theme.js";
 import {
   createTranscriptOverlay,
   type TranscriptThemeLike,
@@ -33,17 +34,17 @@ import {
 initTheme();
 
 /** A theme stub for the markdown records (mirrors `transcript.test.ts`). */
-const THEME: TranscriptThemeLike = {
-  fg: (color: string, text: string) => `<${color}>${text}</${color}>`,
-  bold: (text: string) => `<b>${text}</b>`,
-  italic: (text: string) => `<i>${text}</i>`,
-  underline: (text: string) => `<u>${text}</u>`,
-  strikethrough: (text: string) => `<s>${text}</s>`,
-};
+const THEME: TranscriptThemeLike = makeTheme({
+  fg: colorTag,
+  bold: (text) => `<b>${text}</b>`,
+  italic: (text) => `<i>${text}</i>`,
+  underline: (text) => `<u>${text}</u>`,
+  strikethrough: (text) => `<s>${text}</s>`,
+});
 
 /** A stub TUI with a tall terminal so the whole body fits the viewport. */
 const TUI = {
-  requestRender: () => {},
+  ...stubTui(),
   terminal: { rows: 40 },
 };
 

@@ -41,14 +41,15 @@ import { buildPiHandlers } from "../../adapters/pi/wire.js";
 import { sessionAgentRegistry } from "../../core/session-agent.js";
 import { _resetForTesting as resetIdentityForTesting } from "../../core/subagent/identity.js";
 import { resetRegistry } from "../../core/subagent/registry.js";
-import { _getBufferForTesting, _resetForTesting } from "../../utils/logger.js";
-import { CONTINUATION_PROMPT } from "../todo-continuation/decide.js";
 import {
   type CaseFixture,
   createCaseFixture,
   requireZdebugBinary,
   zdebugExec,
-} from "./e2e-fixture.js";
+} from "../../testkits/auto-debug.js";
+import { restoreEnv, saveEnv } from "../../testkits/env.js";
+import { _getBufferForTesting, _resetForTesting } from "../../utils/logger.js";
+import { CONTINUATION_PROMPT } from "../todo-continuation/decide.js";
 
 afterEach(() => {
   _resetForTesting();
@@ -616,14 +617,13 @@ describe("buildPiHandlers — auto-debug end to end", () => {
 
   // The strategy's silence reason is only observable at debug level.
   beforeEach(() => {
-    origDebug = process.env.ZOO_DEBUG;
+    origDebug = saveEnv("ZOO_DEBUG");
     process.env.ZOO_DEBUG = "1";
     // Fail loudly, never skip, when the release binary is missing.
     requireZdebugBinary();
   });
   afterEach(() => {
-    if (origDebug === undefined) delete process.env.ZOO_DEBUG;
-    else process.env.ZOO_DEBUG = origDebug;
+    restoreEnv("ZOO_DEBUG", origDebug);
   });
 
   /** The auto-debug strategy's silence reason for the last settle. */
@@ -766,12 +766,11 @@ describe("buildPiHandlers — settled-turn facts", () => {
   // The silence reason is only observable at debug level; enable it for
   // these assertions and restore the process env afterwards.
   beforeEach(() => {
-    origDebug = process.env.ZOO_DEBUG;
+    origDebug = saveEnv("ZOO_DEBUG");
     process.env.ZOO_DEBUG = "1";
   });
   afterEach(() => {
-    if (origDebug === undefined) delete process.env.ZOO_DEBUG;
-    else process.env.ZOO_DEBUG = origDebug;
+    restoreEnv("ZOO_DEBUG", origDebug);
   });
 
   it("wakes a turn that issued an edit call", async () => {

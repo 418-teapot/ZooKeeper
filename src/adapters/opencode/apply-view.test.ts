@@ -19,6 +19,7 @@ import { describe, it } from "node:test";
 import { fold } from "../../core/context/fold.js";
 import { computeSpanHash } from "../../core/context/spanhash.js";
 import type { SessionState } from "../../core/context/state.js";
+import { toolPart } from "../../testkits/opencode-messages.js";
 import { materializeSummary } from "./apply-view.js";
 import { history, isInjectableRegion } from "./history.js";
 import { render } from "./render.js";
@@ -55,24 +56,6 @@ function text(text: string): Record<string, unknown> {
 /** Build a reasoning part. */
 function reasoning(text: string): Record<string, unknown> {
   return { type: "reasoning", text };
-}
-
-/** Build a tool part with string input/output. */
-function toolPart(
-  tool: string,
-  input: string,
-  output: string,
-  status?: string,
-): Record<string, unknown> {
-  return {
-    type: "tool",
-    tool,
-    state: {
-      input,
-      output,
-      ...(status ? { status } : {}),
-    },
-  };
 }
 
 // ---------------------------------------------------------------------------

@@ -15,16 +15,11 @@
  * per-suite temporary directory injected into the store factory.
  */
 import assert from "node:assert/strict";
-import {
-  existsSync,
-  mkdtempSync,
-  readFileSync,
-  rmSync,
-  writeFileSync,
-} from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { after, describe, it } from "node:test";
+import { makeMark, makeState } from "../../testkits/context.js";
+import { makeTmpDir } from "../../testkits/tmp.js";
 import type { BlockSpan } from "./lens.js";
 import type { HashedSpan } from "./spanhash.js";
 import {
@@ -33,7 +28,6 @@ import {
   clearConsumedBlockRange,
   deriveNextBlockId,
   hasActiveOverlap,
-  type Mark,
   markKey,
   markStale,
   type SessionState,
@@ -43,11 +37,6 @@ import { createStateStore, SCHEMA_VERSION, type StateStore } from "./store.js";
 // ---------------------------------------------------------------------------
 // Fixtures
 // ---------------------------------------------------------------------------
-
-/** A fresh empty session state. */
-function makeState(): SessionState {
-  return { blocks: new Map(), marks: new Map() };
-}
 
 /** A block fixture; fields default to a valid `[0, 3)` active block. */
 function makeBlock(overrides: Partial<Block> = {}): Block {
@@ -64,21 +53,9 @@ function makeBlock(overrides: Partial<Block> = {}): Block {
   };
 }
 
-/** A mark fixture; defaults to a pending mark over a tool-output region. */
-function makeMark(overrides: Partial<Mark> = {}): Mark {
-  return {
-    anchorOrdinal: 0,
-    content: "tool output",
-    contentTokens: 50,
-    effective: false,
-    markedAt: 2000,
-    ...overrides,
-  };
-}
-
 /** Create a scratch store over a fresh temporary directory. */
 function scratchStore(): { dir: string; store: StateStore } {
-  const dir = mkdtempSync(join(tmpdir(), "zoo-state-test-"));
+  const dir = makeTmpDir("zoo-state-test");
   after(() => rmSync(dir, { recursive: true, force: true }));
   return { dir, store: createStateStore(dir) };
 }

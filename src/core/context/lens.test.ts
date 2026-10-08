@@ -1,6 +1,6 @@
 /**
  * Tests for the host-agnostic context lens (`lens.ts`) and its in-memory
- * testkit (`lens-testkit.ts`).
+ * testkit (`../testkits/context.ts`).
  *
  * Covers: region read semantics (text replacement goes through the
  * testkit `setRegionText` helper), hidden/usage field shapes, ViewItem
@@ -10,13 +10,6 @@
  */
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import type { HostMessage, ViewItem } from "./lens.js";
-import {
-  computeUnits,
-  findFirstUserOrdinal,
-  findLastUserOrdinal,
-  regionsOfKind,
-} from "./lens.js";
 import {
   makeAssistantMsg,
   makeMsg,
@@ -24,7 +17,14 @@ import {
   makeToolResultMsg,
   projectMessages,
   setRegionText,
-} from "./lens-testkit.js";
+} from "../../testkits/context.js";
+import type { HostMessage, ViewItem } from "./lens.js";
+import {
+  computeUnits,
+  findFirstUserOrdinal,
+  findLastUserOrdinal,
+  regionsOfKind,
+} from "./lens.js";
 
 // ---------------------------------------------------------------------------
 // Helpers

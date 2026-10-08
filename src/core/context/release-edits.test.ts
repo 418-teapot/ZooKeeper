@@ -18,12 +18,13 @@
  */
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import type { HostMessage, RegionEdit } from "./lens.js";
 import {
   makeAssistantMsg,
+  makeState,
   makeToolMsg,
   setRegionText,
-} from "./lens-testkit.js";
+} from "../../testkits/context.js";
+import type { HostMessage, RegionEdit } from "./lens.js";
 import {
   PRUNED_TOOL_ERROR_INPUT_REPLACEMENT,
   PRUNED_TOOL_OUTPUT_REPLACEMENT,
@@ -41,11 +42,6 @@ import { markKey, type SessionState } from "./state.js";
 
 /** Output long enough to reclaim tokens against the output placeholder. */
 const LONG_OUTPUT = "x".repeat(500);
-
-/** A fresh empty lens session state. */
-function makeNewState(): SessionState {
-  return { blocks: new Map(), marks: new Map() };
-}
 
 /**
  * Seed a lens mark for the given region.
@@ -116,7 +112,7 @@ function runRelease(
   options: ReleaseOptions,
 ): string[] {
   const lens = messages();
-  const state = makeNewState();
+  const state = makeState();
   seed(state);
   const edits = computeEdits(state, lens, options);
   applyEdits(lens, edits);
@@ -130,7 +126,7 @@ function runRelease(
 
 describe("computeEdits selection", () => {
   it("effective output marks yield the output placeholder at the anchor region", () => {
-    const state = makeNewState();
+    const state = makeState();
     const lens = [makeToolMsg("bash", '{"cmd":"ls"}', LONG_OUTPUT)];
     seedMark(state, 0, 1, true, 100);
     const edits = computeEdits(state, lens, {
@@ -148,7 +144,7 @@ describe("computeEdits selection", () => {
   });
 
   it("effective tool-input marks yield the error-input placeholder", () => {
-    const state = makeNewState();
+    const state = makeState();
     const lens = [makeToolMsg("bash", '"ls"', "boom", { status: "error" })];
     seedMark(state, 0, 0, true, 100);
     const edits = computeEdits(state, lens, {
@@ -166,7 +162,7 @@ describe("computeEdits selection", () => {
   });
 
   it("pending marks below the threshold — no release edits", () => {
-    const state = makeNewState();
+    const state = makeState();
     const lens = [makeToolMsg("bash", '{"cmd":"ls"}', LONG_OUTPUT)];
     seedMark(state, 0, 1, false, 100);
     const edits = computeEdits(state, lens, {
@@ -178,7 +174,7 @@ describe("computeEdits selection", () => {
   });
 
   it("releasedPercent 0 — every pending mark appears as an edit", () => {
-    const state = makeNewState();
+    const state = makeState();
     const lens = [
       makeAssistantMsg({
         toolCalls: [
@@ -209,7 +205,7 @@ describe("computeEdits selection", () => {
   });
 
   it("pendingViewChange forces pending edits regardless of the threshold", () => {
-    const state = makeNewState();
+    const state = makeState();
     const lens = [makeToolMsg("bash", '{"cmd":"ls"}', LONG_OUTPUT)];
     seedMark(state, 0, 1, false, 100);
     const edits = computeEdits(state, lens, {
@@ -227,7 +223,7 @@ describe("computeEdits selection", () => {
   });
 
   it("releasedPercent undefined without a bypass — effective marks only", () => {
-    const state = makeNewState();
+    const state = makeState();
     const lens = [
       makeToolMsg("bash", '{"cmd":"ls"}', LONG_OUTPUT),
       makeToolMsg("bash", '{"cmd":"pwd"}', LONG_OUTPUT),
@@ -249,7 +245,7 @@ describe("computeEdits selection", () => {
   });
 
   it("vanished anchor message — no edit", () => {
-    const state = makeNewState();
+    const state = makeState();
     const lens = [makeToolMsg("bash", '{"cmd":"ls"}', LONG_OUTPUT)];
     seedMark(state, 3, 1, true, 100);
     const edits = computeEdits(state, lens, {
@@ -261,7 +257,7 @@ describe("computeEdits selection", () => {
   });
 
   it("out-of-range region index — no edit", () => {
-    const state = makeNewState();
+    const state = makeState();
     const lens = [makeToolMsg("bash", '{"cmd":"ls"}', LONG_OUTPUT)];
     seedMark(state, 0, 5, true, 100);
     const edits = computeEdits(state, lens, {
@@ -273,7 +269,7 @@ describe("computeEdits selection", () => {
   });
 
   it("mark without a region index — no edit", () => {
-    const state = makeNewState();
+    const state = makeState();
     const lens = [makeToolMsg("bash", '{"cmd":"ls"}', LONG_OUTPUT)];
     seedMark(state, 0, undefined, true, 100);
     const edits = computeEdits(state, lens, {
@@ -285,7 +281,7 @@ describe("computeEdits selection", () => {
   });
 
   it("empty or nullish transcript — no edits", () => {
-    const state = makeNewState();
+    const state = makeState();
     seedMark(state, 0, 1, true, 100);
     const options: ReleaseOptions = {
       promptTokens: 100_000,
@@ -298,7 +294,7 @@ describe("computeEdits selection", () => {
   });
 
   it("is pure — no mark flips, no text writes", () => {
-    const state = makeNewState();
+    const state = makeState();
     const lens = [makeToolMsg("bash", '{"cmd":"ls"}', LONG_OUTPUT)];
     seedMark(state, 0, 1, false, 100);
     const before = regionTexts(lens);

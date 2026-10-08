@@ -41,6 +41,7 @@ import {
   type MessagePart,
   type RunLog,
 } from "../../../core/subagent/run-log.js";
+import { makeTheme, stubTui } from "../../../testkits/theme.js";
 import { factsFromContextMessages } from "../hydrate.js";
 import {
   computeViewportRows,
@@ -80,18 +81,11 @@ function styles(line: string): string {
 }
 
 /** A minimal theme stub matching `MarkdownThemeSource`'s method shape. */
-const THEME = {
-  fg: (style: string, text: string) => `<${style}>${text}</${style}>`,
-  bg: (style: string, text: string) => `[${style}]${text}[/${style}]`,
-  bold: (text: string) => text,
-  italic: (text: string) => text,
-  underline: (text: string) => text,
-  strikethrough: (text: string) => text,
-};
+const THEME = makeTheme();
 
 /** A stub TUI with a tall terminal so the whole body fits the viewport. */
 const TUI = {
-  requestRender: () => {},
+  ...stubTui(),
   terminal: { rows: 40 },
 };
 

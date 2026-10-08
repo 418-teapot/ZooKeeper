@@ -10,18 +10,19 @@
  * selected by the hook unit at composition time.
  */
 import assert from "node:assert/strict";
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { afterEach, beforeEach, describe, it } from "node:test";
-import {
-  type TinyClient,
-  type TodoSource,
-  todoSourceFromClient,
-} from "../../core/client/todo.js";
+import type { TodoSource } from "../../core/client/todo.js";
 import type { Deps } from "../../core/slots.js";
-import type { TodoStateStore } from "../../core/todo/store.js";
 import type { TodoPhase } from "../../core/todo/types.js";
+import { restoreEnv, saveEnv } from "../../testkits/env.js";
+import {
+  fakeStore,
+  type HostTodo,
+  mockClient,
+  sourceOf,
+} from "../../testkits/hooks.js";
+import { cleanupPlanDir, writePlanFile } from "../../testkits/plans.js";
+import { makeTmpDir } from "../../testkits/tmp.js";
 import { _getBufferForTesting, _resetForTesting } from "../../utils/logger.js";
 import {
   DIRECT_WORK_NUDGE,
@@ -33,58 +34,6 @@ import {
 
 // The todo nudge text produced when the list still holds active work.
 const TODO_MARKER = "TODO UPDATE REQUIRED";
-
-// ---------------------------------------------------------------------------
-// Todo source helpers
-// ---------------------------------------------------------------------------
-
-/** Host-shaped todo item as returned by `client.session.todo`. */
-interface HostTodo {
-  content: string;
-  status: string;
-  priority: string;
-  id: string;
-}
-
-/**
- * Build a mock client whose `session.todo` resolves to the given items.
- *
- * @param items - Todo items to return.
- * @returns A mock client object.
- */
-function mockClient(items: HostTodo[]): TinyClient {
-  return {
-    session: {
-      todo: async () => ({ data: items }),
-    },
-  };
-}
-
-/**
- * Build a todo source serving the given host-shaped items through the
- * client adapter.
- *
- * @param items - Todo items to return.
- * @returns A `TodoSource` over a mock client.
- */
-function sourceOf(items: HostTodo[]): TodoSource {
-  return todoSourceFromClient(mockClient(items));
-}
-
-/**
- * Build a store-shaped fake serving the given phases on every read.
- *
- * @param phases - Phases the store hands out.
- * @returns A `TodoStateStore`-shaped object.
- */
-function fakeStore(phases: TodoPhase[]): TodoStateStore {
-  return {
-    get: async () => phases,
-    set: () => {},
-    invalidate: () => {},
-    serialize: <T>(fn: () => Promise<T>) => fn(),
-  };
-}
 
 /** A todo list with work in flight (the progress tier). */
 const ACTIVE_PHASES: TodoPhase[] = [
@@ -352,16 +301,12 @@ describe("nudgeDirectWorkForAgent (dolphin-gated wrapper)", () => {
 
   beforeEach(() => {
     // Capture debug-level entries for the nudge_skipped assertions.
-    origZooDebug = process.env.ZOO_DEBUG;
+    origZooDebug = saveEnv("ZOO_DEBUG");
     process.env.ZOO_DEBUG = "1";
   });
 
   afterEach(() => {
-    if (origZooDebug !== undefined) {
-      process.env.ZOO_DEBUG = origZooDebug;
-    } else {
-      delete process.env.ZOO_DEBUG;
-    }
+    restoreEnv("ZOO_DEBUG", origZooDebug);
   });
 
   // -----------------------------------------------------------------------
@@ -740,44 +685,7 @@ describe("unit.create wiring — gating through deps.resolveAgent", () => {
 let _planNudgeCounter = 0;
 
 function tmpDir(): string {
-  const dir = join(
-    tmpdir(),
-    `zoo-direct-nudge-test-${Date.now()}-${_planNudgeCounter++}`,
-  );
-  mkdirSync(dir, { recursive: true });
-  return dir;
-}
-
-/**
- * Write a plan file under a baseDir's .zoo/plans/ (flat layout).
- */
-function writePlanFile(
-  baseDir: string,
-  filename: string,
-  frontmatter: Record<string, string>,
-  body: string,
-): void {
-  const fmLines = Object.entries(frontmatter)
-    .map(([k, v]) => `${k}: ${v}`)
-    .join("\n");
-  const content = `---\n${fmLines}\n---\n\n${body}`;
-  const dir = join(baseDir, ".zoo", "plans");
-  mkdirSync(dir, { recursive: true });
-  writeFileSync(join(dir, filename), content, "utf-8");
-}
-
-/**
- * Remove a baseDir's .zoo/plans/ directory recursively.
- */
-function cleanupPlanDir(baseDir: string): void {
-  try {
-    rmSync(join(baseDir, ".zoo", "plans"), {
-      recursive: true,
-      force: true,
-    });
-  } catch {
-    // ignore
-  }
+  return makeTmpDir("zoo-direct-nudge-test");
 }
 
 describe("plan nudge scenarios", () => {

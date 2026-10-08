@@ -11,13 +11,14 @@
  */
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
+import { phase } from "../../testkits/todo.js";
 import type { DisplayHue } from "../display.js";
 import {
   FOLD_COLLAPSED,
   FOLD_EXPANDED,
   STATUS_PRESENTATION,
 } from "../display.js";
-import type { TodoPhase, TodoStatus } from "./types.js";
+import type { TodoStatus } from "./types.js";
 import type { TodoViewLine } from "./view.js";
 import {
   collapsedSummaryLine,
@@ -38,14 +39,6 @@ const HUES: readonly DisplayHue[] = [
   "muted",
   "accent",
 ];
-
-/** Build a phase object from [content, status] pairs. */
-function phase(name: string, ...tasks: Array<[string, TodoStatus]>): TodoPhase {
-  return {
-    name,
-    tasks: tasks.map(([content, status]) => ({ content, status })),
-  };
-}
 
 /** The header row of a projected viewport, by phase index. */
 function headerOf(

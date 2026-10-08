@@ -7,15 +7,9 @@
  * calls, and the todo source selected by the unit at composition time.
  */
 import assert from "node:assert/strict";
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { rmSync } from "node:fs";
 import { describe, it } from "node:test";
-import {
-  type TinyClient,
-  type TodoSource,
-  todoSourceFromClient,
-} from "../../core/client/todo.js";
+import type { TodoSource } from "../../core/client/todo.js";
 import {
   TODO_DONE_NUDGE,
   TODO_PROGRESS_NUDGE,
@@ -23,8 +17,9 @@ import {
   VERIFY_REMINDER,
 } from "../../core/prompts.js";
 import type { Deps } from "../../core/slots.js";
-import type { TodoStateStore } from "../../core/todo/store.js";
-import type { TodoPhase } from "../../core/todo/types.js";
+import { fakeStore, mockClient, sourceOf } from "../../testkits/hooks.js";
+import { cleanupPlanDir, writePlanFile } from "../../testkits/plans.js";
+import { makeTmpDir } from "../../testkits/tmp.js";
 import { nudgePostSubagent, unit } from "./index.js";
 
 // The todo nudge text produced for the "progress" tier.
@@ -33,39 +28,6 @@ const PROGRESS_MARKER = "TODO UPDATE REQUIRED";
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-/** Host-shaped todo item as returned by `client.session.todo`. */
-interface HostTodo {
-  content: string;
-  status: string;
-  priority: string;
-  id: string;
-}
-
-/**
- * Build a mock client whose `session.todo` resolves to the given items.
- *
- * @param items - Todo items to return.
- * @returns A mock client object.
- */
-function mockClient(items: HostTodo[]): TinyClient {
-  return {
-    session: {
-      todo: async () => ({ data: items }),
-    },
-  };
-}
-
-/**
- * Build a todo source that serves the given host-shaped items through
- * the client adapter.
- *
- * @param items - Todo items to return.
- * @returns A `TodoSource` over a mock client.
- */
-function sourceOf(items: HostTodo[]): TodoSource {
-  return todoSourceFromClient(mockClient(items));
-}
 
 /**
  * Build a todo source that always rejects.
@@ -629,21 +591,6 @@ describe("integration: tool.execute.after → nudgePostSubagent", () => {
 // Composition: unit.create(deps) selects the single todo source
 // ---------------------------------------------------------------------------
 
-/**
- * Build a store-shaped fake that serves the given phases.
- *
- * @param phases - Phases the store hands out on every read.
- * @returns A `TodoStateStore`-shaped object.
- */
-function fakeStore(phases: TodoPhase[]): TodoStateStore {
-  return {
-    get: async () => phases,
-    set: () => {},
-    invalidate: () => {},
-    serialize: <T>(fn: () => Promise<T>) => fn(),
-  };
-}
-
 /** Assemble a partial deps object for unit-level tests. */
 function makeDeps(partial: Record<string, unknown>): Deps {
   return partial as unknown as Deps;
@@ -760,44 +707,7 @@ describe("unit.create(deps) todo source selection", () => {
 let _planNudgeCounter = 0;
 
 function tmpDir(): string {
-  const dir = join(
-    tmpdir(),
-    `zoo-post-nudge-test-${Date.now()}-${_planNudgeCounter++}`,
-  );
-  mkdirSync(dir, { recursive: true });
-  return dir;
-}
-
-/**
- * Write a plan file under a baseDir's .zoo/plans/ (flat layout).
- */
-function writePlanFile(
-  baseDir: string,
-  filename: string,
-  frontmatter: Record<string, string>,
-  body: string,
-): void {
-  const fmLines = Object.entries(frontmatter)
-    .map(([k, v]) => `${k}: ${v}`)
-    .join("\n");
-  const content = `---\n${fmLines}\n---\n\n${body}`;
-  const dir = join(baseDir, ".zoo", "plans");
-  mkdirSync(dir, { recursive: true });
-  writeFileSync(join(dir, filename), content, "utf-8");
-}
-
-/**
- * Remove a baseDir's .zoo/plans/ directory recursively.
- */
-function cleanupPlanDir(baseDir: string): void {
-  try {
-    rmSync(join(baseDir, ".zoo", "plans"), {
-      recursive: true,
-      force: true,
-    });
-  } catch {
-    // ignore
-  }
+  return makeTmpDir("zoo-post-nudge-test");
 }
 
 describe("plan nudge scenarios", () => {

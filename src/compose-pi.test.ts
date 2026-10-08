@@ -32,7 +32,6 @@ import {
   PI_RESIDENT_EVENT_KEYS,
   PI_SETTLE_EVENT_KEYS,
   type PiAgentMessage,
-  type PiAssistantMessage,
   type PiContentPart,
   type PiToolResultEvent,
   registerPiHandlers,
@@ -54,6 +53,7 @@ import { createTodoStore } from "./core/todo/store.js";
 import { createReplyStripHandler } from "./hooks/reply-strip/index.js";
 import { enhanceSubagentDefinition } from "./hooks/subagent-prompt/index.js";
 import { REGISTRY } from "./registry.js";
+import { assistantMessage } from "./testkits/pi-messages.js";
 import { _getBufferForTesting, _resetForTesting } from "./utils/logger.js";
 
 afterEach(() => {
@@ -493,13 +493,6 @@ describe("extractText", () => {
 // ---------------------------------------------------------------------------
 // buildPiMessageEndHandler
 // ---------------------------------------------------------------------------
-
-function assistantMessage(content: PiAssistantMessage["content"]): {
-  role: "assistant";
-  content: PiAssistantMessage["content"];
-} {
-  return { role: "assistant", content };
-}
 
 function messageEndEvent(message: PiAgentMessage) {
   return { type: "message_end" as const, message };

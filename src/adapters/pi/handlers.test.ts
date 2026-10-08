@@ -24,8 +24,6 @@ import {
   setPrimary,
 } from "../../core/subagent/identity.js";
 import { startRun, updateRun } from "../../core/subagent/registry.js";
-import { _getBufferForTesting, _resetForTesting } from "../../utils/logger.js";
-import { buildPiContributions, buildPiHandlers } from "./wire.js";
 import {
   joinedText,
   MODES_RAW,
@@ -35,7 +33,9 @@ import {
   renderZooWidget,
   resetPiTestState,
   SESSION_CTX,
-} from "./wiring-harness.js";
+} from "../../testkits/pi-wiring.js";
+import { _getBufferForTesting, _resetForTesting } from "../../utils/logger.js";
+import { buildPiContributions, buildPiHandlers } from "./wire.js";
 
 afterEach(resetPiTestState);
 
