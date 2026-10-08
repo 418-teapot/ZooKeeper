@@ -29,6 +29,16 @@ fail()    { printf "${RED}✖ %s${NC}\n" "$1"; }
 
 FAILED=0
 
+# bun does not auto-sync node_modules like uv/cargo do; a stale install makes
+# tsc/bun test fail with misleading errors, so bail out early on sync failure.
+section "TypeScript dependencies"
+if bun install; then
+  ok "bun install"
+else
+  fail "bun install — node_modules could not be synced with package.json/bun.lock"
+  exit 1
+fi
+
 section "Python static tests"
 if uv run pytest "${PY_TEST_DIRS[@]}" -v; then
   ok "pytest all Python tests"

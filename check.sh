@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # ZooKeeper — Auto-fix → format → strict lint for Python, TypeScript, Rust.
 #
-# Phase 1: auto-fix and format (best-effort, failures logged but not fatal).
-# Phase 2: strict lint check (any failure fails the script).
+# Flow: sync TypeScript dependencies (bun install), auto-fix and format
+# (best-effort, failures logged but not fatal), then strict lint check
+# (any failure fails the script).
 set -euo pipefail
 
 PY_FILES="install.py installer/ tests/ tools/ skills/"
@@ -20,10 +21,17 @@ fail()    { printf "${RED}✖ %s${NC}\n" "$1"; }
 
 FAILED=0
 
-# ═══════════════════════════════════════════════════════════════════════════
-# Phase 1 — Auto-fix & format (best-effort)
-# ═══════════════════════════════════════════════════════════════════════════
-section "Phase 1 — Auto-fix & format"
+# bun does not auto-sync node_modules like uv/cargo do; a stale install makes
+# tsc/biome fail with misleading errors, so bail out early on sync failure.
+section "TypeScript dependencies"
+if bun install; then
+  ok "bun install"
+else
+  fail "bun install — node_modules could not be synced with package.json/bun.lock"
+  exit 1
+fi
+
+section "Auto-fix & format (best-effort)"
 
 echo "Python …"
 uv run ruff check --fix $PY_FILES && ok "ruff fix" || fail "ruff fix"
@@ -36,10 +44,8 @@ echo "Rust …"
 (cd "$ZOO_DIR" && cargo clippy --all-targets --all-features --fix --allow-dirty --allow-staged) && ok "cargo clippy fix" || fail "cargo clippy fix"
 (cd "$ZOO_DIR" && cargo fmt) && ok "cargo fmt" || fail "cargo fmt"
 
-# ═══════════════════════════════════════════════════════════════════════════
-# Phase 2 — Strict lint (fail on any problem)
-# ═══════════════════════════════════════════════════════════════════════════
-section "Phase 2 — Strict lint"
+# Strict lint: fail on any problem.
+section "Strict lint"
 
 echo "Python …"
 uv run ruff check $PY_FILES && ok "ruff check" || { fail "ruff check"; FAILED=1; }
@@ -58,7 +64,6 @@ else
 fi
 (cd "$ZOO_DIR" && cargo clippy --all-targets --all-features -- -D warnings) && ok "cargo clippy" || { fail "cargo clippy"; FAILED=1; }
 
-# ═══════════════════════════════════════════════════════════════════════════
 if [ "$FAILED" -eq 0 ]; then
   section "All passed"
 else
