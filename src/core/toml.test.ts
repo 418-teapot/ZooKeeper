@@ -39,6 +39,7 @@ describe("vendor smol-toml — config.toml zoo section", () => {
       "beaver-tdd",
       "code-review",
       "compress-usage",
+      "explain",
       "first-principles",
       "git-commit",
       "grill",
@@ -77,6 +78,7 @@ describe("vendor smol-toml — config.toml zoo section", () => {
     assert.deepEqual(mono.skills, [
       "auto-debug",
       "compress-usage",
+      "explain",
       "first-principles",
       "git-commit",
       "grill",

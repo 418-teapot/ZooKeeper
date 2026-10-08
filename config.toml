@@ -724,6 +724,7 @@ skills = [
   "beaver-tdd",
   "code-review",
   "compress-usage",
+  "explain",
   "first-principles",
   "git-commit",
   "grill",
@@ -768,6 +769,7 @@ agents = [
 skills = [
   "auto-debug",
   "compress-usage",
+  "explain",
   "first-principles",
   "git-commit",
   "grill",
