@@ -9,8 +9,9 @@
  *    messages, protected tools, zero-benefit inputs, and already-marked
  *    calls (idempotent re-runs), and honours the message-count
  *    protection window.
- * 2. **Lens-specific semantics** — self-gating defaults (minMessages=20,
- *    thresholdContext=0.5), the protected-window fail-safe, the folded/
+ * 2. **Lens-specific semantics** — explicit self-gating parameters
+ *    (minMessages, thresholdContext), the protected-window fail-safe, the
+ *    folded/
  *    pruned ordinal predicate, the call-level idempotency across both
  *    region keys, and the canon-invariance linkage (acceptance:
  *    replacing an error input with the placeholder never changes
@@ -332,12 +333,13 @@ describe("lens-specific gating semantics", () => {
     assert.equal(state.marks.size, 0);
   });
 
-  it("message-count gate: default minMessages 20 skips at 20, runs above", () => {
+  it("message-count gate: skips at the configured floor, runs above", () => {
     const atTwenty = Array.from({ length: 20 }, () =>
       makeToolMsg("bash", LONG_INPUT, LONG_OUTPUT, { status: "error" }),
     );
     const state20 = makeState();
     const r20 = runPurgeErrors(state20, projectMessages(atTwenty), {
+      minMessages: 20,
       contextLimit: MODEL_LIMIT,
       thresholdContext: 0,
       protectedStartOrdinal: atTwenty.length,
@@ -351,6 +353,7 @@ describe("lens-specific gating semantics", () => {
     ];
     const state21 = makeState();
     const r21 = runPurgeErrors(state21, projectMessages(above), {
+      minMessages: 20,
       contextLimit: MODEL_LIMIT,
       thresholdContext: 0,
       protectedStartOrdinal: above.length,
@@ -391,15 +394,17 @@ describe("lens-specific gating semantics", () => {
     assert.equal(rAbove.created, 1);
   });
 
-  it("context gate: default thresholdContext 0.5 opens at half the limit", () => {
+  it("context gate: configured thresholdContext opens at equality", () => {
     const lens = [lensMsg([errCall()])];
     const total = measureMessages(lens).total;
 
-    // total / (2 * total) == 0.5 — equality with the default opens.
+    // total / (2 * total) == 0.5 — equality with the configured
+    // threshold opens.
     const at = makeState();
     const rAt = runPurgeErrors(at, projectMessages(lens), {
       minMessages: 0,
       contextLimit: 2 * total,
+      thresholdContext: 0.5,
       protectedStartOrdinal: lens.length,
     });
     assert.equal(rAt.created, 1);
@@ -409,6 +414,7 @@ describe("lens-specific gating semantics", () => {
     const rBelow = runPurgeErrors(below, projectMessages(lens), {
       minMessages: 0,
       contextLimit: 3 * total,
+      thresholdContext: 0.5,
       protectedStartOrdinal: lens.length,
     });
     assert.equal(rBelow.created, 0);

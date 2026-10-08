@@ -47,7 +47,7 @@ export const G_MS_01: Scenario = {
   config: {
     protectedMessages: 0,
     releasedPercent: 0,
-    dedup: { thresholdContext: 100000 },
+    dedup: { minMessages: 20, thresholdContext: 100000 },
     purgeErrors: {},
   },
   rounds: [
@@ -123,7 +123,7 @@ export const G_MS_01: Scenario = {
       config: {
         protectedMessages: 2,
         releasedPercent: 0,
-        dedup: { thresholdContext: 100000 },
+        dedup: { minMessages: 20, thresholdContext: 100000 },
         purgeErrors: {},
       },
     },
@@ -140,7 +140,7 @@ export const G_MS_02: Scenario = {
     protectedMessages: 0,
     releasedPercent: 0,
     dedup: {},
-    purgeErrors: { thresholdContext: 100000 },
+    purgeErrors: { minMessages: 20, thresholdContext: 100000 },
   },
   rounds: [
     {
@@ -187,6 +187,7 @@ export const G_MS_02: Scenario = {
         releasedPercent: 0,
         dedup: {},
         purgeErrors: {
+          minMessages: 20,
           thresholdContext: 100000,
           protectedTools: ["bash"],
         },
@@ -204,7 +205,7 @@ export const G_MS_04: Scenario = {
   config: {
     protectedMessages: 0,
     releasedPercent: 5,
-    dedup: { thresholdContext: 0 },
+    dedup: { minMessages: 20, thresholdContext: 0 },
     purgeErrors: {},
   },
   rounds: [

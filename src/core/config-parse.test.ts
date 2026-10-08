@@ -132,6 +132,30 @@ describe("C11-01 fail-to-skip", () => {
       assert.equal(warns.length, 1);
       assert.equal(warns[0].key, "protected_tools");
     });
+
+    it("returns undefined dedup and logs dedup_config_invalid for non-positive-integer min_messages", () => {
+      for (const value of [0, -1, 1.5]) {
+        const result = parseContextConfig({
+          context: { dedup: { min_messages: value } },
+        });
+        assert.equal(result.dedup, undefined);
+
+        const warns = warnsOf("dedup_config_invalid");
+        assert.equal(warns[warns.length - 1]?.key, "min_messages");
+      }
+    });
+
+    it("parses min_messages and keeps it undefined when the key is absent", () => {
+      const present = parseContextConfig({
+        context: { dedup: { min_messages: 5 } },
+      });
+      assert.equal(present.dedup?.minMessages, 5);
+
+      const absent = parseContextConfig({
+        context: { dedup: { threshold_context: 50 } },
+      });
+      assert.equal(absent.dedup?.minMessages, undefined);
+    });
   });
 
   describe("purge_errors sub-section", () => {
@@ -155,6 +179,29 @@ describe("C11-01 fail-to-skip", () => {
       const warns = warnsOf("purge_errors_config_invalid");
       assert.equal(warns.length, 1);
       assert.equal(warns[0].key, "protected_tools");
+    });
+
+    it("returns undefined purgeErrors and logs purge_errors_config_invalid for non-positive-integer min_messages", () => {
+      const result = parseContextConfig({
+        context: { purge_errors: { min_messages: 0 } },
+      });
+      assert.equal(result.purgeErrors, undefined);
+
+      const warns = warnsOf("purge_errors_config_invalid");
+      assert.equal(warns.length, 1);
+      assert.equal(warns[0].key, "min_messages");
+    });
+
+    it("parses min_messages and keeps it undefined when the key is absent", () => {
+      const present = parseContextConfig({
+        context: { purge_errors: { min_messages: 5 } },
+      });
+      assert.equal(present.purgeErrors?.minMessages, 5);
+
+      const absent = parseContextConfig({
+        context: { purge_errors: { threshold_context: 50 } },
+      });
+      assert.equal(absent.purgeErrors?.minMessages, undefined);
     });
   });
 
@@ -292,7 +339,11 @@ describe("C11-01 fail-to-skip", () => {
       const result = parseContextConfig({
         context: {
           protected_messages: "abc",
-          dedup: { threshold_context: 100, protected_tools: ["webfetch"] },
+          dedup: {
+            min_messages: 20,
+            threshold_context: 100,
+            protected_tools: ["webfetch"],
+          },
           compress: {
             threshold_tokens: 1000,
             protected_tokens: 200,
@@ -307,6 +358,7 @@ describe("C11-01 fail-to-skip", () => {
       assert.equal(result.anchorTokens, 0);
       // Other sub-sections remain valid.
       assert.deepEqual(result.dedup, {
+        minMessages: 20,
         thresholdContext: 100,
         protectedTools: ["webfetch"],
       });
@@ -330,7 +382,11 @@ describe("C11-01 fail-to-skip", () => {
           protected_messages: 3,
           released_percent: 10,
           anchor_tokens: 0,
-          dedup: { threshold_context: 50, protected_tools: ["webfetch"] },
+          dedup: {
+            min_messages: 20,
+            threshold_context: 50,
+            protected_tools: ["webfetch"],
+          },
           compress: {
             threshold_tokens: 1000,
             protected_tokens: 200,
@@ -344,6 +400,7 @@ describe("C11-01 fail-to-skip", () => {
       assert.equal(result.releasedPercent, 10);
       assert.equal(result.anchorTokens, 0);
       assert.deepEqual(result.dedup, {
+        minMessages: 20,
         thresholdContext: 50,
         protectedTools: ["webfetch"],
       });
@@ -1070,6 +1127,7 @@ describe("C11-07 unknown keys ignored", () => {
     const result = parseContextConfig({
       context: {
         dedup: {
+          min_messages: 20,
           threshold_context: 50,
           protected_tools: ["webfetch"],
           threshold_tokens_old: 100, // legacy
@@ -1078,6 +1136,7 @@ describe("C11-07 unknown keys ignored", () => {
       },
     });
     assert.deepEqual(result.dedup, {
+      minMessages: 20,
       thresholdContext: 50,
       protectedTools: ["webfetch"],
     });
@@ -1088,6 +1147,7 @@ describe("C11-07 unknown keys ignored", () => {
     const result = parseContextConfig({
       context: {
         purge_errors: {
+          min_messages: 20,
           threshold_context: 50,
           protected_tools: ["webfetch"],
           legacy_protected_messages: 5,
@@ -1095,6 +1155,7 @@ describe("C11-07 unknown keys ignored", () => {
       },
     });
     assert.deepEqual(result.purgeErrors, {
+      minMessages: 20,
       thresholdContext: 50,
       protectedTools: ["webfetch"],
     });
@@ -1191,8 +1252,13 @@ describe("parseContextConfig — fully valid config", () => {
         protected_messages: 3,
         released_percent: 10,
         anchor_tokens: 0,
-        dedup: { threshold_context: 50, protected_tools: ["webfetch"] },
+        dedup: {
+          min_messages: 20,
+          threshold_context: 50,
+          protected_tools: ["webfetch"],
+        },
         purge_errors: {
+          min_messages: 20,
           threshold_context: 60,
           protected_tools: ["tool1"],
         },
@@ -1215,10 +1281,12 @@ describe("parseContextConfig — fully valid config", () => {
     assert.equal(result.releasedPercent, 10);
     assert.equal(result.anchorTokens, 0);
     assert.deepEqual(result.dedup, {
+      minMessages: 20,
       thresholdContext: 50,
       protectedTools: ["webfetch"],
     });
     assert.deepEqual(result.purgeErrors, {
+      minMessages: 20,
       thresholdContext: 60,
       protectedTools: ["tool1"],
     });

@@ -15,8 +15,11 @@
  * Gating is self-contained: the producer skips entirely below the
  * message-count floor and below the context-fraction threshold, and it
  * honours a caller-computed protected window (`protectedStartOrdinal`)
- * plus a predicate for messages already folded or pruned.  All other
- * semantics — signature normalisation, skip rules, defaults, and the
+ * plus a predicate for messages already folded or pruned.  All gate
+ * parameters (`minMessages`, `thresholdContext`) are required options
+ * supplied by the caller from config.toml — the producer carries no
+ * defaults and refuses to run when either is absent.  All other
+ * semantics — signature normalisation, skip rules, and the
  * first-write-wins mark clamp — are defined below.
  *
  * @module
@@ -30,15 +33,6 @@ import { markKey, RECALL_MAX_CHARS, type SessionState } from "../state.js";
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
-
-/** Minimum non-hidden message count before dedup runs (default). */
-const DEFAULT_MIN_MESSAGES = 20;
-
-/** Fraction of the model context limit that opens the gate (default). */
-const DEFAULT_THRESHOLD_CONTEXT = 0.4;
-
-/** Tool names excluded from dedup by default, matched case-sensitively. */
-const DEFAULT_PROTECTED_TOOLS = ["batch"];
 
 /**
  * Fields stripped from input objects at any depth when computing the
@@ -55,15 +49,17 @@ const VOLATILE_FIELDS = new Set(["timestamp", "ts", "date"]);
  */
 export interface DedupProducerOptions {
   /**
-   * Minimum non-hidden message count before the producer runs.
-   * Defaults to 20; the producer skips when the count is not greater.
+   * Minimum non-hidden message count before the producer runs.  The
+   * producer skips when the count is not greater.  Required — the
+   * caller supplies it from config.toml; the producer has no default.
    */
-  minMessages?: number;
+  minMessages: number;
   /**
    * Fraction of `contextLimit` that must be reached for marks to be
-   * produced.  Defaults to 0.4; equality opens the gate.
+   * produced; equality opens the gate.  Required — the caller
+   * supplies it from config.toml; the producer has no default.
    */
-  thresholdContext?: number;
+  thresholdContext: number;
   /**
    * Model context window in tokens.  Undefined closes the gate
    * (fail-closed — the fraction cannot be evaluated).
@@ -79,7 +75,7 @@ export interface DedupProducerOptions {
   protectedStartOrdinal?: number;
   /**
    * Tool names excluded from dedup, matched case-sensitively.
-   * Defaults to `["batch"]`.
+   * Undefined → empty list (neutral — no tool names are protected).
    */
   protectedTools?: string[];
   /**
@@ -236,19 +232,21 @@ function addPendingMark(
  *   already-claimed positions and written with new pending marks.
  * @param snapshot - The projection snapshot: the region view plus the
  *   invocation table this producer scans.
- * @param options - Dedup options; all fields optional.
+ * @param options - Dedup options; the gate parameters (`minMessages`,
+ *   `thresholdContext`) are required.
  * @returns The number of new marks and their total reclaim tokens.
  */
 export function runDedup(
   state: SessionState,
   snapshot: Projection,
-  options: DedupProducerOptions = {},
+  options: DedupProducerOptions,
 ): DedupRunResult {
   const messages = snapshot.messages;
-  const minMessages = options.minMessages ?? DEFAULT_MIN_MESSAGES;
-  const thresholdContext =
-    options.thresholdContext ?? DEFAULT_THRESHOLD_CONTEXT;
-  const protectedTools = options.protectedTools ?? DEFAULT_PROTECTED_TOOLS;
+  const minMessages = options.minMessages;
+  const thresholdContext = options.thresholdContext;
+  // Undefined → no protected tools (neutral semantics, not a default
+  // list).
+  const protectedTools = options.protectedTools ?? [];
   const prunedOrdinals = options.prunedOrdinals;
 
   // Fail-safe: without a protection window the producer is skipped with

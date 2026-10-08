@@ -667,10 +667,14 @@ released_percent = 10
 anchor_tokens = 2000
 
 [zoo.context.dedup]
+# 触发下限（消息条数）：非 ignored 消息条数不超过该值时跳过去重
+min_messages = 20
 threshold_context = 100000
 protected_tools = []
 
 [zoo.context.purge_errors]
+# 触发下限（消息条数）：非 ignored 消息条数不超过该值时跳过错误清理
+min_messages = 20
 threshold_context = 100000
 protected_tools = []
 

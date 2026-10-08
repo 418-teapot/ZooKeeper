@@ -44,16 +44,6 @@ import { PRUNED_TOOL_ERROR_INPUT_REPLACEMENT } from "../message-parts.js";
 import { markKey, RECALL_MAX_CHARS, type SessionState } from "../state.js";
 
 // ---------------------------------------------------------------------------
-// Constants
-// ---------------------------------------------------------------------------
-
-/** Minimum non-hidden message count before purge-errors runs (default). */
-const DEFAULT_MIN_MESSAGES = 20;
-
-/** Fraction of the model context limit that opens the gate (default). */
-const DEFAULT_THRESHOLD_CONTEXT = 0.5;
-
-// ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
 
@@ -62,15 +52,17 @@ const DEFAULT_THRESHOLD_CONTEXT = 0.5;
  */
 export interface PurgeErrorsProducerOptions {
   /**
-   * Minimum non-hidden message count before the producer runs.
-   * Defaults to 20; the producer skips when the count is not greater.
+   * Minimum non-hidden message count before the producer runs.  The
+   * producer skips when the count is not greater.  Required — the
+   * caller supplies it from config.toml; the producer has no default.
    */
-  minMessages?: number;
+  minMessages: number;
   /**
    * Fraction of `contextLimit` that must be reached for marks to be
-   * produced.  Defaults to 0.5; equality opens the gate.
+   * produced; equality opens the gate.  Required — the caller
+   * supplies it from config.toml; the producer has no default.
    */
-  thresholdContext?: number;
+  thresholdContext: number;
   /**
    * Model context window in tokens.  Undefined closes the gate
    * (fail-closed — the fraction cannot be evaluated).
@@ -86,8 +78,7 @@ export interface PurgeErrorsProducerOptions {
   protectedStartOrdinal?: number;
   /**
    * Tool names excluded from the strategy, matched case-sensitively.
-   * Undefined → no exclusions (unlike dedup, which has its own default
-   * list).
+   * Undefined → empty list (neutral — no tool names are excluded).
    */
   protectedTools?: string[];
   /**
@@ -167,7 +158,8 @@ function addPendingMark(
  *
  * Per error call the skip chain is:
  * 1. Protected window / already-folded-or-pruned ordinal → skip.
- * 2. Tool name in `protectedTools` → skip (no default list).
+ * 2. Tool name in `protectedTools` → skip (undefined means no
+ *    exclusions — neutral, never a default list).
  * 3. A mark already held by either of the call's regions — its
  *    tool-input key or its linked tool-output key — → skip the whole
  *    call (the output-region key covers marks written by the dedup
@@ -182,18 +174,18 @@ function addPendingMark(
  *   already-claimed calls and written with new pending marks.
  * @param snapshot - The projection snapshot: the region view plus the
  *   invocation table this producer scans.
- * @param options - Purge-errors options; all fields optional.
+ * @param options - Purge-errors options; the gate parameters
+ *   (`minMessages`, `thresholdContext`) are required.
  * @returns The number of new marks and their total reclaim tokens.
  */
 export function runPurgeErrors(
   state: SessionState,
   snapshot: Projection,
-  options: PurgeErrorsProducerOptions = {},
+  options: PurgeErrorsProducerOptions,
 ): PurgeErrorsRunResult {
   const messages = snapshot.messages;
-  const minMessages = options.minMessages ?? DEFAULT_MIN_MESSAGES;
-  const thresholdContext =
-    options.thresholdContext ?? DEFAULT_THRESHOLD_CONTEXT;
+  const minMessages = options.minMessages;
+  const thresholdContext = options.thresholdContext;
   const protectedTools = options.protectedTools;
   const prunedOrdinals = options.prunedOrdinals;
 

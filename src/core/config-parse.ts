@@ -162,6 +162,10 @@ const isOptionalNonNegativeNumber = (v: unknown): boolean =>
 const isOptionalPositiveNumber = (v: unknown): boolean =>
   v === undefined || (typeof v === "number" && Number.isFinite(v) && v > 0);
 
+/** Accept `undefined` or a positive finite integer. */
+const isOptionalPositiveInteger = (v: unknown): boolean =>
+  v === undefined || (typeof v === "number" && Number.isInteger(v) && v > 0);
+
 /** Accept `undefined` or an array of strings. */
 const isOptionalStringArray = (v: unknown): boolean =>
   v === undefined ||
@@ -739,6 +743,7 @@ export function parseContextConfig(zooConfig: any): ContextPruningConfig {
   const d = c.dedup as Record<string, unknown> | undefined;
   if (d != null) {
     const dedupChecks: KeyCheck[] = [
+      ["min_messages", d.min_messages, isOptionalPositiveInteger],
       ["threshold_context", d.threshold_context, isOptionalPositiveNumber],
       ["protected_tools", d.protected_tools, isOptionalStringArray],
     ];
@@ -747,6 +752,7 @@ export function parseContextConfig(zooConfig: any): ContextPruningConfig {
       warnSectionInvalid("dedup", badDedup);
     } else {
       dedup = {
+        minMessages: d.min_messages as number | undefined,
         thresholdContext: d.threshold_context as number | undefined,
         protectedTools: d.protected_tools as string[] | undefined,
       };
@@ -759,6 +765,7 @@ export function parseContextConfig(zooConfig: any): ContextPruningConfig {
   const pe = c.purge_errors as Record<string, unknown> | undefined;
   if (pe != null) {
     const peChecks: KeyCheck[] = [
+      ["min_messages", pe.min_messages, isOptionalPositiveInteger],
       ["threshold_context", pe.threshold_context, isOptionalPositiveNumber],
       ["protected_tools", pe.protected_tools, isOptionalStringArray],
     ];
@@ -767,6 +774,7 @@ export function parseContextConfig(zooConfig: any): ContextPruningConfig {
       warnSectionInvalid("purge_errors", badPe);
     } else {
       purgeErrors = {
+        minMessages: pe.min_messages as number | undefined,
         thresholdContext: pe.threshold_context as number | undefined,
         protectedTools: pe.protected_tools as string[] | undefined,
       };

@@ -9,8 +9,8 @@
  *    order, null inputs, tool names), skip rules (protected tools,
  *    non-completed statuses, zero-benefit outputs), the message-count
  *    protection window, and re-run idempotency.
- * 2. **Lens-specific semantics** — self-gating defaults (minMessages=20,
- *    thresholdContext=0.4, protectedTools=["batch"]), the protected
+ * 2. **Lens-specific semantics** — explicit self-gating parameters
+ *    (minMessages, thresholdContext, protectedTools), the protected
  *    window fail-safe, folded-message skipping, parse-failure inputs,
  *    mark content truncation, and the first-write-wins clamp.
  */
@@ -318,12 +318,13 @@ describe("lens-specific gating semantics", () => {
     assert.equal(state.marks.size, 0);
   });
 
-  it("message-count gate: default minMessages 20 skips at 20, runs above", () => {
+  it("message-count gate: skips at the configured floor, runs above", () => {
     const atTwenty = Array.from({ length: 20 }, () =>
       makeToolMsg("bash", '{"cmd":"ls"}', LONG_OUTPUT),
     );
     const state20 = makeState();
     const r20 = runDedup(state20, projectMessages(atTwenty), {
+      minMessages: 20,
       contextLimit: MODEL_LIMIT,
       thresholdContext: 0,
       protectedStartOrdinal: atTwenty.length,
@@ -337,6 +338,7 @@ describe("lens-specific gating semantics", () => {
     ];
     const state21 = makeState();
     const r21 = runDedup(state21, projectMessages(above), {
+      minMessages: 20,
       contextLimit: MODEL_LIMIT,
       thresholdContext: 0,
       protectedStartOrdinal: above.length,
@@ -401,7 +403,7 @@ describe("lens-specific gating semantics", () => {
 // ===========================================================================
 
 describe("lens-specific skip and dedup semantics", () => {
-  it("default protectedTools protects 'batch'", () => {
+  it("undefined protectedTools protects nothing (neutral)", () => {
     const state = makeState();
     const lens = [
       makeToolMsg("batch", '{"x":1}', LONG_OUTPUT),
@@ -413,7 +415,7 @@ describe("lens-specific skip and dedup semantics", () => {
       thresholdContext: 0,
       protectedStartOrdinal: lens.length,
     });
-    assert.equal(result.created, 0);
+    assert.equal(result.created, 1);
   });
 
   it("protectedTools matching is case-sensitive ('Batch' is not protected)", () => {

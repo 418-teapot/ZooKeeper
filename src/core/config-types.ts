@@ -68,11 +68,17 @@ export interface AutoDebugConfig {
  * Per-subsystem gate config for a pruning strategy (dedup / purge-errors).
  *
  * Enablement is decided exclusively by the mode profile — a producer
- * registered via the `context-pruning` hook unit runs whenever its
- * prompt-side threshold is configured.  Absent sections mean the
- * producer is silently skipped.
+ * registered via the `context-pruning` hook unit runs only when both
+ * gate keys (`min_messages` / `threshold_context`) are configured.
+ * Absent sections mean the producer is silently skipped.
  */
 export interface ProducerGateConfig {
+  /**
+   * Minimum non-hidden message count before this producer runs.  The
+   * producer skips when the count is not greater.  Undefined → skip
+   * producer (no default).
+   */
+  minMessages?: number;
   /**
    * Minimum prompt-side total tokens (input + cache.read + cache.write)
    * before this producer runs.  Undefined → skip producer.

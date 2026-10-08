@@ -17,8 +17,9 @@ export const POLY_ZOO: Record<string, unknown> = {
   context: {
     protected_messages: 20,
     released_percent: 10,
-    dedup: { threshold_context: 100000, protected_tools: [] },
+    dedup: { min_messages: 20, threshold_context: 100000, protected_tools: [] },
     purge_errors: {
+      min_messages: 20,
       threshold_context: 100000,
       protected_tools: [],
     },

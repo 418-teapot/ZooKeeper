@@ -116,6 +116,10 @@ const TEST_SESSION_IDS = [
   "sess-dedup-marked",
   "sess-dedup-gated",
   "sess-dedup-pending",
+  "sess-dedup-model-control",
+  "sess-dedup-no-model-limit",
+  "sess-purge-control",
+  "sess-purge-no-min-messages",
   "sess-pure-mock",
   "sess-round-view",
   "sess-stale-expiry",
@@ -191,6 +195,9 @@ function msg(
 
 /** Long output so tool-output replacement reclaims tokens. */
 const LONG_OUTPUT = "x".repeat(2000);
+
+/** Long failed-call input so purge-errors reclaims tokens. */
+const FAILED_INPUT = "very long command ".repeat(50);
 
 /** Model limit used to open the producer context gates in flow runs. */
 const MODEL_LIMIT = 1_000_000;
@@ -594,8 +601,8 @@ describe("robustness", () => {
     const messages = [msg("user", "u1", [textPart("hi")])];
     assert.doesNotThrow(() =>
       contextPruningTransformHandler(adapter, messages, {
-        dedup: { thresholdContext: 100000 },
-        purgeErrors: { thresholdContext: 100000 },
+        dedup: { minMessages: 20, thresholdContext: 100000 },
+        purgeErrors: { minMessages: 20, thresholdContext: 100000 },
         compress: { protectedTokens: 0, thresholdTokens: 0 },
       }),
     );
@@ -626,7 +633,7 @@ describe("robustness", () => {
     // The pipeline must never throw on degenerate part shapes.
     assert.doesNotThrow(() =>
       contextPruningTransformHandler(adapter, messages, {
-        dedup: { thresholdContext: 100000 },
+        dedup: { minMessages: 20, thresholdContext: 100000 },
         purgeErrors: {},
       }),
     );
@@ -1576,6 +1583,38 @@ describe("config gating combinations", () => {
     return messages;
   }
 
+  /**
+   * A 22-message transcript (over the 20-message floor) with one failed
+   * tool call at ordinal 20 whose long input reclaims tokens, plus a
+   * completed token report on the last assistant (100000 + 200 exact).
+   */
+  function purgeErrorsTranscript(sessionID: string): TestMessageEntry[] {
+    const messages: TestMessageEntry[] = [];
+    for (let i = 0; i < 22; i++) {
+      if (i === 20) {
+        messages.push(
+          msg("assistant", `a${i}`, [
+            toolPart(LONG_OUTPUT, FAILED_INPUT, "error"),
+          ]),
+        );
+      } else if (i === 21) {
+        messages.push(
+          msg("assistant", `a${i}`, [textPart("done")], undefined, {
+            input: 100000,
+            output: 200,
+          }),
+        );
+      } else {
+        messages.push(
+          i % 2 === 0
+            ? msg("user", `u${i}`, [textPart(`prompt ${i}`)], sessionID)
+            : msg("assistant", `a${i}`, [textPart(`reply ${i}`)]),
+        );
+      }
+    }
+    return messages;
+  }
+
   it("skips dedup entirely when thresholdContext is not configured", () => {
     const sessionID = "sess-dedup-gated";
     contextPruningTransformHandler(adapter, dedupTranscript(sessionID), {
@@ -1590,12 +1629,29 @@ describe("config gating combinations", () => {
     );
   });
 
+  it("skips dedup when minMessages is not configured", () => {
+    const sessionID = "sess-dedup-no-min-messages";
+    setModelLimit(sessionID, MODEL_LIMIT, "test-model");
+    contextPruningTransformHandler(adapter, dedupTranscript(sessionID), {
+      protectedMessages: 0,
+      compress: { protectedTokens: 0, thresholdTokens: 0 },
+      dedup: { thresholdContext: 100000 },
+      purgeErrors: {},
+    });
+    const state = getContextStateManager().get(sessionID);
+    assert.equal(state.marks.size, 0, "no marks without min_messages");
+    assert.ok(
+      !_getBufferForTesting().some((e) => e.event === "dedup_marked"),
+      "no dedup_marked log",
+    );
+  });
+
   it("skips dedup when the token-protection layer is unconfigured", () => {
     const sessionID = "sess-dedup-no-compress";
     setModelLimit(sessionID, MODEL_LIMIT, "test-model");
     contextPruningTransformHandler(adapter, dedupTranscript(sessionID), {
       protectedMessages: 0,
-      dedup: { thresholdContext: 100000 },
+      dedup: { minMessages: 20, thresholdContext: 100000 },
       purgeErrors: {},
     });
     const state = getContextStateManager().get(sessionID);
@@ -1614,7 +1670,7 @@ describe("config gating combinations", () => {
     const config = {
       protectedMessages: 0,
       compress: { protectedTokens: 0, thresholdTokens: 0 },
-      dedup: { thresholdContext: 100000 },
+      dedup: { minMessages: 20, thresholdContext: 100000 },
       purgeErrors: {},
     };
 
@@ -1646,7 +1702,7 @@ describe("config gating combinations", () => {
       protectedMessages: 0,
       releasedPercent: 0,
       compress: { protectedTokens: 0, thresholdTokens: 0 },
-      dedup: { thresholdContext: 100000 },
+      dedup: { minMessages: 20, thresholdContext: 100000 },
       purgeErrors: {},
     };
 
@@ -1658,6 +1714,75 @@ describe("config gating combinations", () => {
     contextPruningTransformHandler(adapter, dedupTranscript(sessionID), config);
     state = getContextStateManager().get(sessionID);
     assert.equal(state.marks.get(markKey(21, 1))?.effective, true, "released");
+  });
+
+  it("skips purge-errors when minMessages is not configured", () => {
+    // Positive control: both gate keys plus a captured model limit over
+    // the failed-call transcript do mark, so the skip below is meaningful.
+    const control = "sess-purge-control";
+    setModelLimit(control, MODEL_LIMIT, "test-model");
+    contextPruningTransformHandler(adapter, purgeErrorsTranscript(control), {
+      protectedMessages: 0,
+      compress: { protectedTokens: 0, thresholdTokens: 0 },
+      dedup: {},
+      purgeErrors: { minMessages: 20, thresholdContext: 100000 },
+    });
+    assert.equal(
+      getContextStateManager().get(control).marks.has(markKey(20, 0)),
+      true,
+      "control run marks the failed call's input region",
+    );
+
+    const sessionID = "sess-purge-no-min-messages";
+    setModelLimit(sessionID, MODEL_LIMIT, "test-model");
+    contextPruningTransformHandler(adapter, purgeErrorsTranscript(sessionID), {
+      protectedMessages: 0,
+      compress: { protectedTokens: 0, thresholdTokens: 0 },
+      dedup: {},
+      purgeErrors: { thresholdContext: 100000 },
+    });
+    const state = getContextStateManager().get(sessionID);
+    assert.equal(state.marks.size, 0, "no marks without min_messages");
+    assert.ok(
+      !_getBufferForTesting().some(
+        (e) => e.event === "purge-errors_marked" && e.sessionId === sessionID,
+      ),
+      "no purge-errors_marked log",
+    );
+  });
+
+  it("skips dedup when the model limit is unknown", () => {
+    // Positive control: the same transcript with a captured model limit
+    // does mark, so the fail-closed skip below is meaningful.
+    const control = "sess-dedup-model-control";
+    setModelLimit(control, MODEL_LIMIT, "test-model");
+    contextPruningTransformHandler(adapter, dedupTranscript(control), {
+      protectedMessages: 0,
+      compress: { protectedTokens: 0, thresholdTokens: 0 },
+      dedup: { minMessages: 20, thresholdContext: 100000 },
+      purgeErrors: {},
+    });
+    assert.equal(
+      getContextStateManager().get(control).marks.has(markKey(21, 1)),
+      true,
+      "control run marks the duplicate call",
+    );
+
+    const sessionID = "sess-dedup-no-model-limit";
+    contextPruningTransformHandler(adapter, dedupTranscript(sessionID), {
+      protectedMessages: 0,
+      compress: { protectedTokens: 0, thresholdTokens: 0 },
+      dedup: { minMessages: 20, thresholdContext: 100000 },
+      purgeErrors: {},
+    });
+    const state = getContextStateManager().get(sessionID);
+    assert.equal(state.marks.size, 0, "no marks without a model limit");
+    assert.ok(
+      !_getBufferForTesting().some(
+        (e) => e.event === "dedup_marked" && e.sessionId === sessionID,
+      ),
+      "no dedup_marked log",
+    );
   });
 });
 

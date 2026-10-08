@@ -18,9 +18,10 @@
  *    flips the released marks effective.  Runs FIRST so marks written
  *    last turn take effect this turn (the two-turn lifecycle).  The
  *    notify callback and the `marks_released` log fire on a flip.
- * 3. **Producers** — dedup / purge-errors run when their configured
- *    `thresholdContext` is defined.  Marks are pending for the next
- *    turn's release.
+ * 3. **Producers** — dedup / purge-errors run only when both their
+ *    configured `thresholdContext` and `minMessages` are defined; a
+ *    missing gate key skips the producer entirely.  Marks are pending
+ *    for the next turn's release.
  * 4. **Fold** — `fold` computes the folded view; blocks whose span no
  *    longer validates move to the stale status (record retained, with a
  *    diagnostic log of the interval and both hashes), and a view change
@@ -271,10 +272,12 @@ export function contextPruningTransformHandler(
   }
 
   // ── Phase 3: producers (dedup / purge-errors) ─────────────────────
-  // A producer whose prompt-side threshold is not configured is skipped;
-  // configured thresholds are converted to context-limit fractions.
-  // New marks are pending for the NEXT turn's release (two-turn
-  // lifecycle).
+  // A producer runs only when BOTH of its gate keys (threshold_context
+  // and min_messages) are configured; a missing key skips it.  A
+  // configured threshold is converted to a context-limit fraction, which
+  // needs a known model limit — when it cannot be evaluated the producer
+  // fails closed.  New marks are pending for the NEXT turn's release
+  // (two-turn lifecycle).
   const modelLimit = getModelLimit(sessionId);
   const contextLimit = modelLimit?.context;
   const protectedTokens = config.compress?.protectedTokens;
@@ -289,45 +292,64 @@ export function contextPruningTransformHandler(
   const covered = coveredOrdinalsOf(state, snapshot);
   const prunedOrdinals = (ordinal: number): boolean => covered.has(ordinal);
 
-  if (config.dedup?.thresholdContext !== undefined) {
-    const result = runDedup(state, snapshot, {
-      thresholdContext: fractionOf(config.dedup.thresholdContext, contextLimit),
+  const dedupGate = config.dedup;
+  if (
+    dedupGate?.thresholdContext !== undefined &&
+    dedupGate.minMessages !== undefined
+  ) {
+    const thresholdContext = fractionOf(
+      dedupGate.thresholdContext,
       contextLimit,
-      protectedStartOrdinal,
-      protectedTools: config.dedup.protectedTools,
-      prunedOrdinals,
-    });
-    if (result.created > 0) {
-      log("context-pruning", "dedup_marked", sessionId, undefined, "info", {
-        markedCount: result.created,
-        markedTokens: result.tokens,
+    );
+    if (thresholdContext !== undefined) {
+      const result = runDedup(state, snapshot, {
+        minMessages: dedupGate.minMessages,
+        thresholdContext,
+        contextLimit,
+        protectedStartOrdinal,
+        protectedTools: dedupGate.protectedTools,
+        prunedOrdinals,
       });
+      if (result.created > 0) {
+        log("context-pruning", "dedup_marked", sessionId, undefined, "info", {
+          markedCount: result.created,
+          markedTokens: result.tokens,
+        });
+      }
     }
   }
 
-  if (config.purgeErrors?.thresholdContext !== undefined) {
-    const result = runPurgeErrors(state, snapshot, {
-      thresholdContext: fractionOf(
-        config.purgeErrors.thresholdContext,
-        contextLimit,
-      ),
+  const purgeGate = config.purgeErrors;
+  if (
+    purgeGate?.thresholdContext !== undefined &&
+    purgeGate.minMessages !== undefined
+  ) {
+    const thresholdContext = fractionOf(
+      purgeGate.thresholdContext,
       contextLimit,
-      protectedStartOrdinal,
-      protectedTools: config.purgeErrors.protectedTools,
-      prunedOrdinals,
-    });
-    if (result.created > 0) {
-      log(
-        "context-pruning",
-        "purge-errors_marked",
-        sessionId,
-        undefined,
-        "info",
-        {
-          markedCount: result.created,
-          markedTokens: result.tokens,
-        },
-      );
+    );
+    if (thresholdContext !== undefined) {
+      const result = runPurgeErrors(state, snapshot, {
+        minMessages: purgeGate.minMessages,
+        thresholdContext,
+        contextLimit,
+        protectedStartOrdinal,
+        protectedTools: purgeGate.protectedTools,
+        prunedOrdinals,
+      });
+      if (result.created > 0) {
+        log(
+          "context-pruning",
+          "purge-errors_marked",
+          sessionId,
+          undefined,
+          "info",
+          {
+            markedCount: result.created,
+            markedTokens: result.tokens,
+          },
+        );
+      }
     }
   }
 

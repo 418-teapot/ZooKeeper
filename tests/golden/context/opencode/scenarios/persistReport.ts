@@ -27,7 +27,7 @@ export const G_PERSIST_01: Scenario = {
   config: {
     protectedMessages: 0,
     releasedPercent: 0,
-    dedup: { thresholdContext: 100000 },
+    dedup: { minMessages: 20, thresholdContext: 100000 },
     purgeErrors: {},
   },
   rounds: [
@@ -123,7 +123,7 @@ export const G_REPORT_01: Scenario = {
   config: {
     protectedMessages: 0,
     releasedPercent: 0,
-    dedup: { thresholdContext: 100000 },
+    dedup: { minMessages: 20, thresholdContext: 100000 },
     purgeErrors: {},
   },
   rounds: [
