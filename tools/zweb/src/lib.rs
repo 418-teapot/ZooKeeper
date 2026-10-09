@@ -70,7 +70,7 @@ fn convert_html(html: &str) -> Result<String, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::convert_html;
+    use super::{convert_html, html_to_markdown};
 
     #[test]
     fn converts_simple_html() {
@@ -102,5 +102,25 @@ mod tests {
         let markdown = convert_html("<div><p>unclosed <b>tags")
             .expect("malformed html should convert");
         assert!(markdown.contains("unclosed"), "got: {markdown}");
+    }
+
+    #[test]
+    fn wrapper_converts_html() {
+        let markdown =
+            html_to_markdown("<h1>Title</h1><p>Body</p>".to_string())
+                .expect("wrapper should convert valid html");
+        assert!(markdown.contains("# Title"), "got: {markdown}");
+        assert!(markdown.contains("Body"), "got: {markdown}");
+    }
+
+    #[test]
+    fn wrapper_reports_depth_limit_error() {
+        // The default depth ceiling is 64 nodes, so this nest is deep enough
+        // to make the converter report a DepthLimitExceeded warning.
+        let html =
+            format!("{}{}{}", "<div>".repeat(80), "deep", "</div>".repeat(80));
+        let err = html_to_markdown(html)
+            .expect_err("deep nesting should hit the depth limit");
+        assert!(err.reason.contains("depth limit"), "got: {}", err.reason);
     }
 }

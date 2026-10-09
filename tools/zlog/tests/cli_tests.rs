@@ -216,6 +216,29 @@ fn test_log_dir_missing_exits_2() {
 }
 
 #[test]
+fn test_tail_log_dir_missing_exits_2() {
+    // Same as test_log_dir_missing_exits_2 but for the `tail` subcommand,
+    // which performs its own directory check in main().
+    let env = TestEnv::new();
+    let output = env
+        .command(ZLOG_BIN)
+        .args(["tail", "ses-001"])
+        .output()
+        .expect("failed to run zlog tail with missing log dir");
+    assert_eq!(
+        output.status.code(),
+        Some(2),
+        "missing log dir should exit 2, got {:?}",
+        output.status.code()
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("log directory"),
+        "stderr should mention 'log directory', got: {stderr}"
+    );
+}
+
+#[test]
 fn test_show_invalid_with_fixture_exits_2() {
     let fix = TestFixture::new();
     let output = fix
@@ -736,6 +759,38 @@ fn kill_process_group(pgid: i32) {
         .status();
 }
 
+/// Send SIGINT to a process group.  Unlike SIGTERM this lets `zlog` catch
+/// the signal, run its cleanup and exit normally so its coverage profile
+/// is flushed.
+fn interrupt_process_group(pgid: i32) {
+    let _ = Command::new("kill")
+        .args(["-INT", &format!("-{}", pgid)])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
+}
+
+/// Wait for a child to exit, polling until `timeout` elapses.  Returns the
+/// exit status, or `None` if the child is still running.
+fn wait_with_timeout(
+    child: &mut std::process::Child,
+    timeout: Duration,
+) -> Option<std::process::ExitStatus> {
+    let start = Instant::now();
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => return Some(status),
+            Ok(None) => {
+                if start.elapsed() > timeout {
+                    return None;
+                }
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            Err(_) => return None,
+        }
+    }
+}
+
 #[test]
 fn test_tail_raw_new_line_appended() {
     let fix = TestFixture::new();
@@ -823,12 +878,16 @@ fn test_tail_raw_new_line_appended() {
         }
     };
 
-    // Kill the entire process group to stop both zlog and its tail child.
-    kill_process_group(pgid);
+    // SIGINT the group: zlog catches it, tail dies, and zlog exits
+    // normally (which lets its coverage profile flush).  Fall back to
+    // SIGTERM if the graceful path does not finish in time.
+    interrupt_process_group(pgid);
+    let status = wait_with_timeout(&mut child, Duration::from_secs(5));
+    if status.is_none() {
+        kill_process_group(pgid);
+        let _ = child.wait();
+    }
     guard.disarm();
-
-    // Wait for child to exit (stdout already consumed via channel).
-    let _ = child.wait();
 
     let stdout_content = String::from_utf8_lossy(&accumulated);
 
@@ -836,10 +895,123 @@ fn test_tail_raw_new_line_appended() {
         found || stdout_content.contains("new-event"),
         "tail --raw should have emitted the appended line, got stdout: {stdout_content}",
     );
+    assert!(
+        status.is_some_and(|s| s.success()),
+        "zlog tail --raw should exit cleanly after SIGINT, got {status:?}"
+    );
     // The 4 pre-existing lines should NOT appear (tail -n 0 suppresses
     // history).
     assert!(
         !stdout_content.contains("subagent-prompt"),
         "tail -n 0 should NOT output existing lines, got: {stdout_content}"
+    );
+}
+
+// ── cmd_tail: jq pipeline (spawn + stream + Ctrl-C cleanup) ────────────────
+//
+// The non-raw path builds `tail -n 0 -f | grep -F (×N) | jq`.  All three
+// filter flags are set so every grep pre-filter is exercised.  Since grep
+// block-buffers its stdout when writing to a pipe, the test appends enough
+// matching data to push a full buffer through each stage, then signals the
+// process group with SIGINT so zlog exits normally.
+
+#[test]
+fn test_tail_jq_pipeline_streams_filtered_lines() {
+    let fix = TestFixture::new();
+
+    let mut cmd = fix.zlog();
+    cmd.args([
+        "tail",
+        "ses-001",
+        "--hook",
+        "new-event",
+        "--level",
+        "info",
+        "--event",
+        "test",
+    ]);
+    cmd.stdout(Stdio::piped());
+    cmd.stderr(Stdio::piped());
+    cmd.process_group(0);
+
+    let mut child = cmd.spawn().expect("spawn zlog tail (jq pipeline)");
+    let pgid = child.id() as i32;
+    let mut guard = ProcessGroupGuard::new(pgid);
+
+    let mut child_stdout = child.stdout.take().expect("piped stdout");
+    let (tx, rx) = mpsc::channel::<Vec<u8>>();
+    std::thread::spawn(move || {
+        let mut buf = vec![0u8; 4096];
+        loop {
+            match child_stdout.read(&mut buf) {
+                Ok(0) => break, // EOF
+                Ok(n) => {
+                    if tx.send(buf[..n].to_vec()).is_err() {
+                        break; // receiver dropped
+                    }
+                }
+                Err(_) => break,
+            }
+        }
+    });
+
+    // Let tail -f start and register inotify before appending.
+    std::thread::sleep(Duration::from_millis(100));
+
+    // The appended line must contain the same compact substrings the grep
+    // pre-filters match on.
+    let mut payload = String::new();
+    for i in 0..4000 {
+        payload.push_str(&format!(
+            r#"{{"hook":"new-event","level":"info","event":"test","n":{i}}}"#
+        ));
+        payload.push('\n');
+    }
+    let log_path = fix.env.zoo_log_dir().join("opencode-ses-001.log");
+    let mut f = fs::OpenOptions::new()
+        .append(true)
+        .open(&log_path)
+        .expect("open log for append");
+    use std::io::Write;
+    f.write_all(payload.as_bytes()).expect("append matching lines");
+    drop(f);
+
+    let start = Instant::now();
+    let timeout = Duration::from_secs(10);
+    let poll_interval = Duration::from_millis(50);
+    let mut accumulated = Vec::new();
+    let found = loop {
+        match rx.recv_timeout(poll_interval) {
+            Ok(data) => {
+                accumulated.extend_from_slice(&data);
+                if accumulated
+                    .windows(b"new-event".len())
+                    .any(|w| w == b"new-event")
+                {
+                    break true;
+                }
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                if start.elapsed() > timeout {
+                    break false;
+                }
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => break false,
+        }
+    };
+
+    // SIGINT the group so zlog runs its cleanup and exits normally.
+    interrupt_process_group(pgid);
+    let status = wait_with_timeout(&mut child, Duration::from_secs(5));
+    if status.is_none() {
+        kill_process_group(pgid);
+        let _ = child.wait();
+    }
+    guard.disarm();
+
+    assert!(found, "tail jq pipeline should stream the appended lines");
+    assert!(
+        status.is_some_and(|s| s.success()),
+        "zlog tail should exit cleanly after SIGINT, got {status:?}"
     );
 }

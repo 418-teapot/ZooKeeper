@@ -16,7 +16,24 @@ if [ ${#TS_TEST_FILES[@]} -eq 0 ]; then
   exit 1
 fi
 
-TS_COV_THRESHOLD=90
+# Shared line-coverage threshold for the TypeScript suite and every Rust crate.
+COV_THRESHOLD=90
+
+# Rust coverage components are discovered from the workspace manifest so the
+# crate list has a single source of truth.
+COV_CRATES=()
+while IFS= read -r crate; do
+  COV_CRATES+=("$crate")
+done < <(awk '
+  /^\[workspace\]/ { in_ws = 1; next }
+  in_ws && /^\[/ { in_ws = 0 }
+  in_ws && /^members[[:space:]]*=/ { in_members = 1 }
+  in_members {
+    n = split($0, fields, "\"")
+    for (i = 2; i <= n; i += 2) print fields[i]
+    if ($0 ~ /\]/) in_members = 0
+  }
+' tools/Cargo.toml)
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -29,6 +46,21 @@ fail()    { printf "${RED}✖ %s${NC}\n" "$1"; }
 
 FAILED=0
 
+# run_section <title> <label> <command...>: announce <title>, run <command>,
+# and print one pass/fail line for <label>.  A failed command sets FAILED so
+# the run exits non-zero at the end.
+run_section() {
+  local title="$1" label="$2"
+  shift 2
+  section "$title"
+  if "$@"; then
+    ok "$label"
+  else
+    fail "$label"
+    FAILED=1
+  fi
+}
+
 # bun does not auto-sync node_modules like uv/cargo do; a stale install makes
 # tsc/bun test fail with misleading errors, so bail out early on sync failure.
 section "TypeScript dependencies"
@@ -39,33 +71,15 @@ else
   exit 1
 fi
 
-section "Python static tests"
-if uv run pytest "${PY_TEST_DIRS[@]}" -v; then
-  ok "pytest all Python tests"
-else
-  fail "pytest all Python tests"
-  FAILED=1
-fi
+run_section "Python static tests" "pytest all Python tests" \
+  uv run pytest "${PY_TEST_DIRS[@]}" -v
 
-section "Rust workspace tests"
-if RUSTFLAGS="-D warnings" cargo test --manifest-path tools/Cargo.toml --workspace -- --test-threads=1 2>&1; then
-  ok "cargo test --workspace"
-else
-  fail "cargo test --workspace"
-  FAILED=1
-fi
+run_section "Rust workspace tests" "cargo test --workspace" \
+  env RUSTFLAGS="-D warnings" cargo test --manifest-path tools/Cargo.toml --workspace -- --test-threads=1
 
-# Coverage requires cargo-llvm-cov (binary) and LLVM tools.
-# LLVM tools can come from rustup (llvm-tools-preview) or system package manager.
-if ! command -v cargo-llvm-cov &>/dev/null; then
-  echo ""
-  echo "⏭️  cargo-llvm-cov not found, skip Rust coverage"
-  echo "   Install: cargo install cargo-llvm-cov"
-  HAS_CARGO_LLVM_COV=0
-else
-  HAS_CARGO_LLVM_COV=1
-fi
-
+# Coverage is mandatory: a missing cargo-llvm-cov or LLVM toolchain fails the
+# run instead of silently skipping it.  LLVM tools come from rustup
+# (llvm-tools-preview) or a system package manager.
 has_llvm_tools() {
   # rustup component — cargo-llvm-cov locates these automatically.
   if rustup component list 2>/dev/null | grep -q 'llvm-tools.*installed'; then
@@ -85,13 +99,25 @@ has_llvm_tools() {
   return 1
 }
 
-if [ "$HAS_CARGO_LLVM_COV" -eq 1 ] && has_llvm_tools; then
-  section "Rust coverage"
+section "Rust coverage"
+if ! command -v cargo-llvm-cov &>/dev/null; then
+  fail "cargo-llvm-cov not found — Rust coverage cannot run"
+  echo "   Install: cargo install cargo-llvm-cov"
+  FAILED=1
+elif ! has_llvm_tools; then
+  fail "LLVM tools not available — Rust coverage cannot run"
+  echo "   Option A: rustup component add llvm-tools-preview"
+  echo "   Option B: install llvm via system package manager (brew/apt/etc.)"
+  FAILED=1
+else
   COV_OUTPUT=$(RUSTFLAGS="-D warnings" cargo llvm-cov --manifest-path tools/Cargo.toml --workspace --summary-only -- --test-threads=1 2>&1) || true
 
   if echo "$COV_OUTPUT" | grep -q "llvm-tools"; then
-    echo ""
-    echo "⏭️  llvm-tools not found at runtime, skip Rust coverage"
+    echo "$COV_OUTPUT"
+    fail "llvm-tools not found at runtime — Rust coverage cannot run"
+    echo "   Option A: rustup component add llvm-tools-preview"
+    echo "   Option B: install llvm via system package manager (brew/apt/etc.)"
+    FAILED=1
   else
     echo "$COV_OUTPUT"
 
@@ -114,24 +140,17 @@ if [ "$HAS_CARGO_LLVM_COV" -eq 1 ] && has_llvm_tools; then
         }'
     }
 
-    COV_ZWIKI=$(crate_cov 'zwiki/src/')
-    COV_ZUTIL=$(crate_cov 'zutil/src/')
-    COV_ZLOG=$(crate_cov 'zlog/src/')
-    COV_ZFIND=$(crate_cov 'zfind/src/')
-    COV_ZINSPECT=$(crate_cov 'zinspect/src/')
-    COV_ZTRACE=$(crate_cov 'ztrace/src/')
-    COV_ZDEBUG=$(crate_cov 'zdebug/src/')
-    COV_TOTAL=$(echo "$COV_OUTPUT" | awk '/^TOTAL/ {print $4}' | tr -d '%')
-
     check_cov() {
       local name="$1" cov="$2" thr="$3"
       if [ -z "$cov" ]; then
         fail "$name coverage (could not parse)"
         return 1
-      elif ! [[ "$cov" =~ ^[0-9.]+$ ]]; then
+      fi
+      if ! [[ "$cov" =~ ^[0-9.]+$ ]]; then
         fail "$name coverage (invalid format: $cov)"
         return 1
-      elif awk -v c="$cov" -v t="$thr" 'BEGIN{exit (c < t)}'; then
+      fi
+      if awk -v c="$cov" -v t="$thr" 'BEGIN{exit (c < t)}'; then
         ok "$name ${cov}% (≥ ${thr}%)"
       else
         fail "$name ${cov}% < ${thr}% threshold"
@@ -139,22 +158,15 @@ if [ "$HAS_CARGO_LLVM_COV" -eq 1 ] && has_llvm_tools; then
       fi
     }
 
-    # Thresholds sit ~2pp below current measured coverage so regressions
-    # fail CI while normal measurement jitter still passes.
-    check_cov "zwiki"     "$COV_ZWIKI"    85 || FAILED=1
-    check_cov "zutil"     "$COV_ZUTIL"    90 || FAILED=1
-    check_cov "zlog"      "$COV_ZLOG"     80 || FAILED=1
-    check_cov "zfind"     "$COV_ZFIND"    90 || FAILED=1
-    check_cov "zinspect"  "$COV_ZINSPECT" 90 || FAILED=1
-    check_cov "ztrace"    "$COV_ZTRACE"   85 || FAILED=1
-    check_cov "zdebug"    "$COV_ZDEBUG"   85 || FAILED=1
-    check_cov "total"     "$COV_TOTAL"    85 || true
+    # All discovered crates share one threshold; the total line stays
+    # non-blocking as before.
+    for crate in "${COV_CRATES[@]}"; do
+      check_cov "$crate" "$(crate_cov "$crate/src/")" "$COV_THRESHOLD" || FAILED=1
+    done
+    check_cov "total" \
+      "$(echo "$COV_OUTPUT" | awk '/^TOTAL/ {print $4}' | tr -d '%')" \
+      "$COV_THRESHOLD" || true
   fi
-else
-  echo ""
-  echo "⏭️  LLVM tools not available, skip Rust coverage"
-  echo "   Option A: rustup component add llvm-tools-preview"
-  echo "   Option B: install llvm via system package manager (brew/apt/etc.)"
 fi
 
 section "TypeScript type check"
@@ -178,10 +190,10 @@ TS_COV=$(echo "$TS_OUTPUT" | awk -F'|' '/All files/ {gsub(/[[:space:]]/, "", $3)
 if [ -z "$TS_COV" ]; then
   fail "ts coverage (could not parse 'All files' line from coverage output)"
   FAILED=1
-elif awk -v cov="$TS_COV" -v thr="$TS_COV_THRESHOLD" 'BEGIN{exit (cov < thr)}'; then
+elif awk -v cov="$TS_COV" -v thr="$COV_THRESHOLD" 'BEGIN{exit (cov < thr)}'; then
   ok "ts coverage ${TS_COV}%"
 else
-  fail "ts coverage ${TS_COV}% < ${TS_COV_THRESHOLD}% threshold"
+  fail "ts coverage ${TS_COV}% < ${COV_THRESHOLD}% threshold"
   FAILED=1
 fi
 
