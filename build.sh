@@ -19,7 +19,9 @@ section "Binaries"
 BIN_DIR="$SCRIPT_DIR/tools/bin"
 mkdir -p "$BIN_DIR"
 
-for bin in zwiki zlog zfind zinspect ztrace zdebug; do
+# Discover binary crates via src/main.rs so new tools are not omitted.
+for main in */src/main.rs; do
+    bin="${main%%/*}"
     path="target/release/$bin"
     if [ -f "$path" ]; then
         cp "$path" "$BIN_DIR/$bin"
