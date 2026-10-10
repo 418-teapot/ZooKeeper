@@ -234,6 +234,14 @@ def main() -> None:
         defaults = toml_data.get("defaults")
         if isinstance(defaults, dict):
             defaults_model = defaults.get("model")
+        # The whole [pi.retry] table is passed through unchanged so new
+        # keys added to config.toml need no code change here.  A missing
+        # [pi] or [pi.retry] table yields None, so no retry key is written
+        # and pi keeps its own default.
+        pi_section = toml_data.get("pi")
+        retry = (
+            pi_section.get("retry") if isinstance(pi_section, dict) else None
+        )
         # Builtin providers resolve through pi's own login state, so their
         # config name must map to the pi provider id for defaults.model
         # references.  The raw pi_id value is passed through unchanged so
@@ -249,6 +257,7 @@ def main() -> None:
             env,
             pi_provider_names=list(zk_providers),
             builtin_providers=builtin_pi_ids,
+            retry=retry,
         )
         os.makedirs(os.path.dirname(pi_settings_path), exist_ok=True)
         try:

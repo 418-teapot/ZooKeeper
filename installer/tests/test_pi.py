@@ -408,6 +408,47 @@ def test_build_pi_settings_builtin_empty_pi_id_skips(capsys) -> None:
     assert "pi_id" in capsys.readouterr().out
 
 
+def test_build_pi_settings_retry_written() -> None:
+    """The whole [pi.retry] table is written through unchanged."""
+    retry = {"maxRetries": 10, "enabled": False}
+    settings = build_pi_settings(
+        "/abs/src/pi.ts",
+        "Dummy/dummy-small",
+        {},
+        ["Dummy"],
+        retry=retry,
+    )
+    assert settings["retry"] == retry
+
+
+def test_build_pi_settings_retry_absent_skipped(capsys) -> None:
+    """A missing or empty retry table omits the key without warning."""
+    for retry in (None, {}):
+        settings = build_pi_settings(
+            "/abs/src/pi.ts",
+            "Dummy/dummy-small",
+            {},
+            ["Dummy"],
+            retry=retry,
+        )
+        assert "retry" not in settings
+    assert capsys.readouterr().out == ""
+
+
+def test_build_pi_settings_retry_invalid_skipped(capsys) -> None:
+    """A non-table retry value is skipped with a warning."""
+    for invalid in (10, "10"):
+        settings = build_pi_settings(
+            "/abs/src/pi.ts",
+            "Dummy/dummy-small",
+            {},
+            ["Dummy"],
+            retry=invalid,
+        )
+        assert "retry" not in settings
+        assert "pi.retry" in capsys.readouterr().out
+
+
 # ── build_pi_agents_config ──────────────────────────────────────────────
 
 

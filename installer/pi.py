@@ -244,6 +244,7 @@ def build_pi_settings(
     env: dict[str, str],
     pi_provider_names: Optional[list[str]] = None,
     builtin_providers: Optional[dict[str, object]] = None,
+    retry: object = None,
 ) -> dict:
     """Build the pi ``settings.json`` dictionary from scratch.
 
@@ -275,17 +276,33 @@ def build_pi_settings(
             non-empty string ``pi_id``, that id is written and no
             pruned-provider warning is emitted; a builtin provider whose
             ``pi_id`` is missing or empty is skipped with a warning.
+        retry: The whole ``[pi.retry]`` table from the parsed TOML,
+            passed through unchanged.  A non-empty dict is written as
+            ``retry``; a missing value or empty dict is skipped so pi
+            keeps its own default; any other value is skipped with a
+            warning.
 
     Returns:
         The settings dictionary.  Always contains ``extensions`` and
         ``defaultThinkingLevel`` (hardcoded to ``high``);
         ``defaultProvider``/``defaultModel`` are added only when the
-        default model resolves and splits cleanly.
+        default model resolves and splits cleanly; ``retry`` is added only
+        when ``retry`` is a non-empty dict.
     """
     settings: dict[str, object] = {
         "extensions": [extension_path],
         "defaultThinkingLevel": "high",
     }
+
+    # The [pi.retry] table is independent of the default model, so it is
+    # written before the early returns below.  The table is passed through
+    # verbatim: validating individual keys here would force a code change
+    # whenever a new retry option is added to config.toml.
+    if isinstance(retry, dict):
+        if retry:
+            settings["retry"] = retry
+    elif retry is not None:
+        warn(f"pi.retry 值 {retry!r} 无效（需为表），跳过 retry")
 
     resolved = _resolve_default_model(defaults_model, env)
     if resolved is None:

@@ -596,6 +596,11 @@ disable = true
 model       = "{env:ZOO_WHALE_MODEL}"
 small_model = "{env:ZOO_ANT_MODEL}"
 
+# ── Pi ────────────────────────────────────────────────────────────────────────
+
+[pi.retry]
+maxRetries = 10
+
 # ── MCP ───────────────────────────────────────────────────────────────────────
 [mcp.gitlab]
 type = "remote"
