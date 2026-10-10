@@ -4,8 +4,10 @@
  * The command is the ONLY user entry that creates an investigation Case:
  * the raw text typed after `/debug` becomes, verbatim, the Case
  * objective, and the Case is materialized in the session workspace by
- * `zdebug case init`.  The auto-debug strategy then takes over on later
- * turns — "Case existence is the only activation" (see
+ * `zdebug case init`.  On success the command injects a model-visible
+ * startup message through the host's `MessageInjector`, so the agent
+ * loads the `auto-debug` skill and begins investigating in place — the
+ * auto-debug strategy then keeps the loop alive on later turns (see
  * `docs/autodebug-design.md` §8.1).
  *
  * Zero flag parsing: every character of the argument string (spaces,
@@ -23,9 +25,11 @@ import { join } from "node:path";
 import type { ToolHost } from "../../core/client/tool-host.js";
 import type {
   AutoDebugFs,
+  MessageInjector,
   ZdebugExec,
   ZdebugExecResult,
 } from "../../core/slots.js";
+import { log } from "../../utils/logger.js";
 
 /** Directory under the workspace holding the per-Case subdirectories. */
 const CASE_ROOT = join(".zoo", "debug");
@@ -60,6 +64,15 @@ export interface DebugCommandOptions {
    * auto-debug strategy scans.
    */
   directory: string;
+  /**
+   * Host user-message injector used to start the investigation turn.
+   *
+   * The injected text is model-visible (unlike `ToolHost.notify`), so the
+   * agent begins the auto-debug loop without a further user prompt.
+   * `undefined` on hosts that wire no injector — the command then reports
+   * the Case was created but could not auto-start.
+   */
+  messageInjector: MessageInjector | undefined;
 }
 
 /**
@@ -217,19 +230,50 @@ async function initCase(
 }
 
 /**
+ * Render the model-visible startup message for a newly created Case.
+ *
+ * Names the Case id and directory, repeats the objective verbatim, and
+ * tells the agent to load the `auto-debug` skill and start investigating
+ * immediately — so the injected user turn begins the loop.
+ *
+ * @param caseId - The created Case id.
+ * @param objective - The raw objective text (verbatim).
+ * @returns The startup message.
+ */
+export function buildStartupText(caseId: string, objective: string): string {
+  // Display path is always forward-slashed: the zdebug layout and its
+  // docs use `.zoo/debug/<id>`, and the model reads this text on every
+  // platform, so Windows must not see `.zoo\\debug\\<id>`.
+  const caseDir = [".zoo", "debug", caseId].join("/");
+  return [
+    `【调试 Case ${caseId} 已创建】目录：\`${caseDir}/\``,
+    "",
+    "调查目标：",
+    objective,
+    "",
+    "请加载 `auto-debug` skill，并立即开始调查：先读取该 skill，",
+    "按其纪律经 zdebug 记录假设、实验与证据，调查状态保存在磁盘上。",
+  ].join("\n");
+}
+
+/**
  * Handle the `/debug` command.
  *
  * - Whitespace-only arguments → show the usage hint; no Case is created.
- * - Otherwise → create a Case whose objective is the raw argument string,
- *   then notify the user with the new Case id.
+ * - Otherwise → create a Case whose objective is the raw argument
+ *   string, then inject a model-visible startup message that loads the
+ *   `auto-debug` skill so the agent starts investigating in place.
  *
  * All failures throw a Chinese-message `Error` for the unit descriptor's
- * notification wrapper; the CLI itself is never left to crash the caller.
+ * notification wrapper; the CLI itself is never left to crash the
+ * caller.  A Case that was created but whose startup injection failed is
+ * reported directly (never silently swallowed) and does not rethrow —
+ * the user must still learn the Case exists.
  *
  * @param toolHost - Host tool services (notify).
  * @param sessionID - The current session identifier.
  * @param args - The raw arguments string after `/debug`, passed verbatim.
- * @param options - Injected runner and workspace settings.
+ * @param options - Injected runner, workspace settings, and injector.
  * @throws Error (Chinese message) when `zdebug` cannot be launched or
  *   returns a business error.
  */
@@ -249,7 +293,7 @@ export async function handleDebugCommand(
         "/debug <调查目标>",
         "",
         "将调查目标原文作为 objective 创建一个调试 Case，",
-        "后续回合停稳后由自主调试循环接管。",
+        "并立即开始自主调查。",
       ].join("\n"),
     );
     return;
@@ -257,8 +301,63 @@ export async function handleDebugCommand(
 
   const caseId = await initCase(options, objective);
 
+  if (options.messageInjector === undefined) {
+    await reportInjectFailure(
+      toolHost,
+      sessionID,
+      caseId,
+      "宿主未提供消息注入能力",
+    );
+    return;
+  }
+
+  try {
+    await options.messageInjector.inject(
+      sessionID,
+      buildStartupText(caseId, objective),
+    );
+  } catch (err) {
+    log("debug-command", "inject_failed", sessionID, undefined, "warn", {
+      caseId,
+      error: reasonOf(err),
+    });
+    await reportInjectFailure(toolHost, sessionID, caseId, reasonOf(err));
+    return;
+  }
+
   await toolHost?.notify(
     sessionID,
-    `已创建调试 Case ${caseId}。后续回合停稳后由自主调试循环接管。`,
+    `已创建调试 Case ${caseId}，已请求立即开始调查。`,
   );
+}
+
+/**
+ * Tell the user the Case exists but the investigation did not auto-start.
+ *
+ * The persisted notification alone is not a reliable channel on every
+ * host: OpenCode suppresses `notify` when the session agent cannot be
+ * resolved — exactly the case that also makes injection fail — so the
+ * user would never see the notice.  A transient toast is therefore sent
+ * as well through the optional `toast` port, which does not depend on
+ * agent resolution.  Both calls are best-effort; the handler never
+ * rethrows here because the Case already exists.
+ *
+ * @param toolHost - Host tool services (notify and optional toast).
+ * @param sessionID - The current session identifier.
+ * @param caseId - The created Case id.
+ * @param reason - A short cause description.
+ */
+async function reportInjectFailure(
+  toolHost: ToolHost | null | undefined,
+  sessionID: string,
+  caseId: string,
+  reason: string,
+): Promise<void> {
+  const text =
+    `已创建调试 Case ${caseId}，但未能自动启动调查：${reason}。` +
+    "请手动加载 `auto-debug` skill 继续。";
+  await toolHost?.notify(sessionID, text);
+  // Fallback for hosts whose `notify` is suppressed in this situation;
+  // the optional call covers hosts that wire no toast port at all.
+  toolHost?.toast?.(sessionID, { source: "debug", level: "warning", text });
 }

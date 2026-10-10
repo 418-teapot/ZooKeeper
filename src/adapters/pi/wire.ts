@@ -62,6 +62,7 @@ import { createPiAdapter } from "./adapter.js";
 import { loadAgentsJson } from "./agent-models.js";
 import { createPiEventHandlers } from "./handlers.js";
 import { createPiHandoffTarget, type PiCommandCtx } from "./handoff-target.js";
+import { createPiMessageInjector } from "./message-injector.js";
 import { createPiSubagentDriver } from "./subagent.js";
 import type { PiHistoryEntry } from "./subagent-scan.js";
 import { createPiSwitchHost } from "./switch-host.js";
@@ -212,6 +213,12 @@ export function buildPiContributions(
     toolHost?: ToolHost;
     piSwitchHost?: PiSwitchHost;
     getCommandCtx?: () => PiCommandCtx | null | undefined;
+    /**
+     * Host user-message injector for the `/debug` command (only supplied
+     * by the real pi entry point).  Undefined without it — `/debug`
+     * reports the Case was created but could not auto-start.
+     */
+    messageInjector?: Deps["messageInjector"];
     /**
      * Host subagent driver (only supplied by the real pi entry point).
      * Undefined without it — the subagent tool unit then contributes no
@@ -369,6 +376,9 @@ export function buildPiContributions(
       getCommandCtx: hostDeps?.getCommandCtx ?? (() => undefined),
       defaultPrimary: primaries[0],
     }),
+    // The `/debug` startup injector: sends a model-visible user message
+    // into the current session.  Only the real pi entry point supplies it.
+    messageInjector: hostDeps?.messageInjector,
     // Native pi host adapter: the entry point shares a mutable context
     // holder so the session id provider always reads the latest pi event
     // context.  When no adapter is supplied (unit tests that only inspect
@@ -674,6 +684,10 @@ export function buildPiHandlers(
       // through this supplier: the command handler refreshes the shared
       // holder immediately before the handler body runs.
       getCommandCtx: () => contextHolder.current as PiCommandCtx | undefined,
+      // The `/debug` startup injector sends a model-visible user message
+      // through pi's `sendUserMessage`.  Only the real pi API instance
+      // provides it; test-only compositions stay without one.
+      messageInjector: piApi ? createPiMessageInjector(piApi) : undefined,
       // The pi subagent driver — the in-process SDK session executor.  Only
       // wired when a real pi API instance is present (the extension runs
       // inside pi); test-only and driver-less compositions stay closed.

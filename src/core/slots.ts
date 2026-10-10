@@ -187,6 +187,27 @@ export interface AutoDebugFs {
 }
 
 /**
+ * Host-specific injector for a model-visible user message into the
+ * current session.
+ *
+ * Distinct from `ToolHost.notify`: the injected text is a real user
+ * message the model reads on its next turn, which is how a command can
+ * start an agent turn (the `/debug` command uses it to start the
+ * auto-debug investigation in place).  Implementations must reject on
+ * failure so the caller can surface a user-visible error.
+ */
+export interface MessageInjector {
+  /**
+   * Inject a model-visible user message into `sessionID`.
+   *
+   * @param sessionID - The session to inject into.
+   * @param text - The user-message text.
+   * @throws Error when the host cannot deliver the message.
+   */
+  inject(sessionID: string, text: string): Promise<void>;
+}
+
+/**
  * Per-plugin-instance dependencies captured by unit factories.
  *
  * Host-agnostic: `client` is intentionally untyped (each host client
@@ -358,6 +379,15 @@ export interface Deps {
    * command unit then fails closed with the missing-client error.
    */
   handoffTarget?: HandoffTarget;
+  /**
+   * The host-specific user-message injector for commands that start an
+   * in-session turn.
+   *
+   * Undefined on hosts that do not wire one — the `/debug` command then
+   * reports that the Case was created but the investigation could not be
+   * started automatically.
+   */
+  messageInjector?: MessageInjector;
   /**
    * Ask-tool timeout in seconds (`[zoo.ask].timeout`), injected on the pi
    * host only — the ask tool is not registered on OpenCode.

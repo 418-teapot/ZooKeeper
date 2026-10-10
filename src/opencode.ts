@@ -21,6 +21,7 @@ import config from "../config.toml" with { type: "toml" };
 import { createV1Adapter } from "./adapters/opencode/adapter.js";
 import { createOpenCodeHandoffTarget } from "./adapters/opencode/handoff-target.js";
 import { buildInfraHooks } from "./adapters/opencode/infra-hooks.js";
+import { createOpenCodeMessageInjector } from "./adapters/opencode/message-injector.js";
 import { createV1ToolHost } from "./adapters/opencode/tool-host.js";
 import { assembleOpenCodeHooks } from "./compose-opencode.js";
 import { composeProfile } from "./core/compose.js";
@@ -108,6 +109,7 @@ export async function buildPlugin(
       derivePrimaries(modeProfile?.agents ?? [], agentModes)[0],
       directory,
     ),
+    messageInjector: createOpenCodeMessageInjector(client, resolveAgent),
   };
   const composed = composeProfile(modeProfile, REGISTRY, deps);
   const profileHooks = assembleOpenCodeHooks(composed, deps, modeProfile);

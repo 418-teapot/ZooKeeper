@@ -10,7 +10,9 @@
  * `/debug` command.  The command
  * is the only user entry that creates a Case — no flag parsing, the raw
  * arguments become the Case objective (`docs/autodebug-design.md` §6.4,
- * §8.1).
+ * §8.1) — and on success injects a model-visible startup message through
+ * the host's `messageInjector` so the agent starts investigating in
+ * place.
  *
  * @module
  */
@@ -41,14 +43,19 @@ export const unit: CommandUnitDescriptor = {
       commands: [
         {
           name: "debug",
-          description: "创建调试 Case 并启动自主调试循环",
+          description: "创建调试 Case 并立即启动调查",
           handle: async (input) => {
             try {
               await handleDebugCommand(
                 deps.toolHost,
                 input.sessionID,
                 input.arguments,
-                { zdebugExec, fs, directory: deps.directory },
+                {
+                  zdebugExec,
+                  fs,
+                  directory: deps.directory,
+                  messageInjector: deps.messageInjector,
+                },
               );
             } catch (err) {
               await notifySessionError(

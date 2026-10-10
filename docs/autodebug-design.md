@@ -104,6 +104,7 @@ agent 每停稳一次，引擎就问策略一次"要不要继续"。策略重跑
 ```
 用户 /debug 命令（唯一激活入口）
    │  zdebug case init（objective 原文透传）
+   │  向当前会话注入模型可见的启动消息（加载 auto-debug skill 开始调查）
    ▼
 agent（经 bash 调用 zdebug，宿主权限层可见）
    │  case / deliverable / claim / experiment / evidence / artifact ...
@@ -204,7 +205,7 @@ zdebug doctor                            # 环境自检（git 可用性、平台
 - **verify 判据即实验**：`case update-verify --command '<cmd>' --source user|agent --timeout <秒>` 把命令写成临时脚本、复用 `experiment plan` 的物化路径（`plan_experiment`），append `experiment-planned` 与 `case-verify-updated` 两事件，后者载荷为 `{experiment, source}`——Case 的 verify 因而是指向该 Experiment 的指针（model 层 `verify: Option<String>` 存实验 ID）。`--timeout` 必填：判据时限是判据自身的知识，由声明者给出、zdebug 在 `experiment run` 时自持执行（超时杀整棵进程树，Attempt 落盘带 `timed_out` 标记，`run` 以业务错误 `TIMED_OUT` exit 2 退出）。`case init --verify '<cmd>'` 保留为 sugar（需同时给 `--verify-timeout`），走同一物化路径、`source=user`；二次 `update-verify` 产生新实验并迁移指针，旧实验历史保留。旧 `{command, source}` 判据载荷已废弃，无兼容层；
 - **verify 的渲染**：`case status --json` 渲染为 `{"experiment": id, "command": str, "timeout_ms": int}`（command 读自被指实验的 procedure），未声明时渲染为 `null`；`summary.md` 的 Verify 段渲染 `- Experiment:`、`- Command:` 与 `- Timeout:`。
 
-**`/debug` 宿主命令**：`/debug <objective>` 把 arguments 原文整段透传为 `case init` 的 objective——零 flag 解析、不接受 `--verify`；CASE-ID 为工作区内顺序编号 `CASE-N`（扫 `.zoo/debug/` 取最大序号 +1，遇 `CASE_EXISTS` 重试），title 为 objective 折叠空白后的全文（截断是渲染层职责）；zdebug 不可用或返回业务错误时抛出中文报错。poly 与 mono 双 profile 启用（见 §8.1）。
+**`/debug` 宿主命令**：`/debug <objective>` 把 arguments 原文整段透传为 `case init` 的 objective——零 flag 解析、不接受 `--verify`；CASE-ID 为工作区内顺序编号 `CASE-N`（扫 `.zoo/debug/` 取最大序号 +1，遇 `CASE_EXISTS` 重试），title 为 objective 折叠空白后的全文（截断是渲染层职责）；zdebug 不可用或返回业务错误时抛出中文报错；建档成功后向当前会话注入模型可见的启动消息（Case id、目录、objective，并指示加载 `auto-debug` skill）。poly 与 mono 双 profile 启用（见 §8.1）。
 
 ### 6.5 runner（实验执行）
 
@@ -256,6 +257,7 @@ zdebug doctor                            # 环境自检（git 可用性、平台
 **激活语义只有一个：Case 存在即激活。** 触发归约为"谁创建 Case"，答案是只有用户：
 
 - `/debug <objective>`：双宿主斜杠命令，arguments 原文整段透传为 `zdebug case init` 的 objective（零 flag 解析、不接受 `--verify`）；Case 创建时没有 verify 指针，判据随后经 `case update-verify --command '<cmd>' --source user|agent`（或 `case init --verify` sugar）声明——无判据的 Case 只让策略沉默（`no-verify`），不构成循环；
+- 建档成功后，命令向当前会话注入一条模型可见的启动消息（Case id、Case 目录、objective 原文，并要求加载 `auto-debug` skill 立即开始调查），让 agent 无需用户再次发话就进入调查。注入走宿主适配层的消息注入端口（OpenCode 用 `session.promptAsync`，pi 用 `sendUserMessage`）；注入失败时提示用户 Case 已创建但未能自动启动；
 - **skill 明文禁止 agent 自主 `case init`**——对齐 autoresearch 的严格立场（其实验工具默认不激活、测试断言无隐式激活钩子）。承认这是约定而非强制（zdebug 在 PATH 上，agent 技术上可调），接受"能但不能"的语义；
 - 不做隐式激活（检测到测试失败自动建 Case）——违反不变量 4。
 

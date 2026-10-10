@@ -6,20 +6,25 @@
  * and CLI business-error paths, and the unit descriptor shape.  The
  * `zdebug` runner is a fake `ZdebugExec` that records every invocation —
  * no real binary runs — and the host is a `ToolHost` mock that records
- * notifications.
+ * notifications and toasts.
  */
 import assert from "node:assert/strict";
 import { afterEach, describe, it } from "node:test";
-import type { ToolHost } from "../../core/client/tool-host.js";
+import type { ToastPayload, ToolHost } from "../../core/client/tool-host.js";
 import type {
   AutoDebugDirEntry,
   AutoDebugFs,
   CommandUnitDescriptor,
+  MessageInjector,
   ZdebugExec,
   ZdebugExecResult,
 } from "../../core/slots.js";
 import { _resetForTesting } from "../../utils/logger.js";
-import { handleDebugCommand, MAX_CASE_ID_ATTEMPTS } from "./command.js";
+import {
+  buildStartupText,
+  handleDebugCommand,
+  MAX_CASE_ID_ATTEMPTS,
+} from "./command.js";
 import { unit } from "./index.js";
 
 // ---------------------------------------------------------------------------
@@ -82,19 +87,50 @@ function makeFakeExec(options: { result?: ZdebugExecResult; error?: Error }): {
   return { exec, calls };
 }
 
-/** Build a mock tool host that records notifications. */
-function makeToolHost(): {
+/**
+ * Build a mock tool host that records notifications and toasts.
+ *
+ * Pass `{ withToast: false }` to model a host that wires no toast port.
+ */
+function makeToolHost(options: { withToast?: boolean } = {}): {
   toolHost: ToolHost;
   notifyCalls: Array<{ sessionID: string; text: string }>;
+  toastCalls: Array<{ sessionID: string; toast: ToastPayload }>;
 } {
   const notifyCalls: Array<{ sessionID: string; text: string }> = [];
+  const toastCalls: Array<{ sessionID: string; toast: ToastPayload }> = [];
   const toolHost: ToolHost = {
     resolveSessionId: () => undefined,
     notify: async (sessionID, text) => {
       notifyCalls.push({ sessionID, text });
     },
   };
-  return { toolHost, notifyCalls };
+  if (options.withToast !== false) {
+    toolHost.toast = (sessionID, toast) => {
+      toastCalls.push({ sessionID, toast });
+    };
+  }
+  return { toolHost, notifyCalls, toastCalls };
+}
+
+/**
+ * Build a fake message injector that records injections and optionally
+ * rejects with `error`.
+ */
+function makeInjector(options: { error?: Error } = {}): {
+  injector: MessageInjector;
+  calls: Array<{ sessionID: string; text: string }>;
+} {
+  const calls: Array<{ sessionID: string; text: string }> = [];
+  return {
+    calls,
+    injector: {
+      inject: async (sessionID, text) => {
+        calls.push({ sessionID, text });
+        if (options.error) throw options.error;
+      },
+    },
+  };
 }
 
 /** Build a `create`-compatible Deps/ActiveSet pair for the debug unit. */
@@ -131,9 +167,15 @@ async function runCommand(
   exec: ZdebugExec,
   toolHost: ToolHost,
   fs: AutoDebugFs = makeFakeFs().fs,
+  injector: MessageInjector = makeInjector().injector,
 ): Promise<void> {
   const contributions = unit.create(
-    makeDeps({ zdebugExec: exec, toolHost, autoDebugFs: fs }),
+    makeDeps({
+      zdebugExec: exec,
+      toolHost,
+      autoDebugFs: fs,
+      messageInjector: injector,
+    }),
     makeActiveSet(),
   );
   assert.equal(contributions.kind, "command");
@@ -218,18 +260,134 @@ describe("/debug objective passthrough", () => {
     assert.equal(args[args.indexOf("--objective") + 1], objective);
   });
 
-  it("notifies the new Case id on success", async () => {
+  it("notifies the new Case id and injects the startup message on success", async () => {
     const { exec, calls } = makeFakeExec({
       result: { stdout: '{"ok":true,"result":{}}', stderr: "", exitCode: 0 },
     });
     const { toolHost, notifyCalls } = makeToolHost();
+    const { injector, calls: injectCalls } = makeInjector();
 
-    await runCommand("调查登录失败", exec, toolHost);
+    await runCommand("调查登录失败", exec, toolHost, undefined, injector);
 
     const caseId = calls[0].args[calls[0].args.indexOf("case") + 2];
     assert.equal(notifyCalls.length, 1);
     assert.ok(notifyCalls[0].text.includes(caseId));
     assert.ok(notifyCalls[0].text.includes("已创建调试 Case"));
+    // The injector received the model-visible startup message: Case id,
+    // Case directory, objective verbatim, and the skill instruction.
+    assert.equal(injectCalls.length, 1);
+    assert.equal(injectCalls[0].sessionID, "sess-debug");
+    assert.equal(injectCalls[0].text, buildStartupText(caseId, "调查登录失败"));
+    assert.ok(injectCalls[0].text.includes(caseId));
+    assert.ok(injectCalls[0].text.includes(".zoo/debug/"));
+    assert.ok(injectCalls[0].text.includes("调查登录失败"));
+    assert.ok(injectCalls[0].text.includes("auto-debug"));
+  });
+
+  it("reports the created Case when the injector is missing", async () => {
+    const { exec } = makeFakeExec({});
+    const { toolHost, notifyCalls } = makeToolHost();
+
+    // Bare handler with no injector wired (a host that provides none).
+    await handleDebugCommand(toolHost, "sess-debug", "调查目标", {
+      zdebugExec: exec,
+      fs: makeFakeFs().fs,
+      directory: WORKSPACE,
+      messageInjector: undefined,
+    });
+
+    assert.equal(notifyCalls.length, 1);
+    assert.ok(notifyCalls[0].text.includes("已创建调试 Case"));
+    assert.ok(notifyCalls[0].text.includes("未能自动启动"));
+  });
+
+  it("reports the created Case when injection fails", async () => {
+    const { exec } = makeFakeExec({});
+    const { toolHost, notifyCalls } = makeToolHost();
+    const { injector, calls: injectCalls } = makeInjector({
+      error: new Error("promptAsync rejected"),
+    });
+
+    await runCommand("调查登录失败", exec, toolHost, undefined, injector);
+
+    assert.equal(injectCalls.length, 1);
+    // The Case exists, so the failure notice names it and tells the user
+    // to load the skill manually; the handler does not rethrow.
+    assert.equal(notifyCalls.length, 1);
+    assert.ok(notifyCalls[0].text.includes("已创建调试 Case"));
+    assert.ok(notifyCalls[0].text.includes("未能自动启动"));
+    assert.ok(notifyCalls[0].text.includes("promptAsync rejected"));
+    assert.ok(notifyCalls[0].text.includes("auto-debug"));
+    assert.ok(!notifyCalls[0].text.includes("已请求立即开始调查"));
+  });
+
+  it("toasts the inject failure as a fallback to the notification", async () => {
+    const { exec } = makeFakeExec({});
+    const { toolHost, notifyCalls, toastCalls } = makeToolHost();
+    const { injector } = makeInjector({
+      error: new Error("promptAsync rejected"),
+    });
+
+    await runCommand("调查登录失败", exec, toolHost, undefined, injector);
+
+    // The persisted notification is not enough on hosts that suppress
+    // it in this exact situation, so a toast carries the same message.
+    assert.equal(notifyCalls.length, 1);
+    assert.equal(toastCalls.length, 1);
+    assert.equal(toastCalls[0].sessionID, "sess-debug");
+    assert.equal(toastCalls[0].toast.source, "debug");
+    assert.equal(toastCalls[0].toast.level, "warning");
+    assert.ok(toastCalls[0].toast.text.includes("CASE-1"));
+    assert.ok(toastCalls[0].toast.text.includes("未能自动启动"));
+    assert.equal(toastCalls[0].toast.text, notifyCalls[0].text);
+  });
+
+  it("toasts the failure when no injector is wired", async () => {
+    const { exec } = makeFakeExec({});
+    const { toolHost, toastCalls } = makeToolHost();
+
+    await handleDebugCommand(toolHost, "sess-debug", "调查目标", {
+      zdebugExec: exec,
+      fs: makeFakeFs().fs,
+      directory: WORKSPACE,
+      messageInjector: undefined,
+    });
+
+    assert.equal(toastCalls.length, 1);
+    assert.equal(toastCalls[0].toast.source, "debug");
+    assert.equal(toastCalls[0].toast.level, "warning");
+    assert.ok(toastCalls[0].toast.text.includes("未能自动启动"));
+  });
+
+  it("does not throw when the host has no toast surface", async () => {
+    const { exec } = makeFakeExec({});
+    const { toolHost, notifyCalls, toastCalls } = makeToolHost({
+      withToast: false,
+    });
+    const { injector } = makeInjector({
+      error: new Error("promptAsync rejected"),
+    });
+
+    await assert.doesNotReject(() =>
+      runCommand("调查登录失败", exec, toolHost, undefined, injector),
+    );
+
+    assert.equal(notifyCalls.length, 1);
+    assert.equal(toastCalls.length, 0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Startup text display path
+// ---------------------------------------------------------------------------
+
+describe("/debug startup text path", () => {
+  it("renders the Case directory with forward slashes", () => {
+    // The zdebug layout and its docs use `/`; the model must see the
+    // same on every platform (no `.zoo\\debug\\CASE-1`).
+    const text = buildStartupText("CASE-7", "调查目标");
+    assert.ok(text.includes(".zoo/debug/CASE-7/"));
+    assert.ok(!text.includes("\\"));
   });
 });
 
@@ -394,6 +552,7 @@ describe("/debug failure paths", () => {
           zdebugExec: exec,
           fs: makeFakeFs().fs,
           directory: WORKSPACE,
+          messageInjector: undefined,
         }),
       /无法运行 zdebug/,
     );
