@@ -69,6 +69,8 @@ git diff --name-only {DIFF_BASE}
 
 对两个模板执行 {占位符} → 实际值的替换。填充完成后，模板即是可直接传给子 agent 的三段式 prompt。
 
+**必须使用模板原文**：Eagle 的 prompt 只能由「读取模板文件全文 → 替换 {占位符}」构造，禁止重写、压缩、摘要或增删模板章节；模板中的 **SUMMARY:** / **CONTEXT:** / **ACCEPTANCE:** 及所有章节标题必须逐字保留。
+
 ### 占位符来源映射
 
 | 占位符 | 来源 | 用于 |
@@ -120,6 +122,7 @@ git diff --name-only {DIFF_BASE}
 ### 注意事项
 
 - 两个 Eagle 各自输出独立 verdict
+- 委派被拒绝时，必须回到 Phase 1 用模板重新构造后再重启
 - 即使全部 INCONCLUSIVE 且重试后仍无法通过，仍然继续到 Phase 4
 - 不允许无限重试，最多一次
 
