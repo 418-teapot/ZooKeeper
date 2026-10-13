@@ -245,6 +245,7 @@ def build_pi_settings(
     pi_provider_names: Optional[list[str]] = None,
     builtin_providers: Optional[dict[str, object]] = None,
     retry: object = None,
+    providers: Optional[dict[str, object]] = None,
 ) -> dict:
     """Build the pi ``settings.json`` dictionary from scratch.
 
@@ -281,6 +282,14 @@ def build_pi_settings(
             ``retry``; a missing value or empty dict is skipped so pi
             keeps its own default; any other value is skipped with a
             warning.
+        providers: The raw ``[provider]`` table from the parsed TOML.
+            When given and the default provider is present, the model
+            half of the ``Provider/model`` reference is resolved through
+            that provider's ``models`` table to the registry ``id`` (the
+            key pi's ``models.json`` uses), falling back to the table
+            key when no ``id`` field is present.  A provider present but
+            missing the model key, or a non-string ``id``, skips the
+            default fields with a warning (fail-closed).
 
     Returns:
         The settings dictionary.  Always contains ``extensions`` and
@@ -320,7 +329,36 @@ def build_pi_settings(
         )
         return settings
 
-    provider, model_id = split
+    provider, model_key = split
+    model_id = model_key
+
+    # Resolve the registry model id through the provider's models table:
+    # models.json registers models by their ``id`` field, which may
+    # differ from the table key used in the ``Provider/model`` reference
+    # (e.g. key ``qwen3.8-max`` → id ``aliyun/qwen3.8-max``).
+    prov_table = (
+        providers.get(provider) if isinstance(providers, dict) else None
+    )
+    if isinstance(prov_table, dict):
+        models = prov_table.get("models")
+        model_data = (
+            models.get(model_key) if isinstance(models, dict) else None
+        )
+        if not isinstance(model_data, dict):
+            warn(
+                f"默认模型 key '{model_key}' 不在 provider '{provider}'"
+                " 的 models 下，跳过 defaultProvider/defaultModel"
+            )
+            return settings
+        registry_id = model_data.get("id", model_key)
+        if not isinstance(registry_id, str) or not registry_id:
+            warn(
+                f"默认模型 '{provider}/{model_key}' 的 id 字段不是字符串"
+                "，跳过 defaultProvider/defaultModel"
+            )
+            return settings
+        model_id = registry_id
+
     builtin_map = builtin_providers or {}
     if provider in builtin_map:
         pi_id = builtin_map[provider]

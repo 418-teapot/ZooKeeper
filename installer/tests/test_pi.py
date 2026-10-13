@@ -449,6 +449,83 @@ def test_build_pi_settings_retry_invalid_skipped(capsys) -> None:
         assert "pi.retry" in capsys.readouterr().out
 
 
+def test_build_pi_settings_resolves_registry_id(capsys) -> None:
+    """The defaultModel comes from the models table id, not the key."""
+    settings = build_pi_settings(
+        "/abs/src/pi.ts",
+        "{env:ZOO_WHALE_MODEL}",
+        {"ZOO_WHALE_MODEL": "Aliyun/qwen3.8-max"},
+        ["Aliyun"],
+        providers={
+            "Aliyun": {"models": {"qwen3.8-max": {"id": "aliyun/qwen3.8-max"}}}
+        },
+    )
+    assert settings["defaultProvider"] == "Aliyun"
+    assert settings["defaultModel"] == "aliyun/qwen3.8-max"
+    assert capsys.readouterr().out == ""
+
+
+def test_build_pi_settings_model_id_falls_back_to_key(capsys) -> None:
+    """A model table without an id field falls back to the table key."""
+    settings = build_pi_settings(
+        "/abs/src/pi.ts",
+        "Dummy/dummy-small",
+        {},
+        ["Dummy"],
+        providers={"Dummy": {"models": {"dummy-small": {"name": "x"}}}},
+    )
+    assert settings["defaultModel"] == "dummy-small"
+    assert capsys.readouterr().out == ""
+
+
+def test_build_pi_settings_missing_model_key_skips(capsys) -> None:
+    """A model key absent from the provider's models skips the defaults."""
+    settings = build_pi_settings(
+        "/abs/src/pi.ts",
+        "Dummy/ghost",
+        {},
+        ["Dummy"],
+        providers={"Dummy": {"models": {"m": {"id": "m"}}}},
+    )
+    assert "defaultProvider" not in settings
+    assert "defaultModel" not in settings
+    assert "ghost" in capsys.readouterr().out
+
+
+def test_build_pi_settings_non_string_id_skips(capsys) -> None:
+    """A non-string id field skips the defaults (fail-closed)."""
+    settings = build_pi_settings(
+        "/abs/src/pi.ts",
+        "Dummy/bad",
+        {},
+        ["Dummy"],
+        providers={"Dummy": {"models": {"bad": {"id": 42}}}},
+    )
+    assert "defaultProvider" not in settings
+    assert "不是字符串" in capsys.readouterr().out
+
+
+def test_build_pi_settings_builtin_resolves_id_and_pi_id(capsys) -> None:
+    """A builtin default resolves pi_id and the models-table id together."""
+    settings = build_pi_settings(
+        "/abs/src/pi.ts",
+        "OpenAI/gpt-5.5",
+        {},
+        pi_provider_names=[],
+        builtin_providers={"OpenAI": "openai-codex"},
+        providers={
+            "OpenAI": {
+                "builtin": True,
+                "pi_id": "openai-codex",
+                "models": {"gpt-5.5": {}},
+            }
+        },
+    )
+    assert settings["defaultProvider"] == "openai-codex"
+    assert settings["defaultModel"] == "gpt-5.5"
+    assert capsys.readouterr().out == ""
+
+
 # ── build_pi_agents_config ──────────────────────────────────────────────
 
 

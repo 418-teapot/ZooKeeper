@@ -258,6 +258,7 @@ def main() -> None:
             pi_provider_names=list(zk_providers),
             builtin_providers=builtin_pi_ids,
             retry=retry,
+            providers=toml_data.get("provider"),
         )
         os.makedirs(os.path.dirname(pi_settings_path), exist_ok=True)
         try:
