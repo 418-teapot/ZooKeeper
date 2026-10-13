@@ -46,7 +46,7 @@ import {
 import { clearRoundView } from "../../core/context/round-view.js";
 import type { LoopEngine, StopCause } from "../../core/loop/index.js";
 import type { SkillPermissionMap } from "../../core/permissions/skill-permissions.js";
-import { isSkillAllowed } from "../../core/permissions/skill-permissions.js";
+import { filterAllowedSkills } from "../../core/permissions/skill-permissions.js";
 import { applyModelVariant } from "../../core/prompt-variant.js";
 import type { ComposedResult } from "../../core/slots.js";
 import { getPrimary, resolveIdentity } from "../../core/subagent/identity.js";
@@ -287,16 +287,12 @@ export function createPiEventHandlers(
       if (rules === undefined) {
         return { skillPaths: deps.collectSkillPaths(deps.profileSkills) };
       }
-      const kept: string[] = [];
-      const dropped: string[] = [];
-      for (const name of deps.profileSkills) {
-        if (isSkillAllowed(rules, name)) kept.push(name);
-        else dropped.push(name);
-      }
+      const kept = filterAllowedSkills(deps.profileSkills, rules);
+      const dropped = deps.profileSkills.length - kept.length;
       log("resources", "skills_filtered", "", undefined, "info", {
         agent: primary,
         kept: kept.length,
-        dropped: dropped.length,
+        dropped,
       });
       return { skillPaths: deps.collectSkillPaths(kept) };
     },

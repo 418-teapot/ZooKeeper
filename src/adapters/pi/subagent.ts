@@ -32,6 +32,10 @@
  * @module
  */
 
+import {
+  filterAllowedSkills,
+  type SkillPermissionMap,
+} from "../../core/permissions/skill-permissions.js";
 import type {
   SubagentDriver,
   SubagentProgress,
@@ -159,7 +163,9 @@ interface PiContentPart {
  * the sub-session's tool face is restricted).  `model` / `modelRuntime`
  * carry the resolved configured model (strict mode: the request always
  * carries one).  `sessionManager` is the constructed session manager (with
- * the parent-session pointer).
+ * the parent-session pointer).  `resourceLoader`, when present, is the
+ * loader carrying the subagent's filtered ZooKeeper skill directories (its
+ * absence is the machinery-off default: the SDK builds its own).
  */
 export interface PiCreateSessionOptions {
   cwd: string;
@@ -167,7 +173,20 @@ export interface PiCreateSessionOptions {
   sessionManager: PiSessionManager;
   model?: unknown;
   modelRuntime?: PiModelRuntimeLike;
+  resourceLoader?: unknown;
 }
+
+/**
+ * Builds the resource loader a sub-session is created with.
+ *
+ * `skillPaths` are the filtered absolute ZooKeeper skill directories; `cwd`
+ * is the sub-session working directory.  The result is passed to the
+ * session factory as `PiCreateSessionOptions.resourceLoader`.
+ */
+export type PiResourceLoaderFactory = (
+  skillPaths: string[],
+  cwd: string,
+) => Promise<unknown>;
 
 /** Creates the sub-session (injected in tests; defaults to the pi SDK). */
 export type PiSessionFactory = (
@@ -201,6 +220,12 @@ export type PiModelResolver = (
  */
 interface PiSdkLike {
   createAgentSession: PiSessionFactory;
+  DefaultResourceLoader: new (options: {
+    cwd: string;
+    agentDir: string;
+    additionalSkillPaths?: string[];
+  }) => { reload(): Promise<void> };
+  getAgentDir(): string;
   SessionManager: {
     create(
       cwd: string,
@@ -575,6 +600,34 @@ export interface PiSubagentDriverOptions {
    * Defaults to a lazy pi SDK resolution via `ModelRuntime`.
    */
   resolveModel?: PiModelResolver;
+  /**
+   * Per-agent skill permission rules (`[agent.<name>].permission.skill`).
+   * The driver filters the profile skills a subagent may discover by the
+   * rules of the SUBAGENT being created (its own name, never the primary's),
+   * reusing the same evaluation the main session's `resources_discover`
+   * handler applies.
+   */
+  skillPermissions?: SkillPermissionMap;
+  /**
+   * The skill directory names the active profile declares.  Read per run
+   * (never captured once) so the wiring can inject the composed profile
+   * after the driver is constructed.
+   */
+  getProfileSkills?: () => string[];
+  /**
+   * Resolve the absolute paths of the existing profile skill directories
+   * (the main session's `resources_discover` resolution).  Skill injection
+   * is on only when both this and `getProfileSkills` are supplied; either
+   * one missing leaves the sub-session without a custom resource loader
+   * (machinery off, fail-closed).
+   */
+  collectSkillPaths?: (names: string[]) => string[];
+  /**
+   * Build the resource loader carrying the resolved skill paths.  Defaults
+   * to a pi SDK `DefaultResourceLoader` (reloaded before use) with the
+   * paths as `additionalSkillPaths`.
+   */
+  createResourceLoader?: PiResourceLoaderFactory;
 }
 
 /**
@@ -626,6 +679,34 @@ async function defaultResolveModel(
 }
 
 /**
+ * Default resource-loader factory: a pi SDK `DefaultResourceLoader` seeded
+ * with the filtered ZooKeeper skill directories.
+ *
+ * The SDK builds and reloads its OWN default loader only when none is
+ * supplied, so a caller-provided loader must be reloaded here before the
+ * session reads it.  `getAgentDir()` mirrors the SDK's own default agent
+ * directory, keeping the sub-session's discovery scope (global / project
+ * skills, extensions, settings) identical to a default session's.
+ *
+ * @param skillPaths - The filtered absolute skill directories to add.
+ * @param cwd - The sub-session working directory.
+ * @returns A promise of the reloaded resource loader.
+ */
+async function defaultCreateResourceLoader(
+  skillPaths: string[],
+  cwd: string,
+): Promise<unknown> {
+  const sdk = await loadSdk();
+  const loader = new sdk.DefaultResourceLoader({
+    cwd,
+    agentDir: sdk.getAgentDir(),
+    additionalSkillPaths: skillPaths,
+  });
+  await loader.reload();
+  return loader;
+}
+
+/**
  * Create the pi subagent driver.
  *
  * The driver executes a subagent as a fresh pi `AgentSession` created
@@ -650,6 +731,27 @@ export function createPiSubagentDriver(
   const createSessionManager =
     options.createSessionManager ?? defaultCreateSessionManager;
   const resolveModel = options.resolveModel ?? defaultResolveModel;
+  const createResourceLoader =
+    options.createResourceLoader ?? defaultCreateResourceLoader;
+  const collectSkillPaths = options.collectSkillPaths;
+  const getProfileSkills = options.getProfileSkills;
+  // Resolve the skill directories a subagent may discover: the profile
+  // skills filtered by the SUBAGENT's own permission rules (the same
+  // `filterAllowedSkills` evaluation `resources_discover` applies for the
+  // primary), then mapped to their existing absolute paths.  Empty when the
+  // wiring is off (no profile-skills supplier or path resolver) or nothing
+  // survives the filter — the caller then creates the sub-session without a
+  // custom resource loader, exactly like a host with no skill config.
+  const resolveSkillPaths = (agent: string): string[] => {
+    if (collectSkillPaths === undefined || getProfileSkills === undefined) {
+      return [];
+    }
+    const kept = filterAllowedSkills(
+      getProfileSkills(),
+      options.skillPermissions?.[agent],
+    );
+    return kept.length > 0 ? collectSkillPaths(kept) : [];
+  };
 
   return {
     async run(request, ctx): Promise<SubagentResult> {
@@ -789,12 +891,22 @@ export function createPiSubagentDriver(
           return result;
         }
         modelId = modelIdOf(request.model);
+        // Build the resource loader carrying the subagent's filtered ZooKeeper
+        // skill directories.  Only when at least one directory survives do we
+        // pass a loader; otherwise the SDK builds its own default (the same
+        // machinery-off behaviour a host without skill config has).
+        const skillPaths = resolveSkillPaths(request.agent);
+        const resourceLoader =
+          skillPaths.length > 0
+            ? await createResourceLoader(skillPaths, cwd)
+            : undefined;
         const { session: created } = await createSession({
           cwd,
           tools: request.tools,
           sessionManager,
           model: resolved.model,
           modelRuntime: resolved.modelRuntime,
+          ...(resourceLoader !== undefined ? { resourceLoader } : {}),
         });
         session = created;
         unsubscribe = session.subscribe((event) => {

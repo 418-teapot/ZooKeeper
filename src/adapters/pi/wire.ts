@@ -594,6 +594,10 @@ export function buildPiHandlers(
   // rules; an agent absent from the map (or no primary) contributes
   // unfiltered (default-allow, machinery-off unchanged).
   const skillPermissions = parseSkillPermissions(rawConfig ?? {});
+  // The profile-declared skill directory names.  Declared here (empty) so
+  // the subagent driver can read them lazily at delegation time; assigned
+  // once the profile is composed below.
+  let profileSkills: string[] = [];
 
   // Wrap a name in a truecolor ANSI foreground sequence when the agent
   // has a configured color; otherwise return it unchanged (fail-closed).
@@ -692,10 +696,20 @@ export function buildPiHandlers(
       // wired when a real pi API instance is present (the extension runs
       // inside pi); test-only and driver-less compositions stay closed.
       // A test override replaces the SDK driver with a fake so bridge
-      // tests run without loading the pi SDK.
+      // tests run without loading the pi SDK.  The skill seam is injected
+      // from the same config/profile sources the main session's
+      // `resources_discover` uses: each sub-session is seeded with the
+      // skill directories its OWN `[agent.<name>.permission.skill]` rules
+      // allow (`profileSkills` is read lazily, after it is composed).
       subagentDriver:
         overrides?.subagentDriver ??
-        (piApi ? createPiSubagentDriver() : undefined),
+        (piApi
+          ? createPiSubagentDriver({
+              skillPermissions,
+              getProfileSkills: () => profileSkills,
+              collectSkillPaths,
+            })
+          : undefined),
       // The pi subagent transcript-card renderer — turns the tool's
       // streamed text into pi TUI components.  Wired only when a real pi
       // API instance is present; the tool contribution then carries
@@ -882,7 +896,7 @@ export function buildPiHandlers(
     limits,
   });
 
-  const profileSkills = composed.skills.map((skill) => skill.name);
+  profileSkills = composed.skills.map((skill) => skill.name);
 
   // Register profile tools with pi when an API instance is supplied.
   // The composed `tool.definition` contributions (the subagent-prompt format

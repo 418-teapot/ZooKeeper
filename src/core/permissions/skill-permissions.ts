@@ -165,3 +165,25 @@ export function isSkillAllowed(
 
   return candidates[0].action === "allow";
 }
+
+/**
+ * Filter the profile skills an agent may discover by its rule set.
+ *
+ * The one place the filtering is applied, so the main session's
+ * `resources_discover` contribution and a subagent's resource loader can
+ * never disagree on which skills an agent sees.  An agent with no rules
+ * (`undefined`) is unrestricted: the full profile list passes through in
+ * profile order, mirroring the default-allow config semantics.
+ *
+ * @param profileSkills - The skill directory names the profile declares.
+ * @param rules - The agent's ordered skill rules, or `undefined` when the
+ *   agent declares none (unfiltered).
+ * @returns The names the agent may discover, in profile order.
+ */
+export function filterAllowedSkills(
+  profileSkills: readonly string[],
+  rules: SkillPermissionRule[] | undefined,
+): string[] {
+  if (rules === undefined) return [...profileSkills];
+  return profileSkills.filter((name) => isSkillAllowed(rules, name));
+}

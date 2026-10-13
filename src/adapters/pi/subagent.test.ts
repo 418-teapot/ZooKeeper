@@ -11,6 +11,10 @@
 import assert from "node:assert/strict";
 import { afterEach, describe, it } from "node:test";
 import type {
+  SkillPermissionMap,
+  SkillPermissionRule,
+} from "../../core/permissions/skill-permissions.js";
+import type {
   SubagentProgress,
   SubagentResult,
 } from "../../core/subagent/driver.js";
@@ -34,6 +38,7 @@ import {
   type PiResolvedModel,
   type PiSessionEvent,
   type PiSessionManager,
+  type PiSubagentDriverOptions,
 } from "./subagent.js";
 
 afterEach(() => {
@@ -1413,5 +1418,191 @@ describe("pi subagent driver — streaming partials", () => {
       ),
     ]);
     assert.deepEqual(partials[0], [{ type: "text", text: "calling" }]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Skill resource loader injection
+// ---------------------------------------------------------------------------
+
+describe("pi subagent driver — subagent skill discovery", () => {
+  /**
+   * Build a driver whose session/loader factories are observed.
+   *
+   * The four skill options are injected directly (the wiring seam); the
+   * resource-loader factory records every call and echoes its arguments so
+   * a test can assert the loader the session factory received.
+   */
+  function skillHarness(
+    skill: Pick<
+      PiSubagentDriverOptions,
+      "skillPermissions" | "getProfileSkills" | "collectSkillPaths"
+    > = {},
+  ) {
+    const s = mockSession();
+    const factoryCalls: Array<PiCreateSessionOptions> = [];
+    const loaderCalls: Array<{ paths: string[]; cwd: string }> = [];
+    const driver = createPiSubagentDriver({
+      createSession: async (opts) => {
+        factoryCalls.push(opts);
+        return { session: s.session };
+      },
+      createSessionManager: async () => mockSessionManager(),
+      resolveModel: async (model) =>
+        model === "p/m"
+          ? {
+              model: { provider: "p", id: "m" },
+              modelRuntime: { getModel: () => ({ provider: "p", id: "m" }) },
+            }
+          : undefined,
+      ...skill,
+      createResourceLoader: async (paths, cwd) => {
+        loaderCalls.push({ paths, cwd });
+        return { paths, cwd };
+      },
+    });
+    return { driver, s, factoryCalls, loaderCalls };
+  }
+
+  /** Run one subagent to completion through the harness. */
+  async function run(
+    h: ReturnType<typeof skillHarness>,
+    agent = "beaver",
+  ): Promise<SubagentResult> {
+    h.s.setPromptBehavior({ kind: "resolves", emitOnPrompt: okEvents() });
+    return h.driver.run(
+      { agent, prompt: "t", tools: [], model: "p/m" },
+      { signal: new AbortController().signal },
+    );
+  }
+
+  /** Rule set mirroring config.toml's `[agent.lynx]`: catch-all deny. */
+  const ALLOW_ONLY_WIKI: SkillPermissionRule[] = [
+    { pattern: "*", action: "deny" },
+    { pattern: "wiki-query", action: "allow" },
+  ];
+
+  it("passes a resource loader carrying the filtered skill paths", async () => {
+    const h = skillHarness({
+      skillPermissions: { beaver: ALLOW_ONLY_WIKI },
+      getProfileSkills: () => ["wiki-query", "grill", "beaver-tdd"],
+      collectSkillPaths: (names) => names.map((n) => `/skills/${n}`),
+    });
+    const result = await run(h);
+
+    assert.equal(result.kind, "ok");
+    assert.equal(h.loaderCalls.length, 1);
+    assert.deepEqual(h.loaderCalls[0], {
+      paths: ["/skills/wiki-query"],
+      cwd: process.cwd(),
+    });
+    assert.deepEqual(h.factoryCalls[0].resourceLoader, {
+      paths: ["/skills/wiki-query"],
+      cwd: process.cwd(),
+    });
+  });
+
+  it("excludes skills denied by the subagent's own glob rules", async () => {
+    const h = skillHarness({
+      skillPermissions: {
+        beaver: [{ pattern: "beaver-*", action: "deny" }],
+      },
+      getProfileSkills: () => ["wiki-query", "beaver-tdd"],
+      collectSkillPaths: (names) => names.map((n) => `/skills/${n}`),
+    });
+    await run(h);
+    assert.deepEqual(h.loaderCalls[0].paths, ["/skills/wiki-query"]);
+  });
+
+  it("applies the rules of the target subagent, not another agent's", async () => {
+    const skillPermissions: SkillPermissionMap = {
+      beaver: ALLOW_ONLY_WIKI,
+      // kiwi declares no rules → default-allow, every profile skill passes.
+      kiwi: [],
+    };
+    const profile = ["wiki-query", "grill", "beaver-tdd"];
+
+    const beaver = skillHarness({
+      skillPermissions,
+      getProfileSkills: () => profile,
+      collectSkillPaths: (names) => names.map((n) => `/skills/${n}`),
+    });
+    await run(beaver, "beaver");
+    assert.deepEqual(beaver.loaderCalls[0].paths, ["/skills/wiki-query"]);
+
+    const kiwi = skillHarness({
+      skillPermissions,
+      getProfileSkills: () => profile,
+      collectSkillPaths: (names) => names.map((n) => `/skills/${n}`),
+    });
+    await run(kiwi, "kiwi");
+    assert.deepEqual(kiwi.loaderCalls[0].paths, [
+      "/skills/wiki-query",
+      "/skills/grill",
+      "/skills/beaver-tdd",
+    ]);
+  });
+
+  it("reads the profile skills lazily, honoring a later profile", async () => {
+    let profile = ["wiki-query"];
+    const h = skillHarness({
+      skillPermissions: { beaver: [] },
+      getProfileSkills: () => profile,
+      collectSkillPaths: (names) => names.map((n) => `/skills/${n}`),
+    });
+    await run(h);
+    assert.deepEqual(h.loaderCalls[0].paths, ["/skills/wiki-query"]);
+
+    profile = ["grill"];
+    h.s.setPromptBehavior({ kind: "resolves", emitOnPrompt: okEvents() });
+    await h.driver.run(
+      { agent: "beaver", prompt: "t", tools: [], model: "p/m" },
+      { signal: new AbortController().signal },
+    );
+    assert.deepEqual(h.loaderCalls[1].paths, ["/skills/grill"]);
+  });
+
+  it("omits the resource loader when no skill survives the filter", async () => {
+    const h = skillHarness({
+      skillPermissions: { beaver: [{ pattern: "*", action: "deny" }] },
+      getProfileSkills: () => ["wiki-query"],
+      collectSkillPaths: (names) => names.map((n) => `/skills/${n}`),
+    });
+    await run(h);
+    assert.equal(h.loaderCalls.length, 0, "no loader must be built");
+    assert.equal(h.factoryCalls[0].resourceLoader, undefined);
+  });
+
+  it("omits the resource loader when the resolver finds no directory", async () => {
+    const h = skillHarness({
+      skillPermissions: {},
+      getProfileSkills: () => ["wiki-query"],
+      collectSkillPaths: () => [],
+    });
+    await run(h);
+    assert.equal(h.loaderCalls.length, 0);
+    assert.equal(h.factoryCalls[0].resourceLoader, undefined);
+  });
+
+  it("omits the resource loader when the wiring supplies no profile skills", async () => {
+    const h = skillHarness({
+      skillPermissions: { beaver: ALLOW_ONLY_WIKI },
+      // getProfileSkills omitted → the skill machinery stays off.
+      collectSkillPaths: (names) => names.map((n) => `/skills/${n}`),
+    });
+    await run(h);
+    assert.equal(h.loaderCalls.length, 0);
+    assert.equal(h.factoryCalls[0].resourceLoader, undefined);
+  });
+
+  it("omits the resource loader when the wiring supplies no path resolver", async () => {
+    const h = skillHarness({
+      skillPermissions: { beaver: ALLOW_ONLY_WIKI },
+      getProfileSkills: () => ["wiki-query"],
+      // collectSkillPaths omitted → the skill machinery stays off.
+    });
+    await run(h);
+    assert.equal(h.loaderCalls.length, 0);
+    assert.equal(h.factoryCalls[0].resourceLoader, undefined);
   });
 });
