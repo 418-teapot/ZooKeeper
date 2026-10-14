@@ -598,6 +598,9 @@ small_model = "{env:ZOO_ANT_MODEL}"
 
 # ── Pi ────────────────────────────────────────────────────────────────────────
 
+[pi]
+defaultThinkingLevel = "high"
+
 [pi.retry]
 maxRetries = 10
 

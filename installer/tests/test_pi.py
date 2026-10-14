@@ -104,28 +104,158 @@ def test_convert_provider_keeps_v1_for_openai() -> None:
     assert "cost" not in model
 
 
-def test_convert_provider_cost_four_fields_defaulted() -> None:
-    """Missing cost fields default to 0 with snake_case renamed to camelCase."""
+def test_convert_provider_cost_missing_field_lists_field(capsys) -> None:
+    """A partial cost table names each offending field in the warning."""
     provider = {
         "npm": "@ai-sdk/anthropic",
-        "options": {"baseURL": "https://api.example.com"},
+        "options": {
+            "baseURL": "https://api.example.com",
+            "apiKey": "k",
+        },
         "models": {"m": {"cost": {"input": 1}}},
     }
     result = _convert_provider_to_pi("P", provider)
     assert result is not None
-    assert result["models"][0]["cost"] == {
-        "input": 1,
-        "output": 0,
-        "cacheRead": 0,
-        "cacheWrite": 0,
+    assert "cost" not in result["models"][0]
+    out = capsys.readouterr().out
+    assert "cache_read" in out
+    assert "cache_write" in out
+    assert "output" in out
+
+
+def test_convert_provider_cost_non_numeric_field_lists_field(capsys) -> None:
+    """A non-numeric cost field is named in the warning."""
+    provider = {
+        "npm": "@ai-sdk/anthropic",
+        "options": {
+            "baseURL": "https://api.example.com",
+            "apiKey": "k",
+        },
+        "models": {
+            "m": {
+                "cost": {
+                    "input": 1,
+                    "output": "cheap",
+                    "cache_read": 0.1,
+                    "cache_write": 0.2,
+                }
+            }
+        },
     }
+    result = _convert_provider_to_pi("P", provider)
+    assert result is not None
+    assert "cost" not in result["models"][0]
+    out = capsys.readouterr().out
+    assert "output" in out
+
+
+def test_convert_provider_cost_multiple_bad_fields_listed(capsys) -> None:
+    """Every offending cost field is listed in one warning."""
+    provider = {
+        "npm": "@ai-sdk/anthropic",
+        "options": {
+            "baseURL": "https://api.example.com",
+            "apiKey": "k",
+        },
+        "models": {"m": {"cost": {"input": 1, "output": 2}}},
+    }
+    result = _convert_provider_to_pi("P", provider)
+    assert result is not None
+    assert "cost" not in result["models"][0]
+    out = capsys.readouterr().out
+    assert "cache_read" in out
+    assert "cache_write" in out
+
+
+def test_convert_provider_non_dict_cost_warns(capsys) -> None:
+    """A cost that is not a table skips with a warning, not silently."""
+    provider = {
+        "npm": "@ai-sdk/anthropic",
+        "options": {
+            "baseURL": "https://api.example.com",
+            "apiKey": "k",
+        },
+        "models": {"m": {"cost": "cheap"}},
+    }
+    result = _convert_provider_to_pi("P", provider)
+    assert result is not None
+    assert "cost" not in result["models"][0]
+    out = capsys.readouterr().out
+    assert "cost" in out
+    assert "表" in out
+
+
+def test_convert_provider_absent_cost_no_warning(capsys) -> None:
+    """A wholly absent cost table stays silent and writes no cost entry."""
+    provider = {
+        "npm": "@ai-sdk/anthropic",
+        "options": {
+            "baseURL": "https://api.example.com",
+            "apiKey": "k",
+        },
+        "models": {"m": {"name": "m"}},
+    }
+    result = _convert_provider_to_pi("P", provider)
+    assert result is not None
+    assert "cost" not in result["models"][0]
+    assert capsys.readouterr().out == ""
+
+
+def test_convert_provider_missing_base_url_skipped(capsys) -> None:
+    """A provider without a baseURL is skipped with a warning."""
+    provider = {"npm": "@ai-sdk/anthropic", "options": {"apiKey": "k"}}
+    assert _convert_provider_to_pi("P", provider) is None
+    assert "baseURL 缺失或无效" in capsys.readouterr().out
+
+
+def test_convert_provider_non_string_base_url_skipped(capsys) -> None:
+    """A non-string baseURL is skipped with the same wording as missing."""
+    provider = {
+        "npm": "@ai-sdk/anthropic",
+        "options": {"baseURL": 42, "apiKey": "k"},
+    }
+    assert _convert_provider_to_pi("P", provider) is None
+    assert "baseURL 缺失或无效" in capsys.readouterr().out
+
+
+def test_convert_provider_empty_base_url_skipped(capsys) -> None:
+    """An empty baseURL is skipped with the same wording as missing."""
+    provider = {
+        "npm": "@ai-sdk/anthropic",
+        "options": {"baseURL": "", "apiKey": "k"},
+    }
+    assert _convert_provider_to_pi("P", provider) is None
+    assert "baseURL 缺失或无效" in capsys.readouterr().out
+
+
+def test_convert_provider_empty_api_key_skipped(capsys) -> None:
+    """A provider with an empty apiKey is skipped with a warning."""
+    provider = {
+        "npm": "@ai-sdk/anthropic",
+        "options": {"baseURL": "https://api.example.com", "apiKey": ""},
+    }
+    assert _convert_provider_to_pi("P", provider) is None
+    assert "apiKey 缺失或无效" in capsys.readouterr().out
+
+
+def test_convert_provider_missing_api_key_skipped(capsys) -> None:
+    """A provider without an apiKey is skipped with the same wording."""
+    provider = {
+        "npm": "@ai-sdk/anthropic",
+        "options": {"baseURL": "https://api.example.com"},
+    }
+    assert _convert_provider_to_pi("P", provider) is None
+    assert "apiKey 缺失或无效" in capsys.readouterr().out
 
 
 def test_convert_provider_reasoning_only_when_true() -> None:
     """reasoning is emitted only when explicitly true."""
     provider = {
         "npm": "@ai-sdk/anthropic",
-        "options": {"baseURL": "https://api.example.com"},
+        "options": {
+            "baseURL": "https://api.example.com",
+            "apiKey": "k",
+        },
         "models": {"a": {"reasoning": False}, "b": {}},
     }
     result = _convert_provider_to_pi("P", provider)
@@ -152,16 +282,29 @@ def test_convert_provider_unknown_npm_skipped(capsys) -> None:
     assert "npm 类型无法识别" in capsys.readouterr().out
 
 
-def test_convert_provider_handles_non_dict_options_and_models() -> None:
-    """Non-dict options/models degrade to empty defaults."""
+def test_convert_provider_non_dict_options_skipped(capsys) -> None:
+    """Non-dict options degrade to empty, so baseURL is missing."""
     provider = {
         "npm": "@ai-sdk/anthropic",
         "options": "oops",
         "models": "oops",
     }
+    assert _convert_provider_to_pi("P", provider) is None
+    assert "baseURL" in capsys.readouterr().out
+
+
+def test_convert_provider_non_dict_models_defaults_empty() -> None:
+    """A non-dict models table degrades to an empty model list."""
+    provider = {
+        "npm": "@ai-sdk/anthropic",
+        "options": {
+            "baseURL": "https://api.example.com",
+            "apiKey": "k",
+        },
+        "models": "oops",
+    }
     result = _convert_provider_to_pi("P", provider)
     assert result is not None
-    assert result["baseUrl"] == ""
     assert result["models"] == []
 
 
@@ -219,7 +362,10 @@ def test_build_pi_models_config_builtin_excluded() -> None:
             },
             "Dummy": {
                 "npm": "@ai-sdk/anthropic",
-                "options": {"baseURL": "https://api.example.com/v1"},
+                "options": {
+                    "baseURL": "https://api.example.com/v1",
+                    "apiKey": "k",
+                },
                 "models": {"m": {"id": "m"}},
             },
         }
@@ -242,7 +388,6 @@ def test_build_pi_settings_env_ref_split() -> None:
     )
     assert settings == {
         "extensions": ["/abs/src/pi.ts"],
-        "defaultThinkingLevel": "high",
         "defaultProvider": "Dummy",
         "defaultModel": "dummy-small",
     }
@@ -255,7 +400,6 @@ def test_build_pi_settings_plain_string_split() -> None:
     )
     assert settings == {
         "extensions": ["/abs/src/pi.ts"],
-        "defaultThinkingLevel": "high",
         "defaultProvider": "Dummy",
         "defaultModel": "dummy-small",
     }
@@ -268,7 +412,6 @@ def test_build_pi_settings_missing_env_only_extensions(capsys) -> None:
     )
     assert settings == {
         "extensions": ["/abs/src/pi.ts"],
-        "defaultThinkingLevel": "high",
     }
     assert "defaultProvider" not in settings
     assert "defaultModel" not in settings
@@ -282,7 +425,6 @@ def test_build_pi_settings_missing_defaults_section(capsys) -> None:
     )
     assert settings == {
         "extensions": ["/abs/src/pi.ts"],
-        "defaultThinkingLevel": "high",
     }
     assert "defaultProvider" not in settings
     assert "环境变量" in capsys.readouterr().out
@@ -295,7 +437,6 @@ def test_build_pi_settings_empty_env_value(capsys) -> None:
     )
     assert settings == {
         "extensions": ["/abs/src/pi.ts"],
-        "defaultThinkingLevel": "high",
     }
     assert "defaultProvider" not in settings
     assert "为空" in capsys.readouterr().out
@@ -311,7 +452,6 @@ def test_build_pi_settings_no_slash(capsys) -> None:
     )
     assert settings == {
         "extensions": ["/abs/src/pi.ts"],
-        "defaultThinkingLevel": "high",
     }
     assert "defaultProvider" not in settings
     assert "分隔" in capsys.readouterr().out
@@ -327,7 +467,6 @@ def test_build_pi_settings_pruned_provider_still_writes(capsys) -> None:
     )
     assert settings == {
         "extensions": ["/abs/src/pi.ts"],
-        "defaultThinkingLevel": "high",
         "defaultProvider": "Foo",
         "defaultModel": "bar",
     }
@@ -345,7 +484,6 @@ def test_build_pi_settings_builtin_provider_maps_to_pi_id(capsys) -> None:
     )
     assert settings == {
         "extensions": ["/abs/src/pi.ts"],
-        "defaultThinkingLevel": "high",
         "defaultProvider": "openai-codex",
         "defaultModel": "gpt-5.5",
     }
@@ -365,7 +503,6 @@ def test_build_pi_settings_builtin_map_absent_provider_unchanged(
     )
     assert settings == {
         "extensions": ["/abs/src/pi.ts"],
-        "defaultThinkingLevel": "high",
         "defaultProvider": "Dummy",
         "defaultModel": "dummy-small",
     }
@@ -383,7 +520,6 @@ def test_build_pi_settings_builtin_missing_pi_id_skips(capsys) -> None:
     )
     assert settings == {
         "extensions": ["/abs/src/pi.ts"],
-        "defaultThinkingLevel": "high",
     }
     out = capsys.readouterr().out
     assert "内置 provider" in out
@@ -403,50 +539,99 @@ def test_build_pi_settings_builtin_empty_pi_id_skips(capsys) -> None:
     )
     assert settings == {
         "extensions": ["/abs/src/pi.ts"],
-        "defaultThinkingLevel": "high",
     }
     assert "pi_id" in capsys.readouterr().out
 
 
-def test_build_pi_settings_retry_written() -> None:
-    """The whole [pi.retry] table is written through unchanged."""
-    retry = {"maxRetries": 10, "enabled": False}
+def test_build_pi_settings_pi_section_passthrough() -> None:
+    """The whole [pi] table is merged verbatim into settings."""
     settings = build_pi_settings(
         "/abs/src/pi.ts",
         "Dummy/dummy-small",
         {},
         ["Dummy"],
-        retry=retry,
+        pi_section={
+            "defaultThinkingLevel": "xhigh",
+            "retry": {"maxRetries": 10, "enabled": False},
+            "customKey": [1, 2],
+        },
     )
-    assert settings["retry"] == retry
+    assert settings["defaultThinkingLevel"] == "xhigh"
+    assert settings["retry"] == {"maxRetries": 10, "enabled": False}
+    assert settings["customKey"] == [1, 2]
 
 
-def test_build_pi_settings_retry_absent_skipped(capsys) -> None:
-    """A missing or empty retry table omits the key without warning."""
-    for retry in (None, {}):
+def test_build_pi_settings_pi_section_absent_skipped(capsys) -> None:
+    """A missing or empty [pi] table merges nothing and warns not."""
+    for pi_section in (None, {}):
         settings = build_pi_settings(
             "/abs/src/pi.ts",
             "Dummy/dummy-small",
             {},
             ["Dummy"],
-            retry=retry,
+            pi_section=pi_section,
         )
         assert "retry" not in settings
+        assert "defaultThinkingLevel" not in settings
     assert capsys.readouterr().out == ""
 
 
-def test_build_pi_settings_retry_invalid_skipped(capsys) -> None:
-    """A non-table retry value is skipped with a warning."""
+def test_build_pi_settings_pi_section_invalid_skipped(capsys) -> None:
+    """A non-table [pi] section is skipped with a warning."""
     for invalid in (10, "10"):
         settings = build_pi_settings(
             "/abs/src/pi.ts",
             "Dummy/dummy-small",
             {},
             ["Dummy"],
-            retry=invalid,
+            pi_section=invalid,
         )
         assert "retry" not in settings
-        assert "pi.retry" in capsys.readouterr().out
+        assert "defaultThinkingLevel" not in settings
+        assert "pi 节" in capsys.readouterr().out
+
+
+def test_build_pi_settings_reserved_keys_derived_win(capsys) -> None:
+    """Installer-managed keys in [pi] warn and keep their derived values."""
+    settings = build_pi_settings(
+        "/abs/src/pi.ts",
+        "Dummy/dummy-small",
+        {},
+        ["Dummy"],
+        pi_section={
+            "extensions": ["/user/extension.ts"],
+            "defaultProvider": "Attacker",
+            "defaultModel": "evil",
+            "defaultThinkingLevel": "low",
+        },
+    )
+    assert settings["extensions"] == ["/abs/src/pi.ts"]
+    assert settings["defaultProvider"] == "Dummy"
+    assert settings["defaultModel"] == "dummy-small"
+    assert settings["defaultThinkingLevel"] == "low"
+    out = capsys.readouterr().out
+    assert "extensions" in out
+    assert "defaultProvider" in out
+    assert "defaultModel" in out
+
+
+def test_build_pi_settings_reserved_keys_dropped_when_defaults_fail(
+    capsys,
+) -> None:
+    """Reserved keys in [pi] are dropped even when the model fails to resolve."""
+    settings = build_pi_settings(
+        "/abs/src/pi.ts",
+        "{env:ZOO_WHALE_MODEL}",
+        {},
+        ["Dummy"],
+        pi_section={
+            "defaultProvider": "Attacker",
+            "defaultModel": "evil",
+        },
+    )
+    assert "defaultProvider" not in settings
+    assert "defaultModel" not in settings
+    assert "defaultProvider" in capsys.readouterr().out
 
 
 def test_build_pi_settings_resolves_registry_id(capsys) -> None:
@@ -859,7 +1044,10 @@ def _provider_with_thinking(thinking: object) -> dict:
         model["thinking"] = thinking
     return {
         "npm": "@ai-sdk/anthropic",
-        "options": {"baseURL": "https://api.example.com/v1"},
+        "options": {
+            "baseURL": "https://api.example.com/v1",
+            "apiKey": "k",
+        },
         "models": {"m": model},
     }
 

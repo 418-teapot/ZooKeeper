@@ -47,8 +47,9 @@ def _convert_provider_to_pi(prov_name: str, prov_data: dict) -> Optional[dict]:
 
     Returns:
         A dictionary in pi ``models.json`` ``providers`` entry format, or
-        ``None`` if the provider should be skipped (builtin providers and
-        unrecognised ``npm`` types).
+        ``None`` if the provider should be skipped (builtin providers,
+        unrecognised ``npm`` types, and providers missing ``baseURL`` or
+        ``apiKey``).
     """
     # Builtin providers resolve through the host's own auth and model
     # catalog, so ZooKeeper emits no models.json entry for them.
@@ -69,7 +70,15 @@ def _convert_provider_to_pi(prov_name: str, prov_data: dict) -> Optional[dict]:
     if not isinstance(options, dict):
         options = {}
 
-    base_url = options.get("baseURL", "")
+    base_url = options.get("baseURL")
+    if not isinstance(base_url, str) or not base_url:
+        warn(f"provider.{prov_name} 的 baseURL 缺失或无效，跳过")
+        return None
+
+    api_key = options.get("apiKey")
+    if not isinstance(api_key, str) or not api_key:
+        warn(f"provider.{prov_name} 的 apiKey 缺失或无效，跳过")
+        return None
 
     # Strip trailing /v1 for anthropic-messages providers.
     #
@@ -82,8 +91,6 @@ def _convert_provider_to_pi(prov_name: str, prov_data: dict) -> Optional[dict]:
         base_url = base_url.rstrip("/")
         if base_url.endswith("/v1"):
             base_url = base_url[:-3]
-
-    api_key = options.get("apiKey", "")
 
     headers = options.get("headers", {})
     if not isinstance(headers, dict):
@@ -118,17 +125,40 @@ def _convert_provider_to_pi(prov_name: str, prov_data: dict) -> Optional[dict]:
 
         # Cost (with snake_case → camelCase rename)
         cost = model_data.get("cost")
-        if isinstance(cost, dict):
+        if cost is not None and not isinstance(cost, dict):
+            warn(
+                f"provider.{prov_name} 的模型 {model_id} 的 cost 需为表，跳过 cost"
+            )
+        elif isinstance(cost, dict):
             # pi's models.json schema requires all four cost fields present.
-            # Missing fields default to 0 so config.toml entries that only
-            # declare input/output still produce a schema-valid cost object.
-            cost_entry: dict[str, object] = {
-                "input": cost.get("input", 0),
-                "output": cost.get("output", 0),
-                "cacheRead": cost.get("cache_read", 0),
-                "cacheWrite": cost.get("cache_write", 0),
+            # A partial or non-numeric table is skipped with a warning
+            # instead of guessing defaults, so config.toml stays the single
+            # source of truth for pricing.  The warning names every
+            # offending field so the user knows what to fix.
+            cost_fields = {
+                "input": cost.get("input"),
+                "output": cost.get("output"),
+                "cache_read": cost.get("cache_read"),
+                "cache_write": cost.get("cache_write"),
             }
-            entry["cost"] = cost_entry
+            invalid = [
+                name
+                for name, value in cost_fields.items()
+                if not isinstance(value, (int, float))
+                or isinstance(value, bool)
+            ]
+            if invalid:
+                warn(
+                    f"provider.{prov_name} 的模型 {model_id} 的 cost 字段 "
+                    f"{'、'.join(invalid)} 缺失或不是数字，跳过 cost"
+                )
+            else:
+                entry["cost"] = {
+                    "input": cost_fields["input"],
+                    "output": cost_fields["output"],
+                    "cacheRead": cost_fields["cache_read"],
+                    "cacheWrite": cost_fields["cache_write"],
+                }
 
         # Thinking — pi enables it per model through compat
         # forceAdaptiveThinking (pi then sends thinking.type "adaptive"
@@ -238,20 +268,25 @@ def _split_model_reference(model: str) -> Optional[tuple[str, str]]:
     return (provider, model_id)
 
 
+# Keys the installer derives itself; a value for them under [pi] is
+# ignored so the installer stays the single writer of these keys.
+_PI_RESERVED_KEYS = ("extensions", "defaultProvider", "defaultModel")
+
+
 def build_pi_settings(
     extension_path: str,
     defaults_model: object,
     env: dict[str, str],
     pi_provider_names: Optional[list[str]] = None,
     builtin_providers: Optional[dict[str, object]] = None,
-    retry: object = None,
+    pi_section: object = None,
     providers: Optional[dict[str, object]] = None,
 ) -> dict:
     """Build the pi ``settings.json`` dictionary from scratch.
 
     The settings file is fully rebuilt on every install: the previous file
-    is never read or merged, so only the ``extensions`` array, the
-    ``defaultThinkingLevel`` value, and the derived
+    is never read or merged, so only the ``[pi]`` table (passed through
+    verbatim), the ``extensions`` array, and the derived
     ``defaultProvider``/``defaultModel`` keys are written.  Keys pi writes
     back at runtime (theme, lastChangelogVersion, ...) are intentionally
     not preserved.
@@ -260,9 +295,10 @@ def build_pi_settings(
     config.toml (format ``Provider/model``), resolved against *env*.
     When the value is missing, unresolved, empty, or lacks a valid ``/``
     separator, a Chinese warning is printed and only the ``extensions``
-    array plus ``defaultThinkingLevel`` are written — the install
-    continues.  A provider that is absent from this run's pi providers (e.g. pruned for missing credentials)
-    still gets written, with a warning.
+    array plus the merged ``[pi]`` table are written — the install
+    continues.  A provider that is absent from this run's pi providers
+    (e.g. pruned for missing credentials) still gets written, with a
+    warning.
 
     Args:
         extension_path: Absolute path to the pi extension (``src/pi.ts``).
@@ -277,11 +313,13 @@ def build_pi_settings(
             non-empty string ``pi_id``, that id is written and no
             pruned-provider warning is emitted; a builtin provider whose
             ``pi_id`` is missing or empty is skipped with a warning.
-        retry: The whole ``[pi.retry]`` table from the parsed TOML,
-            passed through unchanged.  A non-empty dict is written as
-            ``retry``; a missing value or empty dict is skipped so pi
-            keeps its own default; any other value is skipped with a
-            warning.
+        pi_section: The whole ``[pi]`` table from the parsed TOML.  A
+            dict is merged verbatim into the settings so new pi options
+            need no code change here; a missing value merges nothing;
+            any other value is skipped with a warning (fail-closed).
+            Values for the installer-managed keys (``extensions``,
+            ``defaultProvider``, ``defaultModel``) are ignored with a
+            warning so the derived values always win.
         providers: The raw ``[provider]`` table from the parsed TOML.
             When given and the default provider is present, the model
             half of the ``Provider/model`` reference is resolved through
@@ -292,26 +330,30 @@ def build_pi_settings(
             default fields with a warning (fail-closed).
 
     Returns:
-        The settings dictionary.  Always contains ``extensions`` and
-        ``defaultThinkingLevel`` (hardcoded to ``high``);
+        The settings dictionary.  Always contains ``extensions``; every
+        non-reserved key of ``pi_section`` is merged verbatim;
         ``defaultProvider``/``defaultModel`` are added only when the
-        default model resolves and splits cleanly; ``retry`` is added only
-        when ``retry`` is a non-empty dict.
+        default model resolves and splits cleanly.
     """
-    settings: dict[str, object] = {
-        "extensions": [extension_path],
-        "defaultThinkingLevel": "high",
-    }
+    settings: dict[str, object] = {"extensions": [extension_path]}
 
-    # The [pi.retry] table is independent of the default model, so it is
-    # written before the early returns below.  The table is passed through
-    # verbatim: validating individual keys here would force a code change
-    # whenever a new retry option is added to config.toml.
-    if isinstance(retry, dict):
-        if retry:
-            settings["retry"] = retry
-    elif retry is not None:
-        warn(f"pi.retry 值 {retry!r} 无效（需为表），跳过 retry")
+    # The [pi] table is independent of the default model, so it is merged
+    # before the early returns below.  It is passed through verbatim:
+    # interpreting individual keys here would force a code change
+    # whenever a new pi option is added to config.toml.
+    if isinstance(pi_section, dict):
+        for reserved in _PI_RESERVED_KEYS:
+            if reserved in pi_section:
+                warn(f"pi.{reserved} 由安装器管理，配置值被忽略")
+        settings.update(
+            {
+                key: value
+                for key, value in pi_section.items()
+                if key not in _PI_RESERVED_KEYS
+            }
+        )
+    elif pi_section is not None:
+        warn(f"pi 节值 {pi_section!r} 无效（需为表），跳过")
 
     resolved = _resolve_default_model(defaults_model, env)
     if resolved is None:
