@@ -257,7 +257,7 @@ function fakeClient(
  * returns an empty session state with no blocks and no marks.  The
  * controller must therefore:
  *
- * - pass the raw mapped transcript into `computeContextReport` (no
+ * - pass the raw lens transcript into `computeContextReportLens` (no
  *   folded branch),
  * - compute breakdown, trend, cumulative, and cache exactly over the
  *   raw message list,
@@ -329,9 +329,9 @@ describe("raw view pass-through", () => {
   it("treats a missing state file the same as an empty one (no fold branch)", async () => {
     // Identical transcript to the previous test, but with a real —
     // empty — state file written first.  The controller must compute
-    // the same numbers: an empty persisted state's `effectiveCallIds`
-    // returns undefined and `foldedV1Messages` returns undefined, so
-    // `computeContextReport` receives `mapped` (not a folded array).
+    // the same numbers: an empty persisted state produces no summary
+    // items, so `foldedLensTranscript` returns undefined and the report
+    // runs over the raw transcript.
     writeStateFile(SID, {
       schema: 2,
       blocks: {},
@@ -452,6 +452,70 @@ describe("folded view panel data", () => {
       // Exactly one compute pass produced a category update.
       assert.equal(frame.categories.length, 1);
       // The pass must have flagged the panel as loaded (not errored).
+      assert.deepEqual(frame.loaded, [true]);
+      assert.deepEqual(frame.error, [false]);
+    } finally {
+      if (existsSync(statePath)) rmSync(statePath);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 2b. Effective prune marks over the storage transcript
+// ---------------------------------------------------------------------------
+
+/**
+ * The host returns the pre-prune original text from storage, so the
+ * sidebar must overlay the persisted effective marks to report the
+ * model-visible view.  The mark is keyed by `(ordinal, regionIndex)` at
+ * the tool part's output region (index 1): a pruned call then counts
+ * `input + placeholder` instead of `input + original output`.
+ */
+describe("effective prune marks over storage", () => {
+  const SID = "tui-ctrl-marks-001";
+  const statePath = join(storageDir(), `${SID}.json`);
+
+  after(() => {
+    if (existsSync(statePath)) rmSync(statePath);
+  });
+
+  it("counts a pruned tool output as input plus placeholder", async () => {
+    const output = "z".repeat(400);
+    const messages = [
+      msg("user", "u0", [textPart("x")]),
+      msg("assistant", "a0", [toolPart("echo hi", output, "call_1")], {
+        input: 500,
+        output: 100,
+      }),
+    ];
+    writeStateFile(SID, {
+      schema: 2,
+      blocks: {},
+      marks: {
+        "1:1": {
+          anchorOrdinal: 1,
+          regionIndex: 1,
+          content: output,
+          effective: true,
+          markedAt: 123,
+        },
+      },
+      lastUpdated: new Date().toISOString(),
+    });
+
+    try {
+      const { deps, frame, reset } = captureDeps(fakeClient(messages));
+      reset();
+      const controller = createContextController(deps);
+      await controller.compute(SID);
+
+      assert.equal(frame.categories.length, 1);
+      const cat = frame.categories[0] as CategoryInfo;
+      // tool = input "echo hi" (7 → 2) + placeholder (77 → 20) = 22
+      assert.equal(cat.tool, 22);
+      // exact comes from the assistant's API tokens (500 + 100); the
+      // tool message is the last completed assistant, so total = exact.
+      assert.equal(cat.total, 600);
       assert.deepEqual(frame.loaded, [true]);
       assert.deepEqual(frame.error, [false]);
     } finally {

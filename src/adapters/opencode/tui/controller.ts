@@ -11,26 +11,33 @@
  *
  * Session state is read through the host-agnostic core's store
  * (`createStateStore().load`) — a read-only disk load that never
- * mutates or caches, matching the panel's display-only role; effective
- * prune marks are projected back to v1 tool call ids so the category
- * breakdown keeps the previous pruned-tool accounting.
+ * mutates or caches, matching the panel's display-only role; the
+ * persisted blocks fold the transcript and the persisted effective
+ * prune marks overlay the storage text, so the category breakdown
+ * reflects the model-visible view.  The report and the sidebar
+ * statistics all come from the core lens pipeline.
  *
  * @module
  */
 
 import { formatPercent } from "../../../core/context/context-report.js";
+import {
+  computeContextReportLens,
+  foldedLensTranscript,
+} from "../../../core/context/context-report-lens.js";
 import { fold } from "../../../core/context/fold.js";
+import type { HostMessage } from "../../../core/context/lens.js";
+import {
+  computeCacheTrend,
+  computeCumulativeCacheRate,
+  computeTokenBreakdown,
+  type TokenBreakdownResult,
+} from "../../../core/context/lens-stats.js";
+import { materializeEffectiveMarks } from "../../../core/context/release.js";
 import { createStateStore } from "../../../core/context/store.js";
 import { log } from "../../../utils/logger.js";
 import { history } from "../history.js";
-import { effectiveCallIds, foldedV1Messages } from "../projection.js";
-import type { ContextMessageEntry, TokenBreakdownResult } from "../types.js";
-import {
-  computeCacheTrend,
-  computeContextReport,
-  computeCumulativeCacheRate,
-  computeTokenBreakdown,
-} from "../types.js";
+import type { ContextMessageEntry } from "../types.js";
 import type { CategoryInfo } from "./subagent.js";
 
 /** Dependencies injected by the panel — the controller's only external surface. */
@@ -159,35 +166,35 @@ export function createContextController(
       );
       const view = history(mapped);
 
-      // Load the persisted session state for DCP visibility in the
-      // category breakdown.  Read-only disk load — the display never
-      // mutates or persists.  Defensive: load failure results in an
-      // empty set (tools fully counted).
-      let prunedCallIDs: Set<string> | undefined;
-      // Folded message array after applying compression blocks.
-      // When set, the category breakdown reflects the model-visible
-      // (compression-folded) view instead of the raw message list.
-      let foldMessages: ContextMessageEntry[] | undefined;
+      // Load the persisted session state and materialize the folded
+      // (model-visible) lens transcript for the category breakdown.
+      // Read-only disk load — the display never mutates or persists.
+      // Defensive: a load failure falls back to the raw transcript.
+      let reportMessages: HostMessage[] = view.messages;
+      let folded: HostMessage[] | undefined;
       try {
         const persisted = store.load(sessionId);
-        prunedCallIDs = effectiveCallIds(mapped, persisted);
+        // Overlay the persisted effective prune marks first: storage
+        // holds the pre-prune original text, so without this the tool
+        // category would count full outputs for pruned calls.  Folding
+        // still runs over the untouched view (span hashes validate the
+        // stored content), and the folded transcript copies from the
+        // overlaid messages so ordinals stay aligned.
+        reportMessages = materializeEffectiveMarks(view.messages, persisted);
         // Apply compression-block folding so the category breakdown
         // shows the model-visible (folded) numbers.  Pure read-only —
         // fold never mutates the state or the transcript.
         const { items } = fold(view, persisted);
-        foldMessages = foldedV1Messages(items, mapped, persisted);
+        folded = foldedLensTranscript(items, reportMessages, persisted);
       } catch {
         // Non-fatal: TUI must never crash from persistence I/O.
-        prunedCallIDs = undefined;
+        folded = undefined;
       }
 
-      const report = computeContextReport(
-        foldMessages ?? mapped,
-        prunedCallIDs,
-      );
+      const report = computeContextReportLens(folded ?? reportMessages);
 
       // ── Trend (last vs previous assistant) ──────────────────────
-      const trendResult = computeCacheTrend(mapped);
+      const trendResult = computeCacheTrend(view.messages);
 
       // ── Cumulative (session aggregates preferred, fallback to
       // message-sum) ────────────────────────────────────────────
@@ -220,14 +227,18 @@ export function createContextController(
           cumulativeRate = denom > 0 ? read / denom : null;
         } else {
           // Session exists but has no tokens — fall back to message-sum.
-          cumulativeRate = computeCumulativeCacheRate(mapped).cumulativeRate;
+          cumulativeRate = computeCumulativeCacheRate(
+            view.messages,
+          ).cumulativeRate;
         }
       } else {
-        cumulativeRate = computeCumulativeCacheRate(mapped).cumulativeRate;
+        cumulativeRate = computeCumulativeCacheRate(
+          view.messages,
+        ).cumulativeRate;
       }
 
       // ── Token breakdown (cache read / uncached input / output) ──
-      const breakdown = computeTokenBreakdown(mapped);
+      const breakdown = computeTokenBreakdown(view.messages);
 
       // Only apply if this is still the latest request.
       if (seq !== requestSeq) return;

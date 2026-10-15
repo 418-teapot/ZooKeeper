@@ -3,9 +3,8 @@
  *
  * Declares the report data types (`ContextReport`,
  * `ContextCategoryBreakdown`) and the pure display layer — the report
- * values are computed elsewhere (`context-report-lens.ts` over the
- * host-agnostic lens, and the OpenCode adapter's own producer over host
- * message shapes).  Provides token/cache/percentage
+ * values are computed by the lens producer (`context-report-lens.ts`
+ * over the host-agnostic lens).  Provides token/cache/percentage
  * formatting helpers and the final multi-line report string in Chinese
  * (user-facing).
  *

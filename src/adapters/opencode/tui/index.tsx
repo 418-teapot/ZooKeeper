@@ -8,8 +8,8 @@ import {
   formatTokens,
   progressBar,
 } from "../../../core/context/context-report.js";
+import type { TokenBreakdownResult } from "../../../core/context/lens-stats.js";
 import { initLogger, log } from "../../../utils/logger.js";
-import type { TokenBreakdownResult } from "../types.js";
 import { createContextController } from "./controller.js";
 import type { CategoryInfo, SubEntry } from "./subagent.js";
 import { formatDuration } from "./subagent.js";

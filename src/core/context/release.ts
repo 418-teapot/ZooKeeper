@@ -28,6 +28,11 @@
  * by the nudge phase independently, so release and nudge watermarks do not
  * interact.
  *
+ * `materializeEffectiveMarks` is the read-side twin of `computeEdits`: a
+ * consumer that reports over storage overlays the effective marks through
+ * it so the report counts exactly what the release phase writes into the
+ * model-bound copy.
+ *
  * @module
  */
 
@@ -255,6 +260,60 @@ export function computeEdits(
   }
 
   return edits;
+}
+
+/**
+ * Overlay the effective prune marks onto a transcript as placeholders.
+ *
+ * The read-side twin of `computeEdits`: where that returns the edits the
+ * release phase writes into the model-bound copy, this returns a
+ * transcript whose effective-mark regions read back the same placeholder
+ * — so a consumer that reports over storage (the sidebar, `/dcp`) counts
+ * a pruned tool call as `input + placeholder` instead of the stored
+ * original output.  Both share the `(ordinal, regionIndex)` address
+ * vocabulary and `placeholderFor`, so the report and the transform always
+ * agree on what was pruned.
+ *
+ * Pending marks are not overlaid — they are not yet written to any view.
+ * An unresolvable anchor (missing message or region, or a mark without a
+ * region index) is skipped, exactly as `editFor` does, and a transcript
+ * with no effective mark is returned by reference.
+ *
+ * @param messages - The transcript; ordinals must align with the marks.
+ * @param state - The session state holding the mark map.
+ * @returns The transcript with effective-mark regions overlaid.
+ */
+export function materializeEffectiveMarks(
+  messages: HostMessage[],
+  state: SessionState,
+): HostMessage[] {
+  const indicesByOrdinal = new Map<number, number[]>();
+  for (const mark of state.marks.values()) {
+    if (!mark.effective || mark.regionIndex === undefined) continue;
+    const indices = indicesByOrdinal.get(mark.anchorOrdinal);
+    if (indices) indices.push(mark.regionIndex);
+    else indicesByOrdinal.set(mark.anchorOrdinal, [mark.regionIndex]);
+  }
+  if (indicesByOrdinal.size === 0) return messages;
+
+  const result = messages.slice();
+  for (const [ordinal, indices] of indicesByOrdinal) {
+    const message = messages[ordinal];
+    if (!message) continue;
+    const regions = message.regions.slice();
+    let changed = false;
+    for (const regionIndex of indices) {
+      const region = regions[regionIndex];
+      if (!region) continue;
+      regions[regionIndex] = {
+        kind: region.kind,
+        get: () => placeholderFor(region),
+      };
+      changed = true;
+    }
+    if (changed) result[ordinal] = { ...message, regions };
+  }
+  return result;
 }
 
 /**

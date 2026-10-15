@@ -7,18 +7,18 @@
  * port instead of any host SDK type, so the handler stays
  * framework-agnostic: `fetchHistory` returns lens messages directly,
  * `notify` posts the ignored noReply chat message, and the report is
- * produced by the lens-based `computeContextReportLens` (field-level
- * parity with the v1 adapter, including the placeholder-signal prune
- * detection and the compaction boundary).  Command-failure
+ * produced by the lens-based `computeContextReportLens` (placeholder
+ * signal prune detection and the compaction boundary).  Command-failure
  * notification lives in `src/commands/notify.ts` and is shared with
  * the `/go` command unit.
  *
  * State comes from the host-agnostic context core: the shared
  * process-wide session-state manager (`getContextStateManager`)
  * supplies the session state, and the fold/measure/release layers
- * drive the report.  Pruned tool calls are recognized by
- * their placeholder text, so the report needs no mark-to-tool-call-id
- * projection.
+ * drive the report.  Pruned tool calls are recognized by their
+ * placeholder text, and storage-borne originals are overlaid with the
+ * state's effective marks (`materializeEffectiveMarks`) so the report
+ * counts the model-visible `input + placeholder`.
  *
  * @module
  */
@@ -33,6 +33,7 @@ import {
 import { fold } from "../../core/context/fold.js";
 import type { Projection } from "../../core/context/lens.js";
 import {
+  materializeEffectiveMarks,
   pendingCount,
   pendingTokens,
   reclaimedTokens,
@@ -181,7 +182,13 @@ export async function handleDcpCommand(
     // Defensive: error is non-fatal, fall back to single-count line.
   }
 
-  const report = computeContextReportLens(view);
+  // OpenCode's `fetchHistory` returns the stored original text, so
+  // overlay the shared state's effective marks before reporting: a
+  // pruned tool output then counts as `input + placeholder`, what the
+  // model sees, instead of the stored original.  A host without state
+  // reports the transcript as-is.
+  const reportMessages = state ? materializeEffectiveMarks(view, state) : view;
+  const report = computeContextReportLens(reportMessages);
   const formatted = formatContextReport(report, {
     prunedTokens: totalEff,
     pendingCount: curPendingCount,

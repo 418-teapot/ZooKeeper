@@ -1,15 +1,16 @@
 /**
  * Tests for the v1 message → lens mapping adapter (`history.ts`).
  *
- * Three layers:
+ * Layers:
  *
  * 1. Mapping table — every v1 part type maps to the expected region
  *    kind, message-level fields (`role`, `tokens`, `ignored`) map to the
  *    lens message fields, and edge shapes (empty parts, null parts,
  *    step-start, parallel tools, non-string text) are covered.
- * 2. Parity — real v1 entries are mapped through `messagesOf()` and fed to
- *    the lens-based estimators; the results must equal the v1-shape
- *    estimators applied to the same entries, per message and per transcript.
+ * 2. Estimation — real v1 entries are mapped through `messagesOf()` and
+ *    fed to the lens-based estimators (`estimateMessageHeuristic`,
+ *    `measureMessages`); expected counts are hand-computed literals from
+ *    the estimator definition.
  * 3. Write-back — the adapter's `WritableRegion` regions mutate the
  *    v1 object in place: `part.text`, `state.output`, and
  *    `state.input` (JSON.parse round-trip for object inputs;
@@ -47,13 +48,7 @@ import { makeMsg } from "../../testkits/context.js";
 import { textPart, toolPart } from "../../testkits/opencode-messages.js";
 import { _resetForTesting } from "../../utils/logger.js";
 import { history } from "./history.js";
-import {
-  type ContextMessageEntry,
-  type ContextTokenInfo,
-  computeContextReport as referenceComputeContextReport,
-  estimateMessageHeuristic as referenceEstimateMessageHeuristic,
-  measureContext as referenceMeasureContext,
-} from "./types.js";
+import type { ContextMessageEntry, ContextTokenInfo } from "./types.js";
 
 // ---------------------------------------------------------------------------
 // Logger cleanup
@@ -369,80 +364,11 @@ describe("v1 part → region mapping", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Parity: per-message heuristic (types.ts reference: estimateMessageHeuristic)
+// Estimation over the mapped transcript
 // ---------------------------------------------------------------------------
 
-describe("parity: per-message heuristic vs types.ts reference", () => {
-  const cases: Array<[string, ContextMessageEntry]> = [
-    ["pure text", entry("user", [textPart("Hello World")])],
-    [
-      "CJK mixed text",
-      entry("user", [textPart("你好 world"), textPart("，。ＡＢ")]),
-    ],
-    ["reasoning part", entry("assistant", [reasoningPart("reasoning trace")])],
-    [
-      "tool with string input/output",
-      entry("assistant", [toolPart("bash", "ls", "file1")]),
-    ],
-    [
-      "tool with object input/output",
-      entry("assistant", [
-        toolPart("bash", { cmd: "ls" }, { stdout: "file1\n" }),
-      ]),
-    ],
-    [
-      "tool with error status",
-      entry("assistant", [toolPart("read", "a.ts", "content", "error")]),
-    ],
-    [
-      "tool without state but with text",
-      entry("assistant", [{ type: "tool", text: "orphan text" }]),
-    ],
-    ["step-start without text", entry("assistant", [{ type: "step-start" }])],
-    [
-      "step-finish with text",
-      entry("assistant", [{ type: "step-finish", text: "step done" }]),
-    ],
-    ["snapshot with text", entry("user", [{ type: "snapshot", text: "body" }])],
-    [
-      "file part with text",
-      entry("user", [{ type: "file", path: "a.txt", text: "file content" }]),
-    ],
-    ["empty parts", entry("user", [])],
-    [
-      "mixed parts",
-      entry("assistant", [
-        { type: "step-start" },
-        reasoningPart("think"),
-        textPart("answer"),
-        toolPart("bash", "ls", "out"),
-      ]),
-    ],
-    [
-      "parallel tool calls",
-      entry("assistant", [
-        toolPart("bash", "a", "A"),
-        toolPart("read", "b.ts", "B"),
-      ]),
-    ],
-  ];
-
-  for (const [name, entryToMap] of cases) {
-    it(name, () => {
-      const [lens] = messagesOf([entryToMap]);
-      assert.equal(
-        estimateMessageHeuristic(lens),
-        referenceEstimateMessageHeuristic(entryToMap),
-      );
-    });
-  }
-
+describe("estimation over the mapped transcript", () => {
   it("ignored message maps to hidden and estimates 0", () => {
-    // The v1-shape per-message estimator does NOT skip ignored parts, so
-    // the direct per-message comparison cannot hold for ignored messages;
-    // the hidden-skip semantic is pinned whole-session via
-    // computeContextReport below and per-message here as the lens-based 0
-    // estimate.
     const entryToMap = entry(
       "user",
       [textPart("ignored text")],
@@ -452,16 +378,9 @@ describe("parity: per-message heuristic vs types.ts reference", () => {
     const [lens] = messagesOf([entryToMap]);
     assert.equal(lens.hidden, true);
     assert.equal(estimateMessageHeuristic(lens), 0);
-    assert.ok(referenceEstimateMessageHeuristic(entryToMap) > 0);
   });
-});
 
-// ---------------------------------------------------------------------------
-// Parity: whole-session measurement
-// ---------------------------------------------------------------------------
-
-describe("parity: whole-session vs types.ts reference", () => {
-  it("usage-exact precedence matches the types.ts measureContext reference", () => {
+  it("exact tokens come from the last completed assistant", () => {
     const v1 = [
       entry("user", [textPart("Hello")]),
       entry("assistant", [textPart("Response")], {
@@ -473,18 +392,13 @@ describe("parity: whole-session vs types.ts reference", () => {
       entry("user", [textPart("Follow-up text here")]),
     ];
     const measured = measureMessages(messagesOf(v1));
-    const reference = referenceMeasureContext({ messages: v1 });
-    assert.equal(measured.exact, reference.exact_tokens); // 500+100+50+200+50 = 900
-    assert.equal(measured.heuristic, reference.estimated_new_tokens); // ceil(19/4) = 5
-    assert.equal(measured.total, reference.estimated_tokens); // 905
-    assert.equal(measured.messageCount, reference.message_count); // 3
+    assert.equal(measured.exact, 900); // 500 + 100 + 50 + 200 + 50
+    assert.equal(measured.heuristic, 5); // ceil(19 / 4)
+    assert.equal(measured.total, 905);
+    assert.equal(measured.messageCount, 3);
   });
 
-  it("ignored messages are hidden and skipped like the types.ts computeContextReport reference", () => {
-    // measureContext (types.ts) counts ignored tail text and includes
-    // ignored messages in message_count; computeContextReport is the
-    // counterpart that skips them, so it is the comparison target for the
-    // hidden dimension (same convention as measure.test.ts).
+  it("hidden messages are skipped and excluded from the count", () => {
     const v1 = [
       entry("user", [textPart("Hello")]),
       entry("assistant", [textPart("Response")], { input: 500, output: 100 }),
@@ -492,20 +406,19 @@ describe("parity: whole-session vs types.ts reference", () => {
       entry("user", [textPart("Normal follow-up")]),
     ];
     const measured = measureMessages(messagesOf(v1));
-    const reference = referenceComputeContextReport(v1);
-    assert.equal(measured.exact, reference.exact); // 600
-    assert.equal(measured.heuristic, reference.heuristic); // ceil(16/4) = 4
-    assert.equal(measured.total, reference.total); // 604
-    assert.equal(measured.messageCount, reference.messageCount); // 3
+    assert.equal(measured.exact, 600); // 500 + 100
+    assert.equal(measured.heuristic, 4); // ceil(16 / 4); ignored skipped
+    assert.equal(measured.total, 604);
+    assert.equal(measured.messageCount, 3);
   });
 
-  it("empty transcript matches the types.ts measureContext reference zeros", () => {
-    const measured = measureMessages(messagesOf([]));
-    const reference = referenceMeasureContext({ messages: [] });
-    assert.equal(measured.exact, reference.exact_tokens);
-    assert.equal(measured.heuristic, reference.estimated_new_tokens);
-    assert.equal(measured.total, reference.estimated_tokens);
-    assert.equal(measured.messageCount, reference.message_count);
+  it("empty transcript measures zeros", () => {
+    assert.deepEqual(measureMessages(messagesOf([])), {
+      exact: 0,
+      heuristic: 0,
+      total: 0,
+      messageCount: 0,
+    });
   });
 
   it("nullish transcript input yields zeros", () => {
@@ -523,7 +436,7 @@ describe("parity: whole-session vs types.ts reference", () => {
     });
   });
 
-  it("dirty transcript maps null entries to hidden empty messages and matches the reference on exact/heuristic/total", () => {
+  it("null entries map to hidden empty messages excluded from the count", () => {
     const v1 = [
       null as unknown as ContextMessageEntry,
       entry("user", [textPart("Hi")]),
@@ -540,15 +453,10 @@ describe("parity: whole-session vs types.ts reference", () => {
     assert.ok(mapped[4].hidden);
     assert.deepEqual(mapped[0].regions, []);
     const measured = measureMessages(mapped);
-    const reference = referenceMeasureContext({ messages: v1 });
-    assert.equal(measured.exact, reference.exact_tokens); // 150
-    assert.equal(measured.heuristic, reference.estimated_new_tokens); // 0
-    assert.equal(measured.total, reference.estimated_tokens); // 150
-    // Divergence: the types.ts reference counts null entries in
-    // message_count; the hidden empty messages are excluded from the new
-    // count.
+    assert.equal(measured.exact, 150); // 100 + 50
+    assert.equal(measured.heuristic, 0);
+    assert.equal(measured.total, 150);
     assert.equal(measured.messageCount, 2);
-    assert.notEqual(measured.messageCount, reference.message_count); // 5
   });
 });
 

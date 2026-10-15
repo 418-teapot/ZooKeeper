@@ -22,7 +22,12 @@
  * region whose text starts with `PRUNED_TOOL_OUTPUT_REPLACEMENT`
  * contributes the placeholder estimate instead of the original output,
  * so the tool category counts `input + placeholder` — what the model
- * actually sees after pruning.
+ * actually sees after pruning.  A consumer that reports over a storage
+ * transcript (which keeps the pre-prune original text) overlays the
+ * state's effective marks with `materializeEffectiveMarks` first; the
+ * overlaid placeholder then flows through this same recognition, so the
+ * mark signal and the text signal are complementary and never
+ * double-counted.
  *
  * Compaction boundary: category statistics (user/tool/assistant) only
  * reflect messages at/after the last message marked `compaction` (a
@@ -35,6 +40,10 @@
  * stays unchanged — the formatter receives those counts via
  * `FormatContextReportOptions`.
  *
+ * A consumer that reports over the model-visible view materializes the
+ * folded view as a lens transcript with `foldedLensTranscript` and feeds
+ * it to the producer.
+ *
  * @module
  */
 
@@ -46,6 +55,8 @@ import {
   findLastCompletedAssistant,
 } from "./measure.js";
 import { PRUNED_TOOL_OUTPUT_REPLACEMENT } from "./message-parts.js";
+import { blockIdOf, type SessionState } from "./state.js";
+import { formatSummaryText } from "./view-refs.js";
 
 // ---------------------------------------------------------------------------
 // Compaction boundary
@@ -188,6 +199,55 @@ export function computeContextReportLens(
       system: systemTokens,
     },
   };
+}
+
+// ---------------------------------------------------------------------------
+// Folded transcript
+// ---------------------------------------------------------------------------
+
+/**
+ * Materialize a folded view as a host-agnostic lens transcript.
+ *
+ * A consumer that wants the report to reflect the model-visible view
+ * (a host that folds compression blocks itself) feeds the folded
+ * transcript to `computeContextReportLens`.  Each summary item becomes a
+ * synthetic user-role content message whose text is `formatSummaryText`
+ * — the same label/body the host adapters render — and each original
+ * item keeps its backing lens messages verbatim.  Returns undefined when
+ * nothing was folded, so the caller falls back to the raw transcript.
+ *
+ * @param items - The folded view items, in view order.
+ * @param messages - The lens transcript aligned 1:1 with the items'
+ *   original ordinals.
+ * @param state - The session state (block map, for summary ids).
+ * @returns The folded lens transcript, or undefined when nothing folded.
+ */
+export function foldedLensTranscript(
+  items: ViewItem[],
+  messages: HostMessage[],
+  state: SessionState,
+): HostMessage[] | undefined {
+  let hasSummary = false;
+  const folded: HostMessage[] = [];
+  for (const item of items) {
+    if (item.type === "summary") {
+      hasSummary = true;
+      const text = formatSummaryText({
+        ...item.block,
+        id: blockIdOf(state, item.block.start, item.block.end),
+      });
+      folded.push({
+        role: "user",
+        hidden: false,
+        regions: [{ kind: "content", get: () => text }],
+      });
+    } else {
+      for (let ordinal = item.start; ordinal < item.end; ordinal++) {
+        folded.push(messages[ordinal]);
+      }
+    }
+  }
+  return hasSummary ? folded : undefined;
 }
 
 // ---------------------------------------------------------------------------

@@ -10,9 +10,8 @@
  *
  * Full fold-view materialization (original items, line-prefix injection,
  * in-place array restructure) lives in `src/adapters/opencode/render.ts`;
- * this module provides only the synthetic message builder shared by that
- * renderer and the projection helpers (`src/adapters/opencode/
- * projection.ts`).
+ * this module provides only the synthetic message builder used by that
+ * renderer.
  *
  * @module
  */

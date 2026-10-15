@@ -14,15 +14,18 @@ import assert from "node:assert/strict";
 import { afterEach, describe, it } from "node:test";
 import type { ToolHost } from "../../core/client/tool-host.js";
 import { type HostMessage, project } from "../../core/context/lens.js";
+import { PRUNED_TOOL_OUTPUT_REPLACEMENT } from "../../core/context/message-parts.js";
 import { publishRoundView } from "../../core/context/round-view.js";
 import {
   _resetContextStateManagerForTesting,
   getContextStateManager,
   getRuntimeFlaggedState,
 } from "../../core/context/runtime.js";
+import { markKey } from "../../core/context/state.js";
 import {
   makeAssistantMsg,
   makeMsg,
+  makeToolMsg,
   projectMessages,
 } from "../../testkits/context.js";
 import { _resetForTesting } from "../../utils/logger.js";
@@ -157,6 +160,95 @@ describe("/dcp context subcommand", () => {
       !notifyCalls[0].text.includes("总计"),
       "should not contain total footer",
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Effective prune marks over the storage transcript
+// ---------------------------------------------------------------------------
+
+/**
+ * OpenCode's `fetchHistory` reads the stored transcript, which still
+ * carries the pre-prune original output; the handler must overlay the
+ * shared state's effective marks so the report measures the model-visible
+ * `input + placeholder` for a pruned call.
+ */
+describe("effective prune marks over storage", () => {
+  const SID = "sess-marks-report";
+
+  afterEach(() => {
+    getContextStateManager().store.delete(SID);
+    _resetContextStateManagerForTesting();
+  });
+
+  it("counts a pruned tool output as input plus placeholder", async () => {
+    const output = "y".repeat(400);
+    const view: HostMessage[] = [
+      makeAssistantMsg({ text: "Hi", usage: { input: 500, output: 100 } }),
+      makeToolMsg("bash", "echo hello world", output),
+    ];
+
+    // Seed the shared manager with an effective mark at the tool-output
+    // region (ordinal 1, region index 1).
+    const state = getContextStateManager().get(SID);
+    state.marks.set(markKey(1, 1), {
+      anchorOrdinal: 1,
+      regionIndex: 1,
+      content: output,
+      contentTokens: 100,
+      effective: true,
+      markedAt: 1,
+    });
+
+    const { toolHost, notifyCalls } = mockToolHost(view);
+    await handleDcpCommand(toolHost, SID, "context");
+
+    assert.equal(notifyCalls.length, 1);
+    // Raw total = exact 600 + tail (input 4 + output 100) = 704.
+    // Marked total = 600 + (input 4 + placeholder 20) = 624.
+    assert.match(notifyCalls[0].text, /~624 tokens/);
+    assert.doesNotMatch(notifyCalls[0].text, /~704 tokens/);
+  });
+
+  it("does not double count a round-view placeholder a mark also addresses", async () => {
+    // The pi round view is the transform's own projection, so its tool
+    // output is already the placeholder; the mark overlay must stay
+    // idempotent and the text recognition must count it exactly once.
+    const sid = "sess-marks-roundview";
+    const view: HostMessage[] = [
+      makeAssistantMsg({ text: "Hi", usage: { input: 500, output: 100 } }),
+      makeToolMsg("bash", "echo hello world", PRUNED_TOOL_OUTPUT_REPLACEMENT),
+    ];
+    const state = getContextStateManager().get(sid);
+    state.marks.set(markKey(1, 1), {
+      anchorOrdinal: 1,
+      regionIndex: 1,
+      content: "original output",
+      contentTokens: 100,
+      effective: true,
+      markedAt: 1,
+    });
+    publishRoundView(sid, {
+      projection: projectMessages(view),
+      numbered: [],
+    });
+
+    const notices: string[] = [];
+    const toolHost: ToolHost = {
+      resolveSessionId: () => undefined,
+      notify: async (_sessionID, text) => {
+        notices.push(text);
+      },
+    };
+    try {
+      await handleDcpCommand(toolHost, sid, "context");
+      assert.equal(notices.length, 1);
+      // 600 + (input 4 + placeholder 20) = 624 — the placeholder is
+      // counted once, never twice.
+      assert.match(notices[0], /~624 tokens/);
+    } finally {
+      getContextStateManager().store.delete(sid);
+    }
   });
 });
 
