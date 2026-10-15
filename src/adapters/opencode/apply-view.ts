@@ -3,10 +3,10 @@
  *
  * Renders a fold summary item into the v1 messages shape: a user-role
  * entry carrying `info.synthetic: true` and a single text part.  The
- * text is the render label (`formatSummaryLabel`:
- * `[Block bN · K 条] 标题`) followed by the block's summary body, with
- * the per-round `[mN] ` line prefix prepended to the first line when a
- * line number is given.
+ * text comes from the core render layer (`formatSummaryText`: the
+ * `[Block bN · K 条] 标题` label, an optional leading `[mN] ` line
+ * prefix, and the block's summary body); this module only wraps that
+ * text into a v1 entry.
  *
  * Full fold-view materialization (original items, line-prefix injection,
  * in-place array restructure) lives in `src/adapters/opencode/render.ts`;
@@ -18,7 +18,7 @@
  */
 
 import type { BlockSpan } from "../../core/context/lens.js";
-import { formatSummaryLabel, refPrefix } from "../../core/context/view-refs.js";
+import { formatSummaryText } from "../../core/context/view-refs.js";
 import type { ContextMessageEntry } from "./types.js";
 
 /**
@@ -29,10 +29,9 @@ import type { ContextMessageEntry } from "./types.js";
  * carries no addressing semantics; the `bN` label and the ordinal
  * interval own block identity.
  *
- * The text is the render label (`formatSummaryLabel`:
- * `[Block bN · K 条] 标题`) followed by the block's summary body.  When
- * `lineNumber` is given, the `[mN] ` prefix is prepended to the first
- * line — summary items occupy a line like any other view item.
+ * The text comes from `formatSummaryText` (label, optional `[mN] `
+ * prefix, summary body) — summary items occupy a line like any other
+ * view item.
  *
  * @param block - The surviving block span.  The caller attaches the
  *   block-map id so the label renders the `bN` segment; a bare `Block`
@@ -46,12 +45,7 @@ export function materializeSummary(
   block: BlockSpan & { id?: number },
   lineNumber?: number,
 ): ContextMessageEntry {
-  const label = formatSummaryLabel(block);
-  const body = block.summary.length > 0 ? `\n${block.summary}` : "";
-  const text =
-    lineNumber === undefined
-      ? `${label}${body}`
-      : `${refPrefix(lineNumber)}${label}${body}`;
+  const text = formatSummaryText(block, lineNumber);
   return {
     info: {
       role: "user",

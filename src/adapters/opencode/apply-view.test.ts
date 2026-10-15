@@ -19,9 +19,10 @@ import { describe, it } from "node:test";
 import { fold } from "../../core/context/fold.js";
 import { computeSpanHash } from "../../core/context/spanhash.js";
 import type { SessionState } from "../../core/context/state.js";
+import { isInjectableRegion } from "../../core/context/writable-regions.js";
 import { toolPart } from "../../testkits/opencode-messages.js";
 import { materializeSummary } from "./apply-view.js";
-import { history, isInjectableRegion } from "./history.js";
+import { history } from "./history.js";
 import { render } from "./render.js";
 import type { ContextMessageEntry } from "./types.js";
 

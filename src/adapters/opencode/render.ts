@@ -19,16 +19,15 @@
  * @module
  */
 
-import type {
-  HostMessage,
-  RegionEdit,
-  ViewItem,
-} from "../../core/context/lens.js";
-import type { SessionState } from "../../core/context/state.js";
-import { numberView, refPrefix } from "../../core/context/view-refs.js";
+import type { RegionEdit, ViewItem } from "../../core/context/lens.js";
+import { blockIdOf, type SessionState } from "../../core/context/state.js";
+import { numberView } from "../../core/context/view-refs.js";
+import {
+  injectLinePrefix,
+  type WritableRegion,
+} from "../../core/context/writable-regions.js";
 import { materializeSummary } from "./apply-view.js";
-import { history, isInjectableRegion, type WritableRegion } from "./history.js";
-import { blockIdOf } from "./projection.js";
+import { history } from "./history.js";
 import type { ContextMessageEntry } from "./types.js";
 
 /**
@@ -55,54 +54,6 @@ export function applyEdits(
     if (!region) continue;
     (region as WritableRegion).set(edit.text);
   }
-}
-
-/**
- * Pick the region that receives the line-number prefix for an original
- * view item.
- *
- * Placement keeps the three-branch priority — the first tool-output
- * region wins over the first content region — filtered through the
- * adapter's injection provenance: only regions `isInjectableRegion`
- * marks may receive the prefix, so a content region derived from a
- * step-start/snapshot/file part is skipped in favor of a later
- * text-derived one, and thinking / tool-input regions never qualify.
- *
- * @param msg - The lens message backing the original item.
- * @returns The injection target, or undefined when no region qualifies.
- */
-function pickInjectableRegion(msg: HostMessage): WritableRegion | undefined {
-  const regions = msg.regions;
-  for (const region of regions) {
-    if (region.kind === "tool-output" && isInjectableRegion(region)) {
-      return region as WritableRegion;
-    }
-  }
-  for (const region of regions) {
-    if (region.kind === "content" && isInjectableRegion(region)) {
-      return region as WritableRegion;
-    }
-  }
-  return undefined;
-}
-
-/**
- * Write the current round's line-number prefix into an original
- * message's injection region.
- *
- * Pure prepend: `refPrefix(line)` is placed before the region text as
- * it stands, with no marker stripping.  The input carries no prior-round
- * markers — hosts deliver a fresh per-turn message array, so the render
- * output is never seen as input again.  Messages without an injectable
- * region keep their text unchanged.
- *
- * @param msg - The lens message backing the original item.
- * @param line - The dense line number of the item.
- */
-function injectLinePrefix(msg: HostMessage, line: number): void {
-  const region = pickInjectableRegion(msg);
-  if (region === undefined) return;
-  region.set(refPrefix(line) + region.get());
 }
 
 /**
@@ -147,7 +98,7 @@ export function renderView(
     // An original item covers one fold unit.  On the OpenCode projection
     // a unit is always a single message (a tool call and its result share
     // one message), so the interval loop pushes exactly one entry and the
-    // unit's line number lands on it.
+    // unit's line number lands on it when it has an injectable region.
     const line = lineByItem.get(item);
     let lineInjected = false;
     for (let ordinal = item.start; ordinal < item.end; ordinal++) {

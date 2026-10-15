@@ -39,10 +39,14 @@ import {
   PRUNED_TOOL_OUTPUT_REPLACEMENT,
 } from "../../core/context/message-parts.js";
 import { computeSpanHash } from "../../core/context/spanhash.js";
+import {
+  isInjectableRegion,
+  type WritableRegion,
+} from "../../core/context/writable-regions.js";
 import { makeMsg } from "../../testkits/context.js";
 import { textPart, toolPart } from "../../testkits/opencode-messages.js";
 import { _resetForTesting } from "../../utils/logger.js";
-import { history, isInjectableRegion, type WritableRegion } from "./history.js";
+import { history } from "./history.js";
 import {
   type ContextMessageEntry,
   type ContextTokenInfo,

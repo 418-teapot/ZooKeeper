@@ -22,33 +22,14 @@ import type {
   RegionEdit,
   ViewItem,
 } from "../../core/context/lens.js";
-import type { SessionState } from "../../core/context/state.js";
+import { blockIdOf, type SessionState } from "../../core/context/state.js";
+import { formatSummaryText, numberView } from "../../core/context/view-refs.js";
 import {
-  formatSummaryLabel,
-  numberView,
-  refPrefix,
-} from "../../core/context/view-refs.js";
-import { history, isInjectableRegion, type WritableRegion } from "./history.js";
+  injectLinePrefix,
+  type WritableRegion,
+} from "../../core/context/writable-regions.js";
+import { history } from "./history.js";
 import type { PiAgentMessage, PiUserMessage } from "./types.js";
-
-/**
- * Look up the block-map id matching a folded summary item's interval.
- *
- * Only active blocks are candidates: a block that stopped folding keeps
- * its record (and can share an interval with a later block), so the
- * label must address the block that actually produces the summary.
- */
-function blockIdOf(
-  state: SessionState,
-  start: number,
-  end: number,
-): number | undefined {
-  for (const [id, block] of state.blocks) {
-    if (block.status !== "active") continue;
-    if (block.start === start && block.end === end) return id;
-  }
-  return undefined;
-}
 
 /**
  * Apply region edits through the lens.
@@ -91,59 +72,13 @@ export function applyEdits(
 }
 
 /**
- * Pick the region that receives the line-number prefix for an original
- * message.
- *
- * Tool-output regions win over text-derived content regions; thinking,
- * image-derived content, and tool-input regions never qualify.
- */
-function pickInjectableRegion(msg: HostMessage): WritableRegion | undefined {
-  for (const region of msg.regions) {
-    if (region.kind === "tool-output" && isInjectableRegion(region)) {
-      return region as WritableRegion;
-    }
-  }
-  for (const region of msg.regions) {
-    if (region.kind === "content" && isInjectableRegion(region)) {
-      return region as WritableRegion;
-    }
-  }
-  return undefined;
-}
-
-/**
- * Prepend the current round's prefix to an original message's injection
- * target.
- *
- * Pure prepend, no marker stripping: the input carries no prior-round
- * markers because the host delivers a fresh per-turn message array, so
- * the render output is never seen as input again.
- *
- * @returns True when the prefix was injected; false when the message
- *   carries no injectable region (the caller tries the next unit
- *   member).
- */
-function injectLinePrefix(msg: HostMessage, line: number): boolean {
-  const region = pickInjectableRegion(msg);
-  if (region === undefined) return false;
-  region.set(refPrefix(line) + region.get());
-  return true;
-}
-
-/**
  * Materialize a folded block summary as a synthetic pi user message.
  */
 export function materializeSummary(
   block: BlockSpan & { id?: number },
   lineNumber?: number,
 ): PiUserMessage {
-  const label = formatSummaryLabel(block);
-  const body = block.summary.length > 0 ? `\n${block.summary}` : "";
-  const text =
-    lineNumber === undefined
-      ? `${label}${body}`
-      : `${refPrefix(lineNumber)}${label}${body}`;
-  return { role: "user", content: text };
+  return { role: "user", content: formatSummaryText(block, lineNumber) };
 }
 
 /**

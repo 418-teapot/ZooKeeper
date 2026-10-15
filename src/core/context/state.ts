@@ -265,6 +265,34 @@ export function hasActiveOverlap(
 }
 
 /**
+ * Look up the id of the active block covering exactly `[start, end)`.
+ *
+ * The fold view's summary item carries a `BlockSpan` without the block
+ * map key, so the render phase recovers the persistent `bN` id by
+ * interval.  Only active blocks are candidates: a block that stopped
+ * folding keeps its record and may share an interval with a later block,
+ * so the lookup must address the block that actually produces the
+ * summary.
+ *
+ * @param state - The session state.
+ * @param start - First ordinal (inclusive).
+ * @param end - Last ordinal (exclusive).
+ * @returns The matching block id, or undefined when no active block
+ *   covers the interval.
+ */
+export function blockIdOf(
+  state: SessionState,
+  start: number,
+  end: number,
+): number | undefined {
+  for (const [id, block] of state.blocks) {
+    if (block.status !== "active") continue;
+    if (block.start === start && block.end === end) return id;
+  }
+  return undefined;
+}
+
+/**
  * Consume pending marks covered by a newly landed compression block.
  *
  * Called when a compression range lands (block creation): every pending

@@ -20,37 +20,9 @@
  */
 
 import type { ViewItem } from "../../core/context/lens.js";
-import type { SessionState } from "../../core/context/state.js";
+import { blockIdOf, type SessionState } from "../../core/context/state.js";
 import { materializeSummary } from "./apply-view.js";
 import { type ContextMessageEntry, getCallId } from "./types.js";
-
-/**
- * Look up the block-map id matching a folded summary item's interval.
- *
- * A `ViewItem` summary carries a `BlockSpan` without its map key; the
- * id is the state block-map key (`bN`).  A surviving block always
- * matches by interval; a defensively merged summary item references its
- * first-appearing block.  Only active blocks are candidates — a block
- * that stopped folding keeps its record and may share an interval with a
- * later block, so the id must address the one producing the summary.
- * Returns undefined when nothing matches.
- *
- * @param state - The session state (blocks map).
- * @param start - First covered ordinal of the summary item.
- * @param end - Last covered ordinal (exclusive).
- * @returns The block-map id, or undefined.
- */
-export function blockIdOf(
-  state: SessionState,
-  start: number,
-  end: number,
-): number | undefined {
-  for (const [id, block] of state.blocks) {
-    if (block.status !== "active") continue;
-    if (block.start === start && block.end === end) return id;
-  }
-  return undefined;
-}
 
 /**
  * Project the folded view items back to a v1 message array.

@@ -74,6 +74,11 @@ import type {
   TokenUsage,
 } from "../../core/context/lens.js";
 import { project } from "../../core/context/lens.js";
+import {
+  type RegionProvenance,
+  recordRegionProvenance,
+  type WritableRegion,
+} from "../../core/context/writable-regions.js";
 import type { ContextMessageEntry, ContextTokenInfo } from "./types.js";
 
 /**
@@ -92,42 +97,13 @@ interface V1ToolPart {
 }
 
 /**
- * Derivation source of a lens region within its v1 message.
- *
- * Ref injection writes only text parts and tool outputs, so
- * the injection filter keys off this provenance instead of the region
- * kind alone (content regions also exist for step-start/snapshot/file
- * parts, which are estimation-only and must never receive a line
- * number).
- */
-type RegionProvenance = "text" | "reasoning" | "tool" | "other";
-
-/**
- * Provenance registry keyed by region instance.
- *
- * Kept out of the `TextRegion` interface — the lens contract stays
- * `{ kind, get }`; the adapter's own regions carry their
- * provenance in this side table so `isInjectableRegion` can read it
- * without polluting the core types.
- */
-const regionProvenance = new WeakMap<TextRegion, RegionProvenance>();
-
-/**
- * A lens region whose text the adapter may rewrite in place.
- *
- * The core `TextRegion` contract is read-only; this adapter-internal
- * extension adds the write side used by edit application and line-ref
- * injection.  Core modules never reference it.
- */
-export interface WritableRegion extends TextRegion {
-  /** Rewrite the region's text in place. */
-  set(text: string): void;
-}
-
-/**
  * A lens region bound to a v1 part: reads serialize the current part
- * value, writes mutate the part in place.  The derivation source is
- * recorded in the provenance side table at construction.
+ * value, writes mutate the part in place.  The core provenance registry
+ * is populated at construction; the derivations this adapter records are
+ * `"text"` (text parts), `"reasoning"`, `"tool"` (tool-part input and
+ * output), and `"other"` — the estimation-only content derived from
+ * step-start/snapshot/file parts, which must never receive a line
+ * number.
  */
 class PartRegion implements WritableRegion {
   constructor(
@@ -136,7 +112,7 @@ class PartRegion implements WritableRegion {
     private readonly write: (text: string) => void,
     provenance: RegionProvenance,
   ) {
-    regionProvenance.set(this, provenance);
+    recordRegionProvenance(this, provenance);
   }
 
   get(): string {
@@ -346,24 +322,4 @@ export function history(
       : { role: "user", hidden: true, regions: [] },
   );
   return project(mapped, invocations);
-}
-
-/**
- * Report whether a lens region may receive the line-number prefix.
- *
- * Ref-injection targets are text parts and tool
- * outputs.  Content regions derived from text parts and tool-output
- * regions are injectable; thinking, tool-input, content derived from
- * step-start/snapshot/file parts (estimation-only), and regions this
- * adapter did not create are not.
- *
- * @param region - The region to test.
- * @returns True when the region is a ref-injection target.
- */
-export function isInjectableRegion(region: TextRegion): boolean {
-  if (!region) return false;
-  const provenance = regionProvenance.get(region);
-  if (provenance === "text") return region.kind === "content";
-  if (provenance === "tool") return region.kind === "tool-output";
-  return false;
 }

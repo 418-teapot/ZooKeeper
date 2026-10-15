@@ -55,6 +55,11 @@ import type {
   TextRegion,
 } from "../../core/context/lens.js";
 import { project } from "../../core/context/lens.js";
+import {
+  type RegionProvenance,
+  recordRegionProvenance,
+  type WritableRegion,
+} from "../../core/context/writable-regions.js";
 import { log } from "../../utils/logger.js";
 import type {
   PiAgentMessage,
@@ -69,23 +74,6 @@ import type {
   PiToolResultMessage,
   PiUserMessage,
 } from "./types.js";
-
-/**
- * Origin of a pi-derived lens region, used to decide which regions may
- * receive the per-round `[mN] ` line-number prefix.
- *
- * `summary` covers host-authored summary text (pi compaction / branch
- * summaries): it is counted for estimation but must never be rewritten
- * with a line ref, because the prefix would corrupt the host's own
- * summary block.
- */
-type RegionProvenance = "text" | "image" | "thinking" | "tool" | "summary";
-
-/**
- * Side table that records each region's provenance without polluting the
- * public `TextRegion` interface.
- */
-const regionProvenance = new WeakMap<TextRegion, RegionProvenance>();
 
 /**
  * Linked tool-result facts resolved for a tool-call block.
@@ -164,24 +152,16 @@ function statusOf(isError: boolean): string {
 }
 
 /**
- * A lens region whose text the adapter may rewrite in place.
- *
- * The core `TextRegion` contract is read-only; this adapter-internal
- * extension adds the write side used by the render path.  Core modules
- * never reference it.
- */
-export interface WritableRegion extends TextRegion {
-  /** Rewrite the region's text in place. */
-  set(text: string): void;
-}
-
-/**
  * Lens region bound to a pi message object.
  *
  * The region reads from and writes back into the same backing message, so
  * edits applied through the lens mutate a *copy* of the original message in
- * the pure render path.  The provenance side table is populated at
- * construction.
+ * the pure render path.  The core provenance registry is populated at
+ * construction; the provenance values pi records are `"text"` (text
+ * parts), `"image"` (image-derived content, counted for estimation only),
+ * `"thinking"`, `"tool"` (tool-call input and tool-result output), and
+ * `"summary"` (host-authored compaction / branch summary text, counted but
+ * never rewritten with a line ref).
  */
 class PiTextRegion implements WritableRegion {
   constructor(
@@ -190,7 +170,7 @@ class PiTextRegion implements WritableRegion {
     private readonly write: (text: string) => void,
     provenance: RegionProvenance,
   ) {
-    regionProvenance.set(this, provenance);
+    recordRegionProvenance(this, provenance);
   }
 
   get(): string {
@@ -602,22 +582,4 @@ export function history(messages: PiAgentMessage[]): Projection {
     toHostMessage(message, resultIndex, ordinal, invocations),
   );
   return project(mapped, invocations);
-}
-
-/**
- * Report whether a lens region may receive the line-number prefix.
- *
- * Only text-derived `content` regions and `tool-output` regions are
- * injection targets; image blocks, thinking traces, tool inputs and
- * host-authored summary text are never rewritten with line refs.
- *
- * @param region - The region to test.
- * @returns True when the region is a ref-injection target.
- */
-export function isInjectableRegion(region: TextRegion): boolean {
-  if (!region) return false;
-  const provenance = regionProvenance.get(region);
-  if (provenance === "text") return region.kind === "content";
-  if (provenance === "tool") return region.kind === "tool-output";
-  return false;
 }

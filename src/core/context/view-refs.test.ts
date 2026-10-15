@@ -7,11 +7,12 @@
  * range rejected with an order error), actionable out-of-view errors,
  * swallowed blocks occupying no line, and restart-free reproducibility
  * (no persistence reconciliation).  The three-branch injection placement
- * and the pure-prefix injection semantics live in the host adapters'
- * renderer tests, which own the actual injection
+ * and the pure-prefix injection semantics live in the writable-region
+ * protocol tests (`writable-regions.test.ts`); the host renderer tests
  * (`src/adapters/opencode/apply-view.test.ts`,
  * `src/adapters/opencode/render.test.ts`,
- * `src/adapters/pi/render.test.ts`).  Hidden messages stay visible in
+ * `src/adapters/pi/render.test.ts`) cover them end to end through the
+ * adapters' write-back.  Hidden messages stay visible in
  * the view but occupy
  * no line number and receive no prefix, so the visible numbering stays
  * dense.  Fixtures are built through the lens testkit; the
@@ -29,6 +30,7 @@ import { fold } from "./fold.js";
 import type { ViewItem } from "./lens.js";
 import {
   formatSummaryLabel,
+  formatSummaryText,
   itemAtOrdinal,
   numberView,
   refAtOrdinal,
@@ -187,6 +189,35 @@ describe("formatSummaryLabel", () => {
     assert.equal(label, "[Block b4 · 3 条] t");
     assert.ok(!label.includes("m7"));
     assert.ok(!label.includes("m10"));
+  });
+});
+
+describe("formatSummaryText", () => {
+  it("renders the label followed by the summary body on the next line", () => {
+    assert.equal(
+      formatSummaryText({
+        id: 1,
+        start: 1,
+        end: 3,
+        title: "t",
+        summary: "body",
+      }),
+      "[Block b1 · 2 条] t\nbody",
+    );
+  });
+
+  it("adds no body line for an empty summary", () => {
+    assert.equal(
+      formatSummaryText({ id: 2, start: 0, end: 2, summary: "" }),
+      "[Block b2 · 2 条]",
+    );
+  });
+
+  it("prepends the ref prefix when the item occupies a line", () => {
+    assert.equal(
+      formatSummaryText({ id: 3, start: 0, end: 2, summary: "s" }, 5),
+      "[m5] [Block b3 · 2 条]\ns",
+    );
   });
 });
 

@@ -15,10 +15,11 @@
  * the current round only).
  *
  * The module renders but never materializes: original items receive
- * their prefix through the lens; summary messages are the host
- * adapters' job (`src/adapters/<host>/render.ts`), and their first line
- * is composed as `refPrefix(n) + formatSummaryLabel(block)` followed by
- * the summary text.
+ * their prefix through the lens, while summary messages are the host
+ * adapters' job (`src/adapters/<host>/render.ts`) — `formatSummaryText`
+ * composes the summary item's shared text (the label, optionally
+ * prefixed with `refPrefix(n)`, followed by the summary body) and the
+ * adapter wraps that text into its host message shape.
  *
  * Hidden messages occupy an ordinal but are skipped by numbering and
  * injection: they stay visible in the view with their raw text and no
@@ -202,6 +203,34 @@ export function formatSummaryLabel(block: BlockSpan & { id?: number }): string {
   const title =
     block.title === undefined || block.title === "" ? undefined : block.title;
   return title === undefined ? header : `${header} ${title}`;
+}
+
+/**
+ * Render the text of a folded block summary item.
+ *
+ * The text is the label (`formatSummaryLabel`) followed by the block's
+ * summary body on the next line; the body line is omitted when the
+ * summary is empty, so an empty summary renders as the bare label.
+ * When the item occupies a visible view line, the per-round `[mN] `
+ * prefix goes in front of the label — summary items are addressed like
+ * any other view item.
+ *
+ * Host message materialization is deliberately not part of this
+ * function: each adapter wraps the text into its own message shape.
+ *
+ * @param block - The block span plus its persistent block id.
+ * @param lineNumber - The per-round dense line number, when visible.
+ * @returns The summary item's text.
+ */
+export function formatSummaryText(
+  block: BlockSpan & { id?: number },
+  lineNumber?: number,
+): string {
+  const label = formatSummaryLabel(block);
+  const body = block.summary.length > 0 ? `\n${block.summary}` : "";
+  return lineNumber === undefined
+    ? `${label}${body}`
+    : `${refPrefix(lineNumber)}${label}${body}`;
 }
 
 /**

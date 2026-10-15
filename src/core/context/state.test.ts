@@ -10,8 +10,9 @@
  * survive, only the status changes), the monotonic block-id allocator,
  * the compile- and runtime guarantee that a `Block` satisfies both the
  * fold view contract (`BlockSpan`) and the span validation contract
- * (`HashedSpan`), atomic write (temp file + rename, no residue), and
- * `hasActiveOverlap` interval checking.  Persistence tests run against a
+ * (`HashedSpan`), atomic write (temp file + rename, no residue),
+ * `hasActiveOverlap` interval checking, and the `blockIdOf`
+ * interval→id lookup.  Persistence tests run against a
  * per-suite temporary directory injected into the store factory.
  */
 import assert from "node:assert/strict";
@@ -25,6 +26,7 @@ import type { HashedSpan } from "./spanhash.js";
 import {
   allocateBlockId,
   type Block,
+  blockIdOf,
   clearConsumedBlockRange,
   deriveNextBlockId,
   hasActiveOverlap,
@@ -682,6 +684,34 @@ describe("hasActiveOverlap", () => {
     const state = makeState();
     state.blocks.set(1, makeBlock({ start: 0, end: 5 }));
     assert.equal(hasActiveOverlap(state, 3, 3), false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 8. blockIdOf — interval → block id
+// ---------------------------------------------------------------------------
+
+describe("blockIdOf", () => {
+  it("resolves the active block whose interval matches", () => {
+    const state = makeState();
+    state.blocks.set(1, makeBlock({ start: 2, end: 6 }));
+    state.blocks.set(2, makeBlock({ start: 6, end: 9 }));
+    assert.equal(blockIdOf(state, 2, 6), 1);
+    assert.equal(blockIdOf(state, 6, 9), 2);
+  });
+
+  it("returns undefined when no block covers the interval", () => {
+    const state = makeState();
+    state.blocks.set(1, makeBlock({ start: 2, end: 6 }));
+    assert.equal(blockIdOf(state, 2, 5), undefined);
+    assert.equal(blockIdOf(state, 0, 2), undefined);
+  });
+
+  it("ignores blocks that stopped folding", () => {
+    const state = makeState();
+    state.blocks.set(1, makeBlock({ start: 2, end: 6, status: "consumed" }));
+    state.blocks.set(2, makeBlock({ start: 2, end: 6 }));
+    assert.equal(blockIdOf(state, 2, 6), 2);
   });
 });
 
