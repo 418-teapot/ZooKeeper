@@ -36,7 +36,6 @@ import {
   parseModeProfile,
 } from "./core/config-parse.js";
 import type { ModeProfile } from "./core/config-types.js";
-import { detectEnvTools } from "./core/env-tools.js";
 import { filterDisjointVariants } from "./core/prompt-variant.js";
 import { sessionAgentRegistry } from "./core/session-agent.js";
 import type { Deps } from "./core/slots.js";
@@ -114,9 +113,7 @@ export async function buildPlugin(
     ),
     messageInjector: createOpenCodeMessageInjector(client, resolveAgent),
   };
-  const composed = composeProfile(modeProfile, REGISTRY, deps, {
-    envTools: detectEnvTools(),
-  });
+  const composed = composeProfile(modeProfile, REGISTRY, deps);
   const profileHooks = assembleOpenCodeHooks(composed, deps, modeProfile);
 
   // Assemble the model-family wordings from every enabled agent, tracking
