@@ -41,6 +41,7 @@ import {
 } from "../../core/config-parse.js";
 import type { AgentModeMap, ModeProfile } from "../../core/config-types.js";
 import type { HostAdapter } from "../../core/context/lens.js";
+import { detectEnvTools } from "../../core/env-tools.js";
 import { createLoopEngine } from "../../core/loop/index.js";
 import { parseSkillPermissions } from "../../core/permissions/skill-permissions.js";
 import { sessionAgentRegistry } from "../../core/session-agent.js";
@@ -406,7 +407,9 @@ export function buildPiContributions(
     // the composed shape) a default no-op provider is used.
     adapter: hostDeps?.adapter ?? createPiAdapter(() => undefined),
   };
-  const composed = composeProfile(modeProfile, REGISTRY, deps);
+  const composed = composeProfile(modeProfile, REGISTRY, deps, {
+    envTools: detectEnvTools(),
+  });
 
   // Seed the identity machinery with the default primary when the
   // profile has any primary agents (first in profile array order).  An

@@ -452,3 +452,105 @@ describe("composeProfile — active set", () => {
     assert.deepEqual([...seen.commands], ["go", "dcp"]);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Environment tool bullet injection
+// ---------------------------------------------------------------------------
+
+/** Profile enabling only a mock agent named `dolphin`. */
+const AGENT_PROFILE: ModeProfile = {
+  name: "one-agent",
+  agents: ["dolphin"],
+  skills: [],
+  hooks: [],
+  tools: [],
+  commands: [],
+};
+
+/** Mock dolphin agent unit contributing the supplied prompt. */
+function promptUnit(prompt: string): UnitDescriptor {
+  return mockUnit("dolphin", "agent", () => ({
+    kind: "agent",
+    agents: [{ name: "dolphin", prompt }],
+  }));
+}
+
+describe("composeProfile — environment tool bullets", () => {
+  const CONTRACT_PROMPT = "<Contract>\n- keep\n</Contract>\n";
+
+  it("inserts the bullets before the last </Contract>", () => {
+    const result = composeProfile(
+      AGENT_PROFILE,
+      [promptUnit(CONTRACT_PROMPT)],
+      DEPS,
+      { envTools: { rg: true, fd: "fd" } },
+    );
+    assert.equal(
+      result.agents[0].prompt,
+      "<Contract>\n- keep\n" +
+        "- 搜索文本内容时使用 `rg`，**不得**使用 `grep`\n" +
+        "- 查找文件时使用 `fd`，**不得**使用 `find`\n" +
+        "</Contract>\n",
+    );
+  });
+
+  it("names fdfind in the injected bullet", () => {
+    const result = composeProfile(
+      AGENT_PROFILE,
+      [promptUnit(CONTRACT_PROMPT)],
+      DEPS,
+      { envTools: { rg: false, fd: "fdfind" } },
+    );
+    assert.equal(
+      result.agents[0].prompt,
+      "<Contract>\n- keep\n" +
+        "- 查找文件时使用 `fdfind`，**不得**使用 `find`\n" +
+        "</Contract>\n",
+    );
+  });
+
+  it("injects into the last </Contract> when several are present", () => {
+    const prompt = "</Contract>\nA\n</Contract>\n";
+    const result = composeProfile(AGENT_PROFILE, [promptUnit(prompt)], DEPS, {
+      envTools: { rg: true, fd: null },
+    });
+    assert.equal(
+      result.agents[0].prompt,
+      "</Contract>\nA\n" +
+        "- 搜索文本内容时使用 `rg`，**不得**使用 `grep`\n" +
+        "</Contract>\n",
+    );
+  });
+
+  it("appends to the end when no </Contract> marker exists", () => {
+    const result = composeProfile(
+      AGENT_PROFILE,
+      [promptUnit("plain prompt\n")],
+      DEPS,
+      { envTools: { rg: true, fd: null } },
+    );
+    assert.equal(
+      result.agents[0].prompt,
+      "plain prompt\n- 搜索文本内容时使用 `rg`，**不得**使用 `grep`",
+    );
+  });
+
+  it("leaves prompts untouched when no tool is detected", () => {
+    const result = composeProfile(
+      AGENT_PROFILE,
+      [promptUnit(CONTRACT_PROMPT)],
+      DEPS,
+      { envTools: { rg: false, fd: null } },
+    );
+    assert.equal(result.agents[0].prompt, CONTRACT_PROMPT);
+  });
+
+  it("leaves prompts untouched when envTools is absent", () => {
+    const result = composeProfile(
+      AGENT_PROFILE,
+      [promptUnit(CONTRACT_PROMPT)],
+      DEPS,
+    );
+    assert.equal(result.agents[0].prompt, CONTRACT_PROMPT);
+  });
+});

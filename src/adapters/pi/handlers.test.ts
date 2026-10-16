@@ -508,6 +508,19 @@ describe("buildPiHandlers — resourcesDiscover skill filtering", () => {
 // ---------------------------------------------------------------------------
 
 describe("buildPiHandlers — identity-dispatch prompt injection", () => {
+  /**
+   * Drop the environment-tool usage bullets the composition appends before
+   * the closing `</Contract>` when `rg`/`fd` are on PATH.  The identity
+   * assertions verify the dispatch, not the toolchain, so they must not
+   * depend on the test machine's `PATH`.
+   */
+  function stripEnvToolBullets(prompt: string): string {
+    return prompt
+      .split("\n")
+      .filter((line) => !/^- (搜索文本内容时使用|查找文件时使用) `/.test(line))
+      .join("\n");
+  }
+
   it("default primary (first in profile order) prompt is prepended", async () => {
     // buildPiContributions seeds the identity state with the default
     // primary (dolphin, first in the poly agents array); outside any
@@ -570,7 +583,7 @@ describe("buildPiHandlers — identity-dispatch prompt injection", () => {
       });
       injected = result.systemPrompt;
     });
-    assert.equal(injected, `${BEAVER_PROMPT}\n\nbase`);
+    assert.equal(stripEnvToolBullets(injected), `${BEAVER_PROMPT}\n\nbase`);
   });
 
   it("subagent resolves by the same name lookup when not the default primary", async () => {

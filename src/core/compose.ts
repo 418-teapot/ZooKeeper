@@ -15,6 +15,8 @@
 
 import { log } from "../utils/logger.js";
 import type { ModeProfile } from "./config-types.js";
+import type { EnvTools } from "./env-tools.js";
+import { envToolsBullets } from "./env-tools.js";
 import type { DelegationJudgeContribution } from "./gate.js";
 import { composeGate } from "./gate.js";
 import type {
@@ -112,6 +114,34 @@ export interface ComposeOptions {
    * set handed to factories stays correct.
    */
   warnUnknownUnits?: boolean;
+  /**
+   * Detected environment tools (`rg` / `fd`).  When supplied and at least
+   * one tool is available, the matching usage bullet is inserted before
+   * each agent prompt's closing `</Contract>` marker.  Omitted means no
+   * modification — the default keeps composition output independent of
+   * the machine's `PATH` (existing tests and the golden baseline).
+   */
+  envTools?: EnvTools;
+}
+
+/**
+ * Insert `bullets` immediately before the last `</Contract>` marker,
+ * keeping the bullet list intact (the inserted lines follow the marker's
+ * preceding newline).  A prompt without the marker falls back to a plain
+ * append.
+ *
+ * @param prompt - The agent prompt text.
+ * @param bullets - One bullet per line, no trailing newline.
+ * @returns The prompt with the bullets injected.
+ */
+function injectContractBullets(prompt: string, bullets: string): string {
+  const marker = "</Contract>";
+  const idx = prompt.lastIndexOf(marker);
+  if (idx === -1) {
+    const sep = prompt.endsWith("\n") ? "" : "\n";
+    return `${prompt}${sep}${bullets}`;
+  }
+  return `${prompt.slice(0, idx)}${bullets}\n${prompt.slice(idx)}`;
 }
 
 /**
@@ -157,6 +187,18 @@ export function composeProfile(
     if (!profile[category].includes(unit.name)) continue;
     const contributions = unit.create(deps, activeSet);
     collect(result, contributions, judges);
+  }
+
+  // Environment tool rules are appended to every agent prompt once the
+  // enablement loop has collected them.  Guarded on both the option and a
+  // non-empty bullet set so the default path mutates nothing.
+  if (opts?.envTools !== undefined) {
+    const bullets = envToolsBullets(opts.envTools);
+    if (bullets !== "") {
+      for (const agent of result.agents) {
+        agent.prompt = injectContractBullets(agent.prompt, bullets);
+      }
+    }
   }
 
   // Compose the delegation judges into a single gate (empty chain →
