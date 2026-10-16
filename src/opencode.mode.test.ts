@@ -18,11 +18,13 @@ import {
 } from "./compose-opencode.js";
 import { _resetContextStateManagerForTesting } from "./core/context/runtime.js";
 import { sessionAgentRegistry } from "./core/session-agent.js";
+import type { AgentUnitDescriptor } from "./core/slots.js";
 import { DIRECT_WORK_NUDGE } from "./hooks/direct-work-nudge";
 import { JSON_ERROR_REMINDER } from "./hooks/json-error-nudge";
 import { VERIFY_REMINDER } from "./hooks/post-subagent-nudge";
 import { SUBAGENT_PROMPT_HINT } from "./hooks/subagent-prompt";
 import { buildPlugin, zookeeper } from "./opencode.js";
+import { REGISTRY } from "./registry.js";
 import { composeToolHooks } from "./testkits/config.js";
 import { withModeFile } from "./testkits/mode-file.js";
 import { _getBufferForTesting, _resetForTesting } from "./utils/logger.js";
@@ -896,7 +898,9 @@ describe("experimental.chat.system.transform — model prompt variant", () => {
   }
 
   it("swaps system entries to the gpt variant and back", async () => {
-    const plugin = await makePlugin({});
+    // The poly profile enables the dolphin agent, whose contribution
+    // carries the two variant pairs the transform swaps.
+    const plugin = await makePlugin();
     const output = { system: [`<Contract>\n${BASE}\n</Contract>`] };
 
     await plugin["experimental.chat.system.transform"](
@@ -915,12 +919,91 @@ describe("experimental.chat.system.transform — model prompt variant", () => {
   });
 
   it("leaves entries without the variant lines untouched", async () => {
-    const plugin = await makePlugin({});
+    const plugin = await makePlugin();
     const output = { system: ["plain system prompt"] };
     await plugin["experimental.chat.system.transform"](
       input("gpt-5.5"),
       output,
     );
     assert.deepEqual(output.system, ["plain system prompt"]);
+  });
+
+  it("swaps nothing when no enabled agent ships variants", async () => {
+    // A null profile composes no agents, so the transform receives an
+    // empty variant list and leaves the system prompt untouched
+    // (fail-closed).
+    const plugin = await makePlugin({});
+    const text = `<Contract>\n${BASE}\n</Contract>`;
+    const output = { system: [text] };
+    await plugin["experimental.chat.system.transform"](
+      input("openai/gpt-5.5"),
+      output,
+    );
+    assert.deepEqual(output.system, [text]);
+  });
+});
+
+describe("experimental.chat.system.transform — variant conflict filtering", () => {
+  const DOLPHIN_BASE =
+    "- 有职责匹配的 agent 时，**不得**因省事自行接管其工作；";
+  const DOLPHIN_GPT =
+    "- 职责匹配只决定可以委派给谁，不决定一定委派或不委派；**不得**因为下一步动作更方便，或因为存在匹配的 agent，就跳过完整交付成本判断；";
+  /**
+   * A later agent whose variant reuses dolphin's gpt wording as its own
+   * base: applied after dolphin, it would rewrite dolphin's output.
+   */
+  const conflictUnit: AgentUnitDescriptor = {
+    name: "conflict-agent",
+    kind: "agent",
+    create() {
+      return {
+        kind: "agent",
+        agents: [
+          {
+            name: "conflict-agent",
+            prompt: "",
+            promptVariants: [{ base: DOLPHIN_GPT, gpt: "CONFLICT_MARKER" }],
+          },
+        ],
+      };
+    },
+  };
+
+  it("drops a later overlapping variant and logs its source", async () => {
+    REGISTRY.push(conflictUnit);
+    try {
+      const withConflict = {
+        ...POLY_ZOO,
+        mode: {
+          poly: {
+            ...POLY_PROFILE,
+            agents: [...POLY_PROFILE.agents, "conflict-agent"],
+          },
+        },
+      };
+      const plugin = await makePlugin(withConflict);
+      const output = { system: [`<Contract>\n${DOLPHIN_BASE}\n</Contract>`] };
+      await plugin["experimental.chat.system.transform"](
+        {
+          sessionID: "sess-conflict",
+          model: { id: "gpt-5.5", limit: { context: 1000, output: 100 } },
+        },
+        output,
+      );
+      // Dolphin's pair is kept and applied; the later overlapping pair is
+      // dropped, so its marker never reaches the rewritten prompt.
+      assert.ok(output.system[0].includes(DOLPHIN_GPT));
+      assert.ok(!output.system[0].includes("CONFLICT_MARKER"));
+
+      const conflicts = _getBufferForTesting().filter(
+        (entry) => entry.event === "conflict_dropped",
+      );
+      assert.equal(conflicts.length, 1);
+      assert.equal(conflicts[0].level, "warn");
+      assert.equal(conflicts[0].dropped, 1);
+      assert.deepEqual(conflicts[0].sources, ["conflict-agent"]);
+    } finally {
+      REGISTRY.pop();
+    }
   });
 });

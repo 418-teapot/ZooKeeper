@@ -176,15 +176,16 @@ export function createPiEventHandlers(
       // profile the system prompt is returned unchanged (silent
       // fail-closed).
       const identity = resolveIdentity();
-      const agentPrompt = identity
-        ? deps.composed.agents.find((agent) => agent.name === identity.name)
-            ?.prompt
+      const agent = identity
+        ? deps.composed.agents.find(
+            (candidate) => candidate.name === identity.name,
+          )
         : undefined;
       return {
         systemPrompt:
-          agentPrompt === undefined
+          agent === undefined
             ? evt.systemPrompt
-            : `${applyModelVariant(agentPrompt, resolveContextModelId(ctx))}\n\n${evt.systemPrompt}`,
+            : `${applyModelVariant(agent.prompt, resolveContextModelId(ctx), agent.promptVariants)}\n\n${evt.systemPrompt}`,
       };
     },
     async sessionStart(_evt?, ctx?) {

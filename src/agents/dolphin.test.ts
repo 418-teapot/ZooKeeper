@@ -7,6 +7,7 @@
  */
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
+import { ORCHESTRATOR_AGENT_NAME } from "../core/orchestrator.js";
 import type { ActiveSet, Deps } from "../core/slots.js";
 import {
   buildDolphinPrompt,
@@ -217,6 +218,11 @@ describe("buildDolphinPrompt", () => {
       buildDolphinPrompt(MONO_SET),
     );
   });
+
+  it("unit descriptor ships the prompt variants with the contribution", () => {
+    const [contribution] = unit.create(DEPS, POLY_SET).agents;
+    assert.deepEqual(contribution.promptVariants, DOLPHIN_PROMPT_VARIANTS);
+  });
 });
 
 describe("dolphin prompt variant defaults", () => {
@@ -244,5 +250,16 @@ describe("dolphin prompt variant defaults", () => {
       assert.ok(!pair.base.includes(pair.gpt));
       assert.ok(!pair.gpt.includes(pair.base));
     }
+  });
+});
+
+describe("dolphin agent descriptor name", () => {
+  it("matches the orchestrator agent-name invariant", () => {
+    assert.equal(unit.name, ORCHESTRATOR_AGENT_NAME);
+  });
+
+  it("contributes exactly the orchestrator-named agent", () => {
+    const names = unit.create(DEPS, POLY_SET).agents.map((agent) => agent.name);
+    assert.deepEqual(names, [ORCHESTRATOR_AGENT_NAME]);
   });
 });

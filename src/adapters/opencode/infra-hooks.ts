@@ -16,7 +16,10 @@ import { setModelLimit } from "../../core/context/model-limits.js";
 import { cleanupSession } from "../../core/context/runtime.js";
 import { createLoopEngine } from "../../core/loop/index.js";
 import { ORCHESTRATOR_AGENT_NAME } from "../../core/orchestrator.js";
-import { applyModelVariant } from "../../core/prompt-variant.js";
+import {
+  applyModelVariant,
+  type PromptVariantPair,
+} from "../../core/prompt-variant.js";
 import { sessionAgentRegistry } from "../../core/session-agent.js";
 import type { SettledContribution } from "../../core/slots.js";
 import { log } from "../../utils/logger.js";
@@ -33,6 +36,13 @@ export interface InfraHookDeps {
   resolveAgent(sessionID: string): string | undefined;
   /** The profile's settle strategies; none disables the loop engine. */
   onSettled: SettledContribution[];
+  /**
+   * Model-family prompt wordings from the composed agents, with the
+   * overlapping pairs filtered out (`filterDisjointVariants`).  Empty
+   * when no enabled agent ships a variant; the transform then swaps
+   * nothing (fail-closed).
+   */
+  promptVariants: readonly PromptVariantPair[];
 }
 
 /**
@@ -216,7 +226,11 @@ export function buildInfraHooks(deps: InfraHookDeps) {
       // The config hook bakes the base wording; this is the runtime
       // correction.  Missing model info fails closed to the base wording.
       for (let i = 0; i < output.system.length; i += 1) {
-        output.system[i] = applyModelVariant(output.system[i], input.model?.id);
+        output.system[i] = applyModelVariant(
+          output.system[i],
+          input.model?.id,
+          deps.promptVariants,
+        );
       }
     },
   };

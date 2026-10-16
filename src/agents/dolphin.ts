@@ -298,7 +298,13 @@ export const unit: AgentUnitDescriptor = {
   create(_deps, activeSet) {
     return {
       kind: "agent",
-      agents: [{ name: "dolphin", prompt: buildDolphinPrompt(activeSet) }],
+      agents: [
+        {
+          name: "dolphin",
+          prompt: buildDolphinPrompt(activeSet),
+          promptVariants: DOLPHIN_PROMPT_VARIANTS,
+        },
+      ],
     };
   },
 };

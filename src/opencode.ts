@@ -36,10 +36,12 @@ import {
   parseModeProfile,
 } from "./core/config-parse.js";
 import type { ModeProfile } from "./core/config-types.js";
+import { filterDisjointVariants } from "./core/prompt-variant.js";
 import { sessionAgentRegistry } from "./core/session-agent.js";
 import type { Deps } from "./core/slots.js";
 import { derivePrimaries } from "./core/subagent/identity.js";
 import { REGISTRY } from "./registry.js";
+import { log } from "./utils/logger.js";
 
 /**
  * Build the plugin hooks object from an explicit zoo config.
@@ -114,12 +116,41 @@ export async function buildPlugin(
   const composed = composeProfile(modeProfile, REGISTRY, deps);
   const profileHooks = assembleOpenCodeHooks(composed, deps, modeProfile);
 
+  // Assemble the model-family wordings from every enabled agent, tracking
+  // the contributing agent so a dropped pair can be traced.  The union is
+  // filtered before injection: `applyModelVariant` rewrites the text pair
+  // by pair, so a pair whose wording overlaps an earlier pair would
+  // rewrite that pair's output (cross-talk).  Keeping the first
+  // occurrence and dropping the rest is fail-closed; the conflict is
+  // logged rather than applied.
+  const contributedVariants = composed.agents.flatMap((agent) =>
+    (agent.promptVariants ?? []).map((pair) => ({ agent: agent.name, pair })),
+  );
+  const { kept: promptVariants, dropped } = filterDisjointVariants(
+    contributedVariants.map((item) => item.pair),
+  );
+  if (dropped.length > 0) {
+    const droppedPairs = new Set(dropped);
+    const sources = [
+      ...new Set(
+        contributedVariants
+          .filter((item) => droppedPairs.has(item.pair))
+          .map((item) => item.agent),
+      ),
+    ];
+    log("prompt-variant", "conflict_dropped", "", undefined, "warn", {
+      dropped: dropped.length,
+      sources,
+    });
+  }
+
   return {
     // Always-on infrastructure hooks.
     ...buildInfraHooks({
       client,
       resolveAgent,
       onSettled: composed.onSettled,
+      promptVariants,
     }),
     // Profile-driven registrations (from the adapter).
     ...profileHooks,

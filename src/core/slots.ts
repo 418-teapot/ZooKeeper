@@ -31,6 +31,7 @@ import type { DelegationGate, DelegationJudgeContribution } from "./gate.js";
 import type { HandoffTarget } from "./handoff.js";
 import type { Decision, StopCause } from "./loop/index.js";
 import type { AgentPermissionMap } from "./permissions/deny-tools.js";
+import type { PromptVariantPair } from "./prompt-variant.js";
 import type { SubagentDriver } from "./subagent/driver.js";
 import type { TodoStateStore } from "./todo/store.js";
 import type { ValidationLimits } from "./validate.js";
@@ -894,6 +895,12 @@ export interface AgentContribution {
   name: string;
   /** The prompt text injected into the agent definition. */
   prompt: string;
+  /**
+   * Runtime model-family wordings for this agent's prompt, swapped by
+   * `applyModelVariant` when the active model changes.  Omitted by an
+   * agent that ships a single wording; the host then swaps nothing.
+   */
+  readonly promptVariants?: readonly PromptVariantPair[];
 }
 
 /** A skill registration contribution (directory under skills/). */
