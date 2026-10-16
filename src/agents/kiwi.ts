@@ -1,4 +1,5 @@
 import type { AgentUnitDescriptor } from "../core/slots.js";
+import { envToolsRules } from "./env-tools.js";
 import { MSG_REF_NO_ECHO } from "./parts.js";
 
 /**
@@ -32,6 +33,7 @@ export const KIWI_PROMPT = `<Role>
 - 读取 wiki 文件时，始终使用绝对路径
 - 开始分析前，必须先读取现有内容，确保完整理解页面
 - ${MSG_REF_NO_ECHO}
+${envToolsRules()}
 </Contract>
 `;
 

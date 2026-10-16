@@ -1,4 +1,5 @@
 import type { AgentUnitDescriptor } from "../core/slots.js";
+import { envToolsRules } from "./env-tools.js";
 import { MSG_REF_NO_ECHO } from "./parts.js";
 
 /**
@@ -47,6 +48,7 @@ export const SPIDER_PROMPT = `<Role>
 - **不得**凭记忆、常识或推测补全证据缺口
 - URL 无法访问时必须明确说明，并尝试寻找可靠的替代来源
 - ${MSG_REF_NO_ECHO}
+${envToolsRules()}
 </Contract>
 `;
 

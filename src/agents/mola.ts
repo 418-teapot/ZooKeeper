@@ -1,4 +1,5 @@
 import type { ActiveSet, AgentUnitDescriptor } from "../core/slots.js";
+import { envToolsRules } from "./env-tools.js";
 import {
   DELEGATION_DISCIPLINE_TEXT,
   DELEGATION_LEAF_AGENTS_HEADER,
@@ -49,6 +50,7 @@ const CONTRACT_SECTION = `<Contract>
 - **只**在 \`.zoo/plans\` 中编写规划产物，并遵守相应的批准流程
 - **只**制定计划，**不得**实施。即使用户要求“直接做”，也不得修改产品代码或搭建项目；计划获批后，仍须等用户通过 \`/go\` 明确发起交接
 - ${MSG_REF_NO_ECHO}
+${envToolsRules()}
 </Contract>`;
 
 /**

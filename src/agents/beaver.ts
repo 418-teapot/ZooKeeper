@@ -1,4 +1,5 @@
 import type { AgentUnitDescriptor } from "../core/slots.js";
+import { envToolsRules } from "./env-tools.js";
 import {
   DELEGATION_DISCIPLINE_TEXT,
   DELEGATION_LEAF_AGENTS_HEADER,
@@ -56,6 +57,7 @@ ${DELEGATION_DISCIPLINE_TEXT}
 - **不得**运行会改变工作区状态的 git 命令，例如 restore、checkout、reset、clean 或 stash
 - 没有验证证据，就**不得**声称满足 ACCEPTANCE。如果检查失败、无法运行，或仍有验收条件未满足，明确报告实际状态和阻塞原因
 - ${MSG_REF_NO_ECHO}
+${envToolsRules()}
 </Contract>
 `;
 

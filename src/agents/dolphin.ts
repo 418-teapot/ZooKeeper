@@ -1,5 +1,6 @@
 import type { PromptVariantPair } from "../core/prompt-variant.js";
 import type { ActiveSet, AgentUnitDescriptor } from "../core/slots.js";
+import { envToolsRules } from "./env-tools.js";
 import {
   BEAVER_AGENT_LINE,
   DELEGATION_LEAF_EXAMPLE,
@@ -227,6 +228,7 @@ ${DOLPHIN_CONTRACT_ROUTE_PAIR.base}
 - **不得**为了满足流程、使用可用 agent 或追求并行而制造额外工作；
 - ${MSG_REF_NO_ECHO}
 - ${CONTINUATION_NOTE}
+${envToolsRules()}
 </Contract>`;
 
 /**
@@ -258,6 +260,7 @@ const MONO_PROMPT = `<Role>
 - 没有证据就**不能**算完成。未通过验证、无法运行检查或仍有验收条件未满足时，不得声称完成
 - ${MSG_REF_NO_ECHO}
 - ${CONTINUATION_NOTE}
+${envToolsRules()}
 </Contract>
 
 ${COMMUNICATION_SECTION}

@@ -1,4 +1,5 @@
 import type { AgentUnitDescriptor } from "../core/slots.js";
+import { envToolsRules } from "./env-tools.js";
 import { MSG_REF_NO_ECHO } from "./parts.js";
 
 /**
@@ -55,6 +56,7 @@ export const EAGLE_PROMPT = `<Role>
 - **保持简洁**，信息密度和实用性优先于冗长全面。宁可给出一个证据充分的问题，也不要罗列几个未经证实的猜测
 - **不得**使用情绪化错措辞，只陈述技术依据
 - ${MSG_REF_NO_ECHO}
+${envToolsRules()}
 </Contract>
 `;
 

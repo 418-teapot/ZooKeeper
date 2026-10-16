@@ -1,4 +1,5 @@
 import type { AgentUnitDescriptor } from "../core/slots.js";
+import { envToolsRules } from "./env-tools.js";
 import { MSG_REF_NO_ECHO } from "./parts.js";
 
 /**
@@ -40,6 +41,7 @@ export const LYNX_PROMPT = `<Role>
 - **必须**给出具体的代码位置，不要用含糊的描述代替
 - **不得**进行猜测，找不到就明确说明
 - ${MSG_REF_NO_ECHO}
+${envToolsRules()}
 </Contract>
 `;
 
