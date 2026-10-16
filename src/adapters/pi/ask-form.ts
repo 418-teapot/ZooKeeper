@@ -14,7 +14,7 @@
  * @module
  */
 
-import type { AskResult } from "../../core/ask.js";
+import { type AskResult, fallbackResults } from "../../core/ask.js";
 import { log } from "../../utils/logger.js";
 import {
   type AskDialog,
@@ -26,26 +26,17 @@ import {
 } from "./tui/ask-dialog.js";
 
 // The tool adapter reaches the dialog only through this facade: the question
-// shape it parses into and the one-line renderer it uses for `content` are
-// re-exported here so `src/tools/ask.ts` never imports the dialog directly.
+// shape it parses into is re-exported here so `src/tools/ask.ts` never
+// imports the dialog directly.
 export type {
   AskDialogComponent,
   AskDialogOutcome,
   AskDialogQuestion,
 } from "./tui/ask-dialog.js";
-export { toOneLine } from "./tui/ask-dialog.js";
 
 // ---------------------------------------------------------------------------
 // Dialog presentation
 // ---------------------------------------------------------------------------
-
-/** All-unavailable results (no dialog was ever mounted, or none reported). */
-export function fallbackResults(
-  questions: AskDialogQuestion[],
-  reason: "timeout" | "aborted" | "no-ui",
-): AskResult[] {
-  return questions.map(() => ({ status: "unavailable", reason }) as AskResult);
-}
 
 /**
  * Mount the dialog and wait for the user's decision.

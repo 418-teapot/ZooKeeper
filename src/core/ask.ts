@@ -8,7 +8,7 @@
  * termination: timeout, abort, or no UI).
  *
  * This module has zero host dependencies — no pi/OpenCode types, no I/O, no
- * timer logic. Host adapters implement `AskPresenter` and own scheduling,
+ * timer logic. Host adapters implement `AskFormHost` and own scheduling,
  * rendering, and timeout enforcement.
  *
  * @module
@@ -48,6 +48,18 @@ export interface NormalizedQuestion {
   allowFreeform: boolean;
 }
 
+/**
+ * A normalized question plus a form-presentation hint.
+ *
+ * `recommended` is an index into `options` that a form host may render as a
+ * badge / initial cursor position. It is UI-only: it never enters the
+ * answer payload and the core protocol ignores it.
+ */
+export interface AskFormQuestion extends NormalizedQuestion {
+  /** Index into `options` of the recommended candidate. */
+  recommended?: number;
+}
+
 // ---------------------------------------------------------------------------
 // Result types
 // ---------------------------------------------------------------------------
@@ -73,20 +85,33 @@ export type AskResult =
   | { status: "unavailable"; reason: "timeout" | "aborted" | "no-ui" };
 
 // ---------------------------------------------------------------------------
-// Presenter contract (implemented by host adapters)
+// Form-host contract (implemented by host adapters)
 // ---------------------------------------------------------------------------
 
 /**
  * Presentation contract for the ask protocol.
  *
- * A host adapter renders a normalized question, blocks for the user's
- * decision, and returns the resulting slot. Timeout, abort, and no-UI
- * handling are the adapter's responsibility — this protocol only fixes the
- * result shape.
+ * A host adapter mounts its form, blocks for the user's decisions, and
+ * returns one result per question. Timeout, abort, and no-UI handling are
+ * the adapter's responsibility — this contract only fixes the call and
+ * result shapes. `custom` is the host's own component-mounting surface,
+ * opaque to this layer.
  */
-export interface AskPresenter {
-  /** Render the question and wait for the user's decision. */
-  present(question: NormalizedQuestion): Promise<AskResult>;
+export interface AskFormHost {
+  /**
+   * Mount the form and wait for the user's decisions.
+   *
+   * @param opts - The {@link AskFormQuestion}s (normalized questions plus
+   * the form's `recommended` hint), the host's custom-component surface, an
+   * optional timeout in seconds, and an optional abort signal.
+   * @returns One result per question, in question order.
+   */
+  present(opts: {
+    questions: AskFormQuestion[];
+    custom: (factory: unknown, options?: unknown) => unknown;
+    timeoutSeconds?: number;
+    signal?: AbortSignal;
+  }): Promise<AskResult[]>;
 }
 
 // ---------------------------------------------------------------------------
@@ -210,4 +235,35 @@ export function formatResultForModel(
     case "unavailable":
       return `User unavailable (${r.reason})`;
   }
+}
+
+// ---------------------------------------------------------------------------
+// Fallbacks and text helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Build all-unavailable results for the given questions.
+ *
+ * Used when no form was mounted (no UI) or nothing was reported (timeout /
+ * abort), so every question receives the same system-side slot.
+ *
+ * @param questions - The questions, in ask order.
+ * @param reason - The system-side cause for every slot.
+ * @returns One `unavailable` result per question.
+ */
+export function fallbackResults(
+  questions: NormalizedQuestion[],
+  reason: "timeout" | "aborted" | "no-ui",
+): AskResult[] {
+  return questions.map(() => ({ status: "unavailable", reason }) as AskResult);
+}
+
+/**
+ * Collapse embedded newlines / runs of blanks onto a single line.
+ *
+ * @param text - The text to flatten.
+ * @returns The text on one line.
+ */
+export function toOneLine(text: string): string {
+  return text.replace(/\s+/g, " ").trim();
 }

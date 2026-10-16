@@ -10,20 +10,21 @@
  * stays policy-free.
  *
  * Host gating is fail-closed and expressed entirely through deps: the
- * unit contributes the tool only when the pi entry point supplies the
- * converter loader (`deps.loadHtmlConverter`).  OpenCode never supplies
- * it, so `fetch` is never registered there; on pi a missing or unusable
- * native addon (the loader returns `null`) also yields no tool, leaving
- * the host unchanged instead of registering a tool that cannot run.
+ * unit contributes the tool only when the pi entry point supplies BOTH the
+ * converter loader (`deps.loadHtmlConverter`) and the head truncator
+ * (`deps.truncateHead`).  OpenCode never supplies them, so `fetch` is
+ * never registered there; on pi a missing or unusable native addon (the
+ * loader returns `null`) also yields no tool, leaving the host unchanged
+ * instead of registering a tool that cannot run.
  *
  * @module
  */
 
-import { truncateHead } from "@earendil-works/pi-coding-agent";
 import type { ToolContribution, ToolUnitDescriptor } from "../core/slots.js";
 import {
   fetchWebContent,
   type HtmlConverter,
+  type TruncateHeadFn,
 } from "../core/webfetch/pipeline.js";
 
 /** Maximum accepted `timeout` argument, in seconds. */
@@ -86,16 +87,20 @@ function validateFetchArgs(args: unknown): FetchToolInput {
 // ---------------------------------------------------------------------------
 
 /**
- * Create the fetch tool bound to a converter.
+ * Create the fetch tool bound to a converter and head truncator.
  *
  * The converter and the host head truncator are captured by the closure;
  * the adapter forwards the caller's abort signal so a cancelled tool call
  * aborts the in-flight request.
  *
  * @param converter - The native HTML→Markdown converter.
+ * @param truncate - The host head truncator.
  * @returns The fetch tool contribution.
  */
-export function createFetchTool(converter: HtmlConverter): ToolContribution {
+export function createFetchTool(
+  converter: HtmlConverter,
+  truncate: TruncateHeadFn,
+): ToolContribution {
   return {
     name: "fetch",
     description:
@@ -115,7 +120,7 @@ export function createFetchTool(converter: HtmlConverter): ToolContribution {
       const input = validateFetchArgs(args);
       const result = await fetchWebContent(input.url, {
         converter,
-        truncate: truncateHead,
+        truncate,
         ...(input.timeout !== undefined
           ? { timeoutMs: input.timeout * 1000 }
           : {}),
@@ -129,23 +134,24 @@ export function createFetchTool(converter: HtmlConverter): ToolContribution {
 /**
  * Fetch tool unit descriptor.
  *
- * Fail-closed host gating: without `deps.loadHtmlConverter` (OpenCode) or
- * when the loader reports the native addon unavailable, the unit
- * contributes no tools.  `name` doubles as the registry key and the tool
- * key.
+ * Fail-closed host gating: without BOTH `deps.loadHtmlConverter` and
+ * `deps.truncateHead` (OpenCode), or when the loader reports the native
+ * addon unavailable, the unit contributes no tools.  `name` doubles as the
+ * registry key and the tool key.
  */
 export const unit: ToolUnitDescriptor = {
   name: "fetch",
   kind: "tool",
   create(deps) {
     const load = deps.loadHtmlConverter;
-    if (load === undefined) {
+    const truncate = deps.truncateHead;
+    if (load === undefined || truncate === undefined) {
       return { kind: "tool", tools: [] };
     }
     const converter = load();
     if (converter === null) {
       return { kind: "tool", tools: [] };
     }
-    return { kind: "tool", tools: [createFetchTool(converter)] };
+    return { kind: "tool", tools: [createFetchTool(converter, truncate)] };
   },
 };

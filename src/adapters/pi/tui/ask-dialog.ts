@@ -46,10 +46,11 @@ import {
   wrapTextWithAnsi,
 } from "@earendil-works/pi-tui";
 import type {
+  AskFormQuestion,
   AskOption,
   AskResult,
-  NormalizedQuestion,
 } from "../../../core/ask.js";
+import { toOneLine } from "../../../core/ask.js";
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -58,15 +59,11 @@ import type {
 /**
  * A question as the ask adapter hands it to the dialog.
  *
- * Extends the core's normalized question with `recommended` — an
- * adapter-only UI hint (badge + initial cursor position) that never enters
- * the core protocol or the answer payload.
+ * Alias of the core's {@link AskFormQuestion}: a normalized question plus
+ * `recommended` — an adapter-only UI hint (badge + initial cursor position)
+ * that never enters the core protocol or the answer payload.
  */
-export interface AskDialogQuestion extends NormalizedQuestion {
-  /** Index into `options` of the recommended candidate (ignored when
-   * absent or out of range). */
-  recommended?: number;
-}
+export type AskDialogQuestion = AskFormQuestion;
 
 /** How the form closed; drives the unanswered questions' slots. */
 export type AskDialogClosure = "submit" | "cancel" | "timeout" | "abort";
@@ -188,11 +185,6 @@ export const REAL_TIMERS: AskDialogTimers = {
 /** Pad or truncate `text` to exactly `width` display columns. */
 export function fitColumns(text: string, width: number): string {
   return truncateToWidth(text, Math.max(0, width), "", true);
-}
-
-/** Collapse embedded newlines / runs of blanks onto a single line. */
-export function toOneLine(text: string): string {
-  return text.replace(/\s+/g, " ").trim();
 }
 
 /** Append `text` to `lines`, word-wrapped at `width`. */

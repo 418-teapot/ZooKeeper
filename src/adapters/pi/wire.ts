@@ -20,6 +20,7 @@
 import { readdirSync, realpathSync, statSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { truncateHead } from "@earendil-works/pi-coding-agent";
 import {
   applyToolDefinitionContributions,
   buildPiCommandRegistrationPlan,
@@ -60,6 +61,7 @@ import { REGISTRY } from "../../registry.js";
 import { log } from "../../utils/logger.js";
 import { createPiAdapter } from "./adapter.js";
 import { loadAgentsJson } from "./agent-models.js";
+import { presentAskForm } from "./ask-form.js";
 import { createPiEventHandlers } from "./handlers.js";
 import { createPiHandoffTarget, type PiCommandCtx } from "./handoff-target.js";
 import { createPiMessageInjector } from "./message-injector.js";
@@ -274,6 +276,18 @@ export function buildPiContributions(
      * OpenCode).
      */
     loadHtmlConverter?: Deps["loadHtmlConverter"];
+    /**
+     * Host head truncator for the fetch tool (only supplied by the real pi
+     * entry point).  Undefined without it — the fetch tool unit contributes
+     * no tools (fail-closed, matching OpenCode).
+     */
+    truncateHead?: Deps["truncateHead"];
+    /**
+     * Host form presentation for the ask tool (only supplied by the real pi
+     * entry point).  Undefined without it — the ask tool unit contributes
+     * no tools (fail-closed, matching OpenCode).
+     */
+    askFormHost?: Deps["askFormHost"];
   },
   rawConfig?: any,
 ): {
@@ -358,6 +372,12 @@ export function buildPiContributions(
     // point supplies the fail-closed wrapper that warns when the addon is
     // unavailable.
     loadHtmlConverter: hostDeps?.loadHtmlConverter,
+    // The host head truncator for the fetch pipeline.  Without it the fetch
+    // tool unit contributes no tools (fail-closed, paired with the loader).
+    truncateHead: hostDeps?.truncateHead,
+    // The ask tool's form host.  Without it the ask tool unit contributes
+    // no tools (fail-closed, so `ask` never registers on OpenCode).
+    askFormHost: hostDeps?.askFormHost,
     // pi has no SDK client — the context-pruning transform runs and
     // returns the pruned replacement to pi.  The release notification
     // does not need the client: it posts through the unified pi tool
@@ -753,6 +773,13 @@ export function buildPiHandlers(
       // real pi entry point); the wrapper warns once when the addon is
       // unavailable and the fetch unit then no-ops (fail-closed).
       loadHtmlConverter: loadPiHtmlConverter,
+      // Host head truncator for the fetch pipeline.  Wired here alongside
+      // the converter loader; the fetch unit registers only when both are
+      // present.
+      truncateHead,
+      // The ask tool's form host.  Wired here (the real pi entry point) so
+      // the ask unit registers on pi only and stays closed on OpenCode.
+      askFormHost: { present: presentAskForm },
     },
     rawConfig,
   );

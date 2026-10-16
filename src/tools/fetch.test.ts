@@ -1,9 +1,10 @@
 /**
  * Tests for the fetch tool unit (`src/tools/fetch.ts`).
  *
- * Covers the fail-closed registration gate (no `loadHtmlConverter` in
- * deps → zero tools; a loader that reports the native addon unavailable
- * → zero tools; a usable converter → exactly one `fetch` tool), the
+ * Covers the fail-closed registration gate (no `loadHtmlConverter` or no
+ * `truncateHead` in deps → zero tools; a loader that reports the native
+ * addon unavailable → zero tools; a usable converter plus truncator →
+ * exactly one `fetch` tool), the
  * argument-validation branches (non-object args, missing/empty/non-string
  * `url`, non-positive/non-numeric/an over-ceiling `timeout`) with their
  * Chinese guidance text, the caller abort signal forwarded to the request,
@@ -13,7 +14,10 @@
 import assert from "node:assert/strict";
 import { afterEach, describe, it } from "node:test";
 import type { ActiveSet, Deps } from "../core/slots.js";
-import type { HtmlConverter } from "../core/webfetch/pipeline.js";
+import type {
+  HtmlConverter,
+  TruncateHeadFn,
+} from "../core/webfetch/pipeline.js";
 import { installFetchMock, restoreFetch } from "../testkits/fetch.js";
 import { createFetchTool, unit as fetchUnit } from "./fetch.js";
 
@@ -24,9 +28,21 @@ import { createFetchTool, unit as fetchUnit } from "./fetch.js";
 /** An identity converter — the pipeline's output then equals the body. */
 const identity: HtmlConverter = (html) => html;
 
-/** Build deps carrying an optional converter loader. */
-function deps(loadHtmlConverter?: () => HtmlConverter | null): Deps {
-  return { loadHtmlConverter } as unknown as Deps;
+/** A head truncator that keeps the whole body (never flags truncation). */
+const keepAll: TruncateHeadFn = (content) => ({
+  content,
+  truncated: false,
+  totalLines: 1,
+  totalBytes: new TextEncoder().encode(content).length,
+  outputLines: 1,
+});
+
+/** Build deps carrying optional converter-loader and truncator ports. */
+function deps(
+  loadHtmlConverter?: () => HtmlConverter | null,
+  truncateHead?: TruncateHeadFn,
+): Deps {
+  return { loadHtmlConverter, truncateHead } as unknown as Deps;
 }
 
 /** Replace `globalThis.fetch` with a recorded fake. */
@@ -75,15 +91,23 @@ describe("fetch unit registration gate", () => {
 
   it("contributes no tools when the loader reports no addon", () => {
     const contributions = fetchUnit.create(
-      deps(() => null),
+      deps(() => null, keepAll),
       {} as ActiveSet,
     );
     assert.deepEqual(contributions.tools, []);
   });
 
-  it("contributes one fetch tool with a usable converter", () => {
+  it("contributes no tools without a head truncator", () => {
     const contributions = fetchUnit.create(
       deps(() => identity),
+      {} as ActiveSet,
+    );
+    assert.deepEqual(contributions.tools, []);
+  });
+
+  it("contributes one fetch tool with a usable converter and truncator", () => {
+    const contributions = fetchUnit.create(
+      deps(() => identity, keepAll),
       {} as ActiveSet,
     );
     assert.equal(contributions.tools.length, 1);
@@ -99,7 +123,7 @@ describe("fetch unit registration gate", () => {
 // ---------------------------------------------------------------------------
 
 describe("fetch tool argument validation", () => {
-  const tool = createFetchTool(identity);
+  const tool = createFetchTool(identity, keepAll);
 
   it("rejects non-object arguments", async () => {
     const message = /请提供包含 url 字符串参数的对象后重试。/;
@@ -145,7 +169,7 @@ describe("fetch tool argument validation", () => {
 describe("fetch tool execute", () => {
   it("converts an HTML page through the injected converter", async () => {
     mockFetch(() => htmlResponse("<h1>Hi</h1>", "text/html; charset=utf-8"));
-    const tool = createFetchTool((html) => `MD:${html}`);
+    const tool = createFetchTool((html) => `MD:${html}`, keepAll);
 
     const output = await tool.execute(
       { url: "http://93.184.216.34/" },
@@ -159,7 +183,7 @@ describe("fetch tool execute", () => {
     mockFetch(() => htmlResponse("plain text", "text/plain"));
     const tool = createFetchTool(() => {
       throw new Error("converter must not run for text/plain");
-    });
+    }, keepAll);
 
     const output = await tool.execute(
       { url: "http://93.184.216.34/note.txt", timeout: 5 },
@@ -171,7 +195,7 @@ describe("fetch tool execute", () => {
 
   it("renders a failed fetch as model-readable error text", async () => {
     mockFetch(() => new Response("not found", { status: 404 }));
-    const tool = createFetchTool(identity);
+    const tool = createFetchTool(identity, keepAll);
 
     const output = await tool.execute(
       { url: "http://93.184.216.34/missing" },
@@ -196,7 +220,7 @@ describe("fetch tool execute", () => {
       );
     }) as typeof fetch;
 
-    const tool = createFetchTool(identity);
+    const tool = createFetchTool(identity, keepAll);
     const controller = new AbortController();
     controller.abort();
 

@@ -14,7 +14,7 @@
  *    replacement of a structurally illegal `answered` slot.
  *
  * Also the unit descriptor's pi-only fail-closed behaviour (no
- * `piSwitchHost` → zero tools) and the internal gate that keeps two forms
+ * `askFormHost` → zero tools) and the internal gate that keeps two forms
  * from mounting on top of each other.  The presentation contract itself
  * (`presentAskForm`) is covered in `src/adapters/pi/ask-form.test.ts`.
  *
@@ -23,9 +23,10 @@
 
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import type {
-  AskDialogComponent,
-  AskDialogOutcome,
+import {
+  type AskDialogComponent,
+  type AskDialogOutcome,
+  presentAskForm,
 } from "../adapters/pi/ask-form.js";
 import type { AskResult, NormalizedQuestion } from "../core/ask.js";
 import type { ActiveSet, Deps } from "../core/slots.js";
@@ -576,15 +577,15 @@ describe("ask tool — contribution", () => {
 // ---------------------------------------------------------------------------
 
 describe("ask tool — unit descriptor", () => {
-  it("contributes zero tools without the pi host surface (OpenCode)", () => {
+  it("contributes zero tools without the form host (OpenCode)", () => {
     const contributions = unit.create(makeDeps({}), activeSet());
     assert.equal(contributions.kind, "tool");
     assert.deepEqual(contributions.tools, []);
   });
 
-  it("contributes the ask tool when the pi host surface is present", () => {
+  it("contributes the ask tool when the form host is present", () => {
     const contributions = unit.create(
-      makeDeps({ piSwitchHost: HOST }),
+      makeDeps({ askFormHost: FORM_HOST }),
       activeSet(),
     );
     assert.equal(contributions.kind, "tool");
@@ -594,7 +595,7 @@ describe("ask tool — unit descriptor", () => {
 
   it("passes the configured timeout through to the dialog", async () => {
     const contributions = unit.create(
-      makeDeps({ piSwitchHost: HOST, askTimeoutSeconds: 7 }),
+      makeDeps({ askFormHost: FORM_HOST, askTimeoutSeconds: 7 }),
       activeSet(),
     );
     assert.equal(contributions.kind, "tool");
@@ -614,17 +615,14 @@ describe("ask tool — unit descriptor", () => {
 // Deps helpers (same shape the neighbour tool tests use)
 // ---------------------------------------------------------------------------
 
-const HOST: NonNullable<Deps["piSwitchHost"]> = {
-  getBaselineTools: () => [],
-  setActiveTools: () => {},
-  setWidget: () => {},
-  newSession: async () => ({ cancelled: false }),
+const FORM_HOST: NonNullable<Deps["askFormHost"]> = {
+  present: presentAskForm,
 };
 
 /** The tools contributed by a pi-enabled deps set (exactly one). */
 function unitTools() {
   const contributions = unit.create(
-    makeDeps({ piSwitchHost: HOST }),
+    makeDeps({ askFormHost: FORM_HOST }),
     activeSet(),
   );
   assert.equal(contributions.kind, "tool");

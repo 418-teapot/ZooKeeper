@@ -21,6 +21,7 @@
  * @module
  */
 
+import type { AskFormHost } from "./ask.js";
 import type { ToolHost } from "./client/tool-host.js";
 import type {
   AgentModeMap,
@@ -36,7 +37,7 @@ import type { AgentPermissionMap } from "./permissions/deny-tools.js";
 import type { SubagentDriver } from "./subagent/driver.js";
 import type { TodoStateStore } from "./todo/store.js";
 import type { ValidationLimits } from "./validate.js";
-import type { HtmlConverter } from "./webfetch/pipeline.js";
+import type { HtmlConverter, TruncateHeadFn } from "./webfetch/pipeline.js";
 
 // ---------------------------------------------------------------------------
 // Dependencies and enablement
@@ -398,6 +399,15 @@ export interface Deps {
    */
   askTimeoutSeconds?: number;
   /**
+   * Host form presentation for the ask tool (pi host only).
+   *
+   * Undefined on hosts without one (OpenCode) — the ask tool unit then
+   * contributes no tools (fail-closed, so `ask` never registers there).
+   * The form host owns the dialog lifecycle: it mounts the host's
+   * component surface, waits for the user, and applies the timeout/abort.
+   */
+  askFormHost?: AskFormHost;
+  /**
    * Native HTML→Markdown converter loader (pi host only).
    *
    * Undefined on hosts without a native addon (OpenCode) — the fetch tool
@@ -408,6 +418,15 @@ export interface Deps {
    * which wraps the core loader to emit the `converter_unavailable` warn.
    */
   loadHtmlConverter?: () => HtmlConverter | null;
+  /**
+   * Host head truncator for the fetch pipeline (pi host only).
+   *
+   * Undefined on hosts without one (OpenCode) — the fetch tool unit then
+   * contributes no tools (fail-closed, so `fetch` never registers there).
+   * Paired with `loadHtmlConverter`: the unit registers only when BOTH are
+   * present, so the pipeline always receives a concrete truncator.
+   */
+  truncateHead?: TruncateHeadFn;
   /** The host client (OpenCode / pi), opaque to this layer. */
   client: any;
   /** The plugin working directory. */

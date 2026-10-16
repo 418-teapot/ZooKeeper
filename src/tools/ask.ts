@@ -3,10 +3,10 @@
  *
  * The tool is a thin host adapter over the framework-independent ask
  * protocol (`src/core/ask.ts`): it parses the model's questions through the
- * core normalizer, hands the whole form to the pi adapter
- * (`src/adapters/pi/ask-form.ts`) to mount and collect, then maps the
- * per-question results back onto the tool result —
- * `content` as one line per question (question text + the core's
+ * core normalizer, hands the whole form to the injected form host
+ * (`deps.askFormHost`, implemented by `src/adapters/pi/ask-form.ts`) to
+ * mount and collect, then maps the per-question results back onto the tool
+ * result — `content` as one line per question (question text + the core's
  * `formatResultForModel` rendering) and `details` as the structured
  * `{question, result}` pairs.
  *
@@ -19,28 +19,26 @@
  * through an internal gate, because the dialog takes over the single
  * terminal surface.
  *
- * The unit is pi-only: without a pi host surface in deps (`piSwitchHost`)
- * it contributes zero tools, so OpenCode never registers `ask` (the agents
+ * The unit is pi-only: without a form host in deps (`askFormHost`) it
+ * contributes zero tools, so OpenCode never registers `ask` (the agents
  * deny it in `config.toml` anyway).
  *
  * @module
  */
 
-import { stripTerminalSequences } from "@earendil-works/pi-tui";
-import {
-  type AskDialogQuestion,
-  fallbackResults,
-  presentAskForm,
-  toOneLine,
-} from "../adapters/pi/ask-form.js";
 import type { AskResult, NormalizedQuestion } from "../core/ask.js";
 import {
+  type AskFormHost,
+  type AskFormQuestion,
+  fallbackResults,
   formatResultForModel,
   normalizeQuestion,
+  toOneLine,
   validateAnswer,
 } from "../core/ask.js";
 import { createSequencer } from "../core/sequencer.js";
 import type { ToolContribution, ToolUnitDescriptor } from "../core/slots.js";
+import { stripTerminalSequences } from "../core/terminal-sequences.js";
 import { log } from "../utils/logger.js";
 
 // ---------------------------------------------------------------------------
@@ -150,7 +148,7 @@ function parseOption(
  * defaults (empty options → freeform forced, `multiple` → false,
  * `allowFreeform` → true).
  */
-function parseQuestion(raw: unknown, index: number): AskDialogQuestion {
+function parseQuestion(raw: unknown, index: number): AskFormQuestion {
   if (raw === null || typeof raw !== "object" || Array.isArray(raw)) {
     throw argError(`questions[${index}] 必须是问题对象。`);
   }
@@ -199,7 +197,7 @@ function parseQuestion(raw: unknown, index: number): AskDialogQuestion {
  * @throws A loud Chinese error when `questions` is missing / not a
  *   non-empty array, or an entry is malformed.
  */
-export function parseAskArgs(args: unknown): AskDialogQuestion[] {
+export function parseAskArgs(args: unknown): AskFormQuestion[] {
   if (args === null || typeof args !== "object" || Array.isArray(args)) {
     throw argError("请提供包含 questions 数组的对象。");
   }
@@ -309,12 +307,16 @@ function handBack(
 /**
  * Create the ask tool contribution.
  *
+ * @param host - The injected form host that mounts and collects the form.
  * @param timeoutSeconds - The `[zoo.ask].timeout` budget (undefined → the
  *   form waits for the user indefinitely).
  * @returns The tool contribution (its calls are serialised — the dialog
  *   owns the terminal).
  */
-export function createAskTool(timeoutSeconds?: number): ToolContribution {
+export function createAskTool(
+  host: AskFormHost,
+  timeoutSeconds?: number,
+): ToolContribution {
   // The resource this tool protects is one user-facing dialog, so the
   // exclusion is kept per tool instance rather than declared to the host.
   const runSerialized = createSequencer();
@@ -396,10 +398,10 @@ export function createAskTool(timeoutSeconds?: number): ToolContribution {
           );
         }
         // A call that waited in the queue behind another form and was then
-        // cancelled never steals the terminal: `presentAskForm` checks the
+        // cancelled never steals the terminal: the form host checks the
         // signal at its turn and reports every question as aborted without
         // opening the UI.
-        const results = await presentAskForm({
+        const results = await host.present({
           questions,
           custom,
           ...(timeoutSeconds !== undefined ? { timeoutSeconds } : {}),
@@ -421,7 +423,7 @@ export function createAskTool(timeoutSeconds?: number): ToolContribution {
 /**
  * The ask tool unit descriptor.
  *
- * The unit contributes its tool ONLY on the pi host — `piSwitchHost` is
+ * The unit contributes its tool ONLY on the pi host — `askFormHost` is
  * present exactly when the extension runs inside pi, so on OpenCode the
  * create() returns no tools and `ask` never registers (fail-closed).
  */
@@ -429,12 +431,12 @@ export const unit: ToolUnitDescriptor = {
   name: "ask",
   kind: "tool",
   create(deps) {
-    if (deps.piSwitchHost === undefined) {
+    if (deps.askFormHost === undefined) {
       return { kind: "tool", tools: [] };
     }
     return {
       kind: "tool",
-      tools: [createAskTool(deps.askTimeoutSeconds)],
+      tools: [createAskTool(deps.askFormHost, deps.askTimeoutSeconds)],
     };
   },
 };
