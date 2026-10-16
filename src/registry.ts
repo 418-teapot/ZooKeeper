@@ -3,14 +3,14 @@
  *
  * Every unit in the system is declared exactly once here, in
  * registration order.  The order is significant — it is the single
- * execution order for the four handler slots (`tool.execute.before`,
- * `tool.execute.after`, `experimental.chat.messages.transform`, and
- * `experimental.text.complete`).
+ * execution order for the three handler slots (`tool.execute.after`,
+ * `experimental.chat.messages.transform`, and
+ * `experimental.text.complete`) and for the delegation judge chain.
  * The per-category profile lists in `config.toml` (`[zoo.mode.poly]`)
  * only declare which units are enabled; they never order execution —
  * load order is decided exclusively by this array:
  *
- *   1. hook units — subagent-prompt → subagent-delegation (beforeExec),
+ *   1. hook units — subagent-prompt → subagent-delegation (delegation),
  *      subagent-prompt → json-error-nudge → direct-work-nudge →
  *      post-subagent-nudge (afterExec), context-pruning (transform),
  *      reply-strip (textComplete), todo-continuation → auto-debug

@@ -21,6 +21,10 @@
  *
  * The keys are agent names; values are arrays of allowed `subagent_type`
  * strings that the agent may pass to `task()`.
+ *
+ * This topology is an intentional, hardcoded security policy: it defines how
+ * far each agent may spread its work and is deliberately kept out of
+ * config.toml. Editing it moves a delegation boundary, so it needs review.
  */
 const DELEGATION_ALLOWLIST: Record<string, string[]> = {
   mola: ["lynx", "spider"],

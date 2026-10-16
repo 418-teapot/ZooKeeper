@@ -15,10 +15,7 @@
  */
 import assert from "node:assert/strict";
 import { afterEach, describe, it } from "node:test";
-import {
-  buildToolHooks,
-  registerProfileToolsInConfig,
-} from "../compose-opencode.js";
+import { registerProfileToolsInConfig } from "../compose-opencode.js";
 import type { ToolHost } from "../core/client/tool-host.js";
 import { parseContextConfig } from "../core/config-parse.js";
 import type { ContextPruningConfig } from "../core/config-types.js";
@@ -38,7 +35,7 @@ import {
   type Block,
   RECALL_MAX_CHARS,
 } from "../core/context/state.js";
-import { makePlugin, POLY_ZOO } from "../testkits/config.js";
+import { composeToolHooks, makePlugin, POLY_ZOO } from "../testkits/config.js";
 import { projectMessages } from "../testkits/context.js";
 import { _resetForTesting } from "../utils/logger.js";
 import { createDecompressTool, unit as decompressUnit } from "./decompress.js";
@@ -542,13 +539,13 @@ describe("decompress tool execute — config guidance error", () => {
 describe("decompress tool registration gate", () => {
   it("decompress absent from the profile tools list → no decompress tool", () => {
     const { client } = mockClient([]);
-    const hooks = buildToolHooks(client, { dedup: {}, purgeErrors: {} }, []);
+    const hooks = composeToolHooks(client, { dedup: {}, purgeErrors: {} }, []);
     assert.equal(hooks, undefined);
   });
 
   it("compress only in the list → decompress stays unregistered", () => {
     const { client } = mockClient([]);
-    const hooks = buildToolHooks(client, { dedup: {}, purgeErrors: {} }, [
+    const hooks = composeToolHooks(client, { dedup: {}, purgeErrors: {} }, [
       "compress",
     ]);
     assert.ok(hooks !== undefined, "compress tool registers");
@@ -557,7 +554,7 @@ describe("decompress tool registration gate", () => {
 
   it("decompress in the list → only decompress registered", () => {
     const { client } = mockClient([]);
-    const hooks = buildToolHooks(client, { dedup: {}, purgeErrors: {} }, [
+    const hooks = composeToolHooks(client, { dedup: {}, purgeErrors: {} }, [
       "decompress",
     ]);
     assert.ok(hooks !== undefined);
@@ -568,7 +565,7 @@ describe("decompress tool registration gate", () => {
 
   it("both tools in the list → both tools registered", () => {
     const { client } = mockClient([]);
-    const hooks = buildToolHooks(client, { dedup: {}, purgeErrors: {} }, [
+    const hooks = composeToolHooks(client, { dedup: {}, purgeErrors: {} }, [
       "compress",
       "decompress",
     ]);
@@ -579,7 +576,7 @@ describe("decompress tool registration gate", () => {
 
   it("registers plain JSON Schema args for OpenCode native tool loading", () => {
     const { client } = mockClient([]);
-    const hooks = buildToolHooks(client, { dedup: {}, purgeErrors: {} }, [
+    const hooks = composeToolHooks(client, { dedup: {}, purgeErrors: {} }, [
       "decompress",
     ]);
 
@@ -603,7 +600,7 @@ describe("decompress tool registration gate", () => {
 
   it("carries the restore/recall contract in the description", () => {
     const { client } = mockClient([]);
-    const hooks = buildToolHooks(client, { dedup: {}, purgeErrors: {} }, [
+    const hooks = composeToolHooks(client, { dedup: {}, purgeErrors: {} }, [
       "decompress",
     ]);
 

@@ -10,7 +10,16 @@
  * @module
  */
 
+import { createV1ToolHost } from "../adapters/opencode/tool-host.js";
+import { assembleOpenCodeHooks } from "../compose-opencode.js";
+import { composeProfile } from "../core/compose.js";
+import type {
+  ContextPruningConfig,
+  ModeProfile,
+} from "../core/config-types.js";
+import type { Deps, ToolContribution } from "../core/slots.js";
 import { buildPlugin } from "../opencode.js";
+import { REGISTRY } from "../registry.js";
 
 /** A zoo config carrying the poly profile's tool-flow gates. */
 export const POLY_ZOO: Record<string, unknown> = {
@@ -40,4 +49,44 @@ export const POLY_ZOO: Record<string, unknown> = {
 /** Build a plugin wired to the poly profile (tools: compress + decompress). */
 export function makePlugin(client: unknown = {}): Promise<Record<string, any>> {
   return buildPlugin({ client }, POLY_ZOO) as Promise<Record<string, any>>;
+}
+
+/**
+ * Assemble the OpenCode `tool` surface for a tool-only profile.
+ *
+ * Drives the production path — `composeProfile` over the real registry,
+ * then `assembleOpenCodeHooks` — with deps matching `buildPlugin`'s
+ * construction (the tool units read only `contextConfig` and `toolHost`).
+ * Returns `undefined` when the profile enables no tool, matching the
+ * plugin's absent `tool` key.
+ *
+ * @param client - The host client backing the tool host.
+ * @param contextConfig - The parsed context-pruning config.
+ * @param tools - The profile's tool names.
+ * @returns The composed tool map, or `undefined` when none registers.
+ */
+export function composeToolHooks(
+  client: any,
+  contextConfig: ContextPruningConfig,
+  tools: string[],
+): Record<string, ToolContribution> | undefined {
+  const resolveAgent = (): string | undefined => undefined;
+  const deps: Deps = {
+    limits: {},
+    contextConfig,
+    client,
+    directory: "",
+    resolveAgent,
+    toolHost: createV1ToolHost(client, resolveAgent),
+  };
+  const profile: ModeProfile = {
+    name: "test",
+    agents: [],
+    skills: [],
+    hooks: [],
+    tools,
+    commands: [],
+  };
+  const composed = composeProfile(profile, REGISTRY, deps);
+  return assembleOpenCodeHooks(composed, deps, profile).tool;
 }

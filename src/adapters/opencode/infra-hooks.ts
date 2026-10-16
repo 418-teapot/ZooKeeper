@@ -15,6 +15,7 @@
 import { setModelLimit } from "../../core/context/model-limits.js";
 import { cleanupSession } from "../../core/context/runtime.js";
 import { createLoopEngine } from "../../core/loop/index.js";
+import { ORCHESTRATOR_AGENT_NAME } from "../../core/orchestrator.js";
 import { applyModelVariant } from "../../core/prompt-variant.js";
 import { sessionAgentRegistry } from "../../core/session-agent.js";
 import type { SettledContribution } from "../../core/slots.js";
@@ -133,14 +134,14 @@ export function buildInfraHooks(deps: InfraHookDeps) {
         }
       }
 
-      // Loop settle: a dolphin turn settled with unfinished work.
-      // Fail-closed — only the orchestrator session, and only when the
-      // active profile contributed a settle judge.
+      // Loop settle: the orchestrator's turn settled with unfinished
+      // work.  Fail-closed — only the orchestrator session, and only
+      // when the active profile contributed a settle judge.
       if (type === "session.idle") {
         const sessionID = (properties as { sessionID?: unknown } | undefined)
           ?.sessionID;
         if (typeof sessionID !== "string") return;
-        if (resolveAgent(sessionID) !== "dolphin") return;
+        if (resolveAgent(sessionID) !== ORCHESTRATOR_AGENT_NAME) return;
         if (engine === undefined) return;
 
         const outcome = await classifyStopCause(
@@ -172,7 +173,7 @@ export function buildInfraHooks(deps: InfraHookDeps) {
           await client.session.promptAsync({
             path: { id: sessionID },
             body: {
-              agent: "dolphin",
+              agent: ORCHESTRATOR_AGENT_NAME,
               messageID,
               parts: [{ type: "text", text: decision.text }],
             },

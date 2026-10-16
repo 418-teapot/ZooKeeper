@@ -6,7 +6,10 @@
  * @module
  */
 
-import type { HookUnitDescriptor } from "../../core/slots.js";
+import {
+  type HookUnitDescriptor,
+  makeHookContributions,
+} from "../../core/slots.js";
 import { judgeDelegationTarget } from "./hook.js";
 
 export { judgeDelegationTarget };
@@ -23,13 +26,7 @@ export const unit: HookUnitDescriptor = {
   name: "subagent-delegation",
   kind: "hook",
   create() {
-    return {
-      kind: "hook",
-      beforeExec: [],
-      afterExec: [],
-      transform: [],
-      textComplete: [],
-      toolDefinition: [],
+    return makeHookContributions({
       delegation: [
         {
           name: "judgeDelegationTarget",
@@ -37,7 +34,6 @@ export const unit: HookUnitDescriptor = {
           judge: judgeDelegationTarget,
         },
       ],
-      onSettled: [],
-    };
+    });
   },
 };

@@ -27,7 +27,10 @@
  */
 
 import { resolveTodoSource } from "../../core/client/todo.js";
-import type { HookUnitDescriptor } from "../../core/slots.js";
+import {
+  type HookUnitDescriptor,
+  makeHookContributions,
+} from "../../core/slots.js";
 import { decide } from "./decide.js";
 
 /**
@@ -44,26 +47,10 @@ export const unit: HookUnitDescriptor = {
   create(deps) {
     const maxWakes = deps.continuationConfig?.maxWakes;
     if (maxWakes === undefined) {
-      return {
-        kind: "hook",
-        beforeExec: [],
-        afterExec: [],
-        transform: [],
-        textComplete: [],
-        toolDefinition: [],
-        delegation: [],
-        onSettled: [],
-      };
+      return makeHookContributions();
     }
     const source = resolveTodoSource(deps);
-    return {
-      kind: "hook",
-      beforeExec: [],
-      afterExec: [],
-      transform: [],
-      textComplete: [],
-      toolDefinition: [],
-      delegation: [],
+    return makeHookContributions({
       onSettled: [
         {
           name: "todoContinuation",
@@ -74,6 +61,6 @@ export const unit: HookUnitDescriptor = {
           },
         },
       ],
-    };
+    });
   },
 };

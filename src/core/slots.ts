@@ -2,15 +2,12 @@
  * Host-agnostic contribution slot types shared by every host adapter.
  *
  * Defines the unit descriptor contract (name + kind + factory), the
- * contribution shapes a unit can produce, and the dependency /
- * enablement shapes.  Pure type definitions only — zero runtime logic
- * and no OpenCode imports, so this module is importable from any TS
- * runtime.
+ * contribution shapes a unit can produce, the dependency / enablement
+ * shapes, and the `makeHookContributions` hook-slot constructor.  No
+ * OpenCode imports, so this module is importable from any TS runtime.
  *
  * Composition semantics (declared here, implemented by the OpenCode
  * adapter (`src/compose-opencode.ts`)):
- *   - `beforeExec` contributions propagate exceptions (cancel
- *     execution).
  *  - `afterExec` contributions are isolated per handler (a throwing
  *     handler never blocks the next).
  *  - `transform` and `textComplete` contributions run in registration
@@ -477,14 +474,14 @@ export interface ActiveSet {
 // ---------------------------------------------------------------------------
 
 /** Input shape of the `tool.execute.before` hook. */
-export interface BeforeExecInput {
+export interface ToolBeforeInput {
   tool: string;
   sessionID: string;
   callID: string;
 }
 
 /** Output shape of the `tool.execute.before` hook. */
-export interface BeforeExecOutput {
+export interface ToolBeforeOutput {
   args?: Record<string, unknown>;
 }
 
@@ -556,20 +553,6 @@ export interface TransformOutput {
 // ---------------------------------------------------------------------------
 // Contribution slot types
 // ---------------------------------------------------------------------------
-
-/**
- * One named `tool.execute.before` handler contributed by a hook unit.
- *
- * Exceptions intentionally propagate — they cancel tool execution.
- */
-export interface BeforeExecContribution {
-  /** Handler label used for logging. */
-  name: string;
-  handle(
-    input: BeforeExecInput,
-    output: BeforeExecOutput,
-  ): void | Promise<void>;
-}
 
 /**
  * One named `tool.execute.after` handler contributed by a hook unit.
@@ -829,18 +812,45 @@ export interface SkillUnitContributions {
 /**
  * Contributions produced by a hook unit.
  *
- * All seven handler slots are required arrays — a unit that does not
- * contribute to a slot returns an empty array.
+ * All six handler slots are required arrays — a unit that does not
+ * contribute to a slot returns an empty array (see
+ * {@link makeHookContributions}).
  */
 export interface HookUnitContributions {
   kind: "hook";
-  beforeExec: BeforeExecContribution[];
   afterExec: AfterExecContribution[];
   transform: TransformContribution[];
   textComplete: TextCompleteContribution[];
   toolDefinition: ToolDefinitionContribution[];
   delegation: DelegationJudgeContribution[];
   onSettled: SettledContribution[];
+}
+
+/**
+ * Build a hook unit's contribution set with every slot defaulted to an
+ * empty array and the named slots overridden.
+ *
+ * A hook unit contributes to at most a few slots; this constructor keeps
+ * the unconcerned slots uniformly empty so `create` names only the
+ * handlers it actually contributes.  `kind` is fixed to `"hook"` and is
+ * never part of `partial`.
+ *
+ * @param partial - The slots to contribute; omitted slots stay empty.
+ * @returns The complete hook contribution set.
+ */
+export function makeHookContributions(
+  partial: Partial<Omit<HookUnitContributions, "kind">> = {},
+): HookUnitContributions {
+  return {
+    kind: "hook",
+    afterExec: [],
+    transform: [],
+    textComplete: [],
+    toolDefinition: [],
+    delegation: [],
+    onSettled: [],
+    ...partial,
+  };
 }
 
 /** Contributions produced by a tool unit. */
@@ -929,8 +939,6 @@ export interface ComposedResult {
   agents: AgentContribution[];
   /** Enabled skill contributions. */
   skills: SkillContribution[];
-  /** Enabled `tool.execute.before` handlers. */
-  beforeExec: BeforeExecContribution[];
   /** Enabled `tool.execute.after` handlers. */
   afterExec: AfterExecContribution[];
   /** Enabled messages-transform handlers. */

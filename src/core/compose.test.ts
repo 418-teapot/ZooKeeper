@@ -19,6 +19,7 @@ import type {
   UnitDescriptor,
   UnitKind,
 } from "./slots.js";
+import { makeHookContributions } from "./slots.js";
 
 afterEach(() => {
   _resetForTesting();
@@ -61,31 +62,19 @@ function makeUnits(): { units: UnitDescriptor[]; calls: string[] } {
     }),
     mockUnit("subagent-prompt", "hook", () => {
       calls.push("subagent-prompt");
-      return {
-        kind: "hook",
-        beforeExec: [],
+      return makeHookContributions({
         afterExec: [{ name: "nudgeSubagentOutput", handle: async () => {} }],
-        transform: [],
-        textComplete: [],
         toolDefinition: [
           { name: "enhanceSubagentDefinition", handle: async () => {} },
         ],
         delegation: [{ name: "judgeSubagentPrompt", judge: () => null }],
-        onSettled: [],
-      };
+      });
     }),
     mockUnit("context-pruning", "hook", () => {
       calls.push("context-pruning");
-      return {
-        kind: "hook",
-        beforeExec: [],
-        afterExec: [],
+      return makeHookContributions({
         transform: [{ name: "contextPruning", handle: async () => {} }],
-        textComplete: [],
-        toolDefinition: [],
-        delegation: [],
-        onSettled: [],
-      };
+      });
     }),
     mockUnit("compress", "tool", () => {
       calls.push("compress");
@@ -230,10 +219,6 @@ describe("composeProfile — full profile", () => {
       { name: "wiki-query" },
     ]);
     assert.deepEqual(
-      result.beforeExec.map((h) => h.name),
-      [],
-    );
-    assert.deepEqual(
       result.afterExec.map((h) => h.name),
       ["nudgeSubagentOutput"],
     );
@@ -275,18 +260,17 @@ describe("composeProfile — gateNeedsCaller aggregation", () => {
   });
 
   it("is true when any enabled judge needs the caller", () => {
-    const unit = mockUnit("subagent-delegation", "hook", () => ({
-      kind: "hook",
-      beforeExec: [],
-      afterExec: [],
-      transform: [],
-      textComplete: [],
-      toolDefinition: [],
-      delegation: [
-        { name: "judgeDelegationTarget", needsCaller: true, judge: () => null },
-      ],
-      onSettled: [],
-    }));
+    const unit = mockUnit("subagent-delegation", "hook", () =>
+      makeHookContributions({
+        delegation: [
+          {
+            name: "judgeDelegationTarget",
+            needsCaller: true,
+            judge: () => null,
+          },
+        ],
+      }),
+    );
     const profile: ModeProfile = {
       name: "td",
       agents: [],
@@ -318,7 +302,6 @@ describe("composeProfile — null profile", () => {
     assert.deepEqual(result, {
       agents: [],
       skills: [],
-      beforeExec: [],
       afterExec: [],
       transform: [],
       textComplete: [],
@@ -348,7 +331,6 @@ describe("composeProfile — subset profile", () => {
       result.transform.map((h) => h.name),
       ["contextPruning"],
     );
-    assert.deepEqual(result.beforeExec, []);
     assert.deepEqual(result.afterExec, []);
     assert.deepEqual(result.toolDefinition, []);
     assert.deepEqual(Object.keys(result.tools), ["decompress"]);
@@ -368,7 +350,6 @@ describe("composeProfile — per-kind selection", () => {
     assert.deepEqual(calls, ["beaver", "wiki-query", "compress", "dcp"]);
     assert.deepEqual(result.agents, [{ name: "beaver", prompt: "BEAVER" }]);
     assert.deepEqual(result.skills, [{ name: "wiki-query" }]);
-    assert.deepEqual(result.beforeExec, []);
     assert.deepEqual(result.afterExec, []);
     assert.deepEqual(result.transform, []);
     assert.deepEqual(result.toolDefinition, []);
@@ -390,7 +371,6 @@ describe("composeProfile — empty category lists", () => {
     assert.deepEqual(result, {
       agents: [],
       skills: [],
-      beforeExec: [],
       afterExec: [],
       transform: [],
       textComplete: [],
@@ -460,16 +440,7 @@ describe("composeProfile — active set", () => {
     let seen: ActiveSet | undefined;
     const unit = mockUnit("subagent-prompt", "hook", (_deps, activeSet) => {
       seen = activeSet;
-      return {
-        kind: "hook",
-        beforeExec: [],
-        afterExec: [],
-        transform: [],
-        textComplete: [],
-        toolDefinition: [],
-        delegation: [],
-        onSettled: [],
-      };
+      return makeHookContributions();
     });
     composeProfile(ALL_UNITS_PROFILE, [unit], DEPS);
 

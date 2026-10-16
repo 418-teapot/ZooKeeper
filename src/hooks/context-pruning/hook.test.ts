@@ -1974,7 +1974,6 @@ describe("unit.create enablement", () => {
     const contributions = unit.create(deps, activeSet);
 
     assert.equal(contributions.kind, "hook");
-    assert.deepEqual(contributions.beforeExec, []);
     assert.deepEqual(contributions.afterExec, []);
     assert.deepEqual(contributions.toolDefinition, []);
     assert.equal(contributions.transform.length, 1);
@@ -1999,7 +1998,6 @@ describe("unit.create enablement", () => {
 
     assert.equal(contributions.kind, "hook");
     assert.equal(contributions.transform.length, 0);
-    assert.deepEqual(contributions.beforeExec, []);
     assert.deepEqual(contributions.afterExec, []);
     assert.deepEqual(contributions.toolDefinition, []);
   });

@@ -114,10 +114,8 @@ describe("buildPiContributions — profile-driven selection", () => {
       composed.transform.map((h) => h.name),
       ["contextPruning"],
     );
-    // The delegation strategy lives in the composed gate (judge slot),
-    // not in the beforeExec chain — the pi host consumes it inside the
-    // subagent tool's execute.
-    assert.deepEqual(composed.beforeExec, []);
+    // The delegation strategy lives in the composed gate (judge slot);
+    // the pi host consumes it inside the subagent tool's execute.
     assert.equal(
       typeof composed.gate,
       "function",

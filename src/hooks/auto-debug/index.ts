@@ -25,24 +25,13 @@
  * @module
  */
 
-import type { HookUnitDescriptor } from "../../core/slots.js";
+import {
+  type HookUnitDescriptor,
+  makeHookContributions,
+} from "../../core/slots.js";
 import { decide } from "./decide.js";
 import { defaultAutoDebugFs } from "./workspace-fs.js";
 import { defaultZdebugExec } from "./zdebug-exec.js";
-
-/** An empty hook contribution set (no slot contributed). */
-function emptyContributions() {
-  return {
-    kind: "hook" as const,
-    beforeExec: [],
-    afterExec: [],
-    transform: [],
-    textComplete: [],
-    toolDefinition: [],
-    delegation: [],
-    onSettled: [],
-  };
-}
 
 /**
  * Auto-debug hook unit descriptor.
@@ -59,20 +48,13 @@ export const unit: HookUnitDescriptor = {
   create(deps) {
     const config = deps.autoDebugConfig;
     if (config === undefined) {
-      return emptyContributions();
+      return makeHookContributions();
     }
     const ports = {
       zdebugExec: deps.zdebugExec ?? defaultZdebugExec,
       fs: deps.autoDebugFs ?? defaultAutoDebugFs,
     };
-    return {
-      kind: "hook",
-      beforeExec: [],
-      afterExec: [],
-      transform: [],
-      textComplete: [],
-      toolDefinition: [],
-      delegation: [],
+    return makeHookContributions({
       onSettled: [
         {
           name: "autoDebug",
@@ -84,6 +66,6 @@ export const unit: HookUnitDescriptor = {
             }),
         },
       ],
-    };
+    });
   },
 };

@@ -10,11 +10,11 @@
  *  - OpenCode binds from `message.updated` events (the authoritative
  *    per-session agent reported by the host).
  *  - pi resolves lazily through the subagent run registry and the
- *    async-local identity (see `src/pi.ts`), binding every result so
- *    later lookups hit this store directly; pi has no session-
- *    deletion event, so pi-side bindings live for the whole process
- *    — that accumulation is bounded by design (see
- *    `buildPiResolveAgent`).
+ *    async-local identity (see `buildPiResolveAgent` in
+ *    `src/adapters/pi/wire.ts`), binding every result so later
+ *    lookups hit this store directly; pi has no session-deletion
+ *    event, so pi-side bindings live for the whole process — that
+ *    accumulation is bounded by design.
  *
  * `clear` is the test seam; the process-wide singleton lives on the
  * `sessionAgentRegistry` export, shared by every host entry point and

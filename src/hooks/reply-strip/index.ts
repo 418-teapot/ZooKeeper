@@ -19,11 +19,12 @@
  */
 
 import { stripLineStartRefs } from "../../core/context/reply-strip.js";
-import type {
-  HookUnitDescriptor,
-  TextCompleteContribution,
-  TextCompleteInput,
-  TextCompleteOutput,
+import {
+  type HookUnitDescriptor,
+  makeHookContributions,
+  type TextCompleteContribution,
+  type TextCompleteInput,
+  type TextCompleteOutput,
 } from "../../core/slots.js";
 import { log } from "../../utils/logger.js";
 
@@ -75,15 +76,8 @@ export const unit: HookUnitDescriptor = {
   name: "reply-strip",
   kind: "hook",
   create() {
-    return {
-      kind: "hook",
-      beforeExec: [],
-      afterExec: [],
-      transform: [],
+    return makeHookContributions({
       textComplete: [createReplyStripHandler()],
-      toolDefinition: [],
-      delegation: [],
-      onSettled: [],
-    };
+    });
   },
 };

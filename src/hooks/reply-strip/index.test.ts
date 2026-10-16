@@ -58,7 +58,6 @@ describe("reply-strip unit — handler contribution", () => {
   it("contributes one textComplete handler and nothing to the other slots", () => {
     const contributions = unit.create(DEPS, ACTIVE_SET);
     assert.equal(contributions.kind, "hook");
-    assert.equal(contributions.beforeExec.length, 0);
     assert.equal(contributions.afterExec.length, 0);
     assert.equal(contributions.transform.length, 0);
     assert.equal(contributions.toolDefinition.length, 0);

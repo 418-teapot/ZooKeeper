@@ -14,7 +14,10 @@ export {
   validateSubagentPrompt,
 } from "../../core/validate.js";
 
-import type { HookUnitDescriptor } from "../../core/slots.js";
+import {
+  type HookUnitDescriptor,
+  makeHookContributions,
+} from "../../core/slots.js";
 import {
   enhanceSubagentDefinition,
   judgeSubagentPrompt,
@@ -34,9 +37,7 @@ export const unit: HookUnitDescriptor = {
   name: "subagent-prompt",
   kind: "hook",
   create(deps) {
-    return {
-      kind: "hook",
-      beforeExec: [],
+    return makeHookContributions({
       afterExec: [
         {
           name: "nudgeSubagentOutput",
@@ -44,8 +45,6 @@ export const unit: HookUnitDescriptor = {
             nudgeSubagentOutput(input, output, deps.limits),
         },
       ],
-      transform: [],
-      textComplete: [],
       toolDefinition: [
         {
           name: "enhanceSubagentDefinition",
@@ -58,7 +57,6 @@ export const unit: HookUnitDescriptor = {
           judge: (req) => judgeSubagentPrompt(req, deps.limits),
         },
       ],
-      onSettled: [],
-    };
+    });
   },
 };

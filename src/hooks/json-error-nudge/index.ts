@@ -17,7 +17,10 @@ import {
   JSON_ERROR_TOOL_EXCLUDES,
   recoverJsonError,
 } from "../../core/recovery.js";
-import type { HookUnitDescriptor } from "../../core/slots.js";
+import {
+  type HookUnitDescriptor,
+  makeHookContributions,
+} from "../../core/slots.js";
 
 export {
   JSON_ERROR_PATTERNS,
@@ -35,20 +38,13 @@ export const unit: HookUnitDescriptor = {
   name: "json-error-nudge",
   kind: "hook",
   create() {
-    return {
-      kind: "hook",
-      beforeExec: [],
+    return makeHookContributions({
       afterExec: [
         {
           name: "recoverJsonError",
           handle: (input, output) => recoverJsonError(input, output),
         },
       ],
-      transform: [],
-      textComplete: [],
-      toolDefinition: [],
-      delegation: [],
-      onSettled: [],
-    };
+    });
   },
 };

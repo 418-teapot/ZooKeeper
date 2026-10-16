@@ -10,7 +10,10 @@
  * @module
  */
 
-import type { HookUnitDescriptor } from "../../core/slots.js";
+import {
+  type HookUnitDescriptor,
+  makeHookContributions,
+} from "../../core/slots.js";
 import {
   contextPruningTransformHandler,
   handleContextPruning,
@@ -41,21 +44,9 @@ export const unit: HookUnitDescriptor = {
   create(deps, activeSet) {
     const adapter = deps.adapter;
     if (!adapter) {
-      return {
-        kind: "hook",
-        beforeExec: [],
-        afterExec: [],
-        transform: [],
-        textComplete: [],
-        toolDefinition: [],
-        delegation: [],
-        onSettled: [],
-      };
+      return makeHookContributions();
     }
-    return {
-      kind: "hook",
-      beforeExec: [],
-      afterExec: [],
+    return makeHookContributions({
       transform: [
         {
           name: "contextPruning",
@@ -70,10 +61,6 @@ export const unit: HookUnitDescriptor = {
           },
         },
       ],
-      textComplete: [],
-      toolDefinition: [],
-      delegation: [],
-      onSettled: [],
-    };
+    });
   },
 };

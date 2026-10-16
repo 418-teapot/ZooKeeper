@@ -45,7 +45,6 @@ function emptyResult(): ComposedResult {
   return {
     agents: [],
     skills: [],
-    beforeExec: [],
     afterExec: [],
     transform: [],
     textComplete: [],
@@ -81,7 +80,6 @@ function collect(
       result.skills.push(...contributions.skills);
       break;
     case "hook":
-      result.beforeExec.push(...contributions.beforeExec);
       result.afterExec.push(...contributions.afterExec);
       result.transform.push(...contributions.transform);
       result.textComplete.push(...contributions.textComplete);

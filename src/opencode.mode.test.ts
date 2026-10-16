@@ -12,7 +12,6 @@ import assert from "node:assert/strict";
 import { afterEach, describe, it } from "node:test";
 import { DELEGATION_LEAF_AGENTS_HEADER } from "./agents/parts.js";
 import {
-  buildToolHooks,
   COMMAND_HANDLED,
   normalizeToolName,
   registerProfileToolsInConfig,
@@ -24,6 +23,7 @@ import { JSON_ERROR_REMINDER } from "./hooks/json-error-nudge";
 import { VERIFY_REMINDER } from "./hooks/post-subagent-nudge";
 import { SUBAGENT_PROMPT_HINT } from "./hooks/subagent-prompt";
 import { buildPlugin, zookeeper } from "./opencode.js";
+import { composeToolHooks } from "./testkits/config.js";
 import { withModeFile } from "./testkits/mode-file.js";
 import { _getBufferForTesting, _resetForTesting } from "./utils/logger.js";
 
@@ -210,11 +210,11 @@ describe("poly full profile — registration parity", () => {
     assert.ok(!config.experimental.primary_tools.includes("todo"));
   });
 
-  it("buildToolHooks fails closed for todo with OpenCode deps (no todoStore)", () => {
+  it("composeToolHooks fails closed for todo with OpenCode deps (no todoStore)", () => {
     // The compose-layer check: the OpenCode tool surface composes the real
     // registry with deps that carry a tool host but no todo store, so only
     // the host-port-free tools come back.
-    const hooks = buildToolHooks({}, {}, ["compress", "decompress", "todo"]);
+    const hooks = composeToolHooks({}, {}, ["compress", "decompress", "todo"]);
     assert.deepEqual(Object.keys(hooks ?? {}).sort(), [
       "compress",
       "decompress",

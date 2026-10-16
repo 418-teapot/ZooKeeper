@@ -16,8 +16,9 @@
  * - `name === "subagent"` tool calls are tracked; everything else is ignored.
  * - A call with a linked `toolResult` message resolves its status by a
  *   three-level priority: the persisted `details.outcome` (written by
- *   `terminalToolDetails` in `src/pi.ts` — new data) when it is a legal
- *   terminal string; otherwise the sub-session file's last assistant
+ *   `terminalToolDetails` in `src/adapters/pi/terminal-details.ts` — new
+ *   data) when it is a legal terminal string; otherwise the sub-session
+ *   file's last assistant
  *   message `stopReason` (pi's own authoritative field — a user-aborted run
  *   persists a non-error result whose `stopReason` is `"aborted"`);
  *   otherwise the legacy `isError` binary (`true` → `error` with the result
@@ -32,7 +33,8 @@
  *   forwarded tool-call id, see `src/tools/subagent.ts`).
  * - The terminal `toolResult`'s `details` payload carries the on-disk
  *   `sessionPath` of the sub-session the run created (see
- *   `terminalToolDetails` in `src/pi.ts` — the ONLY fact persisted there).
+ *   `terminalToolDetails` in `src/adapters/pi/terminal-details.ts` — the
+ *   ONLY fact persisted there).
  *   Older session files additionally carry `childSession` (the sub-session
  *   id); when present it is preferred, otherwise the id is recovered from
  *   the sub-session file's own header (see below).
@@ -209,11 +211,12 @@ type TerminalStatus = "done" | "error" | "aborted";
 /**
  * Read the terminal outcome persisted in a subagent result's `details`.
  *
- * `terminalToolDetails` in `src/pi.ts` writes `outcome: run.status` on
- * every terminal result it produces — the authoritative record for new
- * data.  Only the three legal terminal strings count; anything else
- * (older payloads without the field, ill-shaped values) yields `undefined`
- * so the caller falls through to its next priority.
+ * `terminalToolDetails` in `src/adapters/pi/terminal-details.ts` writes
+ * `outcome: run.status` on every terminal result it produces — the
+ * authoritative record for new data.  Only the three legal terminal strings
+ * count; anything else (older payloads without the field, ill-shaped
+ * values) yields `undefined` so the caller falls through to its next
+ * priority.
  *
  * @param raw - The raw `details` value from the toolResult message.
  * @returns The legal terminal outcome, or `undefined`.
@@ -396,12 +399,13 @@ function terminalStatus(
 /**
  * Extract the session pointers from a subagent tool result's `details`.
  *
- * The terminal `details` payload (see `terminalToolDetails` in `src/pi.ts`)
- * persists ONLY the sub-session's on-disk `sessionPath`.  Older session
- * files additionally carried `childSession`; it is read here so a rebuild
- * of pre-reduction history keeps the persisted value.  Both are optional
- * strings; a missing or ill-shaped `details` yields an empty result (the
- * top-level rebuild never depends on them).
+ * The terminal `details` payload (see `terminalToolDetails` in
+ * `src/adapters/pi/terminal-details.ts`) persists ONLY the sub-session's
+ * on-disk `sessionPath`.  Older session files additionally carried
+ * `childSession`; it is read here so a rebuild of pre-reduction history
+ * keeps the persisted value.  Both are optional strings; a missing or
+ * ill-shaped `details` yields an empty result (the top-level rebuild never
+ * depends on them).
  *
  * @param raw - The raw `details` value from the toolResult message.
  * @returns The extracted child session / session path.

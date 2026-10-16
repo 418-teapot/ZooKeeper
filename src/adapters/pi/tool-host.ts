@@ -108,9 +108,9 @@ export interface PiContextHolder {
 /**
  * Create the pi tool host backed by a mutable context holder.
  *
- * The holder is updated by the pi extension entry point
- * (`src/pi.ts`) as each event handler fires.  All operations are
- * best-effort: notification failures are swallowed and logged.
+ * The holder is updated by the pi event handlers
+ * (`src/adapters/pi/handlers.ts`) as each handler fires.  All operations
+ * are best-effort: notification failures are swallowed and logged.
  *
  * @param contextHolder - Mutable reference to the latest pi context.
  * @param appendEntry - Optional pi `appendEntry` binding (extension API)

@@ -15,6 +15,7 @@
 
 import { checkPlanProgress, checkTodoProgress } from "../../core/checks.js";
 import type { TodoSource } from "../../core/client/todo.js";
+import { ORCHESTRATOR_AGENT_NAME } from "../../core/orchestrator.js";
 import {
   DIRECT_WORK_NUDGE,
   SEARCH_DELEGATE_NUDGE,
@@ -119,11 +120,11 @@ export async function nudgeDirectWork(
  * Agent-gated wrapper around `nudgeDirectWork` (dolphin only).
  *
  * The hook unit resolves the session's agent via `Deps.resolveAgent`
- * and passes it here.  When the agent is not `"dolphin"` (including unknown),
- * the nudge is skipped and one debug entry (`nudge_skipped` /
- * `not_dolphin`) is logged — mirroring the historical entry-point guard.
- * Other agents keep receiving no protocol reminder: sub-agents must not
- * be told to delegate.
+ * and passes it here.  When the agent is not the orchestrator
+ * (`ORCHESTRATOR_AGENT_NAME`; including unknown), the nudge is skipped and
+ * one debug entry (`nudge_skipped` / `not_dolphin`) is logged — mirroring
+ * the historical entry-point guard.  Other agents keep receiving no protocol
+ * reminder: sub-agents must not be told to delegate.
  *
  * @param input - Input containing the tool name, session ID, and optional call ID.
  * @param output - Output object mutated in place.
@@ -141,7 +142,7 @@ export async function nudgeDirectWorkForAgent(
     agent?: string;
   },
 ): Promise<void> {
-  if (options.agent !== "dolphin") {
+  if (options.agent !== ORCHESTRATOR_AGENT_NAME) {
     log(
       "direct-work-nudge",
       "nudge_skipped",

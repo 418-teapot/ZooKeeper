@@ -8,9 +8,8 @@
  *
  *  - `config` — agent prompt injection, skill registration, tool
  *    primary_tools append, and slash-command registration.
- *  - `tool.execute.before` — sequential handlers, then the composed
- *    delegation gate for subagent calls; exceptions propagate (cancel
- *    tool execution).
+ *  - `tool.execute.before` — the composed delegation gate for subagent
+ *    calls; a refusal propagates as an error (cancels tool execution).
  *  - `tool.execute.after` — per-handler error isolation (`runAfterHandlers`).
  *  - `experimental.chat.messages.transform` — sequential handlers.
  *  - `experimental.text.complete` — sequential handlers (text
@@ -25,11 +24,11 @@
  * Event keys appear only when their contribution arrays are non-empty
  * (and `tool` only when at least one tool is enabled).
  *
- * The exported helper functions (`buildToolHooks`,
- * `injectAgentPrompts`, `registerProfileToolsInConfig`, `registerSkills`,
- * `runAfterHandlers`) are shared with the config hook and kept public for
- * unit tests.  `normalizeToolName` is shared
- * with the tool registration path and kept public for unit tests.
+ * The exported helper functions (`injectAgentPrompts`,
+ * `registerProfileToolsInConfig`, `registerSkills`, `runAfterHandlers`)
+ * are shared with the config hook and kept public for unit tests.
+ * `normalizeToolName` is shared with the tool registration path and kept
+ * public for unit tests.
  *
  * @module
  */
@@ -39,26 +38,22 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createV1ToolHost } from "./adapters/opencode/tool-host.js";
 import { getAgentName } from "./core/client/agent.js";
-import type { ContextPruningConfig, ModeProfile } from "./core/config-types.js";
+import type { ModeProfile } from "./core/config-types.js";
 import type {
-  ActiveSet,
   AfterExecInput,
   AfterExecOutput,
   AgentContribution,
-  BeforeExecInput,
-  BeforeExecOutput,
   CommandInput,
   ComposedResult,
   Deps,
   TextCompleteInput,
   TextCompleteOutput,
   ToolArgDefinition,
-  ToolContribution,
+  ToolBeforeInput,
+  ToolBeforeOutput,
   ToolDefinitionView,
-  ToolUnitDescriptor,
   TransformOutput,
 } from "./core/slots.js";
-import { REGISTRY } from "./registry.js";
 import { log } from "./utils/logger.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -76,15 +71,6 @@ const ROOT_DIR = resolve(__dirname, "..");
  */
 export const COMMAND_HANDLED = new Error(
   "command handled — no user message needed",
-);
-
-// ---------------------------------------------------------------------------
-// Unit lookups (derived once from the registry)
-// ---------------------------------------------------------------------------
-
-/** The tool units from the registry. */
-const TOOL_UNITS: ToolUnitDescriptor[] = REGISTRY.filter(
-  (unit): unit is ToolUnitDescriptor => unit.kind === "tool",
 );
 
 // ---------------------------------------------------------------------------
@@ -203,58 +189,6 @@ export function registerProfileToolsInConfig(
   ) {
     config.experimental.primary_tools.push("decompress");
   }
-}
-
-// ---------------------------------------------------------------------------
-// Tool hooks
-// ---------------------------------------------------------------------------
-
-/**
- * Build the tool-hooks map registered on the plugin `tool` key.
- *
- * The compress / decompress tools register only when the active profile's
- * tools list names them.  An absent tool name keeps the corresponding
- * tool unregistered.  Returns `undefined` when NO tool is enabled so the
- * `tool` hook key stays absent.
- *
- * Exported for unit testing (the profile list is decided by the caller).
- *
- * @param client - The OpenCode client (captured by the factory closure).
- * @param contextConfig - The parsed context-pruning config.
- * @param profileTools - Tool names declared by the active profile.
- * @returns The tool-hooks map, or `undefined` when no tool is enabled.
- */
-export function buildToolHooks(
-  client: any,
-  contextConfig: ContextPruningConfig,
-  profileTools: string[],
-): Record<string, ToolContribution> | undefined {
-  // Tool adapters never read the session agent — the stub resolver
-  // keeps the fail-closed contract (an unknown session resolves to
-  // `undefined`, never an invented agent).
-  const deps: Deps = {
-    limits: {},
-    contextConfig,
-    client,
-    directory: "",
-    resolveAgent: () => undefined,
-    toolHost: createV1ToolHost(client, () => undefined),
-  };
-  const activeSet: ActiveSet = {
-    agents: new Set(),
-    skills: new Set(),
-    hooks: new Set(),
-    tools: new Set(profileTools),
-    commands: new Set(),
-  };
-  const hooks: Record<string, ToolContribution> = {};
-  for (const unit of TOOL_UNITS) {
-    if (!profileTools.includes(unit.name)) continue;
-    for (const tool of unit.create(deps, activeSet).tools) {
-      hooks[tool.name] = tool;
-    }
-  }
-  return Object.keys(hooks).length === 0 ? undefined : hooks;
 }
 
 // ---------------------------------------------------------------------------
@@ -497,29 +431,19 @@ export function assembleOpenCodeHooks(
         }
       : {}),
 
-    // Present when at least one before-exec hook or one delegation
-    // judge is enabled.  The generic before-exec chain runs first;
-    // then the composed delegation gate judges every subagent call.
-    // Exceptions propagate intentionally — they cancel tool execution.
-    ...(composed.beforeExec.length > 0 || composed.gate !== null
+    // Present only when at least one delegation judge is enabled — the
+    // composed gate judges every subagent call and a refusal propagates
+    // as an error, cancelling tool execution.
+    ...(composed.gate !== null
       ? {
           async "tool.execute.before"(
-            input: BeforeExecInput,
-            output: BeforeExecOutput,
+            input: ToolBeforeInput,
+            output: ToolBeforeOutput,
           ) {
-            const mapped: BeforeExecInput = {
+            const mapped: ToolBeforeInput = {
               ...input,
               tool: normalizeToolName(input.tool),
             };
-            // Generic before-exec chain.  No unit contributes a
-            // beforeExec handler (all hook units keep the slot
-            // empty); the slot is reserved for units that need
-            // to run before any tool call.  Event registration for the
-            // delegation gate below is driven by `composed.gate`, not
-            // by this chain.
-            for (const handler of composed.beforeExec) {
-              await handler.handle(mapped, output);
-            }
             // Delegation gate — the strategy contributed by hook-unit
             // judges runs only for the subagent tool.  Each judge
             // handles its own field-absence skip, so the gate runs

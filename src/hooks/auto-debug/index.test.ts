@@ -127,7 +127,6 @@ describe("auto-debug unit — descriptor", () => {
       tools: new Set(),
       commands: new Set(),
     });
-    assert.deepEqual(composed.beforeExec, []);
     assert.deepEqual(composed.afterExec, []);
     assert.deepEqual(composed.transform, []);
     assert.deepEqual(composed.textComplete, []);

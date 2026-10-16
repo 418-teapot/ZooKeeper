@@ -15,7 +15,10 @@ export {
 } from "../../core/prompts.js";
 
 import { resolveTodoSource } from "../../core/client/todo.js";
-import type { HookUnitDescriptor } from "../../core/slots.js";
+import {
+  type HookUnitDescriptor,
+  makeHookContributions,
+} from "../../core/slots.js";
 import { nudgePostSubagent } from "./hook.js";
 
 export { nudgePostSubagent };
@@ -33,9 +36,7 @@ export const unit: HookUnitDescriptor = {
   kind: "hook",
   create(deps) {
     const source = resolveTodoSource(deps);
-    return {
-      kind: "hook",
-      beforeExec: [],
+    return makeHookContributions({
       afterExec: [
         {
           name: "nudgePostSubagent",
@@ -43,11 +44,6 @@ export const unit: HookUnitDescriptor = {
             nudgePostSubagent(source, input, output, deps.directory),
         },
       ],
-      transform: [],
-      textComplete: [],
-      toolDefinition: [],
-      delegation: [],
-      onSettled: [],
-    };
+    });
   },
 };

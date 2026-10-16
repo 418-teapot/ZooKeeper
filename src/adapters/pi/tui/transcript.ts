@@ -16,7 +16,8 @@
  * full transcript survives on disk in the sub-session file.  For such a run
  * the pi entry point hydrates the facts first (shared cache in
  * `src/adapters/pi/hydrate.ts`, the same one the inline card uses) and opens
- * this overlay on the rebuilt log — see `enterRun` in `src/pi.ts`.  A run
+ * this overlay on the rebuilt log — see the fleet widget's `enterRun`
+ * callback in `src/adapters/pi/tui/wiring.ts`.  A run
  * whose log is still empty because that load failed opens with the
  * `emptyNotice` line (`TRANSCRIPT_UNAVAILABLE_NOTICE`) instead of the plain
  * empty-transcript line, so the surface explains itself rather than lying.

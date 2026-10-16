@@ -17,10 +17,7 @@
  */
 import assert from "node:assert/strict";
 import { afterEach, describe, it } from "node:test";
-import {
-  buildToolHooks,
-  registerProfileToolsInConfig,
-} from "../compose-opencode.js";
+import { registerProfileToolsInConfig } from "../compose-opencode.js";
 import type { ToolHost } from "../core/client/tool-host.js";
 import { parseContextConfig } from "../core/config-parse.js";
 import { fold } from "../core/context/fold.js";
@@ -37,7 +34,7 @@ import {
 } from "../core/context/runtime.js";
 import type { Block, SessionState } from "../core/context/state.js";
 import { numberView } from "../core/context/view-refs.js";
-import { makePlugin, POLY_ZOO } from "../testkits/config.js";
+import { composeToolHooks, makePlugin, POLY_ZOO } from "../testkits/config.js";
 import { _resetForTesting } from "../utils/logger.js";
 import {
   type CompressToolDefinition,
@@ -845,7 +842,7 @@ describe("compress tool execute — error paths", () => {
     // Registration is profile-gated, so this config shape is reachable in
     // production when [zoo.context.compress] is missing — the check guides
     // the model to fix config.toml.
-    const hooks = buildToolHooks(
+    const hooks = composeToolHooks(
       {},
       { dedup: {}, purgeErrors: {}, compress: {} },
       ["compress"],
@@ -860,7 +857,7 @@ describe("compress tool execute — error paths", () => {
   });
 
   it("throws a loud config error when protected_messages is missing (defensive)", async () => {
-    const hooks = buildToolHooks(
+    const hooks = composeToolHooks(
       {},
       {
         dedup: {},
@@ -911,13 +908,13 @@ describe("compress tool execute — error paths", () => {
 describe("compress tool registration gate", () => {
   it("compress absent from the profile tools list → no compress tool", () => {
     const { client } = mockClient([]);
-    const hooks = buildToolHooks(client, { dedup: {}, purgeErrors: {} }, []);
+    const hooks = composeToolHooks(client, { dedup: {}, purgeErrors: {} }, []);
     assert.equal(hooks, undefined);
   });
 
   it("decompress only in the list → compress stays unregistered", () => {
     const { client } = mockClient([]);
-    const hooks = buildToolHooks(client, { dedup: {}, purgeErrors: {} }, [
+    const hooks = composeToolHooks(client, { dedup: {}, purgeErrors: {} }, [
       "decompress",
     ]);
     assert.ok(hooks !== undefined, "decompress tool registers");
@@ -938,7 +935,7 @@ describe("compress tool registration gate", () => {
 
   it("compress in the profile tools list → registered with an executable", () => {
     const { client } = mockClient([]);
-    const hooks = buildToolHooks(client, { dedup: {}, purgeErrors: {} }, [
+    const hooks = composeToolHooks(client, { dedup: {}, purgeErrors: {} }, [
       "compress",
     ]);
     assert.ok(hooks !== undefined);
@@ -948,7 +945,7 @@ describe("compress tool registration gate", () => {
 
   it("registers the ranges-array JSON Schema for OpenCode native tool loading", () => {
     const { client } = mockClient([]);
-    const hooks = buildToolHooks(client, { dedup: {}, purgeErrors: {} }, [
+    const hooks = composeToolHooks(client, { dedup: {}, purgeErrors: {} }, [
       "compress",
     ]);
 
@@ -971,7 +968,7 @@ describe("compress tool registration gate", () => {
 
   it("carries the batch compress contract across description and args", () => {
     const { client } = mockClient([]);
-    const hooks = buildToolHooks(client, { dedup: {}, purgeErrors: {} }, [
+    const hooks = composeToolHooks(client, { dedup: {}, purgeErrors: {} }, [
       "compress",
     ]);
 

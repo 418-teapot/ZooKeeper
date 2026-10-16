@@ -114,8 +114,9 @@ function writeSessionFile(
 
 /**
  * The `details` payload a subagent result persists TODAY: the sub-session
- * file path ONLY (see `terminalToolDetails` in `src/pi.ts`).  A run without
- * a sub-session path persists `{}`.
+ * file path ONLY (see `terminalToolDetails` in
+ * `src/adapters/pi/terminal-details.ts`).  A run without a sub-session
+ * path persists `{}`.
  */
 function detailsPayload(sessionPath?: string): Record<string, unknown> {
   return sessionPath === undefined ? {} : { sessionPath };
