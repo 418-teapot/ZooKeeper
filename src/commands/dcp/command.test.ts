@@ -102,7 +102,7 @@ describe("/dcp context subcommand", () => {
     ];
     const { toolHost, notifyCalls } = mockToolHost(view);
 
-    await handleDcpCommand(toolHost, "sess-1", "context");
+    await handleDcpCommand(toolHost, "sess-1", "context", {});
 
     assert.equal(notifyCalls.length, 1);
     assert.equal(notifyCalls[0].sessionID, "sess-1");
@@ -114,7 +114,7 @@ describe("/dcp context subcommand", () => {
     const view: HostMessage[] = [makeMsg("user", ["Hi"])];
     const { toolHost, notifyCalls } = mockToolHost(view);
 
-    await handleDcpCommand(toolHost, "sess-2", "");
+    await handleDcpCommand(toolHost, "sess-2", "", {});
 
     assert.equal(notifyCalls.length, 1);
     assertNotifyContains(notifyCalls, "上下文报告");
@@ -130,7 +130,7 @@ describe("/dcp context subcommand", () => {
     ];
     const { toolHost, notifyCalls } = mockToolHost(view);
 
-    await handleDcpCommand(toolHost, "sess-3", "context");
+    await handleDcpCommand(toolHost, "sess-3", "context", {});
 
     assertNotifyContains(notifyCalls, "26.7%");
   });
@@ -145,7 +145,7 @@ describe("/dcp context subcommand", () => {
     ];
     const { toolHost, notifyCalls } = mockToolHost(view);
 
-    await handleDcpCommand(toolHost, "sess-4", "context");
+    await handleDcpCommand(toolHost, "sess-4", "context", {});
 
     // Compact report: summary lines only, no category breakdown.
     assert.ok(
@@ -201,7 +201,7 @@ describe("effective prune marks over storage", () => {
     });
 
     const { toolHost, notifyCalls } = mockToolHost(view);
-    await handleDcpCommand(toolHost, SID, "context");
+    await handleDcpCommand(toolHost, SID, "context", {});
 
     assert.equal(notifyCalls.length, 1);
     // Raw total = exact 600 + tail (input 4 + output 100) = 704.
@@ -241,7 +241,7 @@ describe("effective prune marks over storage", () => {
       },
     };
     try {
-      await handleDcpCommand(toolHost, sid, "context");
+      await handleDcpCommand(toolHost, sid, "context", {});
       assert.equal(notices.length, 1);
       // 600 + (input 4 + placeholder 20) = 624 — the placeholder is
       // counted once, never twice.
@@ -261,7 +261,7 @@ describe("unknown subcommand", () => {
     const view: HostMessage[] = [makeMsg("user", ["Hi"])];
     const { toolHost, notifyCalls } = mockToolHost(view);
 
-    await handleDcpCommand(toolHost, "sess-5", "foobar");
+    await handleDcpCommand(toolHost, "sess-5", "foobar", {});
 
     assert.equal(notifyCalls.length, 1);
     assertNotifyContains(notifyCalls, "用法");
@@ -283,7 +283,7 @@ describe("empty messages", () => {
   it("handles empty array gracefully", async () => {
     const { toolHost, notifyCalls } = mockToolHost([]);
 
-    await handleDcpCommand(toolHost, "sess-6", "context");
+    await handleDcpCommand(toolHost, "sess-6", "context", {});
 
     assert.equal(notifyCalls.length, 1);
     assertNotifyContains(notifyCalls, "0 tokens");
@@ -298,14 +298,14 @@ describe("empty messages", () => {
 describe("missing host APIs", () => {
   it("throws when toolHost is null", async () => {
     await assert.rejects(
-      () => handleDcpCommand(null, "sess-7", "context"),
+      () => handleDcpCommand(null, "sess-7", "context", {}),
       /无法获取/,
     );
   });
 
   it("throws when toolHost is undefined", async () => {
     await assert.rejects(
-      () => handleDcpCommand(undefined, "sess-8", "context"),
+      () => handleDcpCommand(undefined, "sess-8", "context", {}),
       /无法获取/,
     );
   });
@@ -313,7 +313,7 @@ describe("missing host APIs", () => {
   it("throws when fetchHistory is unavailable", async () => {
     const toolHost = {} as ToolHost; // no fetchHistory at all
     await assert.rejects(
-      () => handleDcpCommand(toolHost, "sess-9", "context"),
+      () => handleDcpCommand(toolHost, "sess-9", "context", {}),
       /无法获取/,
     );
   });
@@ -339,7 +339,7 @@ describe("missing host APIs", () => {
       numbered: [],
     });
 
-    await handleDcpCommand(toolHost, "sess-report-round-view", "context");
+    await handleDcpCommand(toolHost, "sess-report-round-view", "context", {});
 
     assert.equal(notices.length, 1);
     assert.match(notices[0], /上下文报告/);
@@ -354,7 +354,7 @@ describe("missing host APIs", () => {
       notify: async () => {},
     };
     await assert.rejects(
-      () => handleDcpCommand(toolHost, "sess-10", "context"),
+      () => handleDcpCommand(toolHost, "sess-10", "context", {}),
       /rate limit exceeded/,
     );
   });

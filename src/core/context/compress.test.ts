@@ -866,6 +866,69 @@ describe("compressRanges — batch semantics", () => {
     assert.deepEqual([b3.start, b3.end], [6, 8]);
     assert.equal(b3.status, "active");
   });
+
+  it("commits each block's compressedTokens from the single prepared account (batch)", () => {
+    // Contract: the committed block carries exactly the figure the
+    // prepare-time formula computed — interval estimate + swallowed
+    // pending-mark tokens − consumed active blocks − netted covered
+    // inactive records — with no recomputation at commit.
+    const history = makeTranscript(12);
+    const state = makeState();
+    const initial = numberedView(history, state);
+    compressRange(history, initial, state, 2, 3, "第一段主题", "第一段摘要。");
+    const consumedBlock = state.blocks.get(1);
+    assert.ok(consumedBlock !== undefined);
+
+    // One pending mark inside each batch range (effective marks are
+    // never swallowed and stay out of the account).
+    state.marks.set(
+      markKey(3),
+      makeMark({ anchorOrdinal: 3, contentTokens: 30 }),
+    );
+    state.marks.set(
+      markKey(6, 0),
+      makeMark({ anchorOrdinal: 6, regionIndex: 0, contentTokens: 25 }),
+    );
+    state.marks.set(
+      markKey(7),
+      makeMark({ anchorOrdinal: 7, contentTokens: 99, effective: true }),
+    );
+
+    const items = numberedView(history, state);
+    const result = compressRanges(
+      projectMessages(history),
+      items,
+      state,
+      OPTIONS,
+      [
+        // [1, 6) fully covers block 1 [2, 4) → consumed in the batch.
+        { fromRef: "m2", toRef: "m5", title: "主题A", summary: "摘要A。" },
+        { fromRef: "m6", toRef: "m7", title: "主题B", summary: "摘要B。" },
+      ],
+    );
+    assert.deepEqual(result.failed, []);
+    assert.equal(result.created.length, 2);
+    assert.equal(result.swallowedMarks, 2, "one pending mark per range");
+
+    const intervalTokensOf = (start: number, end: number): number => {
+      let total = 0;
+      for (let i = start; i < end; i++) {
+        total += estimateMessageHeuristic(history[i]);
+      }
+      return total;
+    };
+    const [blockA, blockB] = result.created;
+    assert.equal(
+      blockA.compressedTokens,
+      intervalTokensOf(1, 6) + 30 - consumedBlock.compressedTokens,
+      "range A: interval + mark tokens − consumed block",
+    );
+    assert.equal(
+      blockB.compressedTokens,
+      intervalTokensOf(6, 8) + 25,
+      "range B: interval + mark tokens (effective mark excluded)",
+    );
+  });
 });
 
 // ---------------------------------------------------------------------------

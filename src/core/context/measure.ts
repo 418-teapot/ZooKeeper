@@ -187,6 +187,36 @@ export function findLastCompletedAssistant(
   return { index: -1, exactTokens: 0 };
 }
 
+// ---------------------------------------------------------------------------
+// Prompt-side token accounting
+// ---------------------------------------------------------------------------
+
+/**
+ * Compute the prompt-side total of the last completed assistant message.
+ *
+ * Sums `input + cacheRead + cacheWrite` of that message's API usage;
+ * output and reasoning tokens are excluded.  The completion detection
+ * reuses `findLastCompletedAssistant`, so a streaming or text-only
+ * assistant (no API output) is not completed and yields 0.
+ *
+ * This is deliberately NOT `LastCompletedAssistantResult.exactTokens`:
+ * that figure sums all five API-reported components (input + output +
+ * reasoning + cacheRead + cacheWrite), so reusing it here would shift
+ * every nudge trigger boundary.  The nudge subsystem's denominator
+ * semantics contract lives in `nudge.ts`.
+ *
+ * @param messages - The transcript.
+ * @returns The prompt-side total, or 0 when no completed assistant exists.
+ */
+export function promptSideTokens(messages: HostMessage[]): number {
+  const { index } = findLastCompletedAssistant(messages);
+  if (index < 0) return 0;
+  const usage = messages[index]?.usage;
+  return (
+    (usage?.input ?? 0) + (usage?.cacheRead ?? 0) + (usage?.cacheWrite ?? 0)
+  );
+}
+
 /**
  * Result of measuring a whole transcript.
  */

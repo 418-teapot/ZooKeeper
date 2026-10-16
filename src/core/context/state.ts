@@ -293,6 +293,45 @@ export function blockIdOf(
 }
 
 /**
+ * Write a pending prune mark, first-write-wins.
+ *
+ * The clamp — a position that already holds a mark is never overwritten
+ * — keeps mark writes idempotent across the producers that share this
+ * helper (`producers/dedup.ts`, `producers/purge-errors.ts`).
+ *
+ * @param state - The session state to write into.
+ * @param ordinal - The message ordinal the mark anchors to.
+ * @param regionIndex - The tool region index within the message; absent
+ *   means an empty key and the mark is refused (defensive).
+ * @param content - The original region text (content snapshot).
+ * @param contentTokens - Estimated reclaim tokens of the region.
+ * @param now - Timestamp for the mark.
+ * @returns True when the mark was written, false when the position was
+ *   already claimed or the key is empty.
+ */
+export function addPendingMark(
+  state: SessionState,
+  ordinal: number,
+  regionIndex: number | undefined,
+  content: string,
+  contentTokens: number,
+  now: number,
+): boolean {
+  if (regionIndex === undefined) return false;
+  const key = markKey(ordinal, regionIndex);
+  if (state.marks.has(key)) return false;
+  state.marks.set(key, {
+    anchorOrdinal: ordinal,
+    regionIndex,
+    content: content.slice(0, RECALL_MAX_CHARS),
+    contentTokens,
+    effective: false,
+    markedAt: now,
+  });
+  return true;
+}
+
+/**
  * Consume pending marks covered by a newly landed compression block.
  *
  * Called when a compression range lands (block creation): every pending

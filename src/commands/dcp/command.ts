@@ -98,8 +98,8 @@ async function readReportHistory(
  * @param toolHost - Host tool services (fetchHistory / notify).
  * @param sessionID - The current session identifier.
  * @param args - The raw arguments string after `/dcp`.
- * @param contextConfig - Optional context pruning config (needed for
- *   the compress gate).  When absent, compress is skipped.
+ * @param contextConfig - Context pruning config (needed for the
+ *   compress gate).
  * @param hasCompressTool - Whether the `compress` tool is registered in
  *   the active mode profile.  `/dcp compress` refuses to arm the trigger
  *   when the tool is not registered.
@@ -109,7 +109,7 @@ export async function handleDcpCommand(
   toolHost: ToolHost | null | undefined,
   sessionID: string,
   args: string,
-  contextConfig?: ContextPruningConfig,
+  contextConfig: ContextPruningConfig,
   hasCompressTool = false,
 ): Promise<void> {
   const trimmed = args.trim();
@@ -119,7 +119,7 @@ export async function handleDcpCommand(
     await handleCompressSubcommand(
       toolHost,
       sessionID,
-      contextConfig ?? { dedup: {}, purgeErrors: {} },
+      contextConfig,
       hasCompressTool,
     );
     return;

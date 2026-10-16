@@ -14,10 +14,11 @@
  *
  * **Denominator semantics:** the level comparison uses the *prompt-side
  * total* of the last completed assistant message — `input + cacheRead +
- * cacheWrite` — fed into `evaluateNudge`.  `MessageMeasure.exact` is NOT
- * used here: it also sums `output` and `reasoning`, which nudge
- * evaluation deliberately excludes, so using it would shift every trigger
- * boundary.
+ * cacheWrite` — fed into `evaluateNudge` and computed by the shared
+ * `promptSideTokens` helper in `measure.ts`.  `MessageMeasure.exact`
+ * is NOT used here: it also sums `output` and `reasoning`, which nudge
+ * evaluation deliberately excludes, so using it would shift every
+ * trigger boundary.
  *
  * **Single-anchor watermark:** all persisted state is one number
  * (`state.nudges.lastNudgeTokens`).  On each evaluation
@@ -64,6 +65,7 @@ import { findFirstUserOrdinal, findLastUserOrdinal } from "./lens.js";
 import {
   estimateMessageHeuristic,
   findLastCompletedAssistant,
+  promptSideTokens,
 } from "./measure.js";
 import type { SessionState } from "./state.js";
 import type { NumberedItem } from "./view-refs.js";
@@ -244,23 +246,32 @@ export function resolveThresholds(
 // ---------------------------------------------------------------------------
 
 /**
- * Compute the prompt-side total of the last completed assistant message.
+ * Structured outcome of one nudge evaluation.
  *
- * Sums `input + cache read + cache write`, output and reasoning excluded.
- * The completion detection reuses the measurement machinery, so a
- * streaming or text-only assistant (no API output) is not completed and
- * yields 0.
- *
- * @param messages - The transcript.
- * @returns The prompt-side total, or 0 when no completed assistant exists.
+ * Every field is a post-write snapshot: `measureLevel`'s reclaim
+ * bookkeeping and the anchor persistence have already happened when
+ * this object is returned.  `text` is non-null if and only if the
+ * decision fired AND an eligible compressible window exists — the only
+ * case where a reminder is injected.
  */
-function promptSideTokens(messages: HostMessage[]): number {
-  const { index } = findLastCompletedAssistant(messages);
-  if (index < 0) return 0;
-  const usage = messages[index]?.usage;
-  return (
-    (usage?.input ?? 0) + (usage?.cacheRead ?? 0) + (usage?.cacheWrite ?? 0)
-  );
+export interface NudgeDecision {
+  /** The water level: measured prompt-side total with the booked
+   * reclaim discounted off it. */
+  promptTokens: number;
+  /** The raw prompt-side total of the last completed assistant. */
+  measuredTokens: number;
+  /** The anchor persisted by this evaluation (post-write snapshot). */
+  anchor: number;
+  /** The thresholds the level was compared against. */
+  thresholds: NudgeThresholds;
+  /** The band the level sits in, or null below the gentle threshold. */
+  level: NudgeLevel | null;
+  /** Whether the growth interval past the anchor was crossed. */
+  fired: boolean;
+  /** The eligible compressible window, or null (no eligible window). */
+  eligibility: NudgeEligibility | null;
+  /** The reminder text; non-null iff `fired && eligibility !== null`. */
+  text: string | null;
 }
 
 /**
@@ -400,28 +411,32 @@ function renderNudgeText(
 }
 
 /**
- * Evaluate the nudge decision for one prompt snapshot and inject the
- * reminder text when it fires.
+ * Evaluate the nudge decision for one prompt snapshot.
  *
  * The full decision flow, driven by the single-anchor watermark:
  *
  * 1. An absent or invalid `config` (thresholds fail to resolve) disables
- *    the subsystem — nothing runs and the watermark is untouched.
- * 2. Without a completed assistant message there is no real token level
- *    — the evaluation is skipped (watermark untouched).
- * 3. The token level is the measured prompt-side total with the booked
+ *    the subsystem — nothing runs and the watermark is untouched; the
+ *    same holds when no completed assistant message exists (no real
+ *    token level to measure).  These are the only null returns.
+ * 2. The token level is the measured prompt-side total with the booked
  *    reclaim discounted off it (see `measureLevel`).  `anchor = min(last
  *    ?? tokens, tokens)` ratchets downward; the level is `"urgent"`
  *    at/above `max`, `"gentle"` at/above `min`, else null.
- * 4. A trigger fires when a level is set AND the distance from the anchor
+ * 3. A trigger fires when a level is set AND the distance from the anchor
  *    has grown past the level's interval (`growthTokens` gentle,
  *    `floor(growthTokens / 2)` urgent); on trigger the anchor moves to
  *    the current tokens, otherwise it stays at `anchor`.
- * 5. The anchor is persisted on EVERY evaluation (the ratchet follows
+ * 4. The anchor is persisted on EVERY evaluation (the ratchet follows
  *    context downward between triggers), a no-op when unchanged.
- * 6. When a level fires AND an eligible compressible window exists, the
- *    reminder text is assembled from the shared templates and returned;
- *    otherwise `null` (the anchor was still persisted).
+ * 5. When a level fires AND an eligible compressible window exists, the
+ *    reminder text is assembled from the shared templates;
+ *    `decision.text` stays null otherwise (the anchor was still
+ *    persisted).
+ *
+ * The reclaim bookkeeping (`measureLevel`) and the anchor persistence
+ * happen inside this function; the returned decision is a post-write
+ * snapshot.
  *
  * @param state - The session state; `state.nudges` carries the watermark
  *   and the reclaim booking, both read and persisted here.
@@ -430,14 +445,15 @@ function renderNudgeText(
  * @param config - Raw nudge configuration; `undefined` disables.
  * @param options - Context window, protection inputs, and this round's
  *   numbered view (the window's coordinate system).
- * @returns The reminder text, or `null` when nothing should be injected.
+ * @returns The structured decision, or null when the subsystem is
+ *   disabled or no completed assistant exists (watermark untouched).
  */
 export function evaluateNudge(
   state: SessionState,
   messages: HostMessage[],
   config: NudgeConfig | undefined,
   options: NudgeInjectOptions,
-): string | null {
+): NudgeDecision | null {
   if (config === undefined) return null;
   const thresholds = resolveThresholds(config, options.contextLimit);
   if (thresholds === null) return null;
@@ -445,7 +461,8 @@ export function evaluateNudge(
   const { index } = findLastCompletedAssistant(messages);
   if (index < 0) return null;
 
-  const promptTokens = measureLevel(state, promptSideTokens(messages));
+  const measuredTokens = promptSideTokens(messages);
+  const promptTokens = measureLevel(state, measuredTokens);
   const anchor = Math.min(
     state.nudges?.lastNudgeTokens ?? promptTokens,
     promptTokens,
@@ -475,17 +492,48 @@ export function evaluateNudge(
     state.nudges = { ...(state.nudges ?? {}), lastNudgeTokens: newAnchor };
   }
 
-  if (!fired || level === null) return null;
+  if (!fired || level === null) {
+    return {
+      promptTokens,
+      measuredTokens,
+      anchor: newAnchor,
+      thresholds,
+      level,
+      fired,
+      eligibility: null,
+      text: null,
+    };
+  }
 
   const eligibility = computeEligibility(messages, options.numbered, options);
-  if (eligibility === null) return null;
+  if (eligibility === null) {
+    return {
+      promptTokens,
+      measuredTokens,
+      anchor: newAnchor,
+      thresholds,
+      level,
+      fired,
+      eligibility: null,
+      text: null,
+    };
+  }
 
-  return renderNudgeText(
-    level,
+  return {
     promptTokens,
-    options.contextLimit,
+    measuredTokens,
+    anchor: newAnchor,
+    thresholds,
+    level,
+    fired,
     eligibility,
-  );
+    text: renderNudgeText(
+      level,
+      promptTokens,
+      options.contextLimit,
+      eligibility,
+    ),
+  };
 }
 
 // ---------------------------------------------------------------------------

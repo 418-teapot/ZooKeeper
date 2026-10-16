@@ -573,12 +573,24 @@ export function validateRange(
 
 /**
  * A gate-checked payload ready to be committed.
+ *
+ * The token account is computed exactly once, here at prepare time;
+ * `commitPreparedRange` mutates from these figures without recomputing
+ * them.
  */
 interface PreparedRange {
   /** The merged summary text stored on the new block. */
   summary: string;
   /** Heuristic estimate of the merged summary text. */
   summaryTokens: number;
+  /**
+   * The block's token account: interval estimate + swallowed
+   * pending-mark tokens − consumed active blocks − netted covered
+   * inactive records.
+   */
+  compressedTokens: number;
+  /** Count of pending marks the landed range swallows. */
+  markCount: number;
 }
 
 /**
@@ -679,11 +691,13 @@ function nettedCoveredInactiveTokens(validation: RangeValidation): number {
 /**
  * Prepare a validated range's payload and run the apply-time gates.
  *
- * Zero-mutation: builds the merged summary and the token arithmetic, then
- * fires the no-new-content gate (net compressible tokens <= 0) and the
- * negative-benefit gate (merged summary not smaller than the net
+ * Zero-mutation: builds the merged summary and the token arithmetic,
+ * then fires the no-new-content gate (net compressible tokens <= 0) and
+ * the negative-benefit gate (merged summary not smaller than the net
  * benefit) — both reject before any mutation.  The pending-mark tokens
- * swallowed by the landed range are included in the net figure.
+ * swallowed by the landed range are included in the net figure.  The
+ * computed account travels on the prepared payload so the commit phase
+ * never recomputes it.
  *
  * @param history - The transcript.
  * @param state - The session state (read-only here).
@@ -702,19 +716,24 @@ function prepareRange(
     range.start,
     range.end,
   );
-  const markTokens = pendingMarkStats(state, range.start, range.end).tokens;
+  const markStats = pendingMarkStats(state, range.start, range.end);
   const consumedTokens = validation.swallowed.reduce(
     (sum, ref) => sum + ref.block.compressedTokens,
     0,
   );
   const coveredInactiveTokens = nettedCoveredInactiveTokens(validation);
   const compressedTokens =
-    intervalTokens + markTokens - consumedTokens - coveredInactiveTokens;
+    intervalTokens + markStats.tokens - consumedTokens - coveredInactiveTokens;
 
   // ── No-new-content gate ────────────────────────────────────────────
   if (compressedTokens <= 0) {
     return {
-      prepared: { summary: "", summaryTokens: 0 },
+      prepared: {
+        summary: "",
+        summaryTokens: 0,
+        compressedTokens: 0,
+        markCount: 0,
+      },
       error:
         "范围内没有带来新的可压缩内容（所涉及的消息均已被现有压缩块覆盖），" +
         "请扩大范围以包含尚未压缩的新消息。",
@@ -727,14 +746,29 @@ function prepareRange(
   // ── Negative-benefit gate on the merged summary ────────────────────
   if (summaryTokens >= compressedTokens) {
     return {
-      prepared: { summary, summaryTokens },
+      // Rejection payloads are inert: the caller aborts on `error`, so
+      // every field is zeroed like the no-new-content branch above.
+      prepared: {
+        summary: "",
+        summaryTokens: 0,
+        compressedTokens: 0,
+        markCount: 0,
+      },
       error:
         `压缩收益为负：合并后的摘要约 ${summaryTokens} tokens，不低于待压缩内容` +
         `约 ${compressedTokens} tokens。请提供更精简的摘要或扩大压缩范围。`,
     };
   }
 
-  return { prepared: { summary, summaryTokens }, error: null };
+  return {
+    prepared: {
+      summary,
+      summaryTokens,
+      compressedTokens,
+      markCount: markStats.count,
+    },
+    error: null,
+  };
 }
 
 /**
@@ -742,18 +776,20 @@ function prepareRange(
  * pending marks of the landed interval, and create the new block.
  *
  * Runs only after every gate passed, so it cannot fail.  The block's
- * `compressedTokens` is computed with the authoritative
- * `clearConsumedBlockRange` return (the same figure the apply-time gates
- * saw pre-flight), and its `spanHash` is computed over the interval at
- * creation so `validateBlock` can self-verify the coverage later.
+ * `compressedTokens` comes verbatim from the prepared payload — the
+ * single token account computed at prepare time — and its `spanHash`
+ * is computed over the interval at creation so `validateBlock` can
+ * self-verify the coverage later.  `clearConsumedBlockRange` still runs
+ * for its deletion side effect (the swallowed pending marks leave the
+ * collection); its return value is not read here.
  *
  * @param snapshot - The projection snapshot (span hash resolves tool
  *   names through the invocation table).
  * @param state - The session state (mutated).
  * @param range - The resolved range with its validated title.
  * @param validation - The gate outcome (swallowed blocks consumed).
- * @param prepared - The gate-checked payload.
- * @returns The newly created block plus the count of swallowed marks.
+ * @param prepared - The gate-checked payload (token account + summary).
+ * @returns The newly created block.
  */
 function commitPreparedRange(
   snapshot: Projection,
@@ -761,23 +797,11 @@ function commitPreparedRange(
   range: { start: number; end: number; title: string },
   validation: RangeValidation,
   prepared: PreparedRange,
-): { block: Block; markCount: number } {
-  const history = snapshot.messages;
-  const markStats = pendingMarkStats(state, range.start, range.end);
+): Block {
   for (const { block } of validation.swallowed) {
     block.status = "consumed";
   }
-  const clearedTokens = clearConsumedBlockRange(state, range.start, range.end);
-  const intervalTokens = estimateIntervalTokens(
-    history,
-    range.start,
-    range.end,
-  );
-  const consumedTokens = validation.swallowed.reduce(
-    (sum, ref) => sum + ref.block.compressedTokens,
-    0,
-  );
-  const coveredInactiveTokens = nettedCoveredInactiveTokens(validation);
+  clearConsumedBlockRange(state, range.start, range.end);
 
   const id = allocateBlockId(state);
   const block: Block = {
@@ -787,13 +811,12 @@ function commitPreparedRange(
     summary: prepared.summary,
     spanHash: computeSpanHash(snapshot, range.start, range.end),
     status: "active",
-    compressedTokens:
-      intervalTokens + clearedTokens - consumedTokens - coveredInactiveTokens,
+    compressedTokens: prepared.compressedTokens,
     summaryTokens: prepared.summaryTokens,
     createdAt: Date.now(),
   };
   state.blocks.set(id, block);
-  return { block, markCount: markStats.count };
+  return block;
 }
 
 // ---------------------------------------------------------------------------
@@ -1042,15 +1065,16 @@ export function compressRanges(
   const created: Block[] = [];
   let swallowedMarks = 0;
   for (const { entry, result, prepared } of preparedList) {
-    const applied = commitPreparedRange(
-      snapshot,
-      state,
-      { start: entry.start, end: entry.end, title: entry.title },
-      result,
-      prepared,
+    created.push(
+      commitPreparedRange(
+        snapshot,
+        state,
+        { start: entry.start, end: entry.end, title: entry.title },
+        result,
+        prepared,
+      ),
     );
-    created.push(applied.block);
-    swallowedMarks += applied.markCount;
+    swallowedMarks += prepared.markCount;
   }
   return { created, failed: [], swallowedMarks };
 }

@@ -13,13 +13,15 @@
  * reads tool regions only through `TextRegion` lenses and never
  * rewrites any region text.
  *
- * Gating is self-contained: the producer skips entirely without a
- * caller-computed protected window, below the message-count floor, and
- * below the context-fraction threshold; a `prunedOrdinals` predicate
- * excludes messages already folded or pruned.  All other semantics —
- * error-status determination, skip rules, the input zero-benefit gate,
- * and the placeholder — are defined below: only the failed call's input
- * is pruned, never its output.
+ * Gating is shared with the dedup producer through `producers/gate.ts`:
+ * the producer skips entirely without a caller-computed protected
+ * window, below the message-count floor, and below the context-fraction
+ * threshold; a `prunedOrdinals` predicate excludes messages already
+ * folded or pruned.  All other semantics — error-status determination,
+ * skip rules, the input zero-benefit gate, and the placeholder — are
+ * defined below: only the failed call's input is pruned, never its
+ * output.  The mark write itself is the shared first-write-wins
+ * `addPendingMark` in `state.ts`.
  *
  * **Idempotency.**  A call whose region already holds a mark is never
  * re-marked.  The check covers both region keys of the call — the
@@ -39,109 +41,26 @@
  */
 
 import type { Projection } from "../lens.js";
-import { measureMessages, netReclaimTokens } from "../measure.js";
+import { netReclaimTokens } from "../measure.js";
 import { PRUNED_TOOL_ERROR_INPUT_REPLACEMENT } from "../message-parts.js";
-import { markKey, RECALL_MAX_CHARS, type SessionState } from "../state.js";
+import { addPendingMark, markKey, type SessionState } from "../state.js";
+import type { ProducerGateOptions, ProducerRunResult } from "./gate.js";
+import { checkProducerGate } from "./gate.js";
 
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
 
 /**
- * Options for the lens purge-errors producer.
+ * Options for the lens purge-errors producer — the shared gate options
+ * (see `producers/gate.ts`).
  */
-export interface PurgeErrorsProducerOptions {
-  /**
-   * Minimum non-hidden message count before the producer runs.  The
-   * producer skips when the count is not greater.  Required — the
-   * caller supplies it from config.toml; the producer has no default.
-   */
-  minMessages: number;
-  /**
-   * Fraction of `contextLimit` that must be reached for marks to be
-   * produced; equality opens the gate.  Required — the caller
-   * supplies it from config.toml; the producer has no default.
-   */
-  thresholdContext: number;
-  /**
-   * Model context window in tokens.  Undefined closes the gate
-   * (fail-closed — the fraction cannot be evaluated).
-   */
-  contextLimit?: number;
-  /**
-   * First protected ordinal (inclusive): error calls at or after this
-   * ordinal are never marked.  Computed by the caller from the
-   * protected-messages window; undefined skips the producer entirely
-   * (fail-safe when the window is not configured).
-   * `messages.length` is an empty window.
-   */
-  protectedStartOrdinal?: number;
-  /**
-   * Tool names excluded from the strategy, matched case-sensitively.
-   * Undefined → empty list (neutral — no tool names are excluded).
-   */
-  protectedTools?: string[];
-  /**
-   * Predicate over message ordinals reporting messages already folded
-   * into a compression block or otherwise pruned; their tool calls are
-   * never marked.
-   */
-  prunedOrdinals?: (ordinal: number) => boolean;
-}
+export type PurgeErrorsProducerOptions = ProducerGateOptions;
 
 /**
  * Result of one purge-errors pass.
  */
-export interface PurgeErrorsRunResult {
-  /** Number of new pending marks written. */
-  created: number;
-  /** Total estimated reclaim tokens of the new marks. */
-  tokens: number;
-}
-
-// ---------------------------------------------------------------------------
-// Mark write
-// ---------------------------------------------------------------------------
-
-/**
- * Write a pending prune mark, first-write-wins.
- *
- * The clamp — a position that already holds a mark is never overwritten
- * — keeps mark writes idempotent: `state.ts` exposes no `addMark` helper,
- * so the write guard lives in this module until the release-gate phase
- * centralises mark writes.
- *
- * @param state - The session state to write into.
- * @param ordinal - The message ordinal the mark anchors to.
- * @param regionIndex - The tool region index within the message; absent
- *   means an empty key and the mark is refused (defensive).
- * @param content - The original region text (content snapshot).
- * @param contentTokens - Estimated reclaim tokens of the region.
- * @param now - Timestamp for the mark.
- * @returns True when the mark was written, false when the position was
- *   already claimed or the key is empty.
- */
-function addPendingMark(
-  state: SessionState,
-  ordinal: number,
-  regionIndex: number | undefined,
-  content: string,
-  contentTokens: number,
-  now: number,
-): boolean {
-  if (regionIndex === undefined) return false;
-  const key = markKey(ordinal, regionIndex);
-  if (state.marks.has(key)) return false;
-  state.marks.set(key, {
-    anchorOrdinal: ordinal,
-    regionIndex,
-    content: content.slice(0, RECALL_MAX_CHARS),
-    contentTokens,
-    effective: false,
-    markedAt: now,
-  });
-  return true;
-}
+export type PurgeErrorsRunResult = ProducerRunResult;
 
 // ---------------------------------------------------------------------------
 // Main entry point
@@ -184,33 +103,11 @@ export function runPurgeErrors(
   options: PurgeErrorsProducerOptions,
 ): PurgeErrorsRunResult {
   const messages = snapshot.messages;
-  const minMessages = options.minMessages;
-  const thresholdContext = options.thresholdContext;
-  const protectedTools = options.protectedTools;
   const prunedOrdinals = options.prunedOrdinals;
 
-  // Fail-safe: without a protection window the producer is skipped with
-  // zero side effects.
-  if (options.protectedStartOrdinal === undefined) {
-    return { created: 0, tokens: 0 };
-  }
-  const protectedStartOrdinal = options.protectedStartOrdinal;
-
-  if (!messages || messages.length === 0) {
-    return { created: 0, tokens: 0 };
-  }
-  const measured = measureMessages(messages);
-  if (measured.messageCount <= minMessages) {
-    return { created: 0, tokens: 0 };
-  }
-
-  // Context gate: unknown model limit closes the gate; equality opens it.
-  if (options.contextLimit === undefined) {
-    return { created: 0, tokens: 0 };
-  }
-  if (measured.total < options.contextLimit * thresholdContext) {
-    return { created: 0, tokens: 0 };
-  }
+  const gate = checkProducerGate(snapshot, options);
+  if (gate === null) return { created: 0, tokens: 0 };
+  const protectedStartOrdinal = gate.protectedStartOrdinal;
 
   let created = 0;
   let tokens = 0;
@@ -224,7 +121,7 @@ export function runPurgeErrors(
     const inputRef = invocation.input;
     if (prunedOrdinals?.(inputRef.ordinal)) continue;
     if (inputRef.ordinal >= protectedStartOrdinal) continue;
-    if (protectedTools?.includes(invocation.name)) continue;
+    if (options.protectedTools?.includes(invocation.name)) continue;
 
     const inputRegion =
       messages[inputRef.ordinal]?.regions[inputRef.regionIndex];

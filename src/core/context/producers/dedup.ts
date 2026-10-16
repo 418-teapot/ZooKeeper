@@ -12,7 +12,8 @@
  * layout here.  The module reads tool regions only through `TextRegion`
  * lenses and never rewrites any region text.
  *
- * Gating is self-contained: the producer skips entirely below the
+ * Gating is shared with the purge-errors producer through
+ * `producers/gate.ts`: the producer skips entirely below the
  * message-count floor and below the context-fraction threshold, and it
  * honours a caller-computed protected window (`protectedStartOrdinal`)
  * plus a predicate for messages already folded or pruned.  All gate
@@ -20,15 +21,18 @@
  * supplied by the caller from config.toml — the producer carries no
  * defaults and refuses to run when either is absent.  All other
  * semantics — signature normalisation, skip rules, and the
- * first-write-wins mark clamp — are defined below.
+ * first-write-wins mark clamp (the shared `addPendingMark` in
+ * `state.ts`) — are defined below.
  *
  * @module
  */
 
 import type { Projection } from "../lens.js";
-import { measureMessages, netReclaimTokens } from "../measure.js";
+import { netReclaimTokens } from "../measure.js";
 import { PRUNED_TOOL_OUTPUT_REPLACEMENT } from "../message-parts.js";
-import { markKey, RECALL_MAX_CHARS, type SessionState } from "../state.js";
+import { addPendingMark, markKey, type SessionState } from "../state.js";
+import type { ProducerGateOptions, ProducerRunResult } from "./gate.js";
+import { checkProducerGate } from "./gate.js";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -45,56 +49,15 @@ const VOLATILE_FIELDS = new Set(["timestamp", "ts", "date"]);
 // ---------------------------------------------------------------------------
 
 /**
- * Options for the lens dedup producer.
+ * Options for the lens dedup producer — the shared gate options (see
+ * `producers/gate.ts`).
  */
-export interface DedupProducerOptions {
-  /**
-   * Minimum non-hidden message count before the producer runs.  The
-   * producer skips when the count is not greater.  Required — the
-   * caller supplies it from config.toml; the producer has no default.
-   */
-  minMessages: number;
-  /**
-   * Fraction of `contextLimit` that must be reached for marks to be
-   * produced; equality opens the gate.  Required — the caller
-   * supplies it from config.toml; the producer has no default.
-   */
-  thresholdContext: number;
-  /**
-   * Model context window in tokens.  Undefined closes the gate
-   * (fail-closed — the fraction cannot be evaluated).
-   */
-  contextLimit?: number;
-  /**
-   * First protected ordinal (inclusive): tool-output regions at or
-   * after this ordinal are never marked.  Computed by the caller from
-   * the protected-messages / protected-tokens window; undefined skips
-   * the producer entirely (fail-safe when the window is not
-   * configured).  `messages.length` is an empty window.
-   */
-  protectedStartOrdinal?: number;
-  /**
-   * Tool names excluded from dedup, matched case-sensitively.
-   * Undefined → empty list (neutral — no tool names are protected).
-   */
-  protectedTools?: string[];
-  /**
-   * Predicate over message ordinals reporting messages already folded
-   * into a compression block or otherwise pruned; their tool calls are
-   * never marked.
-   */
-  prunedOrdinals?: (ordinal: number) => boolean;
-}
+export type DedupProducerOptions = ProducerGateOptions;
 
 /**
  * Result of one dedup pass.
  */
-export interface DedupRunResult {
-  /** Number of new pending marks written. */
-  created: number;
-  /** Total estimated reclaim tokens of the new marks. */
-  tokens: number;
-}
+export type DedupRunResult = ProducerRunResult;
 
 /**
  * One candidate tool-output region grouped by signature.
@@ -171,50 +134,6 @@ function makeSignature(tool: string, input: unknown): string {
 }
 
 // ---------------------------------------------------------------------------
-// Mark write
-// ---------------------------------------------------------------------------
-
-/**
- * Write a pending prune mark, first-write-wins.
- *
- * The clamp — a position that already holds a mark is never overwritten
- * — keeps mark writes idempotent: `state.ts` exposes no `addMark` helper,
- * so the write guard lives in this module until the release-gate phase
- * centralises mark writes.
- *
- * @param state - The session state to write into.
- * @param ordinal - The message ordinal the mark anchors to.
- * @param regionIndex - The tool-output region index within the message;
- *   absent means an empty key and the mark is refused (defensive).
- * @param output - The original output text (content snapshot).
- * @param contentTokens - Estimated reclaim tokens of the output.
- * @param now - Timestamp for the mark.
- * @returns True when the mark was written, false when the position was
- *   already claimed or the key is empty.
- */
-function addPendingMark(
-  state: SessionState,
-  ordinal: number,
-  regionIndex: number | undefined,
-  output: string,
-  contentTokens: number,
-  now: number,
-): boolean {
-  if (regionIndex === undefined) return false;
-  const key = markKey(ordinal, regionIndex);
-  if (state.marks.has(key)) return false;
-  state.marks.set(key, {
-    anchorOrdinal: ordinal,
-    regionIndex,
-    content: output.slice(0, RECALL_MAX_CHARS),
-    contentTokens,
-    effective: false,
-    markedAt: now,
-  });
-  return true;
-}
-
-// ---------------------------------------------------------------------------
 // Main entry point
 // ---------------------------------------------------------------------------
 
@@ -242,35 +161,11 @@ export function runDedup(
   options: DedupProducerOptions,
 ): DedupRunResult {
   const messages = snapshot.messages;
-  const minMessages = options.minMessages;
-  const thresholdContext = options.thresholdContext;
-  // Undefined → no protected tools (neutral semantics, not a default
-  // list).
-  const protectedTools = options.protectedTools ?? [];
   const prunedOrdinals = options.prunedOrdinals;
 
-  // Fail-safe: without a protection window the producer is skipped with
-  // zero side effects.
-  if (options.protectedStartOrdinal === undefined) {
-    return { created: 0, tokens: 0 };
-  }
-  const protectedStartOrdinal = options.protectedStartOrdinal;
-
-  if (!messages || messages.length === 0) {
-    return { created: 0, tokens: 0 };
-  }
-  const measured = measureMessages(messages);
-  if (measured.messageCount <= minMessages) {
-    return { created: 0, tokens: 0 };
-  }
-
-  // Context gate: unknown model limit closes the gate; equality opens it.
-  if (options.contextLimit === undefined) {
-    return { created: 0, tokens: 0 };
-  }
-  if (measured.total < options.contextLimit * thresholdContext) {
-    return { created: 0, tokens: 0 };
-  }
+  const gate = checkProducerGate(snapshot, options);
+  if (gate === null) return { created: 0, tokens: 0 };
+  const protectedStartOrdinal = gate.protectedStartOrdinal;
 
   // Phase 1: positions already claimed by a mark (pending or effective)
   // never get a second mark.
@@ -297,7 +192,7 @@ export function runDedup(
     const status = invocation.status;
     if (status !== undefined && status !== "completed") continue;
     const tool = invocation.name;
-    if (protectedTools.includes(tool)) continue;
+    if (options.protectedTools?.includes(tool)) continue;
     const key = markKey(output.ordinal, output.regionIndex);
     if (alreadyMarked.has(key)) continue;
 

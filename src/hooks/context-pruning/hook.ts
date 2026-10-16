@@ -61,19 +61,13 @@ import type { ContextPruningConfig } from "../../core/config-types.js";
 import { computeProtectedStartOrdinal } from "../../core/context/compress.js";
 import { formatTokens } from "../../core/context/context-report.js";
 import { fold } from "../../core/context/fold.js";
-import type {
-  HostAdapter,
-  HostMessage,
-  Projection,
-} from "../../core/context/lens.js";
-import { findLastCompletedAssistant } from "../../core/context/measure.js";
+import type { HostAdapter, Projection } from "../../core/context/lens.js";
+import { promptSideTokens } from "../../core/context/measure.js";
 import { getModelLimit } from "../../core/context/model-limits.js";
 import {
   computeEligibility,
   type EligibilityConfig,
   evaluateNudge,
-  readLevel,
-  resolveThresholds,
 } from "../../core/context/nudge.js";
 import { runDedup } from "../../core/context/producers/dedup.js";
 import { runPurgeErrors } from "../../core/context/producers/purge-errors.js";
@@ -101,24 +95,6 @@ import { log } from "../../utils/logger.js";
 // ---------------------------------------------------------------------------
 // Pipeline helpers
 // ---------------------------------------------------------------------------
-
-/**
- * Compute the prompt-side token total of the last completed assistant.
- *
- * Counts `input + cacheRead + cacheWrite`; output and reasoning tokens
- * are excluded.
- *
- * @param view - The lens transcript.
- * @returns The prompt-side total, or 0 without a completed assistant.
- */
-function promptSideTokens(view: HostMessage[]): number {
-  const { index } = findLastCompletedAssistant(view);
-  if (index < 0) return 0;
-  const usage = view[index]?.usage;
-  return (
-    (usage?.input ?? 0) + (usage?.cacheRead ?? 0) + (usage?.cacheWrite ?? 0)
-  );
-}
 
 /**
  * Convert an absolute prompt-side threshold into the producers'
@@ -202,10 +178,7 @@ function coveredOrdinalsOf(
 export function contextPruningTransformHandler(
   adapter: HostAdapter<unknown>,
   messages: unknown,
-  config: ContextPruningConfig = {
-    dedup: {},
-    purgeErrors: {},
-  },
+  config: ContextPruningConfig,
   notify?: (text: string) => void,
   hasCompressTool?: boolean,
   toast?: (payload: ToastPayload) => void,
@@ -443,44 +416,33 @@ export function contextPruningTransformHandler(
   // persisted, never ref-assigned.
   const nudgeConfig = config.nudge;
   if (hasCompressTool && nudgeConfig !== undefined && modelLimit) {
-    const nudgeText = evaluateNudge(state, view, nudgeConfig, {
+    const decision = evaluateNudge(state, view, nudgeConfig, {
       contextLimit: modelLimit.context,
       numbered,
       ...eligibilityConfig,
     });
-    if (nudgeText !== null) {
+    if (decision !== null && decision.text !== null) {
       messages = adapter.appendUserMessage(
         messages,
         "zoo-nudge",
         sessionId,
-        nudgeText,
+        decision.text,
       );
 
-      // Log the decision payload (the eligibility window is recomputed
-      // here; it is pure over the same inputs the core just used).  The
-      // level is the one the decision used — the measured total with the
-      // booked reclaim discounted off it.
-      const eligibility = computeEligibility(view, numbered, eligibilityConfig);
-      const levelTokens = readLevel(state, promptTokens);
-      const thresholds = resolveThresholds(nudgeConfig, modelLimit.context);
-      const level =
-        thresholds === null
-          ? null
-          : levelTokens >= thresholds.max
-            ? "urgent"
-            : "gentle";
+      // Log the decision payload — every field is the post-write
+      // snapshot the core evaluation persisted.
       log("context-pruning", "nudge_injected", sessionId, undefined, "info", {
         // `nudgeLevel` instead of `level` — the logger reserves
         // `level` for the entry's log level.
-        nudgeLevel: level,
-        tokens: levelTokens,
-        measuredTokens: promptTokens,
-        anchor: state.nudges?.lastNudgeTokens,
-        ...(eligibility
+        nudgeLevel: decision.level,
+        tokens: decision.promptTokens,
+        measuredTokens: decision.measuredTokens,
+        anchor: decision.anchor,
+        ...(decision.eligibility
           ? {
-              startRef: eligibility.startRef,
-              endRef: eligibility.endRef,
-              reclaimTokens: eligibility.reclaimTokens,
+              startRef: decision.eligibility.startRef,
+              endRef: decision.eligibility.endRef,
+              reclaimTokens: decision.eligibility.reclaimTokens,
             }
           : {}),
       });
@@ -490,13 +452,15 @@ export function contextPruningTransformHandler(
       // decision point — no extra throttling state.  Fire-and-forget;
       // the port renders source/level uniformly and silently drops
       // when the host has no UI surface.
-      if (toast && level !== null) {
-        const percent = Math.round((levelTokens / modelLimit.context) * 100);
+      if (toast && decision.level !== null) {
+        const percent = Math.round(
+          (decision.promptTokens / modelLimit.context) * 100,
+        );
         toast({
           source: "context-pruning",
-          level: level === "urgent" ? "warning" : "info",
+          level: decision.level === "urgent" ? "warning" : "info",
           text:
-            level === "urgent"
+            decision.level === "urgent"
               ? `上下文吃紧：已用 ${percent}%`
               : `上下文渐满：已用 ${percent}%`,
         });

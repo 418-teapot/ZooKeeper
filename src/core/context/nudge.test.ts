@@ -186,12 +186,12 @@ describe("evaluateNudge gates", () => {
         lensNudgeMessages(140000),
         NUDGE_CONFIG,
         opts(lensNudgeMessages(140000)),
-      ),
+      )?.text,
       null,
     );
     const grown = lensNudgeMessages(150000);
-    const text = evaluateNudge(state, grown, NUDGE_CONFIG, opts(grown));
-    assert.equal(text, null, "no text without an eligible window");
+    const decision = evaluateNudge(state, grown, NUDGE_CONFIG, opts(grown));
+    assert.equal(decision?.text, null, "no text without an eligible window");
     assert.equal(
       state.nudges?.lastNudgeTokens,
       150000,
@@ -213,7 +213,7 @@ describe("evaluateNudge gates", () => {
     );
     const grown = lensNudgeMessages(150000);
     assert.equal(
-      evaluateNudge(state, grown, NUDGE_CONFIG, opts(grown)),
+      evaluateNudge(state, grown, NUDGE_CONFIG, opts(grown))?.text,
       null,
       "no window → no injection",
     );
@@ -245,12 +245,18 @@ describe("nudge text assembly", () => {
     const state = makeState();
     const baseline = lensNudgeMessages(140000);
     assert.equal(
-      evaluateNudge(state, baseline, NUDGE_CONFIG, injectOpts(baseline)),
+      evaluateNudge(state, baseline, NUDGE_CONFIG, injectOpts(baseline))?.text,
       null,
       "baseline injects nothing",
     );
     const grown = lensNudgeMessages(150000);
-    const text = evaluateNudge(state, grown, NUDGE_CONFIG, injectOpts(grown));
+    const decision = evaluateNudge(
+      state,
+      grown,
+      NUDGE_CONFIG,
+      injectOpts(grown),
+    );
+    const text = decision?.text ?? null;
     assert.ok(text !== null, "gentle fires");
     assert.ok(text.startsWith("<internal-reminder>"), "wrapper opens");
     assert.ok(text.endsWith("</internal-reminder>"), "wrapper closes");
@@ -287,7 +293,13 @@ describe("nudge text assembly", () => {
     const baseline = lensNudgeMessages(140000);
     evaluateNudge(state, baseline, NUDGE_CONFIG, injectOpts(baseline));
     const urgent = lensNudgeMessages(165000);
-    const text = evaluateNudge(state, urgent, NUDGE_CONFIG, injectOpts(urgent));
+    const decision = evaluateNudge(
+      state,
+      urgent,
+      NUDGE_CONFIG,
+      injectOpts(urgent),
+    );
+    const text = decision?.text ?? null;
     assert.ok(text !== null, "urgent fires");
     assert.ok(
       text.includes("**CONTEXT LIMIT — 165000 (83% of 200000 window)**"),
@@ -592,13 +604,17 @@ describe("reclaim credit (water level)", () => {
     assert.equal(readLevel(state, 150000), 110000, "pure read discounts");
     assert.equal(state.nudges?.pendingReclaimTokens, 40000, "read is pure");
 
-    const text = evaluateNudge(
+    const decision = evaluateNudge(
       state,
       viewAt(150000),
       NUDGE_CONFIG,
       parityOpts(viewAt(150000)),
     );
-    assert.equal(text, null, "no nudge once the level drops below the band");
+    assert.equal(
+      decision?.text,
+      null,
+      "no nudge once the level drops below the band",
+    );
     assert.equal(
       state.nudges?.lastNudgeTokens,
       110000,
@@ -662,7 +678,7 @@ describe("reclaim credit (water level)", () => {
     // anchor, so nothing fires while the credit holds.
     const same = viewAt(150000);
     assert.equal(
-      evaluateNudge(state, same, NUDGE_CONFIG, parityOpts(same)),
+      evaluateNudge(state, same, NUDGE_CONFIG, parityOpts(same))?.text,
       null,
       "discounted level matches the anchor",
     );
@@ -670,7 +686,13 @@ describe("reclaim credit (water level)", () => {
     // A measurement that moves off the credited one consumes the credit,
     // so the next evaluation reports the measured value itself.
     const later = viewAt(155000);
-    const text = evaluateNudge(state, later, NUDGE_CONFIG, parityOpts(later));
+    const decision = evaluateNudge(
+      state,
+      later,
+      NUDGE_CONFIG,
+      parityOpts(later),
+    );
+    const text = decision?.text ?? null;
     assert.ok(text !== null, "gentle fires 15K above the anchor");
     assert.ok(
       text.includes("**CONTEXT GROWING — 155000 (78% of 200000 window)**"),
@@ -684,7 +706,7 @@ describe("reclaim credit (water level)", () => {
     const messages = viewAt(150000);
     assert.equal(readLevel(state, 150000), 0);
     assert.equal(
-      evaluateNudge(state, messages, NUDGE_CONFIG, parityOpts(messages)),
+      evaluateNudge(state, messages, NUDGE_CONFIG, parityOpts(messages))?.text,
       null,
       "a level of 0 is below every threshold",
     );
