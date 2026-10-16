@@ -23,7 +23,7 @@ import {
   type Block,
   type SessionState,
 } from "../../../../src/core/context/state.js";
-import { contextPruningTransformHandler } from "../../../../src/hooks/context-pruning/hook.js";
+import { contextPruningTransformHandler } from "../../../../src/core/context/pipeline.js";
 import { createCompressTool } from "../../../../src/tools/compress.js";
 import { createDecompressTool } from "../../../../src/tools/decompress.js";
 import type { CompressionPlan, GoldenHost, ToolRoundAction } from "../types.js";

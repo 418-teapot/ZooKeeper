@@ -38,6 +38,10 @@ import {
 } from "../../core/context/model-limits.js";
 import { creditReclaim } from "../../core/context/nudge.js";
 import {
+  contextPruningTransformHandler,
+  handleContextPruning,
+} from "../../core/context/pipeline.js";
+import {
   _listRoundViewSessionsForTesting,
   getRoundView,
 } from "../../core/context/round-view.js";
@@ -53,10 +57,6 @@ import { computeSpanHash } from "../../core/context/spanhash.js";
 import { allocateBlockId, markKey } from "../../core/context/state.js";
 import type { ActiveSet, Deps } from "../../core/slots.js";
 import { _getBufferForTesting, _resetForTesting } from "../../utils/logger.js";
-import {
-  contextPruningTransformHandler,
-  handleContextPruning,
-} from "./hook.js";
 import { unit } from "./index.js";
 
 // ---------------------------------------------------------------------------

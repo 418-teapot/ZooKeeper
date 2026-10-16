@@ -11,13 +11,13 @@
  */
 
 import {
+  contextPruningTransformHandler,
+  handleContextPruning,
+} from "../../core/context/pipeline.js";
+import {
   type HookUnitDescriptor,
   makeHookContributions,
 } from "../../core/slots.js";
-import {
-  contextPruningTransformHandler,
-  handleContextPruning,
-} from "./hook.js";
 
 export { contextPruningTransformHandler, handleContextPruning };
 
