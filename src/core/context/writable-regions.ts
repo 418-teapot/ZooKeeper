@@ -6,9 +6,11 @@
  * region to its own message structure and supplies the write-back
  * closure, which is the only host-specific part of a region.  Everything
  * built on top of that protocol is host-agnostic and lives here: the
+ * region factory binding a host write-back closure to the protocol, the
  * provenance side table recording each region's derivation, the
  * injectability predicate, the placement rule that picks a line-ref
- * target, and the prefix write itself.
+ * target, the prefix write itself, and the application of region edits
+ * through a lens.
  *
  * Line-ref injection is the render layer's only region write: the
  * per-round `[mN] ` prefix is prepended to exactly one injectable region
@@ -18,7 +20,12 @@
  * @module
  */
 
-import type { HostMessage, TextRegion } from "./lens.js";
+import type {
+  HostMessage,
+  RegionEdit,
+  RegionKind,
+  TextRegion,
+} from "./lens.js";
 import { refPrefix } from "./view-refs.js";
 
 /**
@@ -74,6 +81,37 @@ export function recordRegionProvenance(
   provenance: RegionProvenance,
 ): void {
   regionProvenance.set(region, provenance);
+}
+
+/**
+ * Build a writable region from a read closure and a write-back closure.
+ *
+ * The only host-specific part of a region is where its text lives, so an
+ * adapter supplies the two closures and gets back a region that already
+ * carries its provenance in the side table.  Writing through `set` lands
+ * in the adapter's own message structure.
+ *
+ * @param kind - The region kind (`content`, `tool-output`, ...).
+ * @param read - Reads the region's current text.
+ * @param write - Writes replacement text back into the host structure.
+ * @param provenance - The derivation source to record.
+ * @returns The writable region.
+ */
+export function createWritableRegion(
+  kind: RegionKind,
+  read: () => string,
+  write: (text: string) => void,
+  provenance: RegionProvenance,
+): WritableRegion {
+  const region: WritableRegion = {
+    kind,
+    get: () => read(),
+    set: (text) => {
+      write(text);
+    },
+  };
+  recordRegionProvenance(region, provenance);
+  return region;
 }
 
 /**
@@ -143,4 +181,28 @@ export function injectLinePrefix(msg: HostMessage, line: number): boolean {
   if (region === undefined) return false;
   region.set(refPrefix(line) + region.get());
   return true;
+}
+
+/**
+ * Write region edits through a lens into its backing host structures.
+ *
+ * Each edit addresses a region by message ordinal and region index; the
+ * region's `set` writes the replacement text into the host message the
+ * adapter bound at projection time.  An edit with no region index, an
+ * out-of-range ordinal, or an ordinal whose region is missing is skipped
+ * defensively.
+ *
+ * @param lens - The projection region view the edits address.
+ * @param edits - Region text replacements.
+ */
+export function applyRegionEdits(
+  lens: HostMessage[],
+  edits: RegionEdit[],
+): void {
+  for (const edit of edits) {
+    if (edit.regionIndex === undefined) continue;
+    const region = lens[edit.messageOrdinal]?.regions?.[edit.regionIndex];
+    if (!region) continue;
+    (region as WritableRegion).set(edit.text);
+  }
 }

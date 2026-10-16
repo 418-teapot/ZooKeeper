@@ -8,12 +8,19 @@
 import assert from "node:assert/strict";
 import { afterEach, describe, it } from "node:test";
 import {
+  assembleOpenCodeHooks,
   injectAgentPrompts,
   registerSkills,
   runAfterHandlers,
 } from "./compose-opencode.js";
+import { composeProfile } from "./core/compose.js";
 import { initPluginLogger, parseLimits } from "./core/config-parse.js";
 import { sessionAgentRegistry } from "./core/session-agent.js";
+import type {
+  Deps,
+  TextCompleteOutput,
+  TransformOutput,
+} from "./core/slots.js";
 import { buildPlugin } from "./opencode.js";
 import { _getBufferForTesting, _resetForTesting } from "./utils/logger.js";
 
@@ -561,6 +568,113 @@ describe("runAfterHandlers", () => {
 
     await runAfterHandlers(handlers, input, output);
     assert.deepEqual(order, ["sync-a", "async-b"]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// transform / text.complete isolation
+// ---------------------------------------------------------------------------
+
+/** Minimal deps: only `limits`/`contextConfig` are read at assembly. */
+const DEPS: Deps = {
+  limits: {},
+  contextConfig: {},
+  client: {},
+  directory: "/tmp/zoo",
+  resolveAgent: () => undefined,
+};
+
+/** Count the buffered `handler_crashed` entries. */
+function crashedEntries(): Array<Record<string, unknown>> {
+  return _getBufferForTesting().filter(
+    (entry) => entry.event === "handler_crashed",
+  );
+}
+
+describe("transform / text.complete isolation", () => {
+  it("isolates a crashing messages.transform contribution and runs later ones", async () => {
+    const composed = composeProfile(null, [], DEPS);
+    let captured: TransformOutput | undefined;
+    composed.transform = [
+      {
+        name: "boom",
+        handle: () => {
+          throw new Error("transform boom");
+        },
+      },
+      {
+        name: "capture",
+        handle: (output) => {
+          captured = output;
+        },
+      },
+    ];
+
+    const plugin = assembleOpenCodeHooks(composed, DEPS, null);
+    const output: TransformOutput = {
+      messages: [{ info: { sessionID: "sess-1" }, parts: [] }],
+    };
+    await plugin["experimental.chat.messages.transform"]({}, output);
+
+    assert.ok(captured, "later contribution must still run");
+    const crashed = crashedEntries();
+    assert.equal(crashed.length, 1);
+    assert.equal(crashed[0].handler, "boom");
+    assert.equal(crashed[0].sessionId, "sess-1");
+    assert.equal(crashed[0].callId, undefined);
+    assert.equal(crashed[0].error, "Error: transform boom");
+  });
+
+  it("falls back to an empty session id when the message list is empty", async () => {
+    const composed = composeProfile(null, [], DEPS);
+    composed.transform = [
+      {
+        name: "boom",
+        handle: () => {
+          throw new Error("transform boom");
+        },
+      },
+    ];
+
+    const plugin = assembleOpenCodeHooks(composed, DEPS, null);
+    await plugin["experimental.chat.messages.transform"]({}, { messages: [] });
+
+    const crashed = crashedEntries();
+    assert.equal(crashed.length, 1);
+    assert.equal(crashed[0].sessionId, "");
+  });
+
+  it("isolates a crashing text.complete contribution and runs later ones", async () => {
+    const composed = composeProfile(null, [], DEPS);
+    composed.textComplete = [
+      {
+        name: "boom",
+        handle: () => {
+          throw new Error("text boom");
+        },
+      },
+      {
+        name: "capture",
+        handle: (_input, out) => {
+          out.text = `${out.text}!`;
+        },
+      },
+    ];
+
+    const plugin = assembleOpenCodeHooks(composed, DEPS, null);
+    const output: TextCompleteOutput = { text: "hi" };
+    await plugin["experimental.text.complete"](
+      { sessionID: "s1", messageID: "m1", partID: "p1" },
+      output,
+    );
+
+    assert.equal(output.text, "hi!");
+    const crashed = crashedEntries();
+    assert.equal(crashed.length, 1);
+    assert.equal(crashed[0].handler, "boom");
+    assert.equal(crashed[0].sessionId, "s1");
+    assert.equal(crashed[0].callId, "p1");
+    assert.equal(crashed[0].error, "Error: text boom");
   });
 });
 

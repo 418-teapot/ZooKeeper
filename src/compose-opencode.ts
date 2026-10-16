@@ -11,8 +11,9 @@
  *  - `tool.execute.before` — the composed delegation gate for subagent
  *    calls; a refusal propagates as an error (cancels tool execution).
  *  - `tool.execute.after` — per-handler error isolation (`runAfterHandlers`).
- *  - `experimental.chat.messages.transform` — sequential handlers.
- *  - `experimental.text.complete` — sequential handlers (text
+ *  - `experimental.chat.messages.transform` — isolated handlers (a crash
+ *    is logged and skipped).
+ *  - `experimental.text.complete` — isolated handlers (text
  *    finalization, e.g. ref-echo stripping).
  *  - `tool.definition` — the raw OpenCode output is mapped onto the
  *    host-neutral tool-definition view, enhancers run in order (the
@@ -27,18 +28,20 @@
  * The exported helper functions (`injectAgentPrompts`,
  * `registerProfileToolsInConfig`, `registerSkills`, `runAfterHandlers`)
  * are shared with the config hook and kept public for unit tests.
- * `normalizeToolName` is shared with the tool registration path and kept
- * public for unit tests.
+ * `normalizeToolName` is shared with the tool registration path, and
+ * `toToolDefinitionView` / `applyToolDefinitionView` are the thin
+ * host-side halves of the definition boundary — all kept public for unit
+ * tests.
  *
  * @module
  */
 
-import { readdirSync, statSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createV1ToolHost } from "./adapters/opencode/tool-host.js";
 import { getAgentName } from "./core/client/agent.js";
 import type { ModeProfile } from "./core/config-types.js";
+import { scanSkillDirectories } from "./core/skills.js";
 import type {
   AfterExecInput,
   AfterExecOutput,
@@ -48,12 +51,17 @@ import type {
   Deps,
   TextCompleteInput,
   TextCompleteOutput,
-  ToolArgDefinition,
   ToolBeforeInput,
   ToolBeforeOutput,
   ToolDefinitionView,
   TransformOutput,
 } from "./core/slots.js";
+import { runIsolated } from "./core/slots.js";
+import {
+  collectToolDefinitionChanges,
+  createToolDefinitionView,
+  runToolDefinitionContributions,
+} from "./core/tool-definition.js";
 import { log } from "./utils/logger.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -125,7 +133,10 @@ export function injectAgentPrompts(
  *
  * Fail-closed: a skill registers only when its directory name appears in
  * `profileSkills`.  Absent names are skipped silently — config.toml (the
- * single source of truth) lists every skill explicitly.
+ * single source of truth) lists every skill explicitly.  The scan itself is
+ * shared with the pi adapter (`scanSkillDirectories`); this function only
+ * owns the OpenCode result sink (initialising and appending to
+ * `config.skills.paths`).
  *
  * @param config - The config object being mutated by the `config` hook.
  * @param profileSkills - Skill directory names declared by the active profile.
@@ -134,23 +145,8 @@ export function registerSkills(config: any, profileSkills: string[]): void {
   config.skills ??= {};
   config.skills.paths ??= [];
   const skillsDir = resolve(ROOT_DIR, "skills");
-  try {
-    for (const entry of readdirSync(skillsDir)) {
-      const skillPath = resolve(skillsDir, entry);
-      if (!statSync(skillPath).isDirectory()) continue;
-      if (!profileSkills.includes(entry)) continue;
-      config.skills.paths.push(skillPath);
-      log("plugin", "skill_registered", "", undefined, "debug", {
-        skill: entry,
-      });
-    }
-  } catch (err) {
-    const code = (err as { code?: string }).code;
-    if (code !== "ENOENT") {
-      log("plugin", "skill_register_error", "", undefined, "warn", {
-        error: String(err),
-      });
-    }
+  for (const skillPath of scanSkillDirectories(skillsDir, profileSkills)) {
+    config.skills.paths.push(skillPath);
   }
 }
 
@@ -198,8 +194,8 @@ export function registerProfileToolsInConfig(
 /**
  * Run a list of after-exec handlers with per-handler error isolation.
  *
- * A throwing handler is logged (`handler_crashed`) and never blocks the
- * next handler.
+ * Delegates to the shared {@link runIsolated} runner: a throwing handler
+ * is logged (`handler_crashed`) and never blocks the next handler.
  *
  * @param handlers - The named handler list in handler execution order.
  * @param input - The after-exec hook input.
@@ -213,16 +209,10 @@ export async function runAfterHandlers(
   input: AfterExecInput,
   output: AfterExecOutput,
 ): Promise<void> {
-  for (const { name, fn } of handlers) {
-    try {
-      await fn(input, output);
-    } catch (err) {
-      log("plugin", "handler_crashed", input.sessionID, input.callID, "error", {
-        handler: name,
-        error: String(err),
-      });
-    }
-  }
+  await runIsolated(handlers, (handler) => handler.fn(input, output), {
+    sessionID: input.sessionID,
+    callId: input.callID,
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -261,71 +251,74 @@ interface OpenCodeToolDefinitionOutput {
 }
 
 /**
+ * Read the native per-argument schemas out of an OpenCode output.
+ *
+ * @param output - The raw OpenCode hook output.
+ * @returns The `parameters.properties` map, or `undefined` when absent.
+ */
+function nativeProperties(
+  output: OpenCodeToolDefinitionOutput,
+): Record<string, unknown> | undefined {
+  const parameters =
+    output.parameters && typeof output.parameters === "object"
+      ? (output.parameters as { properties?: unknown }).properties
+      : undefined;
+  return parameters && typeof parameters === "object"
+    ? (parameters as Record<string, unknown>)
+    : undefined;
+}
+
+/**
  * Map an OpenCode `tool.definition` output onto the host-neutral view.
  *
- * The per-argument schemas are referenced directly (not copied): a
- * contributor's in-place `description` mutation lands on the native
- * schema objects immediately, so `applyToolDefinitionView` only has to
- * re-apply rebindings and a rewritten top-level description.
+ * The per-argument schemas are copied onto the view (never referenced):
+ * a contributor's in-place `description` mutation stays on the view until
+ * `applyToolDefinitionView` writes the changed fields back into the
+ * native output.
  *
  * @param name - The canonical (host-normalized) tool name.
  * @param output - The raw OpenCode hook output.
  * @returns The host-neutral tool-definition view.
  */
-function toToolDefinitionView(
+export function toToolDefinitionView(
   name: string,
   output: OpenCodeToolDefinitionOutput,
 ): ToolDefinitionView {
-  const args: Record<string, ToolArgDefinition> = {};
-  const parameters =
-    output.parameters && typeof output.parameters === "object"
-      ? (output.parameters as { properties?: unknown }).properties
-      : undefined;
-  if (parameters && typeof parameters === "object") {
-    for (const [key, value] of Object.entries(parameters)) {
-      if (value !== null && typeof value === "object") {
-        args[key] = value as ToolArgDefinition;
-      }
-    }
-  }
-  return { name, description: output.description, args };
+  return createToolDefinitionView(
+    name,
+    output.description,
+    nativeProperties(output),
+  );
 }
 
 /**
  * Write the neutral view's changes back into the raw OpenCode output.
  *
- * Per-argument entries are live references to the native schema property
- * objects, so in-place description mutations already landed; this pass
- * re-applies rebindings (a contributor replacing an entry wholesale)
- * and a rewritten top-level description.
+ * Only the fields the contributors actually changed are written; the
+ * target stays the native `output` object because the host hook contract
+ * requires an in-place mutation.
  *
  * @param view - The (possibly mutated) host-neutral view.
  * @param output - The raw OpenCode hook output.
  */
-function applyToolDefinitionView(
+export function applyToolDefinitionView(
   view: ToolDefinitionView,
   output: OpenCodeToolDefinitionOutput,
 ): void {
-  if (
-    view.description !== undefined &&
-    view.description !== output.description
-  ) {
-    output.description = view.description;
+  const parameters = nativeProperties(output);
+  const changes = collectToolDefinitionChanges(
+    view,
+    output.description,
+    parameters,
+  );
+  if (changes.description !== undefined) {
+    output.description = changes.description;
   }
-  const parameters =
-    output.parameters && typeof output.parameters === "object"
-      ? (output.parameters as { properties?: Record<string, unknown> })
-          .properties
-      : undefined;
-  if (parameters && typeof parameters === "object" && view.args !== undefined) {
-    for (const [key, arg] of Object.entries(view.args)) {
-      const property = parameters[key];
-      if (property !== null && typeof property === "object") {
-        const schema = property as { description?: unknown };
-        if (schema.description !== arg.description) {
-          schema.description = arg.description;
-        }
-      }
+  if (parameters === undefined) return;
+  for (const [key, description] of Object.entries(changes.args)) {
+    const property = parameters[key];
+    if (property !== null && typeof property === "object") {
+      (property as { description?: unknown }).description = description;
     }
   }
 }
@@ -333,6 +326,28 @@ function applyToolDefinitionView(
 // ---------------------------------------------------------------------------
 // Hook assembly
 // ---------------------------------------------------------------------------
+
+/**
+ * Derive the conversation session id from a transform output.
+ *
+ * The OpenCode `experimental.chat.messages.transform` hook input carries
+ * no session context; the host conversation's first entry does.  Core's
+ * `TransformOutput.messages` is deliberately opaque, so the id is read
+ * structurally with a `""` fallback for an empty or malformed list.
+ *
+ * @param output - The transform output being handled.
+ * @returns The session id, or `""` when it cannot be derived.
+ */
+function transformSessionID(output: TransformOutput): string {
+  const first = (
+    output.messages as
+      | Array<{ info?: { sessionID?: unknown } }>
+      | null
+      | undefined
+  )?.[0];
+  const id = first?.info?.sessionID;
+  return typeof id === "string" ? id : "";
+}
 
 /**
  * Assemble the profile-driven OpenCode hooks fragment.
@@ -391,9 +406,11 @@ export function assembleOpenCodeHooks(
             _input: Record<string, never>,
             output: TransformOutput,
           ) {
-            for (const handler of composed.transform) {
-              await handler.handle(output);
-            }
+            await runIsolated(
+              composed.transform,
+              (handler) => handler.handle(output),
+              { sessionID: transformSessionID(output) },
+            );
           },
         }
       : {}),
@@ -405,9 +422,11 @@ export function assembleOpenCodeHooks(
             input: TextCompleteInput,
             output: TextCompleteOutput,
           ) {
-            for (const handler of composed.textComplete) {
-              await handler.handle(input, output);
-            }
+            await runIsolated(
+              composed.textComplete,
+              (handler) => handler.handle(input, output),
+              { sessionID: input.sessionID, callId: input.partID },
+            );
           },
         }
       : {}),
@@ -423,9 +442,7 @@ export function assembleOpenCodeHooks(
               normalizeToolName(input.toolID),
               output,
             );
-            for (const handler of composed.toolDefinition) {
-              await handler.handle(view);
-            }
+            await runToolDefinitionContributions(view, composed.toolDefinition);
             applyToolDefinitionView(view, output);
           },
         }

@@ -46,6 +46,7 @@ import type {
   ComposedResult,
   Deps,
   ToolContribution,
+  ToolDefinitionView,
   TransformOutput,
 } from "./core/slots.js";
 import { _resetForTesting as _resetIdentityForTesting } from "./core/subagent/identity.js";
@@ -609,6 +610,41 @@ describe("buildPiMessageEndHandler", () => {
     ]);
   });
 
+  it("isolates a throwing text-finalization contribution and still runs later ones", () => {
+    const calls: string[] = [];
+    const handler = buildPiMessageEndHandler([
+      {
+        name: "boom",
+        handle: () => {
+          throw new Error("strip boom");
+        },
+      },
+      {
+        name: "capture",
+        handle: (_input, output) => {
+          calls.push("capture");
+          output.text = output.text.toUpperCase();
+        },
+      },
+    ]);
+
+    const result = handler(
+      messageEndEvent(assistantMessage([{ type: "text", text: "hi" }])),
+      {},
+    );
+
+    assert.deepEqual(calls, ["capture"]);
+    assert.ok(result);
+    assert.equal(result?.message?.role, "assistant");
+    assert.deepEqual(result?.message?.content, [{ type: "text", text: "HI" }]);
+    const crashed = crashedEntries();
+    assert.equal(crashed.length, 1);
+    assert.equal(crashed[0].handler, "boom");
+    assert.equal(crashed[0].sessionId, "");
+    assert.equal(crashed[0].callId, "0");
+    assert.equal(crashed[0].error, "Error: strip boom");
+  });
+
   it("returns undefined for any input when no contributions are supplied", () => {
     const handler = buildPiMessageEndHandler([]);
     const assistant = handler(
@@ -732,15 +768,18 @@ function subagentToolWithArgs(): ToolContribution {
 }
 
 describe("applyToolDefinitionContributions", () => {
-  it("returns the tools unchanged for an empty contribution chain", () => {
+  it("returns the tools unchanged for an empty contribution chain", async () => {
     const tool = subagentToolWithArgs();
-    const tools = applyToolDefinitionContributions({ subagent: tool }, []);
+    const tools = await applyToolDefinitionContributions(
+      { subagent: tool },
+      [],
+    );
     assert.equal(tools.subagent, tool, "no enhancers must pass tools through");
   });
 
-  it("appends SUBAGENT_PROMPT_HINT to the subagent prompt description when subagent-prompt is composed", () => {
+  it("appends SUBAGENT_PROMPT_HINT to the subagent prompt description when subagent-prompt is composed", async () => {
     const tool = subagentToolWithArgs();
-    const tools = applyToolDefinitionContributions(
+    const tools = await applyToolDefinitionContributions(
       { subagent: tool },
       HINT_CONTRIBUTIONS,
     );
@@ -762,10 +801,13 @@ describe("applyToolDefinitionContributions", () => {
     assert.equal(tools.subagent.args?.agent, tool.args?.agent);
   });
 
-  it("keeps the tool arguments hint-free when no subagent-prompt contribution is composed", () => {
+  it("keeps the tool arguments hint-free when no subagent-prompt contribution is composed", async () => {
     const tool = subagentToolWithArgs();
     const noop = [{ name: "no-op", handle: () => {} }];
-    const tools = applyToolDefinitionContributions({ subagent: tool }, noop);
+    const tools = await applyToolDefinitionContributions(
+      { subagent: tool },
+      noop,
+    );
     assert.equal(
       tools.subagent,
       tool,
@@ -778,7 +820,7 @@ describe("applyToolDefinitionContributions", () => {
     assert.ok(!prompt?.description?.includes(SUBAGENT_PROMPT_HINT));
   });
 
-  it("leaves non-subagent tools untouched (identity preserved)", () => {
+  it("leaves non-subagent tools untouched (identity preserved)", async () => {
     const compress: ToolContribution = {
       name: "compress",
       description: "compress message ranges",
@@ -787,18 +829,49 @@ describe("applyToolDefinitionContributions", () => {
         return "compressed";
       },
     };
-    const tools = applyToolDefinitionContributions(
+    const tools = await applyToolDefinitionContributions(
       { subagent: subagentToolWithArgs(), compress },
       HINT_CONTRIBUTIONS,
     );
     assert.equal(tools.compress, compress, "foreign tools must pass through");
   });
 
-  it("does not mutate the input tool map (pure boundary)", () => {
+  it("does not mutate the input tool map (pure boundary)", async () => {
     const tool = subagentToolWithArgs();
     const before = tool.args?.prompt as { description?: string } | undefined;
-    applyToolDefinitionContributions({ subagent: tool }, HINT_CONTRIBUTIONS);
+    await applyToolDefinitionContributions(
+      { subagent: tool },
+      HINT_CONTRIBUTIONS,
+    );
     assert.equal(before?.description, "完整任务说明");
+  });
+
+  it("awaits an asynchronous enhancer before writing its change back", async () => {
+    const tool = subagentToolWithArgs();
+    const contributions = [
+      {
+        name: "async-enhancer",
+        handle: async (view: ToolDefinitionView) => {
+          await Promise.resolve();
+          const prompt = view.args?.prompt;
+          if (prompt) prompt.description = "async-enriched";
+        },
+      },
+    ];
+
+    const tools = await applyToolDefinitionContributions(
+      { subagent: tool },
+      contributions,
+    );
+
+    const prompt = tools.subagent.args?.prompt as
+      | { description?: string }
+      | undefined;
+    assert.equal(
+      prompt?.description,
+      "async-enriched",
+      "an async enhancer must be awaited before write-back",
+    );
   });
 });
 
@@ -909,7 +982,7 @@ describe("pi composition — the todo tool registration boundary", () => {
     assert.equal(tools.todo?.renderResult, renderResult);
   });
 
-  it("the pi definition boundary passes the composed todo tool through untouched", () => {
+  it("the pi definition boundary passes the composed todo tool through untouched", async () => {
     const tools = composeTools({
       toolHost: piToolHost(),
       todoStore: createTodoStore(async () => []),
@@ -918,7 +991,7 @@ describe("pi composition — the todo tool registration boundary", () => {
     assert.ok(todo);
 
     // Definition enhancers only target the subagent tool.
-    const enhanced = applyToolDefinitionContributions(tools, [
+    const enhanced = await applyToolDefinitionContributions(tools, [
       { name: "enhanceSubagentDefinition", handle: enhanceSubagentDefinition },
     ]);
     assert.equal(enhanced.todo, todo, "no enhancer may rewrite the todo tool");

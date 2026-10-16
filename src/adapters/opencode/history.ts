@@ -5,8 +5,8 @@
  * This is the only layer allowed to know both the v1 message shape
  * (`ContextMessageEntry { info, parts }`) and the core lens types
  * (`HostMessage`, `TextRegion`).  Every v1 part type maps to lens
- * regions with lossless text round-tripping: the adapter's `PartRegion`
- * regions are writable (see `WritableRegion`), so edit application and
+ * regions with lossless text round-tripping: the adapter's writable
+ * regions (see `createWritableRegion`), so edit application and
  * line-prefix injection mutate the host structure through the lens
  * while the core never unpacks it.
  *
@@ -69,16 +69,12 @@ import type {
   HostMessage,
   Invocation,
   Projection,
-  RegionKind,
   TextRegion,
   TokenUsage,
 } from "../../core/context/lens.js";
 import { project } from "../../core/context/lens.js";
-import {
-  type RegionProvenance,
-  recordRegionProvenance,
-  type WritableRegion,
-} from "../../core/context/writable-regions.js";
+import { serializeMeasuredValue } from "../../core/context/measure.js";
+import { createWritableRegion } from "../../core/context/writable-regions.js";
 import type { ContextMessageEntry, ContextTokenInfo } from "./types.js";
 
 /**
@@ -94,49 +90,6 @@ interface V1ToolPart {
     output?: unknown;
     status?: string;
   };
-}
-
-/**
- * A lens region bound to a v1 part: reads serialize the current part
- * value, writes mutate the part in place.  The core provenance registry
- * is populated at construction; the derivations this adapter records are
- * `"text"` (text parts), `"reasoning"`, `"tool"` (tool-part input and
- * output), and `"other"` — the estimation-only content derived from
- * step-start/snapshot/file parts, which must never receive a line
- * number.
- */
-class PartRegion implements WritableRegion {
-  constructor(
-    readonly kind: RegionKind,
-    private readonly read: () => string,
-    private readonly write: (text: string) => void,
-    provenance: RegionProvenance,
-  ) {
-    recordRegionProvenance(this, provenance);
-  }
-
-  get(): string {
-    return this.read();
-  }
-
-  set(text: string): void {
-    this.write(text);
-  }
-}
-
-/**
- * Serialize a part value for lens reads.
- *
- * `null`/`undefined` become the empty string; objects are
- * `JSON.stringify`ed — the same normalization `estimateTokenCount`
- * applies, so estimates stay equal.
- *
- * @param value - The raw part value.
- * @returns The lens-visible text.
- */
-function serializeValue(value: unknown): string {
-  if (value == null) return "";
-  return typeof value === "string" ? value : JSON.stringify(value);
 }
 
 /**
@@ -237,18 +190,18 @@ function toHostMessage(
     if (toolPart.type === "tool" && toolPart.state) {
       const inputIndex = regions.length;
       regions.push(
-        new PartRegion(
+        createWritableRegion(
           "tool-input",
-          () => serializeValue(toolPart.state?.input),
+          () => serializeMeasuredValue(toolPart.state?.input),
           (text) => {
             const state = toolPart.state;
             if (state) writeInputBack(state, text);
           },
           "tool",
         ),
-        new PartRegion(
+        createWritableRegion(
           "tool-output",
-          () => serializeValue(toolPart.state?.output),
+          () => serializeMeasuredValue(toolPart.state?.output),
           (text) => {
             const state = toolPart.state;
             if (state) state.output = text;
@@ -269,7 +222,7 @@ function toHostMessage(
 
     if (typeof toolPart.text !== "string") continue;
     regions.push(
-      new PartRegion(
+      createWritableRegion(
         toolPart.type === "reasoning" ? "thinking" : "content",
         () => toolPart.text ?? "",
         (text) => {

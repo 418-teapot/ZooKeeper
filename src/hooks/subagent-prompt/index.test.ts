@@ -7,7 +7,9 @@
  * handlers that were part of the same hook unit.
  */
 import assert from "node:assert/strict";
-import { describe, it } from "node:test";
+import { afterEach, beforeEach, describe, it } from "node:test";
+import { restoreEnv, saveEnv } from "../../testkits/env.js";
+import { _getBufferForTesting, _resetForTesting } from "../../utils/logger.js";
 import {
   enhanceSubagentDefinition,
   judgeSubagentPrompt,
@@ -16,6 +18,11 @@ import {
   type ValidationLimits,
   validateSubagentPrompt,
 } from "./index.js";
+
+// Keep the logger buffer isolated between tests.
+afterEach(() => {
+  _resetForTesting();
+});
 
 // Limits mirror `[zoo.validation]` in config.toml — the plugin entry point
 // derives them via parseLimits and passes them to the hook adapters.
@@ -909,5 +916,131 @@ describe("word count precision", () => {
     ].join("\n");
     const result = validateSubagentPrompt(prompt);
     assert.equal(result.valid, true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Case-insensitive tool gate
+// The gate normalises the tool name before matching, so a host that reports
+// the canonical name in a different letter case still gets the nudge.
+// ---------------------------------------------------------------------------
+
+describe("case-insensitive tool gate", () => {
+  const prompt = validPrompt({ context: "The bug is at src/db.py line 42." });
+
+  for (const tool of ["Subagent", "SUBAGENT", "SubAgent"]) {
+    it(`appends nudges for tool="${tool}"`, () => {
+      const output: { output?: string } = { output: "Subagent result" };
+      nudgeSubagentOutput(
+        { tool, sessionID: "s1", callID: "c1", args: { prompt } },
+        output,
+        limits,
+      );
+      assert.ok(
+        output.output?.includes("Guidance for next time"),
+        `expected the nudge for tool "${tool}"`,
+      );
+    });
+  }
+
+  it("still skips a genuinely non-subagent tool", () => {
+    const output: { output?: string } = { output: "grep result" };
+    nudgeSubagentOutput(
+      { tool: "grep", sessionID: "s1", callID: "c1", args: { prompt } },
+      output,
+      limits,
+    );
+    assert.equal(output.output, "grep result");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Logger fields
+// ---------------------------------------------------------------------------
+
+describe("logger fields", () => {
+  it("logs nudge_injected with the warning list", () => {
+    const prompt = validPrompt({
+      context: "The bug is at src/db.py line 42. Fix it.",
+    });
+    const output: { output?: string } = { output: "Task result" };
+    nudgeSubagentOutput(
+      { tool: "subagent", sessionID: "s-log", callID: "c9", args: { prompt } },
+      output,
+      limits,
+    );
+    const entry = _getBufferForTesting().find(
+      (e) => e.event === "nudge_injected",
+    );
+    assert.ok(entry, "expected the nudge_injected log entry");
+    assert.equal(entry.hook, "subagent-prompt");
+    assert.equal(entry.level, "info");
+    assert.equal(entry.sessionId, "s-log");
+    assert.equal(entry.callId, "c9");
+    assert.ok(Array.isArray(entry.warnings));
+  });
+});
+
+describe("logger fields (skip)", () => {
+  let origZooDebug: string | undefined;
+
+  beforeEach(() => {
+    origZooDebug = saveEnv("ZOO_DEBUG");
+    process.env.ZOO_DEBUG = "1";
+  });
+
+  afterEach(() => {
+    restoreEnv("ZOO_DEBUG", origZooDebug);
+  });
+
+  it("logs nudge_skipped/not_subagent for a non-subagent tool", () => {
+    const output: { output?: string } = { output: "grep result" };
+    nudgeSubagentOutput(
+      { tool: "grep", sessionID: "s2", callID: "c2" },
+      output,
+      limits,
+    );
+    const entry = _getBufferForTesting().find(
+      (e) => e.event === "nudge_skipped",
+    );
+    assert.ok(entry, "expected the nudge_skipped log entry");
+    assert.equal(entry.hook, "subagent-prompt");
+    assert.equal(entry.level, "debug");
+    assert.equal(entry.sessionId, "s2");
+    assert.equal(entry.callId, "c2");
+    assert.equal(entry.reason, "not_subagent");
+  });
+
+  it("logs nudge_skipped/no_prompt_arg when the prompt arg is missing", () => {
+    const output: { output?: string } = { output: "subagent result" };
+    nudgeSubagentOutput(
+      { tool: "subagent", sessionID: "s3", callID: "c3" },
+      output,
+      limits,
+    );
+    const entry = _getBufferForTesting().find(
+      (e) => e.event === "nudge_skipped",
+    );
+    assert.ok(entry);
+    assert.equal(entry.reason, "no_prompt_arg");
+  });
+
+  it("logs a field-less nudge_skipped when the prompt has no warnings", () => {
+    const output: { output?: string } = { output: "subagent result" };
+    nudgeSubagentOutput(
+      {
+        tool: "subagent",
+        sessionID: "s4",
+        callID: "c4",
+        args: { prompt: validPrompt() },
+      },
+      output,
+      limits,
+    );
+    const entry = _getBufferForTesting().find(
+      (e) => e.event === "nudge_skipped",
+    );
+    assert.ok(entry);
+    assert.equal(entry.reason, undefined);
   });
 });

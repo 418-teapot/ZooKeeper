@@ -23,8 +23,8 @@ import type { RegionEdit, ViewItem } from "../../core/context/lens.js";
 import { blockIdOf, type SessionState } from "../../core/context/state.js";
 import { numberView } from "../../core/context/view-refs.js";
 import {
+  applyRegionEdits,
   injectLinePrefix,
-  type WritableRegion,
 } from "../../core/context/writable-regions.js";
 import { materializeSummary } from "./apply-view.js";
 import { history } from "./history.js";
@@ -48,12 +48,7 @@ export function applyEdits(
   edits: RegionEdit[],
 ): void {
   const lens = history(entries).messages;
-  for (const edit of edits) {
-    if (edit.regionIndex === undefined) continue;
-    const region = lens[edit.messageOrdinal]?.regions?.[edit.regionIndex];
-    if (!region) continue;
-    (region as WritableRegion).set(edit.text);
-  }
+  applyRegionEdits(lens, edits);
 }
 
 /**

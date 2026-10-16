@@ -6,18 +6,18 @@
  * shapes, and the `makeHookContributions` hook-slot constructor.  No
  * OpenCode imports, so this module is importable from any TS runtime.
  *
- * Composition semantics (declared here, implemented by the OpenCode
- * adapter (`src/compose-opencode.ts`)):
- *  - `afterExec` contributions are isolated per handler (a throwing
- *     handler never blocks the next).
- *  - `transform` and `textComplete` contributions run in registration
- *    order.
+ * Composition semantics (the isolated runners live here; the adapter
+ * layers wire each runner to its host event key):
+ *  - `afterExec`, `transform`, and `textComplete` contributions run in
+ *    registration order with per-contribution isolation — a throwing
+ *    handler is logged as `handler_crashed` and never blocks the next.
  *  - Event keys appear only when they have contributions.
  *  - Command registration and handler are atomic (one record).
  *
  * @module
  */
 
+import { log } from "../utils/logger.js";
 import type { AskFormHost } from "./ask.js";
 import type { ToolHost } from "./client/tool-host.js";
 import type {
@@ -616,6 +616,118 @@ export interface ToolDefinitionContribution {
   /** Handler label used for logging. */
   name: string;
   handle(view: ToolDefinitionView): void | Promise<void>;
+}
+
+// ---------------------------------------------------------------------------
+// Isolated contribution runs
+// ---------------------------------------------------------------------------
+
+/**
+ * Log context for an isolated contribution run.
+ */
+export interface IsolationLogContext {
+  /** Session the contributions run for. */
+  sessionID: string;
+  /**
+   * Call identifier written to a crash entry, omitted from the entry when
+   * `undefined`.  A transform run carries no call id; a text-finalization
+   * run uses the text part index (pi) or part id (OpenCode).
+   */
+  callId?: string;
+}
+
+/**
+ * Log one crashed contribution as `handler_crashed` and swallow its error.
+ *
+ * @param name - The contribution's handler label.
+ * @param logCtx - Session and call fields for the entry.
+ * @param err - The thrown or rejected value.
+ */
+function logHandlerCrash(
+  name: string,
+  logCtx: IsolationLogContext,
+  err: unknown,
+): void {
+  log("plugin", "handler_crashed", logCtx.sessionID, logCtx.callId, "error", {
+    handler: name,
+    error: String(err),
+  });
+}
+
+/**
+ * Run named contributions sequentially with per-contribution isolation.
+ *
+ * A contribution that throws (or rejects) is logged as `handler_crashed`
+ * and never blocks the next: the run always proceeds through the whole
+ * list.  `invoke` adapts a slot's handler signature to a single call — the
+ * transform slot takes only the output while after-exec and
+ * text-finalization take an input and an output.
+ *
+ * @param contributions - The named contributions in execution order.
+ * @param invoke - Calls one contribution; a rejection is isolated.
+ * @param logCtx - Session and call fields for a crash entry.
+ */
+export async function runIsolated<T extends { name: string }>(
+  contributions: readonly T[],
+  invoke: (contribution: T) => void | Promise<void>,
+  logCtx: IsolationLogContext,
+): Promise<void> {
+  for (const contribution of contributions) {
+    try {
+      await invoke(contribution);
+    } catch (err) {
+      logHandlerCrash(contribution.name, logCtx, err);
+    }
+  }
+}
+
+/**
+ * Whether a contribution's return value is a thenable whose rejection the
+ * synchronous runner must still observe.
+ *
+ * @param value - A handler's return value.
+ * @returns True when the value exposes a callable `then`.
+ */
+function isThenable(value: unknown): value is PromiseLike<unknown> {
+  return (
+    typeof (value as { then?: unknown } | null | undefined)?.then === "function"
+  );
+}
+
+/**
+ * Synchronous variant of {@link runIsolated} for a loop the host consumes
+ * synchronously (pi's `message_end` returns its result directly, without
+ * awaiting).
+ *
+ * Isolation covers both error paths: a synchronous throw is logged as
+ * `handler_crashed` and never blocks the next contribution, and a promise
+ * returned by an async handler is not awaited but its rejection is attached
+ * to and logged the same way — the rejection never escapes as an unhandled
+ * rejection.  The host contract stays synchronous: the loop returns before
+ * any such rejection settles.
+ *
+ * @param contributions - The named contributions in execution order.
+ * @param invoke - Calls one contribution; a throw or returned rejection is
+ *   isolated.
+ * @param logCtx - Session and call fields for a crash entry.
+ */
+export function runIsolatedSync<T extends { name: string }>(
+  contributions: readonly T[],
+  invoke: (contribution: T) => unknown,
+  logCtx: IsolationLogContext,
+): void {
+  for (const contribution of contributions) {
+    try {
+      const result = invoke(contribution);
+      if (isThenable(result)) {
+        result.then(undefined, (err: unknown) => {
+          logHandlerCrash(contribution.name, logCtx, err);
+        });
+      }
+    } catch (err) {
+      logHandlerCrash(contribution.name, logCtx, err);
+    }
+  }
 }
 
 /**

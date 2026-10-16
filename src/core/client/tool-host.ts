@@ -29,10 +29,10 @@ import type { Projection } from "../context/lens.js";
  * Payload of a transient toast shown to the human observer.
  *
  * `source` names the producing unit (e.g. `"context-pruning"`) and
- * `level` the urgency band; the host port owns the rendering of both
- * (prefix / variant), so producers pass plain parameters and never
- * pre-format.  `text` is a short human-facing sentence — never a model
- * prompt payload.
+ * `level` the urgency band; `formatToastMessage` renders the shared
+ * prefix while the host port maps `level` onto its own variant, so
+ * producers pass plain parameters and never pre-format.  `text` is a
+ * short human-facing sentence — never a model prompt payload.
  */
 export interface ToastPayload {
   /** Producing unit name, rendered by the port as the toast origin. */
@@ -41,6 +41,21 @@ export interface ToastPayload {
   level: "info" | "warning";
   /** Short human-readable message. */
   text: string;
+}
+
+/**
+ * Render a toast payload into the observer-facing message string.
+ *
+ * The `[zoo][source]` tag names the producing unit so the observer can
+ * tell the plugin's toasts apart from the host's own; the payload text
+ * follows verbatim.  The `level` selects the host's severity variant and
+ * is not part of the string.
+ *
+ * @param toast - The toast payload to render.
+ * @returns The observer-facing message string.
+ */
+export function formatToastMessage(toast: ToastPayload): string {
+  return `[zoo][${toast.source}] ${toast.text}`;
 }
 
 /**

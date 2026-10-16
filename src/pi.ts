@@ -22,11 +22,11 @@ import { initPluginLogger } from "./core/config-parse.js";
  *
  * @param pi - pi ExtensionAPI instance (provided at runtime by pi).
  */
-export function zookeeperPi(pi: ExtensionAPI): void {
+export async function zookeeperPi(pi: ExtensionAPI): Promise<void> {
   const config = loadConfig();
   const zooConfig = config.zoo ?? {};
   initPluginLogger(zooConfig, "pi");
-  registerPiHandlers(pi, buildPiHandlers(zooConfig, pi, config));
+  registerPiHandlers(pi, await buildPiHandlers(zooConfig, pi, config));
 }
 
 export default zookeeperPi;

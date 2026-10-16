@@ -73,11 +73,15 @@ import type {
   TextCompleteContribution,
   TextCompleteInput,
   TextCompleteOutput,
-  ToolArgDefinition,
   ToolContribution,
   ToolDefinitionContribution,
-  ToolDefinitionView,
 } from "./core/slots.js";
+import { runIsolated, runIsolatedSync } from "./core/slots.js";
+import {
+  collectToolDefinitionChanges,
+  createToolDefinitionView,
+  runToolDefinitionContributions,
+} from "./core/tool-definition.js";
 import { loadHtmlConverter } from "./core/webfetch/native.js";
 import type { HtmlConverter } from "./core/webfetch/pipeline.js";
 import { log } from "./utils/logger.js";
@@ -145,29 +149,6 @@ export function loadPiHtmlConverter(
 // ---------------------------------------------------------------------------
 
 /**
- * Extract the raw tool arguments onto a neutral per-argument map.
- *
- * Each argument's schema is copied (the entry itself, not the containing
- * map), so a contributor's `description` mutation never reaches the
- * input tool's objects — the boundary function stays pure and the
- * unchanged arguments keep their original identity.
- *
- * @param args - The raw tool argument schemas (or `undefined`).
- * @returns The neutral per-argument map.
- */
-function collectArgDefinitions(
-  args: Record<string, unknown> | undefined,
-): Record<string, ToolArgDefinition> {
-  const viewArgs: Record<string, ToolArgDefinition> = {};
-  for (const [name, schema] of Object.entries(args ?? {})) {
-    if (schema !== null && typeof schema === "object") {
-      viewArgs[name] = { ...(schema as Record<string, unknown>) };
-    }
-  }
-  return viewArgs;
-}
-
-/**
  * Apply the composed `tool.definition` contributions at the pi tool
  * registration boundary.
  *
@@ -179,59 +160,62 @@ function collectArgDefinitions(
  * object, and unaffected tools keep their exact identity (matching the
  * OpenCode adapter, which runs the chain at its own event boundary).
  *
+ * The enhancement is asynchronous because a contributor's `handle` may
+ * return a promise; the host awaits the whole chain before writing back.
+ *
  * @param tools - The composed tool contributions keyed by name.
  * @param contributions - The composed `tool.definition` enhancers.
  * @returns The tools with their argument descriptions enriched.
  */
-export function applyToolDefinitionContributions(
+export async function applyToolDefinitionContributions(
   tools: Record<string, ToolContribution>,
   contributions: ToolDefinitionContribution[],
-): Record<string, ToolContribution> {
+): Promise<Record<string, ToolContribution>> {
   // No enhancers (a profile without the subagent-prompt hook unit) → pass
   // the tools through unchanged.
   if (contributions.length === 0) return tools;
 
   const enriched: Record<string, ToolContribution> = {};
   for (const [key, tool] of Object.entries(tools)) {
-    const view: ToolDefinitionView = {
-      name: tool.name,
-      description: tool.description,
-      args: collectArgDefinitions(tool.args),
-    };
-    for (const contribution of contributions) {
-      contribution.handle(view);
-    }
+    const view = createToolDefinitionView(
+      tool.name,
+      tool.description,
+      tool.args,
+    );
+    await runToolDefinitionContributions(view, contributions);
+    const changes = collectToolDefinitionChanges(
+      view,
+      tool.description,
+      tool.args,
+    );
 
     // Write the mutated per-argument descriptions back into a fresh tool
     // only when something changed; untouched arguments keep their exact
     // identity.
-    const originalArgs = tool.args ?? {};
-    let argsChanged = false;
-    const args: Record<string, unknown> = {};
-    for (const [argName, schema] of Object.entries(originalArgs)) {
-      const argView = view.args?.[argName];
-      if (
-        argView !== undefined &&
-        argView.description !==
-          (schema as { description?: unknown }).description
-      ) {
-        args[argName] = {
-          ...(schema as Record<string, unknown>),
-          description: argView.description,
-        };
-        argsChanged = true;
-      } else {
-        args[argName] = schema;
+    const argsChanged = Object.keys(changes.args).length > 0;
+    let args = tool.args;
+    if (argsChanged) {
+      const originalArgs = tool.args ?? {};
+      const nextArgs: Record<string, unknown> = {};
+      for (const [argName, schema] of Object.entries(originalArgs)) {
+        nextArgs[argName] =
+          argName in changes.args
+            ? {
+                ...(schema as Record<string, unknown>),
+                description: changes.args[argName],
+              }
+            : schema;
       }
+      args = nextArgs;
     }
-    const descriptionChanged =
-      view.description !== undefined && view.description !== tool.description;
-    if (!argsChanged && !descriptionChanged) {
+
+    const { description } = changes;
+    if (!argsChanged && description === undefined) {
       enriched[key] = tool;
     } else {
       enriched[key] = {
         ...tool,
-        ...(descriptionChanged ? { description: view.description } : {}),
+        ...(description !== undefined ? { description } : {}),
         ...(argsChanged ? { args } : {}),
       };
     }
@@ -370,16 +354,11 @@ export function buildPiToolResultHandler(
     };
     const output: AfterExecOutput = { output: originalText };
 
-    for (const contribution of afterExec) {
-      try {
-        await contribution.handle(input, output);
-      } catch (err) {
-        log("plugin", "handler_crashed", sessionID, input.callID, "error", {
-          handler: contribution.name,
-          error: String(err),
-        });
-      }
-    }
+    await runIsolated(
+      afterExec,
+      (contribution) => contribution.handle(input, output),
+      { sessionID, callId: input.callID },
+    );
 
     const finalText = output.output;
     if (finalText === undefined || finalText === originalText) {
@@ -441,16 +420,11 @@ export function buildPiContextHandler(
       messages: event.messages,
     };
 
-    for (const contribution of transform) {
-      try {
-        await contribution.handle(output);
-      } catch (err) {
-        log("plugin", "handler_crashed", sessionID, undefined, "error", {
-          handler: contribution.name,
-          error: String(err),
-        });
-      }
-    }
+    await runIsolated(
+      transform,
+      (contribution) => contribution.handle(output),
+      { sessionID },
+    );
 
     // Return the transformed messages so pi uses the pruned view for this
     // turn.  The transform output is typed as `unknown`; it is the same
@@ -508,16 +482,11 @@ export function buildPiMessageEndHandler(
         partID: String(index),
       };
       const output: TextCompleteOutput = { text: part.text };
-      for (const contribution of textComplete) {
-        try {
-          contribution.handle(input, output);
-        } catch (err) {
-          log("plugin", "handler_crashed", sessionID, String(index), "error", {
-            handler: contribution.name,
-            error: String(err),
-          });
-        }
-      }
+      runIsolatedSync(
+        textComplete,
+        (contribution) => contribution.handle(input, output),
+        { sessionID, callId: String(index) },
+      );
 
       if (output.text !== part.text) {
         changed = true;

@@ -10,8 +10,8 @@
 
 import { checkPlanProgress, checkTodoProgress } from "../../core/checks.js";
 import type { TodoSource } from "../../core/client/todo.js";
+import { applyNudge } from "../../core/nudge.js";
 import { VERIFY_REMINDER } from "../../core/prompts.js";
-import { log } from "../../utils/logger.js";
 
 // ---------------------------------------------------------------------------
 // Handler
@@ -44,36 +44,39 @@ export async function nudgePostSubagent(
   output: { output?: string },
   planDir: string,
 ): Promise<void> {
-  // Skip non-delegation tools
-  if (input.tool.toLowerCase() !== "subagent") return;
+  // Facts exposed to the injected log; filled by the text provider.
+  let hasTodo = false;
+  let hasPlan = false;
 
-  // Skip null / undefined output
-  if (output.output == null) return;
-
-  // Build nudge pipeline
-  let suffix = `\n\n${VERIFY_REMINDER}`;
-
-  // Todo progress check (async — read through the injected source)
-  const todoNudge = source
-    ? await checkTodoProgress(source, input.sessionID)
-    : null;
-  if (todoNudge) suffix += `\n\n${todoNudge}`;
-
-  // Plan progress check (sync — filesystem read)
-  const planNudge = checkPlanProgress(input.sessionID, planDir);
-  if (planNudge) suffix += `\n\n${planNudge}`;
-
-  output.output += suffix;
-
-  log(
-    "post-subagent-nudge",
-    "nudge_injected",
-    input.sessionID,
-    input.callID,
-    "info",
-    {
-      has_todo: !!todoNudge,
-      has_plan: !!planNudge,
-    },
-  );
+  await applyNudge({
+    hook: "post-subagent-nudge",
+    sessionID: input.sessionID,
+    callID: input.callID,
+    tool: input.tool,
+    output,
+    rules: [
+      {
+        // Skip non-delegation tools.
+        matches: (tool) => tool === "subagent",
+        // Skip null / undefined output (silently — only the direct-work
+        // nudge logs this skip).
+        guards: [() => (output.output == null ? {} : null)],
+        text: async () => {
+          // Todo progress check (async — read through the injected source).
+          const todoNudge = source
+            ? await checkTodoProgress(source, input.sessionID)
+            : null;
+          // Plan progress check (sync — filesystem read).
+          const planNudge = checkPlanProgress(input.sessionID, planDir);
+          hasTodo = !!todoNudge;
+          hasPlan = !!planNudge;
+          return [VERIFY_REMINDER, todoNudge, planNudge]
+            .filter((part): part is string => part != null)
+            .join("\n\n");
+        },
+        event: "nudge_injected",
+        fields: () => ({ has_todo: hasTodo, has_plan: hasPlan }),
+      },
+    ],
+  });
 }

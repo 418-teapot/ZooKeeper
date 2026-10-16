@@ -10,7 +10,7 @@
  * @module
  */
 
-import { log } from "../utils/logger.js";
+import { applyNudge } from "./nudge.js";
 import { JSON_ERROR_REMINDER, JSON_ERROR_REMINDER_MARKER } from "./prompts.js";
 
 // ---------------------------------------------------------------------------
@@ -77,82 +77,57 @@ export function recoverJsonError(
   input: { tool: string; sessionID?: string; callID?: string },
   output: { output?: string },
 ): void {
-  // Skip if tool is in exclude list
-  if (JSON_ERROR_TOOL_EXCLUDES.has(input.tool.toLowerCase())) {
-    log(
-      "json-error-nudge",
-      "recovery_skipped",
-      input.sessionID ?? "",
-      input.callID,
-      "debug",
-      {
-        tool: input.tool,
-        reason: "excluded",
-      },
-    );
-    return;
-  }
+  // Captured by the pattern guard for the injected-log fields.
+  let matchedPattern: RegExp | undefined;
 
-  // Skip undefined/missing output
-  if (output.output == null) {
-    log(
-      "json-error-nudge",
-      "recovery_skipped",
-      input.sessionID ?? "",
-      input.callID,
-      "debug",
-      {
-        tool: input.tool,
-        reason: "no_output",
-      },
-    );
-    return;
-  }
-
-  // Skip if output already contains the reminder marker (dedup)
-  if (output.output.includes(JSON_ERROR_REMINDER_MARKER)) {
-    log(
-      "json-error-nudge",
-      "recovery_skipped",
-      input.sessionID ?? "",
-      input.callID,
-      "debug",
-      {
-        tool: input.tool,
-        reason: "already_marked",
-      },
-    );
-    return;
-  }
-
-  // Check each pattern
-  for (const pattern of JSON_ERROR_PATTERNS) {
-    if (pattern.test(output.output)) {
-      output.output += `\n${JSON_ERROR_REMINDER}`;
-      log(
-        "json-error-nudge",
-        "recovery_injected",
-        input.sessionID ?? "",
-        input.callID,
-        "info",
-        {
-          tool: input.tool,
-          pattern: pattern.source,
-        },
-      );
-      return;
-    }
-  }
-
-  log(
-    "json-error-nudge",
-    "recovery_skipped",
-    input.sessionID ?? "",
-    input.callID,
-    "debug",
-    {
-      tool: input.tool,
-      reason: "no_match",
+  applyNudge({
+    hook: "json-error-nudge",
+    sessionID: input.sessionID ?? "",
+    callID: input.callID,
+    tool: input.tool,
+    output,
+    gateSkip: {
+      event: "recovery_skipped",
+      fields: { tool: input.tool, reason: "excluded" },
     },
-  );
+    rules: [
+      {
+        // Skip if the tool is in the exclude list.
+        matches: (tool) => !JSON_ERROR_TOOL_EXCLUDES.has(tool),
+        guards: [
+          // Skip undefined/missing output.
+          () =>
+            output.output == null
+              ? {
+                  event: "recovery_skipped",
+                  fields: { tool: input.tool, reason: "no_output" },
+                }
+              : null,
+          // Skip if output already contains the reminder marker (dedup).
+          () =>
+            (output.output as string).includes(JSON_ERROR_REMINDER_MARKER)
+              ? {
+                  event: "recovery_skipped",
+                  fields: { tool: input.tool, reason: "already_marked" },
+                }
+              : null,
+          // Find the first matching pattern; none means no_match.
+          () => {
+            matchedPattern = JSON_ERROR_PATTERNS.find((pattern) =>
+              pattern.test(output.output as string),
+            );
+            return matchedPattern
+              ? null
+              : {
+                  event: "recovery_skipped",
+                  fields: { tool: input.tool, reason: "no_match" },
+                };
+          },
+        ],
+        text: () => JSON_ERROR_REMINDER,
+        event: "recovery_injected",
+        fields: () => ({ tool: input.tool, pattern: matchedPattern?.source }),
+      },
+    ],
+  });
 }

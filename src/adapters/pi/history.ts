@@ -51,15 +51,11 @@ import type {
   HostMessage,
   Invocation,
   Projection,
-  RegionKind,
   TextRegion,
 } from "../../core/context/lens.js";
 import { project } from "../../core/context/lens.js";
-import {
-  type RegionProvenance,
-  recordRegionProvenance,
-  type WritableRegion,
-} from "../../core/context/writable-regions.js";
+import { serializeMeasuredValue } from "../../core/context/measure.js";
+import { createWritableRegion } from "../../core/context/writable-regions.js";
 import { log } from "../../utils/logger.js";
 import type {
   PiAgentMessage,
@@ -152,49 +148,6 @@ function statusOf(isError: boolean): string {
 }
 
 /**
- * Lens region bound to a pi message object.
- *
- * The region reads from and writes back into the same backing message, so
- * edits applied through the lens mutate a *copy* of the original message in
- * the pure render path.  The core provenance registry is populated at
- * construction; the provenance values pi records are `"text"` (text
- * parts), `"image"` (image-derived content, counted for estimation only),
- * `"thinking"`, `"tool"` (tool-call input and tool-result output), and
- * `"summary"` (host-authored compaction / branch summary text, counted but
- * never rewritten with a line ref).
- */
-class PiTextRegion implements WritableRegion {
-  constructor(
-    readonly kind: RegionKind,
-    private readonly read: () => string,
-    private readonly write: (text: string) => void,
-    provenance: RegionProvenance,
-  ) {
-    recordRegionProvenance(this, provenance);
-  }
-
-  get(): string {
-    return this.read();
-  }
-
-  set(text: string): void {
-    this.write(text);
-  }
-}
-
-/**
- * Serialize a tool-call arguments value for lens reads.
- *
- * `null`/`undefined` become the empty string; objects are `JSON.stringify`ed
- * so the lens-visible text is what the token estimator counts (it applies
- * the same normalization to non-string values).
- */
-function serializeArguments(value: unknown): string {
-  if (value == null) return "";
-  return typeof value === "string" ? value : JSON.stringify(value);
-}
-
-/**
  * Write edited text back into a tool-call arguments object.
  *
  * Parsing text as JSON keeps arguments an object; non-parsing placeholder
@@ -258,7 +211,7 @@ function userMessageRegions(
   if (typeof content === "string") {
     if (content.length > 0) {
       regions.push(
-        new PiTextRegion(
+        createWritableRegion(
           "content",
           () => content,
           (text) => {
@@ -276,7 +229,7 @@ function userMessageRegions(
     const part = parts[i];
     if (part?.type === "text") {
       regions.push(
-        new PiTextRegion(
+        createWritableRegion(
           "content",
           () => part.text,
           (text) => {
@@ -287,7 +240,7 @@ function userMessageRegions(
       );
     } else {
       regions.push(
-        new PiTextRegion(
+        createWritableRegion(
           "content",
           () => "",
           (text) => {
@@ -331,7 +284,7 @@ function assistantMessageRegions(
   for (const block of content) {
     if (block.type === "text") {
       regions.push(
-        new PiTextRegion(
+        createWritableRegion(
           "content",
           () => block.text,
           (text) => {
@@ -342,7 +295,7 @@ function assistantMessageRegions(
       );
     } else if (block.type === "thinking") {
       regions.push(
-        new PiTextRegion(
+        createWritableRegion(
           "thinking",
           () => block.thinking,
           (text) => {
@@ -370,9 +323,9 @@ function assistantMessageRegions(
           : {}),
       });
       regions.push(
-        new PiTextRegion(
+        createWritableRegion(
           "tool-input",
-          () => serializeArguments(block.arguments),
+          () => serializeMeasuredValue(block.arguments),
           (text) => {
             writeArguments(block, text);
           },
@@ -404,7 +357,7 @@ function summaryMessageRegions(
     return [];
   }
   return [
-    new PiTextRegion(
+    createWritableRegion(
       "content",
       () => message.summary,
       (text) => {
@@ -434,7 +387,7 @@ function toolResultMessageRegions(message: PiToolResultMessage): TextRegion[] {
   }
 
   return [
-    new PiTextRegion(
+    createWritableRegion(
       "tool-output",
       () => extractText(content),
       (text) => {

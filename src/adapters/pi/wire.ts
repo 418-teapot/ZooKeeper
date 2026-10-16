@@ -17,7 +17,7 @@
  * @module
  */
 
-import { readdirSync, realpathSync, statSync } from "node:fs";
+import { realpathSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { truncateHead } from "@earendil-works/pi-coding-agent";
@@ -44,6 +44,7 @@ import type { HostAdapter } from "../../core/context/lens.js";
 import { createLoopEngine } from "../../core/loop/index.js";
 import { parseSkillPermissions } from "../../core/permissions/skill-permissions.js";
 import { sessionAgentRegistry } from "../../core/session-agent.js";
+import { scanSkillDirectories } from "../../core/skills.js";
 import type { ComposedResult, Deps, PiSwitchHost } from "../../core/slots.js";
 import type { SubagentDriver } from "../../core/subagent/driver.js";
 import {
@@ -440,26 +441,17 @@ export function buildPiContributions(
  * pi's `loadSkillsFromDir` discovers a skill when a directory contains
  * SKILL.md.  A skill registers only when its directory name appears in
  * `profileSkills` AND the directory actually exists under skills/
- * (mirroring the OpenCode adapter's fail-closed `registerSkills`).
+ * (mirroring the OpenCode adapter's fail-closed `registerSkills`).  The
+ * scan itself is shared with OpenCode (`scanSkillDirectories`); this
+ * wrapper only supplies the base directory resolved from pi's module
+ * location.
  *
  * @param profileSkills - Skill directory names declared by the profile.
  * @returns Absolute paths of the existing, profile-listed directories.
  */
 export function collectSkillPaths(profileSkills: string[]): string[] {
   const skillsDir = resolve(__dirname, "../../../skills");
-  const paths: string[] = [];
-  try {
-    for (const entry of readdirSync(skillsDir)) {
-      if (!profileSkills.includes(entry)) continue;
-      const fullPath = resolve(skillsDir, entry);
-      if (statSync(fullPath).isDirectory()) {
-        paths.push(fullPath);
-      }
-    }
-  } catch {
-    // skillsDir does not exist — return empty array
-  }
-  return paths;
+  return scanSkillDirectories(skillsDir, profileSkills);
 }
 
 // ---------------------------------------------------------------------------
@@ -475,6 +467,11 @@ export function collectSkillPaths(profileSkills: string[]): string[] {
  * registers the composed tools / commands / notice renderer with pi, and
  * returns the event handlers over those surfaces.
  *
+ * Asynchronous because the tool-registration boundary awaits the composed
+ * `tool.definition` enhancers (a contributor's `handle` may return a
+ * promise), so pi's own async extension factory must wait for the tools
+ * to be registered.
+ *
  * Exported for unit testing — `zookeeperPi` wires this with the config
  * loaded from disk.
  *
@@ -487,9 +484,9 @@ export function collectSkillPaths(profileSkills: string[]): string[] {
  * @param overrides - Optional host-dependency overrides.  Only used by
  *   tests: a bridge test injects a fake subagent driver so the registered
  *   tool executes without loading the real pi SDK.
- * @returns The thirteen handlers plus the registration gates.
+ * @returns A promise of the thirteen handlers plus the registration gates.
  */
-export function buildPiHandlers(
+export async function buildPiHandlers(
   zooConfig: any,
   piApi?: ExtensionAPI,
   rawConfig?: any,
@@ -509,7 +506,7 @@ export function buildPiHandlers(
     /** Test seam: `zdebug` runner for the auto-debug strategy. */
     zdebugExec?: Deps["zdebugExec"];
   },
-): PiEventHandlers {
+): Promise<PiEventHandlers> {
   // Mutable holder updated by every event handler so the pi adapter and
   // tool host always see the latest ExtensionContext.
   const contextHolder: PiContextHolder = { current: undefined };
@@ -934,7 +931,7 @@ export function buildPiHandlers(
   // itself staying policy-free.  The delegation gate is enforced
   // separately on pi's native `tool_call` event (see `registerPiHandlers`
   // and `handlers.toolCall`).
-  const definitionEnrichedTools = applyToolDefinitionContributions(
+  const definitionEnrichedTools = await applyToolDefinitionContributions(
     composed.tools,
     composed.toolDefinition,
   );

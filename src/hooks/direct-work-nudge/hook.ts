@@ -15,6 +15,7 @@
 
 import { checkPlanProgress, checkTodoProgress } from "../../core/checks.js";
 import type { TodoSource } from "../../core/client/todo.js";
+import { applyNudge, type NudgeGuard } from "../../core/nudge.js";
 import { ORCHESTRATOR_AGENT_NAME } from "../../core/orchestrator.js";
 import {
   DIRECT_WORK_NUDGE,
@@ -54,66 +55,65 @@ export async function nudgeDirectWork(
   const tool = input.tool.toLowerCase();
   const isDirectEdit = tool === "edit" || tool === "write";
   const isSearch = tool === "grep" || tool === "glob";
-  if (!isDirectEdit && !isSearch) return;
-  if (output.output == null) {
-    log(
-      "direct-work-nudge",
-      "nudge_skipped",
-      input.sessionID,
-      input.callID,
-      "debug",
-      {
-        tool: input.tool,
-        reason: "no_output",
-      },
-    );
-    return;
-  }
 
-  if (isDirectEdit) {
-    output.output += `\n\n${DIRECT_WORK_NUDGE}`;
-
-    // Which backend serves the todo read is decided by the caller at
-    // composition time; a caller without a readable list passes `null`
-    // (or omits the option) and this nudge is simply skipped.
-    const todoNudge = options?.todoSource
-      ? await checkTodoProgress(options.todoSource, input.sessionID)
+  // Both variants share this guard: a tool call with no text has nothing
+  // to append to.
+  const hasOutput: NudgeGuard = () =>
+    output.output == null
+      ? {
+          event: "nudge_skipped",
+          fields: { tool: input.tool, reason: "no_output" },
+        }
       : null;
-    if (todoNudge) output.output += `\n\n${todoNudge}`;
 
-    const planNudge = checkPlanProgress(
-      input.sessionID,
-      options?.planDir ?? "",
-    );
-    if (planNudge) output.output += `\n\n${planNudge}`;
+  // Facts exposed to the injected log; filled by the edit text provider.
+  let hasTodo = false;
+  let hasPlan = false;
 
-    log(
-      "direct-work-nudge",
-      "nudge_injected",
-      input.sessionID,
-      input.callID,
-      "info",
+  await applyNudge({
+    hook: "direct-work-nudge",
+    sessionID: input.sessionID,
+    callID: input.callID,
+    tool: input.tool,
+    output,
+    rules: [
       {
-        tool: input.tool,
-        nudge_type: "edit",
-        has_todo: todoNudge != null,
-        has_plan: planNudge != null,
+        matches: () => isDirectEdit,
+        guards: [hasOutput],
+        text: async () => {
+          // Which backend serves the todo read is decided by the caller at
+          // composition time; a caller without a readable list passes
+          // `null` (or omits the option) and this nudge is simply skipped.
+          const todoNudge = options?.todoSource
+            ? await checkTodoProgress(options.todoSource, input.sessionID)
+            : null;
+          const planNudge = checkPlanProgress(
+            input.sessionID,
+            options?.planDir ?? "",
+          );
+          hasTodo = todoNudge != null;
+          hasPlan = planNudge != null;
+          return [DIRECT_WORK_NUDGE, todoNudge, planNudge]
+            .filter((part): part is string => part != null)
+            .join("\n\n");
+        },
+        event: "nudge_injected",
+        fields: () => ({
+          tool: input.tool,
+          nudge_type: "edit",
+          has_todo: hasTodo,
+          has_plan: hasPlan,
+        }),
       },
-    );
-  } else {
-    output.output += `\n\n${SEARCH_DELEGATE_NUDGE}`;
-    log(
-      "direct-work-nudge",
-      "nudge_injected",
-      input.sessionID,
-      input.callID,
-      "info",
       {
-        tool: input.tool,
-        nudge_type: "search",
+        matches: () => isSearch,
+        guards: [hasOutput],
+        text: () => SEARCH_DELEGATE_NUDGE,
+        event: "nudge_injected",
+        fields: () => ({ tool: input.tool, nudge_type: "search" }),
       },
-    );
-  }
+    ],
+  });
 }
 
 /**

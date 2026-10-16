@@ -27,7 +27,11 @@
  */
 
 import type { SessionClient } from "../../core/client/session.js";
-import type { ToastPayload, ToolHost } from "../../core/client/tool-host.js";
+import {
+  formatToastMessage,
+  type ToastPayload,
+  type ToolHost,
+} from "../../core/client/tool-host.js";
 import type { Projection } from "../../core/context/lens.js";
 import { log } from "../../utils/logger.js";
 import { history } from "./history.js";
@@ -227,8 +231,8 @@ export function createV1ToolHost(
     /**
      * Show a transient toast via the TUI `showToast` surface.
      *
-     * The source and level are rendered here (the `[zoo][source]`
-     * message prefix plus the toast variant) so producers stay uniform
+     * The message is rendered by `formatToastMessage` and the level
+     * passes through as the toast variant, so producers stay uniform
      * across hosts.  Fire-and-forget: the request promise is detached —
      * rejections are logged and swallowed, and synchronous throws are
      * logged too.  When the client has no `tui.showToast` the toast
@@ -259,7 +263,7 @@ export function createV1ToolHost(
         void tui
           .showToast({
             body: {
-              message: `[zoo][${toast.source}] ${toast.text}`,
+              message: formatToastMessage(toast),
               variant: toast.level,
             },
           })

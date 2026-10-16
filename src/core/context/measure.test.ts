@@ -24,6 +24,7 @@ import {
   findLastCompletedAssistant,
   measureMessages,
   netReclaimTokens,
+  serializeMeasuredValue,
 } from "./measure.js";
 import { PRUNED_TOOL_OUTPUT_REPLACEMENT } from "./message-parts.js";
 
@@ -84,6 +85,26 @@ describe("estimateTokenCount", () => {
     // independent literals
     assert.equal(estimateTokenCount({ foo: "bar" }), 4); // '{"foo":"bar"}' → ceil(13/4)
     assert.equal(estimateTokenCount("你好世界今日天气"), 6); // ceil(8/1.5)
+  });
+});
+
+// ---------------------------------------------------------------------------
+// serializeMeasuredValue — lens-visible value text
+// ---------------------------------------------------------------------------
+
+describe("serializeMeasuredValue", () => {
+  it("maps nullish to the empty string", () => {
+    assert.equal(serializeMeasuredValue(null), "");
+    assert.equal(serializeMeasuredValue(undefined), "");
+  });
+
+  it("passes strings through verbatim", () => {
+    assert.equal(serializeMeasuredValue("plain"), "plain");
+  });
+
+  it("JSON-serializes non-strings", () => {
+    assert.equal(serializeMeasuredValue({ a: 1 }), '{"a":1}');
+    assert.equal(serializeMeasuredValue(3), "3");
   });
 });
 

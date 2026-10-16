@@ -8,7 +8,7 @@
  */
 import assert from "node:assert/strict";
 import { rmSync } from "node:fs";
-import { describe, it } from "node:test";
+import { afterEach, describe, it } from "node:test";
 import type { TodoSource } from "../../core/client/todo.js";
 import {
   TODO_DONE_NUDGE,
@@ -20,7 +20,13 @@ import type { Deps } from "../../core/slots.js";
 import { fakeStore, mockClient, sourceOf } from "../../testkits/hooks.js";
 import { cleanupPlanDir, writePlanFile } from "../../testkits/plans.js";
 import { makeTmpDir } from "../../testkits/tmp.js";
+import { _getBufferForTesting, _resetForTesting } from "../../utils/logger.js";
 import { nudgePostSubagent, unit } from "./index.js";
+
+// Keep the logger buffer isolated between tests.
+afterEach(() => {
+  _resetForTesting();
+});
 
 // The todo nudge text produced for the "progress" tier.
 const PROGRESS_MARKER = "TODO UPDATE REQUIRED";
@@ -851,5 +857,34 @@ describe("plan nudge scenarios", () => {
     } finally {
       cleanupPlanDir(baseDir);
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Logger fields
+// ---------------------------------------------------------------------------
+
+describe("logger fields", () => {
+  it("logs nudge_injected with the todo/plan facts", async () => {
+    const source = sourceOf([
+      { content: "Active", status: "in_progress", priority: "high", id: "1" },
+    ]);
+    const output: { output?: string } = { output: "Done" };
+    await nudgePostSubagent(
+      source,
+      { tool: "subagent", sessionID: "s1", callID: "c1" },
+      output,
+      "",
+    );
+    const entry = _getBufferForTesting().find(
+      (e) => e.event === "nudge_injected",
+    );
+    assert.ok(entry, "expected the nudge_injected log entry");
+    assert.equal(entry.hook, "post-subagent-nudge");
+    assert.equal(entry.level, "info");
+    assert.equal(entry.sessionId, "s1");
+    assert.equal(entry.callId, "c1");
+    assert.equal(entry.has_todo, true);
+    assert.equal(entry.has_plan, false);
   });
 });

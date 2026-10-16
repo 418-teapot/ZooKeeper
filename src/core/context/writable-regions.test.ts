@@ -13,8 +13,15 @@
  */
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import type { HostMessage, RegionKind, TextRegion } from "./lens.js";
+import type {
+  HostMessage,
+  RegionEdit,
+  RegionKind,
+  TextRegion,
+} from "./lens.js";
 import {
+  applyRegionEdits,
+  createWritableRegion,
   injectLinePrefix,
   isInjectableRegion,
   pickInjectableRegion,
@@ -153,5 +160,76 @@ describe("injectLinePrefix", () => {
     const content = region("content", "[m1] old", "text");
     assert.equal(injectLinePrefix(message([content]), 4), true);
     assert.equal(content.get(), "[m4] [m1] old");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 4. Region factory
+// ---------------------------------------------------------------------------
+
+describe("createWritableRegion", () => {
+  it("reads and writes through the supplied closures", () => {
+    let value = "before";
+    const built = createWritableRegion(
+      "content",
+      () => value,
+      (text) => {
+        value = text;
+      },
+      "text",
+    );
+    assert.equal(built.kind, "content");
+    assert.equal(built.get(), "before");
+    built.set("after");
+    assert.equal(value, "after");
+    assert.equal(built.get(), "after");
+  });
+
+  it("records provenance so the region is injectable", () => {
+    const built = createWritableRegion(
+      "content",
+      () => "t",
+      () => {},
+      "text",
+    );
+    assert.equal(isInjectableRegion(built), true);
+  });
+
+  it("keeps a non-injective derivation read-only", () => {
+    const built = createWritableRegion(
+      "content",
+      () => "t",
+      () => {},
+      "summary",
+    );
+    assert.equal(isInjectableRegion(built), false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 5. Region-edit application
+// ---------------------------------------------------------------------------
+
+describe("applyRegionEdits", () => {
+  it("writes each edit into the addressed region", () => {
+    const other = region("content", "keep", "text");
+    const target = region("content", "old", "text");
+    const edits: RegionEdit[] = [
+      { messageOrdinal: 0, regionIndex: 1, text: "new" },
+    ];
+    applyRegionEdits([message([other, target])], edits);
+    assert.equal(target.get(), "new");
+    assert.equal(other.get(), "keep");
+  });
+
+  it("skips edits without a region index or an unresolved anchor", () => {
+    const content = region("content", "old", "text");
+    const edits: RegionEdit[] = [
+      { messageOrdinal: 0, text: "no-index" },
+      { messageOrdinal: 5, regionIndex: 0, text: "out-of-range" },
+      { messageOrdinal: 0, regionIndex: 3, text: "no-region" },
+    ];
+    applyRegionEdits([message([content])], edits);
+    assert.equal(content.get(), "old");
   });
 });

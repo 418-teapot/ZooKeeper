@@ -23,7 +23,11 @@
  * @module
  */
 
-import type { ToastPayload, ToolHost } from "../../core/client/tool-host.js";
+import {
+  formatToastMessage,
+  type ToastPayload,
+  type ToolHost,
+} from "../../core/client/tool-host.js";
 import { log } from "../../utils/logger.js";
 
 /**
@@ -173,9 +177,9 @@ export function createPiToolHost(
     /**
      * Show a transient toast via pi's `ui.notify` channel.
      *
-     * The source and level are rendered here (the `[zoo][source]` prefix
-     * plus the pi notification type) so producers stay uniform across
-     * hosts.  Fire-and-forget and observational: the latest context is
+     * The message is rendered by `formatToastMessage` and the level
+     * passes through as the pi notification type, so producers stay
+     * uniform across hosts.  Fire-and-forget and observational: the latest context is
      * read from the mutable holder (refreshed on every pi event, so it
      * is current whenever a transform runs); when the holder has no UI
      * surface (e.g. pi print mode) the call silently drops with a debug
@@ -195,7 +199,7 @@ export function createPiToolHost(
       }
 
       try {
-        ui.notify(`[zoo][${toast.source}] ${toast.text}`, toast.level);
+        ui.notify(formatToastMessage(toast), toast.level);
       } catch (err) {
         log("tool-host", "toast_failed", _sessionId, undefined, "warn", {
           error: String(err),

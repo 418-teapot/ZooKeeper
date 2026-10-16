@@ -56,6 +56,22 @@ function estimateStringTokens(text: string): number {
 }
 
 /**
+ * Serialize a value to the lens-visible text the estimator counts.
+ *
+ * `null`/`undefined` map to the empty string, a string passes through
+ * verbatim, and every other value is `JSON.stringify`ed.  A host adapter
+ * builds a raw part value's lens text with this, so the text it exposes
+ * is exactly what `estimateTokenCount` measures.
+ *
+ * @param value - The raw value.
+ * @returns The lens-visible text.
+ */
+export function serializeMeasuredValue(value: unknown): string {
+  if (value == null) return "";
+  return typeof value === "string" ? value : JSON.stringify(value);
+}
+
+/**
  * Estimate token count for an arbitrary value.
  *
  * - null / undefined → 0
@@ -66,9 +82,7 @@ function estimateStringTokens(text: string): number {
  * @returns Estimated token count.
  */
 export function estimateTokenCount(val: unknown): number {
-  if (val == null) return 0;
-  const str = typeof val === "string" ? val : JSON.stringify(val);
-  return estimateStringTokens(str);
+  return estimateStringTokens(serializeMeasuredValue(val));
 }
 
 // ---------------------------------------------------------------------------

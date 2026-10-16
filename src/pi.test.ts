@@ -37,7 +37,7 @@ describe("zookeeperPi — thin entry wiring", () => {
     // the entry selects the full profile.
     await withModeFile(JSON.stringify({ mode: "poly" }), async () => {
       const api = mockApi();
-      zookeeperPi(api as any);
+      await zookeeperPi(api as any);
       assert.equal(typeof api.handlers.session_start, "function");
       assert.equal(typeof api.handlers.before_agent_start, "function");
       assert.equal(typeof api.handlers.resources_discover, "function");

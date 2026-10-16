@@ -235,6 +235,16 @@ export const CONTEXT_NUDGE_LEVELS = {
 };
 
 // ---------------------------------------------------------------------------
+// Subagent-prompt advisory nudge
+// ---------------------------------------------------------------------------
+
+/**
+ * Header line prefixed to the soft-warning list appended to a delegated
+ * `subagent` call's output.
+ */
+export const SUBAGENT_GUIDANCE_HEADER = "--- Guidance for next time ---";
+
+// ---------------------------------------------------------------------------
 // JSON error recovery
 // ---------------------------------------------------------------------------
 

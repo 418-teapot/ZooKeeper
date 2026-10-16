@@ -25,8 +25,8 @@ import type {
 import { blockIdOf, type SessionState } from "../../core/context/state.js";
 import { formatSummaryText, numberView } from "../../core/context/view-refs.js";
 import {
+  applyRegionEdits,
   injectLinePrefix,
-  type WritableRegion,
 } from "../../core/context/writable-regions.js";
 import { history } from "./history.js";
 import type { PiAgentMessage, PiUserMessage } from "./types.js";
@@ -40,12 +40,7 @@ export function applyEditsToLens(
   lens: HostMessage[],
   edits: RegionEdit[],
 ): void {
-  for (const edit of edits) {
-    if (edit.regionIndex === undefined) continue;
-    const region = lens[edit.messageOrdinal]?.regions?.[edit.regionIndex];
-    if (!region) continue;
-    (region as WritableRegion).set(edit.text);
-  }
+  applyRegionEdits(lens, edits);
 }
 
 /**

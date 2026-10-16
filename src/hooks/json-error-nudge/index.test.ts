@@ -5,7 +5,9 @@
  * and false positives.
  */
 import assert from "node:assert/strict";
-import { describe, it } from "node:test";
+import { afterEach, beforeEach, describe, it } from "node:test";
+import { restoreEnv, saveEnv } from "../../testkits/env.js";
+import { _getBufferForTesting, _resetForTesting } from "../../utils/logger.js";
 import {
   nudgeSubagentOutput,
   type ValidationLimits,
@@ -18,6 +20,11 @@ import {
   JSON_ERROR_TOOL_EXCLUDES,
   recoverJsonError,
 } from "./index.js";
+
+// Keep the logger buffer isolated between tests.
+afterEach(() => {
+  _resetForTesting();
+});
 
 // Limits mirror `[zoo.validation]` in config.toml — needed to drive the
 // subagent-prompt nudge adapter when simulating the plugin's after pipeline.
@@ -355,5 +362,86 @@ describe("integration: tool.execute.after → recoverJsonError", () => {
     recoverJsonError({ tool: "write", sessionID: "s1", callID: "c1" }, output);
     assert.ok(output.output?.includes(JSON_ERROR_REMINDER_MARKER));
     assert.ok(output.output?.includes("You sent invalid JSON arguments"));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Reminder separator — the reminder is set off by a blank line
+// ---------------------------------------------------------------------------
+
+describe("reminder separator", () => {
+  it("prepends a blank line before the reminder", () => {
+    const res = applyRecovery("write", "json parse error: token");
+    assert.equal(
+      res.output,
+      `json parse error: token\n\n${JSON_ERROR_REMINDER}`,
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Logger fields
+// ---------------------------------------------------------------------------
+
+describe("logger fields", () => {
+  it("logs recovery_injected with tool and pattern", () => {
+    const output: { output?: string } = { output: "json parse error: token" };
+    recoverJsonError({ tool: "write", sessionID: "s1", callID: "c1" }, output);
+    const entry = _getBufferForTesting().find(
+      (e) => e.event === "recovery_injected",
+    );
+    assert.ok(entry, "expected the recovery_injected log entry");
+    assert.equal(entry.hook, "json-error-nudge");
+    assert.equal(entry.level, "info");
+    assert.equal(entry.sessionId, "s1");
+    assert.equal(entry.callId, "c1");
+    assert.equal(entry.tool, "write");
+    assert.equal(entry.pattern, /json parse error/i.source);
+  });
+});
+
+describe("logger fields (skip)", () => {
+  let origZooDebug: string | undefined;
+
+  beforeEach(() => {
+    origZooDebug = saveEnv("ZOO_DEBUG");
+    process.env.ZOO_DEBUG = "1";
+  });
+
+  afterEach(() => {
+    restoreEnv("ZOO_DEBUG", origZooDebug);
+  });
+
+  it("logs recovery_skipped/excluded for an excluded tool", () => {
+    const output: { output?: string } = { output: "json parse error" };
+    recoverJsonError({ tool: "bash", sessionID: "s1", callID: "c1" }, output);
+    const entry = _getBufferForTesting().find(
+      (e) => e.event === "recovery_skipped",
+    );
+    assert.ok(entry, "expected the recovery_skipped log entry");
+    assert.equal(entry.hook, "json-error-nudge");
+    assert.equal(entry.level, "debug");
+    assert.equal(entry.tool, "bash");
+    assert.equal(entry.reason, "excluded");
+  });
+
+  it("logs recovery_skipped/no_output when output is missing", () => {
+    const output: { output?: string } = {};
+    recoverJsonError({ tool: "write", sessionID: "s1", callID: "c1" }, output);
+    const entry = _getBufferForTesting().find(
+      (e) => e.event === "recovery_skipped",
+    );
+    assert.ok(entry);
+    assert.equal(entry.reason, "no_output");
+  });
+
+  it("logs recovery_skipped/no_match when no pattern matches", () => {
+    const output: { output?: string } = { output: "all good" };
+    recoverJsonError({ tool: "write", sessionID: "s1", callID: "c1" }, output);
+    const entry = _getBufferForTesting().find(
+      (e) => e.event === "recovery_skipped",
+    );
+    assert.ok(entry);
+    assert.equal(entry.reason, "no_match");
   });
 });

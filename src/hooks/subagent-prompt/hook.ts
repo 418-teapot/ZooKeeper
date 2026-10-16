@@ -17,6 +17,8 @@ import {
   SUBAGENT_PROMPT_HINT,
 } from "../../agents/parts.js";
 import type { DelegationRefusal, DelegationRequest } from "../../core/gate.js";
+import { applyNudge } from "../../core/nudge.js";
+import { SUBAGENT_GUIDANCE_HEADER } from "../../core/prompts.js";
 import type { ToolDefinitionView } from "../../core/slots.js";
 import {
   type ValidationLimits,
@@ -125,57 +127,51 @@ export function nudgeSubagentOutput(
   output: { output?: string },
   limits: ValidationLimits,
 ): void {
-  if (input.tool !== "subagent") {
-    log(
-      "subagent-prompt",
-      "nudge_skipped",
-      input.sessionID ?? "",
-      input.callID,
-      "debug",
-      { reason: "not_subagent" },
-    );
-    return;
-  }
-
   const promptArg = input.args?.prompt;
-  if (typeof promptArg !== "string") {
-    log(
-      "subagent-prompt",
-      "nudge_skipped",
-      input.sessionID ?? "",
-      input.callID,
-      "debug",
-      { reason: "no_prompt_arg" },
-    );
-    return;
-  }
 
-  const result = validateSubagentPrompt(promptArg, limits);
-  if (result.warnings.length === 0) {
-    log(
-      "subagent-prompt",
-      "nudge_skipped",
-      input.sessionID ?? "",
-      input.callID,
-      "debug",
-      undefined,
-    );
-    return;
-  }
+  // Validation runs at most once and is shared by the guard chain, the
+  // text provider, and the injected-log fields.
+  let validated: ReturnType<typeof validateSubagentPrompt> | undefined;
+  const validateOnce = () => {
+    validated ??= validateSubagentPrompt(promptArg as string, limits);
+    return validated;
+  };
 
-  // Append nudges to tool output so the orchestrator LLM sees them
-  const nudgeText = result.warnings.map((w) => `- ${w}`).join("\n");
-  const suffix = `\n\n--- Guidance for next time ---\n${nudgeText}`;
-  output.output = (output.output ?? "") + suffix;
-
-  log(
-    "subagent-prompt",
-    "nudge_injected",
-    input.sessionID ?? "",
-    input.callID,
-    "info",
-    {
-      warnings: result.warnings,
+  applyNudge({
+    hook: "subagent-prompt",
+    sessionID: input.sessionID ?? "",
+    callID: input.callID,
+    tool: input.tool,
+    output,
+    gateSkip: {
+      event: "nudge_skipped",
+      fields: { reason: "not_subagent" },
     },
-  );
+    rules: [
+      {
+        matches: (tool) => tool === "subagent",
+        guards: [
+          () =>
+            typeof promptArg !== "string"
+              ? {
+                  event: "nudge_skipped",
+                  fields: { reason: "no_prompt_arg" },
+                }
+              : null,
+          () =>
+            validateOnce().warnings.length === 0
+              ? { event: "nudge_skipped" }
+              : null,
+        ],
+        text: () => {
+          const nudgeText = validateOnce()
+            .warnings.map((w) => `- ${w}`)
+            .join("\n");
+          return `${SUBAGENT_GUIDANCE_HEADER}\n${nudgeText}`;
+        },
+        event: "nudge_injected",
+        fields: () => ({ warnings: validateOnce().warnings }),
+      },
+    ],
+  });
 }

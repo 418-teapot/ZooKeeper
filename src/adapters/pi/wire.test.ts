@@ -373,16 +373,16 @@ describe("buildPiResolveAgent — session identity resolution", () => {
 // ---------------------------------------------------------------------------
 
 describe("buildPiHandlers — registerTool wiring", () => {
-  it("registers compress and decompress with pi when the profile enables them", () => {
+  it("registers compress and decompress with pi when the profile enables them", async () => {
     const api = mockApi();
-    buildPiHandlers(POLY_ZOO, api as any);
+    await buildPiHandlers(POLY_ZOO, api as any);
     const toolNames = api.tools.map((tool: any) => tool.name);
     assert.deepEqual(toolNames.sort(), ["compress", "decompress"]);
   });
 
-  it("sets label to the tool name and wraps parameters in an object schema", () => {
+  it("sets label to the tool name and wraps parameters in an object schema", async () => {
     const api = mockApi();
-    buildPiHandlers(POLY_ZOO, api as any);
+    await buildPiHandlers(POLY_ZOO, api as any);
     const compress = api.tools.find((tool: any) => tool.name === "compress");
     assert.ok(compress);
     assert.equal((compress as any).label, "compress");
@@ -391,9 +391,9 @@ describe("buildPiHandlers — registerTool wiring", () => {
     assert.ok((compress as any).parameters.properties.ranges);
   });
 
-  it("bridged compress schema accepts what validateCompressArgs accepts", () => {
+  it("bridged compress schema accepts what validateCompressArgs accepts", async () => {
     const api = mockApi();
-    buildPiHandlers(POLY_ZOO, api as any);
+    await buildPiHandlers(POLY_ZOO, api as any);
     const compress = api.tools.find((tool: any) => tool.name === "compress") as
       | {
           parameters: {
@@ -437,7 +437,7 @@ describe("buildPiHandlers — registerTool wiring", () => {
 
   it("execute wrapper delegates to the contribution and propagates errors", async () => {
     const api = mockApi();
-    buildPiHandlers(
+    await buildPiHandlers(
       {
         mode: {
           poly: {
@@ -473,7 +473,7 @@ describe("buildPiHandlers — registerTool wiring", () => {
     startRun({ id: "call-ask", agent: "beaver", parentSession: "sess-1" });
     updateRun("call-ask", { sessionPath: "/tmp/ask-run.jsonl" });
     const api = mockApi();
-    buildPiHandlers(
+    await buildPiHandlers(
       { mode: { poly: { ...POLY_PROFILE, tools: ["ask"] } } },
       api as any,
     );
@@ -497,10 +497,10 @@ describe("buildPiHandlers — registerTool wiring", () => {
     );
   });
 
-  it("registers the subagent tool when the profile lists it and a driver is wired", () => {
+  it("registers the subagent tool when the profile lists it and a driver is wired", async () => {
     const api = mockApi();
     api.activeTools.push("bash", "edit", "subagent", "compress", "decompress");
-    buildPiHandlers(
+    await buildPiHandlers(
       {
         mode: {
           poly: {
@@ -525,14 +525,14 @@ describe("buildPiHandlers — registerTool wiring", () => {
     assert.equal(typeof (subagent as any).renderResult, "function");
   });
 
-  it("enforces the composed delegation gate on the tool_call event", () => {
+  it("enforces the composed delegation gate on the tool_call event", async () => {
     // The gate belongs to the path, not the mechanism: pi's native
     // `tool_call` event is the gate's enforcement point (the tool itself
     // never observes the policy).  A refused delegation returns
     // `{ block: true, reason }`, which pi surfaces as an error tool result.
     const api = mockApi();
     api.activeTools.push("bash", "edit", "subagent", "compress", "decompress");
-    const handlers = buildPiHandlers(
+    const handlers = await buildPiHandlers(
       {
         mode: {
           poly: {
@@ -599,7 +599,7 @@ describe("buildPiHandlers — registerTool wiring", () => {
         return { kind: "ok", text: "done" };
       },
     };
-    buildPiHandlers(
+    await buildPiHandlers(
       {
         mode: {
           poly: {
@@ -669,34 +669,34 @@ describe("buildPiHandlers — registerTool wiring", () => {
 // ---------------------------------------------------------------------------
 
 describe("buildPiHandlers — registerCommand wiring", () => {
-  it("registers composed commands with pi when the profile enables them", () => {
+  it("registers composed commands with pi when the profile enables them", async () => {
     const api = mockApi();
     // rawConfig supplies the `[agent.*].mode` table, so the switch unit
     // derives the primaries (dolphin, mola) and contributes a command
     // per primary alongside go/dcp — names are config-derived.
-    buildPiHandlers(POLY_ZOO, api as any, MODES_RAW);
+    await buildPiHandlers(POLY_ZOO, api as any, MODES_RAW);
     const names = api.commands.map((c) => c.name).sort();
     assert.deepEqual(names, ["dcp", "dolphin", "go", "mola"]);
   });
 
-  it("preserves description and a handler on each registration", () => {
+  it("preserves description and a handler on each registration", async () => {
     const api = mockApi();
-    buildPiHandlers(POLY_ZOO, api as any);
+    await buildPiHandlers(POLY_ZOO, api as any);
     const dcp = api.commands.find((c) => c.name === "dcp");
     assert.ok(dcp, "dcp must be registered");
     assert.equal(dcp.description, "显示上下文用量与缓存命中率");
     assert.equal(typeof dcp.handler, "function");
   });
 
-  it("null profile registers no commands (fail-closed)", () => {
+  it("null profile registers no commands (fail-closed)", async () => {
     const api = mockApi();
-    buildPiHandlers({}, api as any);
+    await buildPiHandlers({}, api as any);
     assert.deepEqual(api.commands, []);
   });
 
-  it("commands registered for a profile without commands list stay empty", () => {
+  it("commands registered for a profile without commands list stay empty", async () => {
     const api = mockApi();
-    buildPiHandlers(
+    await buildPiHandlers(
       {
         mode: {
           poly: { ...POLY_PROFILE, commands: [] },
@@ -709,7 +709,7 @@ describe("buildPiHandlers — registerCommand wiring", () => {
 
   it("/dcp context appends a zoo-notice custom entry (persistent, no LLM context)", async () => {
     const api = mockApi();
-    buildPiHandlers(POLY_ZOO, api as any);
+    await buildPiHandlers(POLY_ZOO, api as any);
     const dcp = api.commands.find((c) => c.name === "dcp");
     assert.ok(dcp && typeof dcp.handler === "function");
 
@@ -756,7 +756,7 @@ describe("buildPiHandlers — registerCommand wiring", () => {
 
   it("/dcp errors route through notifySessionError into appendEntry", async () => {
     const api = mockApi();
-    buildPiHandlers(POLY_ZOO, api as any);
+    await buildPiHandlers(POLY_ZOO, api as any);
     const dcp = api.commands.find((c) => c.name === "dcp");
     assert.ok(dcp && typeof dcp.handler === "function");
 
@@ -784,27 +784,27 @@ describe("buildPiHandlers — registerCommand wiring", () => {
     // in-session channel.  Registering a tool is side-effect free —
     // entries only appear once the tool actually executes and notifies.
     const api = mockApi();
-    buildPiHandlers(POLY_ZOO, api as any);
+    await buildPiHandlers(POLY_ZOO, api as any);
 
     const compress = api.tools.find((t: any) => t.name === "compress");
     assert.ok(compress, "compress tool must be registered");
     assert.equal(api.appendedEntries.length, 0, "no custom entry appended yet");
   });
 
-  it("registers a zoo-notice entry renderer with pi", () => {
+  it("registers a zoo-notice entry renderer with pi", async () => {
     const api = mockApi();
-    buildPiHandlers(POLY_ZOO, api as any);
+    await buildPiHandlers(POLY_ZOO, api as any);
     const renderer = api.renderers.find((r) => r.customType === "zoo-notice");
     assert.ok(renderer, "zoo-notice entry renderer must be registered");
     assert.equal(typeof renderer.renderer, "function");
   });
 
-  it("registers the zoo-notice renderer even without dcp enabled", () => {
+  it("registers the zoo-notice renderer even without dcp enabled", async () => {
     // The renderer is unconditional: every in-session notification is a
     // zoo-notice entry, so a profile that enables no /dcp command still
     // needs the renderer.
     const api = mockApi();
-    buildPiHandlers(
+    await buildPiHandlers(
       {
         mode: {
           poly: { ...POLY_PROFILE, commands: [] },
@@ -821,11 +821,11 @@ describe("buildPiHandlers — registerCommand wiring", () => {
     );
   });
 
-  it("non-null profile with dcp enabled still registers the renderer", () => {
+  it("non-null profile with dcp enabled still registers the renderer", async () => {
     // A profile that registers dcp (but no other command) must register
     // the zoo-notice entry renderer so reports draw a card in the TUI.
     const api = mockApi();
-    buildPiHandlers(
+    await buildPiHandlers(
       {
         mode: {
           poly: { ...POLY_PROFILE, commands: ["dcp"] },
@@ -838,12 +838,12 @@ describe("buildPiHandlers — registerCommand wiring", () => {
     assert.equal(typeof renderer.renderer, "function");
   });
 
-  it("null profile still registers the zoo-notice renderer when the API supports it", () => {
+  it("null profile still registers the zoo-notice renderer when the API supports it", async () => {
     // The renderer is a pure UI helper for any zoo-notice entry: it is
     // registered regardless of the profile (a null profile merely yields
     // no notifications to render).
     const api = mockApi();
-    buildPiHandlers({}, api as any);
+    await buildPiHandlers({}, api as any);
     assert.ok(
       api.renderers.some(
         (r) =>
@@ -901,9 +901,9 @@ describe("buildPiHandlers — primary-switch command wiring", () => {
     };
   }
 
-  it("registers one /<agent> command per configured primary", () => {
+  it("registers one /<agent> command per configured primary", async () => {
     const api = mockApi();
-    buildPiHandlers(POLY_ZOO, api as any, MODES_RAW);
+    await buildPiHandlers(POLY_ZOO, api as any, MODES_RAW);
     const switchNames = api.commands
       .map((c) => c.name)
       .filter((n) => ["dolphin", "mola"].includes(n))
@@ -914,7 +914,7 @@ describe("buildPiHandlers — primary-switch command wiring", () => {
   it("switch command replaces the session: trims denied tools and nudges the fleet widget", async () => {
     const api = mockApi();
     api.activeTools.push("webfetch", "edit", "bash");
-    const handlers = buildPiHandlers(POLY_ZOO, api as any, {
+    const handlers = await buildPiHandlers(POLY_ZOO, api as any, {
       ...MODES_RAW,
       agent: {
         ...MODES_RAW.agent,
@@ -965,9 +965,9 @@ describe("buildPiHandlers — primary-switch command wiring", () => {
     assert.deepEqual(api.activeTools, ["edit", "bash"]);
   });
 
-  it("no rawConfig (no primaries) → no switch commands registered", () => {
+  it("no rawConfig (no primaries) → no switch commands registered", async () => {
     const api = mockApi();
-    buildPiHandlers(POLY_ZOO, api as any);
+    await buildPiHandlers(POLY_ZOO, api as any);
     const switchNames = api.commands
       .map((c) => c.name)
       .filter((n) => ["dolphin", "mola"].includes(n));
@@ -1001,7 +1001,7 @@ describe("buildPiHandlers — primary tool-deny trim (main session)", () => {
   it("trims a beaver-primary session's fetch at session start", async () => {
     const api = mockApi();
     api.activeTools.push(...ALL_TOOLS);
-    const handlers = buildPiHandlers(POLY_ZOO, api as any, PERM_DENY_RAW);
+    const handlers = await buildPiHandlers(POLY_ZOO, api as any, PERM_DENY_RAW);
     setPrimary("beaver");
     await handlers.sessionStart(
       { type: "session_start", reason: "startup" },
@@ -1013,7 +1013,7 @@ describe("buildPiHandlers — primary tool-deny trim (main session)", () => {
   it("keeps fetch for a dolphin session (dolphin denies websearch only)", async () => {
     const api = mockApi();
     api.activeTools.push(...ALL_TOOLS);
-    const handlers = buildPiHandlers(POLY_ZOO, api as any, PERM_DENY_RAW);
+    const handlers = await buildPiHandlers(POLY_ZOO, api as any, PERM_DENY_RAW);
     setPrimary("dolphin");
     await handlers.sessionStart(
       { type: "session_start", reason: "startup" },
@@ -1025,7 +1025,7 @@ describe("buildPiHandlers — primary tool-deny trim (main session)", () => {
   it("applies the trim from before_agent_start (fallback) and is idempotent", async () => {
     const api = mockApi();
     api.activeTools.push(...ALL_TOOLS);
-    const handlers = buildPiHandlers(POLY_ZOO, api as any, PERM_DENY_RAW);
+    const handlers = await buildPiHandlers(POLY_ZOO, api as any, PERM_DENY_RAW);
     setPrimary("beaver");
     await handlers.beforeAgentStart({ systemPrompt: "base" }, SESSION_CTX);
     assert.deepEqual(api.activeTools, ["edit", "bash"]);
@@ -1037,7 +1037,7 @@ describe("buildPiHandlers — primary tool-deny trim (main session)", () => {
   it("restores fetch when switching from beaver back to dolphin", async () => {
     const api = mockApi();
     api.activeTools.push(...ALL_TOOLS);
-    const handlers = buildPiHandlers(POLY_ZOO, api as any, PERM_DENY_RAW);
+    const handlers = await buildPiHandlers(POLY_ZOO, api as any, PERM_DENY_RAW);
     setPrimary("beaver");
     await handlers.sessionStart(
       { type: "session_start", reason: "startup" },
@@ -1054,7 +1054,7 @@ describe("buildPiHandlers — primary tool-deny trim (main session)", () => {
     // capability allowlist; the process-wide primary is not its identity.
     const api = mockApi();
     api.activeTools.push(...ALL_TOOLS);
-    const handlers = buildPiHandlers(POLY_ZOO, api as any, PERM_DENY_RAW);
+    const handlers = await buildPiHandlers(POLY_ZOO, api as any, PERM_DENY_RAW);
     setPrimary("beaver");
     await runWithIdentity({ kind: "subagent", name: "beaver" }, () =>
       handlers.sessionStart(
@@ -1067,7 +1067,7 @@ describe("buildPiHandlers — primary tool-deny trim (main session)", () => {
 
   it("leaves the tool set untouched with no baseline (fail-closed)", async () => {
     const api = mockApi();
-    const handlers = buildPiHandlers(POLY_ZOO, api as any, PERM_DENY_RAW);
+    const handlers = await buildPiHandlers(POLY_ZOO, api as any, PERM_DENY_RAW);
     setPrimary("beaver");
     await handlers.sessionStart(
       { type: "session_start", reason: "startup" },
@@ -1079,7 +1079,7 @@ describe("buildPiHandlers — primary tool-deny trim (main session)", () => {
   it("/go handoff: the executor primary's deny is trimmed in the new session", async () => {
     const api = mockApi();
     api.activeTools.push(...ALL_TOOLS);
-    const handlers = buildPiHandlers(POLY_ZOO, api as any, PERM_DENY_RAW);
+    const handlers = await buildPiHandlers(POLY_ZOO, api as any, PERM_DENY_RAW);
     setPrimary("dolphin");
     // The /go handoff switches the self-maintained primary to the executor
     // (beaver) BEFORE replacing the session; the generic trim in the new
@@ -1205,7 +1205,7 @@ function focusedEditorTui(): unknown {
 describe("buildPiHandlers — widget seeding", () => {
   it("first beforeAgentStart registers the fleet widget factory under zoo", async () => {
     const api = mockApi();
-    const handlers = buildPiHandlers(POLY_ZOO, api as any, MODES_RAW);
+    const handlers = await buildPiHandlers(POLY_ZOO, api as any, MODES_RAW);
     const { calls, ctx } = widgetRecordingCtx();
 
     // The first per-session event registers the `zoo` fleet widget (a
@@ -1219,7 +1219,7 @@ describe("buildPiHandlers — widget seeding", () => {
 
   it("beforeAgentStart seeds the todo column one-shot when session_start never ran", async () => {
     const api = mockApi();
-    const handlers = buildPiHandlers(POLY_ZOO, api as any, MODES_RAW);
+    const handlers = await buildPiHandlers(POLY_ZOO, api as any, MODES_RAW);
     // The store's first read scans the transcript, so the fallback seed is
     // observable through a counted history scan.
     const scans = { count: 0 };
@@ -1245,7 +1245,7 @@ describe("buildPiHandlers — widget seeding", () => {
 
   it("re-registers on later beforeAgentStart events without stacking the listener", async () => {
     const api = mockApi();
-    const handlers = buildPiHandlers(POLY_ZOO, api as any, MODES_RAW);
+    const handlers = await buildPiHandlers(POLY_ZOO, api as any, MODES_RAW);
     // Registration is idempotent: every trigger re-seeds the widget (pi's
     // setWidget disposes the prior component) and re-binds the listener only
     // after releasing the previous one — so the subscription count never
@@ -1279,7 +1279,7 @@ describe("buildPiHandlers — widget seeding", () => {
 
   it("session_start registers the fleet widget; a later beforeAgentStart re-registers idempotently", async () => {
     const api = mockApi();
-    const handlers = buildPiHandlers(POLY_ZOO, api as any, MODES_RAW);
+    const handlers = await buildPiHandlers(POLY_ZOO, api as any, MODES_RAW);
     // A ui that records setWidget calls and counts live terminal-input
     // subscriptions, so the idempotent re-registration can be asserted to
     // release the previous listener instead of stacking a second one.
@@ -1322,7 +1322,7 @@ describe("buildPiHandlers — widget seeding", () => {
 
   it("re-registers the fleet widget after its component is disposed (reload/resume)", async () => {
     const api = mockApi();
-    const handlers = buildPiHandlers(POLY_ZOO, api as any, MODES_RAW);
+    const handlers = await buildPiHandlers(POLY_ZOO, api as any, MODES_RAW);
     // A ui that records setWidget calls AND counts live onTerminalInput
     // subscriptions (returning a real unsubscribe), so a re-registration can
     // be asserted to release the previous listener instead of stacking it.
@@ -1379,7 +1379,7 @@ describe("buildPiHandlers — widget seeding", () => {
 
   it("session_start stays silent without a ui surface on ctx", async () => {
     const api = mockApi();
-    const handlers = buildPiHandlers(POLY_ZOO, api as any, MODES_RAW);
+    const handlers = await buildPiHandlers(POLY_ZOO, api as any, MODES_RAW);
     // A ui-less ctx (e.g. headless / RPC mode) must not crash the seed:
     // the fail-closed no-ui path no-ops silently.
     await assert.doesNotReject(() =>
@@ -1397,7 +1397,7 @@ describe("buildPiHandlers — widget seeding", () => {
     resetIdentityForTesting();
     // Without rawConfig the agent-mode map is empty → no primaries → the
     // identity machinery stays off and no seed may run.
-    const handlers = buildPiHandlers(POLY_ZOO, api as any);
+    const handlers = await buildPiHandlers(POLY_ZOO, api as any);
     let widgetCalls = 0;
     const ctx = {
       sessionManager: { getSessionId: () => "sess" },
@@ -1416,7 +1416,7 @@ describe("buildPiHandlers — widget seeding", () => {
   });
 
   it("stays silent without a pi switch host (no API)", async () => {
-    const handlers = buildPiHandlers(POLY_ZOO, undefined, MODES_RAW);
+    const handlers = await buildPiHandlers(POLY_ZOO, undefined, MODES_RAW);
     let widgetCalls = 0;
     const ctx = {
       sessionManager: { getSessionId: () => "sess" },
@@ -1438,7 +1438,7 @@ describe("buildPiHandlers — widget seeding", () => {
     resetIdentityForTesting();
     // Without rawConfig the agent-mode map is empty → no primaries → the
     // identity machinery stays off and no seed may run.
-    const handlers = buildPiHandlers(POLY_ZOO, api as any);
+    const handlers = await buildPiHandlers(POLY_ZOO, api as any);
     let widgetCalls = 0;
     const ctx = {
       sessionManager: { getSessionId: () => "sess" },
@@ -1455,7 +1455,7 @@ describe("buildPiHandlers — widget seeding", () => {
 
   it("session_start rebuilds the run registry from the message history", async () => {
     const api = mockApi();
-    const handlers = buildPiHandlers(POLY_ZOO, api as any, MODES_RAW);
+    const handlers = await buildPiHandlers(POLY_ZOO, api as any, MODES_RAW);
     const history = () => [
       {
         type: "message",
@@ -1529,7 +1529,7 @@ describe("buildPiHandlers — widget seeding", () => {
 
   it("session_start registry rebuild is idempotent across repeated triggers", async () => {
     const api = mockApi();
-    const handlers = buildPiHandlers(POLY_ZOO, api as any, MODES_RAW);
+    const handlers = await buildPiHandlers(POLY_ZOO, api as any, MODES_RAW);
     const history = () => [
       {
         type: "message",
@@ -1579,7 +1579,7 @@ describe("buildPiHandlers — widget seeding", () => {
 
   it("session_start leaves the registry untouched without a session manager history", async () => {
     const api = mockApi();
-    const handlers = buildPiHandlers(POLY_ZOO, api as any, MODES_RAW);
+    const handlers = await buildPiHandlers(POLY_ZOO, api as any, MODES_RAW);
     // A ui + session-id-only ctx (no buildContextEntries) must not crash and
     // must not touch the registry (fresh session → nothing to rebuild).
     await assert.doesNotReject(() =>
@@ -1593,7 +1593,7 @@ describe("buildPiHandlers — widget seeding", () => {
 
   it("session_start rebuilds even when buildContextEntries reads `this`", async () => {
     const api = mockApi();
-    const handlers = buildPiHandlers(POLY_ZOO, api as any, MODES_RAW);
+    const handlers = await buildPiHandlers(POLY_ZOO, api as any, MODES_RAW);
     // Regression: pi's real SessionManager.buildContextEntries reads
     // `this.getEntries()`, so the mock must be `this`-dependent too.
     // The function must be invoked as a method
@@ -1668,7 +1668,7 @@ describe("buildPiHandlers — widget seeding", () => {
 describe("buildPiHandlers — session_start drops the cached round view", () => {
   it("clears the session's published round view (pi has no session-deleted event)", async () => {
     const api = mockApi();
-    const handlers = buildPiHandlers(POLY_ZOO, api as any, MODES_RAW);
+    const handlers = await buildPiHandlers(POLY_ZOO, api as any, MODES_RAW);
     // pi never fires session.deleted, so session_start is the only place a
     // long-lived process can reclaim a finished session's frozen snapshot.
     publishRoundView("sess-rv", {
@@ -1703,7 +1703,7 @@ describe("buildPiHandlers — session_start drops the cached round view", () => 
 
   it("drops only the cached view — the session's other records survive", async () => {
     const api = mockApi();
-    const handlers = buildPiHandlers(POLY_ZOO, api as any, MODES_RAW);
+    const handlers = await buildPiHandlers(POLY_ZOO, api as any, MODES_RAW);
     // The session's identity binding stands in for the records a resume
     // must keep (the binding, the persisted state file, the model limit):
     // `cleanupSession` would have dropped all of them, so its survival
@@ -1742,7 +1742,7 @@ describe("buildPiHandlers — session_start drops the cached round view", () => 
 describe("buildPiHandlers — fleet widget enter-inspect wiring", () => {
   it("enter on a selected run opens the transcript overlay via ui.custom", async () => {
     const api = mockApi();
-    const handlers = buildPiHandlers(POLY_ZOO, api as any, MODES_RAW);
+    const handlers = await buildPiHandlers(POLY_ZOO, api as any, MODES_RAW);
     let opened = 0;
     let factory: unknown;
     const { calls, inputHandler, ctx } = widgetInputCtx({
@@ -1786,7 +1786,7 @@ describe("buildPiHandlers — fleet widget enter-inspect wiring", () => {
     // under the open overlay, forcing a full symmetric re-paint.  enterRun
     // must collapse the widget BEFORE the overlay opens.
     const api = mockApi();
-    const handlers = buildPiHandlers(POLY_ZOO, api as any, MODES_RAW);
+    const handlers = await buildPiHandlers(POLY_ZOO, api as any, MODES_RAW);
     let opened = 0;
     const { calls, inputHandler, ctx } = widgetInputCtx({
       custom: () => {
@@ -1829,7 +1829,7 @@ describe("buildPiHandlers — fleet widget enter-inspect wiring", () => {
     // change at close would repaint the whole base again.  The normal ↓
     // path still re-expands afterwards (unchanged semantics).
     const api = mockApi();
-    const handlers = buildPiHandlers(POLY_ZOO, api as any, MODES_RAW);
+    const handlers = await buildPiHandlers(POLY_ZOO, api as any, MODES_RAW);
     let opened = 0;
     let factory: unknown;
     const { calls, inputHandler, ctx } = widgetInputCtx({
@@ -1885,7 +1885,7 @@ describe("buildPiHandlers — fleet widget enter-inspect wiring", () => {
 
   it("does not open an overlay when the cached ctx exposes no ui.custom", async () => {
     const api = mockApi();
-    const handlers = buildPiHandlers(POLY_ZOO, api as any, MODES_RAW);
+    const handlers = await buildPiHandlers(POLY_ZOO, api as any, MODES_RAW);
     // No ui.custom on the cached ctx (a host ui surface without the overlay
     // opener).
     const { calls, inputHandler, ctx } = widgetInputCtx();
@@ -1915,7 +1915,7 @@ describe("buildPiHandlers — fleet widget enter-inspect wiring", () => {
     // The log is the single data source: a run whose log carries no facts
     // yet still opens (the key is consumed) and explains itself.
     const api = mockApi();
-    const handlers = buildPiHandlers(POLY_ZOO, api as any, MODES_RAW);
+    const handlers = await buildPiHandlers(POLY_ZOO, api as any, MODES_RAW);
     let factory: unknown;
     const { calls, inputHandler, ctx } = widgetInputCtx({
       custom: (f: unknown) => {
@@ -1957,7 +1957,7 @@ describe("buildPiHandlers — fleet widget enter-inspect wiring", () => {
     // projecting the log it was handed — it must neither crash nor blank
     // out; it simply stops receiving appends.
     const api = mockApi();
-    const handlers = buildPiHandlers(POLY_ZOO, api as any, MODES_RAW);
+    const handlers = await buildPiHandlers(POLY_ZOO, api as any, MODES_RAW);
     let factory: unknown;
     const { calls, inputHandler, ctx } = widgetInputCtx({
       custom: (f: unknown) => {
@@ -2013,7 +2013,7 @@ describe("buildPiHandlers — fleet widget enter-inspect wiring", () => {
     // overlay through the log's single stream subscription — no polling, no
     // bus.
     const api = mockApi();
-    const handlers = buildPiHandlers(POLY_ZOO, api as any, MODES_RAW);
+    const handlers = await buildPiHandlers(POLY_ZOO, api as any, MODES_RAW);
     let factory: unknown;
     const { calls, inputHandler, ctx } = widgetInputCtx({
       custom: (f: unknown) => {
@@ -2107,7 +2107,7 @@ describe("buildPiHandlers — fleet widget enter-inspect hydration", () => {
     dispose: () => void;
   }> {
     const api = mockApi();
-    const handlers = buildPiHandlers(POLY_ZOO, api as any, MODES_RAW);
+    const handlers = await buildPiHandlers(POLY_ZOO, api as any, MODES_RAW);
     let opened = 0;
     let factory: unknown;
     const { calls, inputHandler, ctx } = widgetInputCtx({
@@ -2335,7 +2335,7 @@ describe("buildPiHandlers — transcript overlay border + title agent color", ()
     run: { id: string; agent: string; label?: string },
   ): Promise<string[]> {
     const api = mockApi();
-    const handlers = buildPiHandlers(POLY_ZOO, api as any, raw as any);
+    const handlers = await buildPiHandlers(POLY_ZOO, api as any, raw as any);
     let factory: unknown;
     const { calls, inputHandler, ctx } = widgetInputCtx({
       custom: (f: unknown) => {
@@ -2457,7 +2457,7 @@ describe("buildPiHandlers — zoo widget colorization", () => {
 
   it("registers the fleet widget whose collapsed line uses the ANSI-wrapped primary when its color is configured", async () => {
     const api = mockApi();
-    const handlers = buildPiHandlers(POLY_ZOO, api as any, COLORS_RAW);
+    const handlers = await buildPiHandlers(POLY_ZOO, api as any, COLORS_RAW);
     const { calls, ctx } = widgetRecordingCtx();
     // The default primary (dolphin) carries #66CCFF → the widget's collapsed
     // line embeds the truecolor-wrapped name (inside the muted status hue).
@@ -2472,7 +2472,7 @@ describe("buildPiHandlers — zoo widget colorization", () => {
     const api = mockApi();
     // MODES_RAW has no color fields → the colors map is empty, so the
     // primary falls back to the plain agent name (fail-closed).
-    const handlers = buildPiHandlers(POLY_ZOO, api as any, MODES_RAW);
+    const handlers = await buildPiHandlers(POLY_ZOO, api as any, MODES_RAW);
     const { calls, ctx } = widgetRecordingCtx();
     await handlers.beforeAgentStart({ systemPrompt: "base" }, ctx);
     const { lines, dispose } = renderZooWidget(calls);
@@ -2483,7 +2483,7 @@ describe("buildPiHandlers — zoo widget colorization", () => {
 
   it("leaves the collapsed primary plain when the color for that agent is malformed", async () => {
     const api = mockApi();
-    const handlers = buildPiHandlers(POLY_ZOO, api as any, {
+    const handlers = await buildPiHandlers(POLY_ZOO, api as any, {
       ...MODES_RAW,
       agent: {
         ...MODES_RAW.agent,
@@ -2546,7 +2546,7 @@ describe("buildPiHandlers — primary-switch widget colorization", () => {
   it("switch command nudges the fleet widget which renders the ANSI-wrapped target name", async () => {
     const api = mockApi();
     api.activeTools.push("webfetch", "edit");
-    const handlers = buildPiHandlers(POLY_ZOO, api as any, {
+    const handlers = await buildPiHandlers(POLY_ZOO, api as any, {
       agent: {
         ...COLORS_RAW.agent,
         mola: { mode: "primary", color: "#FFA500" },
@@ -2591,7 +2591,7 @@ describe("buildPiHandlers — primary-switch widget colorization", () => {
     api.activeTools.push("webfetch", "edit");
     // COLORS_RAW has no color for spider; MODES_RAW has no colors at all.
     // Build with MODES_RAW so the colors map is empty → plain name.
-    const handlers = buildPiHandlers(POLY_ZOO, api as any, MODES_RAW);
+    const handlers = await buildPiHandlers(POLY_ZOO, api as any, MODES_RAW);
     const dolphin = api.commands.find((c) => c.name === "dolphin");
     assert.ok(dolphin && typeof dolphin.handler === "function");
 
@@ -2623,7 +2623,7 @@ describe("buildPiHandlers — primary-switch widget colorization", () => {
 
 describe("buildPiHandlers — null profile fail-closed", () => {
   it("all six handlers no-op with a null profile", async () => {
-    const handlers = buildPiHandlers({});
+    const handlers = await buildPiHandlers({});
     // session_start with a ui ctx must not seed anything without a profile
     // (no pi switch host → fail-closed silent no-op).
     await handlers.sessionStart(
@@ -2677,14 +2677,14 @@ describe("buildPiHandlers — null profile fail-closed", () => {
 // ---------------------------------------------------------------------------
 
 describe("buildPiHandlers — plugin_init load-time event", () => {
-  it("emits plugin_init once at load with agents/skills/limits fields", () => {
+  it("emits plugin_init once at load with agents/skills/limits fields", async () => {
     // Init the logger so the load-time plugin_init is attributed to a
     // temp log dir instead of tripping the one-time used-before-init
     // warning (isolation pattern used across this file).
     const logDir = makeTmpDir("zoo-pi-log");
     try {
       initLogger("pi", { logDir });
-      buildPiHandlers(POLY_ZOO);
+      await buildPiHandlers(POLY_ZOO);
       const inits = _getBufferForTesting().filter(
         (entry) => entry.event === "plugin_init",
       );
@@ -2716,11 +2716,11 @@ describe("buildPiHandlers — plugin_init load-time event", () => {
     }
   });
 
-  it("null profile → plugin_init with empty agents/skills", () => {
+  it("null profile → plugin_init with empty agents/skills", async () => {
     const logDir = makeTmpDir("zoo-pi-log");
     try {
       initLogger("pi", { logDir });
-      buildPiHandlers({});
+      await buildPiHandlers({});
       const inits = _getBufferForTesting().filter(
         (entry) => entry.event === "plugin_init",
       );
@@ -2736,11 +2736,11 @@ describe("buildPiHandlers — plugin_init load-time event", () => {
     }
   });
 
-  it("buffers plugin_init sessionless; flush into the first pi session's file", () => {
+  it("buffers plugin_init sessionless; flush into the first pi session's file", async () => {
     const logDir = makeTmpDir("zoo-pi-log");
     try {
       initLogger("pi", { logDir });
-      buildPiHandlers(POLY_ZOO);
+      await buildPiHandlers(POLY_ZOO);
 
       // Load-time plugin_init is sessionless and no session exists yet:
       // it stays buffered and no pi.log host-level file is created.
