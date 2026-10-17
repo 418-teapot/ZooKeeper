@@ -14,7 +14,7 @@
  * @module
  */
 
-import type { MessageInjector } from "../../core/slots.js";
+import type { MessageInjector } from "../../core/ports/handoff.js";
 import { log } from "../../utils/logger.js";
 
 /**

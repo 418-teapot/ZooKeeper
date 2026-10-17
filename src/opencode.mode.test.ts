@@ -18,7 +18,7 @@ import {
 } from "./compose-opencode.js";
 import { _resetContextStateManagerForTesting } from "./core/context/runtime.js";
 import { sessionAgentRegistry } from "./core/session-agent.js";
-import type { AgentUnitDescriptor } from "./core/slots.js";
+import type { AgentUnitDescriptor } from "./core/unit.js";
 import { DIRECT_WORK_NUDGE } from "./hooks/direct-work-nudge";
 import { JSON_ERROR_REMINDER } from "./hooks/json-error-nudge";
 import { VERIFY_REMINDER } from "./hooks/post-subagent-nudge";
@@ -354,7 +354,10 @@ describe("poly full profile — registration parity", () => {
       output,
     );
     assert.equal(output.text, "plain reply");
-    assert.equal(logEvents().length, 0);
+    assert.equal(
+      logEvents().filter((e) => e.event === "reply_ref_stripped").length,
+      0,
+    );
   });
 
   it("config hook injects all profile agents, skills, tools, and commands", async () => {
@@ -396,7 +399,7 @@ describe("poly full profile — registration parity", () => {
   it("registers no /<agent> primary-switch commands on OpenCode", async () => {
     // The switch unit contributes a command per configured primary on
     // the pi host only.  OpenCode never provides the pi switch surfaces
-    // (piSwitchHost), so even with primaries in the profile no `/<agent>`
+    // (switchHost), so even with primaries in the profile no `/<agent>`
     // switch command may appear in the config hook (or be handled).
     const plugin = await makePlugin();
     const config: Record<string, any> = {};
@@ -955,6 +958,8 @@ describe("experimental.chat.system.transform — variant conflict filtering", ()
   const conflictUnit: AgentUnitDescriptor = {
     name: "conflict-agent",
     kind: "agent",
+    needs: [],
+    wants: [],
     create() {
       return {
         kind: "agent",

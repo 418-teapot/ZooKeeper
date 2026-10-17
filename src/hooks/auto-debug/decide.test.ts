@@ -20,7 +20,7 @@ import type {
   AutoDebugFs,
   ZdebugExec,
   ZdebugExecResult,
-} from "../../core/slots.js";
+} from "../../core/ports/autodebug.js";
 import { _getBufferForTesting, _resetForTesting } from "../../utils/logger.js";
 import {
   type AutoDebugContext,

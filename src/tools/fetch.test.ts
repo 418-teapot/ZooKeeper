@@ -13,7 +13,10 @@
  */
 import assert from "node:assert/strict";
 import { afterEach, describe, it } from "node:test";
-import type { ActiveSet, Deps } from "../core/slots.js";
+import { composeProfile } from "../core/compose.js";
+import type { ModeProfile } from "../core/config-types.js";
+import type { Capabilities } from "../core/ports/index.js";
+import type { ActiveSet } from "../core/unit.js";
 import type {
   HtmlConverter,
   TruncateHeadFn,
@@ -41,8 +44,11 @@ const keepAll: TruncateHeadFn = (content) => ({
 function deps(
   loadHtmlConverter?: () => HtmlConverter | null,
   truncateHead?: TruncateHeadFn,
-): Deps {
-  return { loadHtmlConverter, truncateHead } as unknown as Deps;
+): Partial<Capabilities> {
+  return {
+    loadHtmlConverter,
+    truncateHead,
+  } as unknown as Partial<Capabilities>;
 }
 
 /** Replace `globalThis.fetch` with a recorded fake. */
@@ -82,11 +88,27 @@ afterEach(() => {
 // Registration gate
 // ---------------------------------------------------------------------------
 
+/** A minimal mode profile enabling exactly the fetch tool unit. */
+const FETCH_TOOL_PROFILE: ModeProfile = {
+  name: "test",
+  agents: [],
+  skills: [],
+  hooks: [],
+  tools: ["fetch"],
+  commands: [],
+};
+
 describe("fetch unit registration gate", () => {
-  it("contributes no tools without a converter loader", () => {
-    const contributions = fetchUnit.create(deps(), {} as ActiveSet);
-    assert.equal(contributions.kind, "tool");
-    assert.deepEqual(contributions.tools, []);
+  it("skips the unit and reports loadHtmlConverter without a converter loader", () => {
+    const result = composeProfile(
+      FETCH_TOOL_PROFILE,
+      [fetchUnit],
+      deps(undefined, keepAll),
+    );
+    assert.deepEqual(result.tools, {});
+    assert.deepEqual(result.report.skipped, [
+      { name: "fetch", missing: ["loadHtmlConverter"] },
+    ]);
   });
 
   it("contributes no tools when the loader reports no addon", () => {
@@ -97,12 +119,16 @@ describe("fetch unit registration gate", () => {
     assert.deepEqual(contributions.tools, []);
   });
 
-  it("contributes no tools without a head truncator", () => {
-    const contributions = fetchUnit.create(
+  it("skips the unit and reports truncateHead without a head truncator", () => {
+    const result = composeProfile(
+      FETCH_TOOL_PROFILE,
+      [fetchUnit],
       deps(() => identity),
-      {} as ActiveSet,
     );
-    assert.deepEqual(contributions.tools, []);
+    assert.deepEqual(result.tools, {});
+    assert.deepEqual(result.report.skipped, [
+      { name: "fetch", missing: ["truncateHead"] },
+    ]);
   });
 
   it("contributes one fetch tool with a usable converter and truncator", () => {

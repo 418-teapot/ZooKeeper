@@ -12,7 +12,7 @@ import assert from "node:assert/strict";
 import { chmodSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, it } from "node:test";
-import type { ActiveSet } from "../core/slots.js";
+import type { ActiveSet } from "../core/unit.js";
 import { makeTmpDir } from "../testkits/tmp.js";
 import { BEAVER_PROMPT } from "./beaver.js";
 import { buildDolphinPrompt } from "./dolphin.js";

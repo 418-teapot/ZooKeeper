@@ -43,12 +43,12 @@ import {
   buildPiMessageEndHandler,
   buildPiToolResultHandler,
 } from "../../compose-pi.js";
+import type { ComposedResult } from "../../core/compose.js";
 import { clearRoundView } from "../../core/context/round-view.js";
 import type { LoopEngine, StopCause } from "../../core/loop/index.js";
 import type { SkillPermissionMap } from "../../core/permissions/skill-permissions.js";
 import { filterAllowedSkills } from "../../core/permissions/skill-permissions.js";
 import { applyModelVariant } from "../../core/prompt-variant.js";
-import type { ComposedResult } from "../../core/slots.js";
 import { getPrimary, resolveIdentity } from "../../core/subagent/identity.js";
 import { flushLogs, log } from "../../utils/logger.js";
 import {

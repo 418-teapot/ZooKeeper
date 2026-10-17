@@ -84,7 +84,7 @@ export function todoSourceFromStore(store: TodoStateStore): TodoSource {
  *
  * @param deps - Composition deps: an optional host-injected state store
  *   and an optional host client (callers pass the loosely typed
- *   `Deps["client"]`, so `any` is accepted here).
+ *   `Capabilities["client"]`, so `any` is accepted here).
  * @returns The chosen `TodoSource`, or `null` when neither backend is
  *   available.
  */

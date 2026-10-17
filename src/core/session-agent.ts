@@ -18,7 +18,7 @@
  *
  * `clear` is the test seam; the process-wide singleton lives on the
  * `sessionAgentRegistry` export, shared by every host entry point and
- * read by units through `Deps.resolveAgent`.
+ * read by units through `Capabilities.resolveAgent`.
  *
  * @module
  */
@@ -74,6 +74,6 @@ export class SessionAgentRegistry {
  * The hosts' event handlers are the writers (OpenCode via
  * `message.updated`; pi via lazy resolution inside `resolveAgent`);
  * `cleanupSession` removes entries on session deletion; hook units
- * read through `Deps.resolveAgent`.
+ * read through `Capabilities.resolveAgent`.
  */
 export const sessionAgentRegistry = new SessionAgentRegistry();

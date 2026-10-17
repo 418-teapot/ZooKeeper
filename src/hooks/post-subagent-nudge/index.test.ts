@@ -10,13 +10,13 @@ import assert from "node:assert/strict";
 import { rmSync } from "node:fs";
 import { afterEach, describe, it } from "node:test";
 import type { TodoSource } from "../../core/client/todo.js";
+import type { Capabilities } from "../../core/ports/index.js";
 import {
   TODO_DONE_NUDGE,
   TODO_PROGRESS_NUDGE,
   TODO_RESUME_NUDGE,
   VERIFY_REMINDER,
 } from "../../core/prompts.js";
-import type { Deps } from "../../core/slots.js";
 import { fakeStore, mockClient, sourceOf } from "../../testkits/hooks.js";
 import { cleanupPlanDir, writePlanFile } from "../../testkits/plans.js";
 import { makeTmpDir } from "../../testkits/tmp.js";
@@ -598,8 +598,8 @@ describe("integration: tool.execute.after → nudgePostSubagent", () => {
 // ---------------------------------------------------------------------------
 
 /** Assemble a partial deps object for unit-level tests. */
-function makeDeps(partial: Record<string, unknown>): Deps {
-  return partial as unknown as Deps;
+function makeDeps(partial: Record<string, unknown>): Partial<Capabilities> {
+  return partial as unknown as Partial<Capabilities>;
 }
 
 /** An empty activation set — this unit's create() does not consult it. */
@@ -613,7 +613,7 @@ const EMPTY_SETS = {
 
 /** Invoke the unit's composed nudgePostSubagent after-exec handler. */
 async function runComposed(
-  deps: Deps,
+  deps: Partial<Capabilities>,
   output: { output?: string },
 ): Promise<void> {
   const composed = unit.create(deps, EMPTY_SETS);

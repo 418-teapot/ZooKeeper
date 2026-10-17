@@ -9,18 +9,19 @@
  * response size limits, and full-content persistence, so this adapter
  * stays policy-free.
  *
- * Host gating is fail-closed and expressed entirely through deps: the
- * unit contributes the tool only when the pi entry point supplies BOTH the
- * converter loader (`deps.loadHtmlConverter`) and the head truncator
- * (`deps.truncateHead`).  OpenCode never supplies them, so `fetch` is
- * never registered there; on pi a missing or unusable native addon (the
- * loader returns `null`) also yields no tool, leaving the host unchanged
- * instead of registering a tool that cannot run.
+ * Host gating is fail-closed and expressed entirely through capability
+ * declarations: the unit lists the converter loader and the head
+ * truncator in `needs`, so composition skips it unless the pi entry
+ * point supplies BOTH (`caps.loadHtmlConverter` + `caps.truncateHead`).
+ * OpenCode never supplies them, so `fetch` is never registered there;
+ * on pi a missing or unusable native addon (the loader returns `null`)
+ * also yields no tool, leaving the host unchanged instead of registering
+ * a tool that cannot run.
  *
  * @module
  */
 
-import type { ToolContribution, ToolUnitDescriptor } from "../core/slots.js";
+import { defineTool, type ToolContribution } from "../core/unit.js";
 import {
   fetchWebContent,
   type HtmlConverter,
@@ -134,24 +135,23 @@ export function createFetchTool(
 /**
  * Fetch tool unit descriptor.
  *
- * Fail-closed host gating: without BOTH `deps.loadHtmlConverter` and
- * `deps.truncateHead` (OpenCode), or when the loader reports the native
- * addon unavailable, the unit contributes no tools.  `name` doubles as the
- * registry key and the tool key.
+ * Fail-closed host gating: `needs` lists BOTH `loadHtmlConverter` and
+ * `truncateHead`, so composition skips the unit when either is absent
+ * (OpenCode); when the loader reports the native addon unavailable, the
+ * unit contributes no tools.  `name` doubles as the registry key and the
+ * tool key.
  */
-export const unit: ToolUnitDescriptor = {
+export const unit = defineTool({
   name: "fetch",
-  kind: "tool",
-  create(deps) {
-    const load = deps.loadHtmlConverter;
-    const truncate = deps.truncateHead;
-    if (load === undefined || truncate === undefined) {
-      return { kind: "tool", tools: [] };
-    }
-    const converter = load();
+  needs: ["loadHtmlConverter", "truncateHead"],
+  create(caps) {
+    const converter = caps.loadHtmlConverter();
     if (converter === null) {
       return { kind: "tool", tools: [] };
     }
-    return { kind: "tool", tools: [createFetchTool(converter, truncate)] };
+    return {
+      kind: "tool",
+      tools: [createFetchTool(converter, caps.truncateHead)],
+    };
   },
-};
+});

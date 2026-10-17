@@ -25,10 +25,7 @@
  * @module
  */
 
-import {
-  type HookUnitDescriptor,
-  makeHookContributions,
-} from "../../core/slots.js";
+import { defineHook, makeHookContributions } from "../../core/unit.js";
 import { decide } from "./decide.js";
 import { defaultAutoDebugFs } from "./workspace-fs.js";
 import { defaultZdebugExec } from "./zdebug-exec.js";
@@ -39,20 +36,18 @@ import { defaultZdebugExec } from "./zdebug-exec.js";
  * Binds the `zdebug` runner and filesystem ports once and contributes one
  * `onSettled` handler that discovers the workspace Case, re-runs its
  * verification experiment, and returns the strategy's verdict.  All other
- * slots stay empty.  Without a valid `[zoo.autodebug]` the `onSettled`
- * slot stays empty too.
+ * slots stay empty.  Without a valid `[zoo.autodebug]` section the unit
+ * declares an unmet need and composition skips it entirely.
  */
-export const unit: HookUnitDescriptor = {
+export const unit = defineHook({
   name: "auto-debug",
-  kind: "hook",
-  create(deps) {
-    const config = deps.autoDebugConfig;
-    if (config === undefined) {
-      return makeHookContributions();
-    }
+  needs: ["autoDebugConfig", "directory"],
+  wants: ["zdebugExec", "autoDebugFs"],
+  create(caps) {
+    const config = caps.autoDebugConfig;
     const ports = {
-      zdebugExec: deps.zdebugExec ?? defaultZdebugExec,
-      fs: deps.autoDebugFs ?? defaultAutoDebugFs,
+      zdebugExec: caps.zdebugExec ?? defaultZdebugExec,
+      fs: caps.autoDebugFs ?? defaultAutoDebugFs,
     };
     return makeHookContributions({
       onSettled: [
@@ -61,11 +56,11 @@ export const unit: HookUnitDescriptor = {
           maxWakes: config.maxWakes,
           handle: (input) =>
             decide(ports, {
-              workspace: deps.directory,
+              workspace: caps.directory,
               sessionID: input.sessionID,
             }),
         },
       ],
     });
   },
-};
+});

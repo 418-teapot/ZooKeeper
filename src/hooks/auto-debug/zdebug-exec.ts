@@ -16,7 +16,10 @@
  */
 
 import { spawn } from "node:child_process";
-import type { ZdebugExec, ZdebugExecResult } from "../../core/slots.js";
+import type {
+  ZdebugExec,
+  ZdebugExecResult,
+} from "../../core/ports/autodebug.js";
 
 /** The CLI binary resolved through `PATH` on every invocation. */
 const ZDEBUG_BINARY = "zdebug";

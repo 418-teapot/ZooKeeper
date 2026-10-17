@@ -18,10 +18,13 @@
 import assert from "node:assert/strict";
 import { afterEach, describe, it } from "node:test";
 import type { ToolHost } from "../core/client/tool-host.js";
-import type { ActiveSet, Deps, ToolContribution } from "../core/slots.js";
+import { composeProfile } from "../core/compose.js";
+import type { ModeProfile } from "../core/config-types.js";
+import type { Capabilities } from "../core/ports/index.js";
 import type { TodoSnapshot } from "../core/todo/serialize.js";
 import { createTodoStore } from "../core/todo/store.js";
 import type { TodoPhase } from "../core/todo/types.js";
+import type { ActiveSet, ToolContribution } from "../core/unit.js";
 import { _resetForTesting } from "../utils/logger.js";
 import { parseTodoArgs, unit as todoUnit } from "./todo.js";
 
@@ -30,6 +33,16 @@ import { parseTodoArgs, unit as todoUnit } from "./todo.js";
 // ---------------------------------------------------------------------------
 
 const TEST_SESSION_ID = "sess-todo-tool";
+
+/** A minimal mode profile enabling exactly the todo tool unit. */
+const TODO_TOOL_PROFILE: ModeProfile = {
+  name: "test",
+  agents: [],
+  skills: [],
+  hooks: [],
+  tools: ["todo"],
+  commands: [],
+};
 
 /** No tool context needed — the fake host resolves a fixed session id. */
 const TOOL_CTX = {};
@@ -75,7 +88,7 @@ function makeTool(opts: { host?: ToolHost } = {}): ToolContribution {
     resolveAgent: () => undefined,
     toolHost: opts.host ?? fakeHost(),
     todoStore: store,
-  } as unknown as Deps;
+  } as unknown as Partial<Capabilities>;
   const tools = todoUnit.create(deps, {} as ActiveSet).tools;
   assert.equal(tools.length, 1, "the wired unit contributes exactly one tool");
   return tools[0];
@@ -937,7 +950,7 @@ describe("todo tool concurrency", () => {
         resolveAgent: () => undefined,
         toolHost: fakeHost(),
         todoStore: store,
-      }) as unknown as Deps;
+      }) as unknown as Partial<Capabilities>;
     const toolA = todoUnit.create(depsFor(first), {} as ActiveSet).tools[0];
     const toolB = todoUnit.create(depsFor(second), {} as ActiveSet).tools[0];
 
@@ -967,7 +980,7 @@ describe("todo tool unit descriptor", () => {
     assert.equal(todoUnit.kind, "tool");
   });
 
-  it("contributes zero tools when deps carry no todoStore", () => {
+  it("skips the unit and reports todoStore when deps carry no todoStore", () => {
     const deps = {
       limits: {},
       contextConfig: {},
@@ -975,11 +988,15 @@ describe("todo tool unit descriptor", () => {
       directory: "",
       resolveAgent: () => undefined,
       toolHost: fakeHost(),
-    } as unknown as Deps;
-    assert.deepEqual(todoUnit.create(deps, {} as ActiveSet).tools, []);
+    } as unknown as Partial<Capabilities>;
+    const result = composeProfile(TODO_TOOL_PROFILE, [todoUnit], deps);
+    assert.deepEqual(result.tools, {});
+    assert.deepEqual(result.report.skipped, [
+      { name: "todo", missing: ["todoStore"] },
+    ]);
   });
 
-  it("contributes zero tools when deps carry no tool host", () => {
+  it("skips the unit and reports toolHost when deps carry no tool host", () => {
     const deps = {
       limits: {},
       contextConfig: {},
@@ -987,8 +1004,12 @@ describe("todo tool unit descriptor", () => {
       directory: "",
       resolveAgent: () => undefined,
       todoStore: createTodoStore(async () => []),
-    } as unknown as Deps;
-    assert.deepEqual(todoUnit.create(deps, {} as ActiveSet).tools, []);
+    } as unknown as Partial<Capabilities>;
+    const result = composeProfile(TODO_TOOL_PROFILE, [todoUnit], deps);
+    assert.deepEqual(result.tools, {});
+    assert.deepEqual(result.report.skipped, [
+      { name: "todo", missing: ["toolHost"] },
+    ]);
   });
 
   it("reads and writes through the injected store, never a fresh one", async () => {
@@ -1001,7 +1022,7 @@ describe("todo tool unit descriptor", () => {
       resolveAgent: () => undefined,
       toolHost: fakeHost(),
       todoStore: store,
-    } as unknown as Deps;
+    } as unknown as Partial<Capabilities>;
     const tool = todoUnit.create(deps, {} as ActiveSet).tools[0];
     await tool.execute({ op: "init", tasks: ["Injected"] }, TOOL_CTX, {});
     assert.equal(
@@ -1041,7 +1062,7 @@ describe("todo tool unit descriptor", () => {
       toolHost: fakeHost(),
       todoStore: createTodoStore(async () => []),
       todoRenderer: { renderCall, renderResult },
-    } as unknown as Deps;
+    } as unknown as Partial<Capabilities>;
     const tool = todoUnit.create(deps, {} as ActiveSet).tools[0];
     assert.equal(tool.renderCall, renderCall);
     assert.equal(tool.renderResult, renderResult);

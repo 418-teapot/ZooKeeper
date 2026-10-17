@@ -37,20 +37,20 @@ import {
   registerPiHandlers,
 } from "./compose-pi.js";
 import type { ToolHost } from "./core/client/tool-host.js";
+import type { ComposedResult } from "./core/compose.js";
 import { composeProfile } from "./core/compose.js";
 import type { ModeProfile } from "./core/config-types.js";
+import type { Capabilities } from "./core/ports/index.js";
+import { _resetForTesting as _resetIdentityForTesting } from "./core/subagent/identity.js";
+import { createTodoStore } from "./core/todo/store.js";
 import type {
   AfterExecContribution,
   AfterExecInput,
   CommandInput,
-  ComposedResult,
-  Deps,
   ToolContribution,
   ToolDefinitionView,
   TransformOutput,
-} from "./core/slots.js";
-import { _resetForTesting as _resetIdentityForTesting } from "./core/subagent/identity.js";
-import { createTodoStore } from "./core/todo/store.js";
+} from "./core/unit.js";
 import { createReplyStripHandler } from "./hooks/reply-strip/index.js";
 import { enhanceSubagentDefinition } from "./hooks/subagent-prompt/index.js";
 import { REGISTRY } from "./registry.js";
@@ -900,8 +900,8 @@ function piToolHost(): ToolHost {
   };
 }
 
-/** Deps carrying the required base fields plus the supplied host ports. */
-function piDeps(host: Partial<Deps> = {}): Deps {
+/** Capabilities carrying the required base fields plus the supplied host ports. */
+function piCaps(host: Partial<Capabilities> = {}): Partial<Capabilities> {
   return {
     limits: {},
     contextConfig: {},
@@ -912,9 +912,9 @@ function piDeps(host: Partial<Deps> = {}): Deps {
   };
 }
 
-/** Compose the real registry with the tool profile and the given deps. */
-function composeTools(host: Partial<Deps> = {}) {
-  return composeProfile(TOOL_PROFILE, REGISTRY, piDeps(host)).tools;
+/** Compose the real registry with the tool profile and the given caps. */
+function composeTools(host: Partial<Capabilities> = {}) {
+  return composeProfile(TOOL_PROFILE, REGISTRY, piCaps(host)).tools;
 }
 
 describe("pi composition — the todo tool registration boundary", () => {
@@ -960,14 +960,16 @@ describe("pi composition — the todo tool registration boundary", () => {
     assert.deepEqual(Object.keys(tools).sort(), ["compress", "decompress"]);
   });
 
-  it("contributes no todo tool when the host supplies no toolHost", () => {
+  it("registers no tool at all when the host supplies no toolHost", () => {
     const tools = composeTools({ todoStore: createTodoStore(async () => []) });
     assert.equal(
       tools.todo,
       undefined,
-      "no tool services → the todo unit must fail closed",
+      "no tool services → the todo unit must be skipped",
     );
-    assert.deepEqual(Object.keys(tools).sort(), ["compress", "decompress"]);
+    // compress and decompress also need the tool host: absent it, no tool
+    // unit activates.
+    assert.deepEqual(Object.keys(tools).sort(), []);
   });
 
   it("attaches the host todo renderer to the composed tool (pi-only seam)", () => {

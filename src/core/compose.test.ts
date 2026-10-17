@@ -12,20 +12,21 @@ import { afterEach, describe, it } from "node:test";
 import { _getBufferForTesting, _resetForTesting } from "../utils/logger.js";
 import { composeProfile } from "./compose.js";
 import type { ModeProfile } from "./config-types.js";
+import type { Capabilities } from "./ports/index.js";
 import type {
   ActiveSet,
-  Deps,
+  CapabilityKey,
   UnitContributions,
   UnitDescriptor,
   UnitKind,
-} from "./slots.js";
-import { makeHookContributions } from "./slots.js";
+} from "./unit.js";
+import { makeHookContributions } from "./unit.js";
 
 afterEach(() => {
   _resetForTesting();
 });
 
-const DEPS: Deps = {
+const BASE_CAPS: Partial<Capabilities> = {
   limits: {},
   contextConfig: {},
   client: {},
@@ -127,9 +128,14 @@ function makeUnits(): { units: UnitDescriptor[]; calls: string[] } {
 function mockUnit(
   name: string,
   kind: UnitKind,
-  create: (deps: Deps, activeSet: ActiveSet) => UnitContributions,
+  create: (
+    deps: Partial<Capabilities>,
+    activeSet: ActiveSet,
+  ) => UnitContributions,
+  needs: readonly CapabilityKey[] = [],
+  wants: readonly CapabilityKey[] = [],
 ): UnitDescriptor {
-  return { name, kind, create } as UnitDescriptor;
+  return { name, kind, needs, wants, create } as UnitDescriptor;
 }
 
 /** Profile listing every unit in the registry. */
@@ -189,7 +195,7 @@ const ONE_OF_EACH_PROFILE: ModeProfile = {
 describe("composeProfile — full profile", () => {
   it("instantiates every listed unit in registry order", () => {
     const { units, calls } = makeUnits();
-    composeProfile(ALL_UNITS_PROFILE, units, DEPS);
+    composeProfile(ALL_UNITS_PROFILE, units, BASE_CAPS);
     assert.deepEqual(calls, [
       "dolphin",
       "beaver",
@@ -207,7 +213,7 @@ describe("composeProfile — full profile", () => {
 
   it("collects contributions into the host-agnostic result", () => {
     const { units } = makeUnits();
-    const result = composeProfile(ALL_UNITS_PROFILE, units, DEPS);
+    const result = composeProfile(ALL_UNITS_PROFILE, units, BASE_CAPS);
 
     assert.deepEqual(result.agents, [
       { name: "dolphin", prompt: "DOLPHIN" },
@@ -255,7 +261,7 @@ describe("composeProfile — full profile", () => {
 describe("composeProfile — gateNeedsCaller aggregation", () => {
   it("is false when no enabled judge needs the caller", () => {
     const { units } = makeUnits();
-    const result = composeProfile(ALL_UNITS_PROFILE, units, DEPS);
+    const result = composeProfile(ALL_UNITS_PROFILE, units, BASE_CAPS);
     assert.equal(result.gateNeedsCaller, false);
   });
 
@@ -279,13 +285,13 @@ describe("composeProfile — gateNeedsCaller aggregation", () => {
       tools: [],
       commands: [],
     };
-    const result = composeProfile(profile, [unit], DEPS);
+    const result = composeProfile(profile, [unit], BASE_CAPS);
     assert.equal(result.gateNeedsCaller, true);
   });
 
   it("is false for a null profile", () => {
     const { units } = makeUnits();
-    const result = composeProfile(null, units, DEPS);
+    const result = composeProfile(null, units, BASE_CAPS);
     assert.equal(result.gateNeedsCaller, false);
   });
 });
@@ -297,7 +303,7 @@ describe("composeProfile — gateNeedsCaller aggregation", () => {
 describe("composeProfile — null profile", () => {
   it("returns an empty result without instantiating any unit", () => {
     const { units, calls } = makeUnits();
-    const result = composeProfile(null, units, DEPS);
+    const result = composeProfile(null, units, BASE_CAPS);
     assert.deepEqual(calls, []);
     assert.deepEqual(result, {
       agents: [],
@@ -311,6 +317,7 @@ describe("composeProfile — null profile", () => {
       commands: {},
       gate: null,
       gateNeedsCaller: false,
+      report: { activated: [], skipped: [] },
     });
   });
 });
@@ -322,7 +329,7 @@ describe("composeProfile — null profile", () => {
 describe("composeProfile — subset profile", () => {
   it("instantiates only enabled units, preserving registry order", () => {
     const { units, calls } = makeUnits();
-    const result = composeProfile(SUBSET_PROFILE, units, DEPS);
+    const result = composeProfile(SUBSET_PROFILE, units, BASE_CAPS);
 
     assert.deepEqual(calls, ["mola", "context-pruning", "decompress"]);
     assert.deepEqual(result.agents, [{ name: "mola", prompt: "MOLA" }]);
@@ -345,7 +352,7 @@ describe("composeProfile — subset profile", () => {
 describe("composeProfile — per-kind selection", () => {
   it("selects agent / skill / tool / command units independently", () => {
     const { units, calls } = makeUnits();
-    const result = composeProfile(ONE_OF_EACH_PROFILE, units, DEPS);
+    const result = composeProfile(ONE_OF_EACH_PROFILE, units, BASE_CAPS);
 
     assert.deepEqual(calls, ["beaver", "wiki-query", "compress", "dcp"]);
     assert.deepEqual(result.agents, [{ name: "beaver", prompt: "BEAVER" }]);
@@ -359,13 +366,183 @@ describe("composeProfile — per-kind selection", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Capability matching (needs / wants)
+// ---------------------------------------------------------------------------
+
+/** A profile enabling exactly the given tool units, every other kind empty. */
+function toolProfile(tools: string[]): ModeProfile {
+  return {
+    name: "cap",
+    agents: [],
+    skills: [],
+    hooks: [],
+    tools,
+    commands: [],
+  };
+}
+
+const TOOL_HOST: NonNullable<Partial<Capabilities>["toolHost"]> = {
+  resolveSessionId: () => "s",
+  async notify(): Promise<void> {},
+};
+
+describe("composeProfile — capability matching", () => {
+  it("activates a unit whose needs are all present and reports it", () => {
+    const calls: string[] = [];
+    const unit = mockUnit(
+      "compress",
+      "tool",
+      () => {
+        calls.push("compress");
+        return {
+          kind: "tool",
+          tools: [
+            { name: "compress", description: "c", execute: async () => "ok" },
+          ],
+        };
+      },
+      ["toolHost", "contextConfig"],
+    );
+
+    const result = composeProfile(toolProfile(["compress"]), [unit], {
+      ...BASE_CAPS,
+      toolHost: TOOL_HOST,
+    });
+
+    assert.deepEqual(calls, ["compress"]);
+    assert.deepEqual(result.report.activated, ["compress"]);
+    assert.deepEqual(result.report.skipped, []);
+    assert.deepEqual(Object.keys(result.tools), ["compress"]);
+  });
+
+  it("skips a unit with an absent need, never calling its factory, and reports the key", () => {
+    const calls: string[] = [];
+    const unit = mockUnit(
+      "compress",
+      "tool",
+      () => {
+        calls.push("compress");
+        return { kind: "tool", tools: [] };
+      },
+      ["toolHost", "contextConfig"],
+    );
+
+    // `BASE_CAPS` carries `contextConfig` but no `toolHost`.
+    const result = composeProfile(toolProfile(["compress"]), [unit], {
+      ...BASE_CAPS,
+    });
+
+    assert.deepEqual(calls, [], "a skipped unit's factory must never run");
+    assert.deepEqual(result.report.activated, []);
+    assert.deepEqual(result.report.skipped, [
+      { name: "compress", missing: ["toolHost"] },
+    ]);
+    assert.deepEqual(result.tools, {});
+  });
+
+  it("records every missing need in declaration order", () => {
+    const unit = mockUnit(
+      "compress",
+      "tool",
+      () => ({ kind: "tool", tools: [] }),
+      ["toolHost", "contextConfig"],
+    );
+
+    const result = composeProfile(toolProfile(["compress"]), [unit], {});
+
+    assert.deepEqual(result.report.skipped, [
+      { name: "compress", missing: ["toolHost", "contextConfig"] },
+    ]);
+  });
+
+  it("activates a unit whose optional wants are absent", () => {
+    const unit = mockUnit(
+      "todo",
+      "tool",
+      () => ({
+        kind: "tool",
+        tools: [{ name: "todo", description: "t", execute: async () => "ok" }],
+      }),
+      ["toolHost"],
+      ["todoRenderer"],
+    );
+
+    const result = composeProfile(toolProfile(["todo"]), [unit], {
+      ...BASE_CAPS,
+      toolHost: TOOL_HOST,
+    });
+
+    assert.deepEqual(result.report.activated, ["todo"]);
+    assert.deepEqual(result.report.skipped, []);
+    assert.deepEqual(Object.keys(result.tools), ["todo"]);
+  });
+
+  it("hands the factory only its declared needs and wants", () => {
+    let seen: Partial<Capabilities> | undefined;
+    const unit = mockUnit(
+      "compress",
+      "tool",
+      (caps) => {
+        seen = caps;
+        return { kind: "tool", tools: [] };
+      },
+      ["toolHost", "contextConfig"],
+    );
+
+    composeProfile(toolProfile(["compress"]), [unit], {
+      ...BASE_CAPS,
+      toolHost: TOOL_HOST,
+    });
+
+    assert.deepEqual(Object.keys(seen ?? {}).sort(), [
+      "contextConfig",
+      "toolHost",
+    ]);
+  });
+
+  it("passes thunk capabilities through without ever invoking them", () => {
+    // Ports carry behavior, not values: composition must hand the thunk
+    // over by reference and never call it — the unit decides the timing
+    // (pi's tool baseline is forbidden during extension load).
+    let calls = 0;
+    const baseline = () => {
+      calls++;
+      return ["x"];
+    };
+    let seen: Partial<Capabilities> | undefined;
+    const unit = mockUnit(
+      "subagent",
+      "tool",
+      (caps) => {
+        seen = caps;
+        return { kind: "tool", tools: [] };
+      },
+      ["toolHost"],
+      ["subagentBaseline"],
+    );
+
+    const result = composeProfile(toolProfile(["subagent"]), [unit], {
+      ...BASE_CAPS,
+      toolHost: TOOL_HOST,
+      subagentBaseline: baseline,
+    });
+
+    assert.deepEqual(result.report.activated, ["subagent"]);
+    assert.equal(calls, 0, "composition must not invoke capability thunks");
+    assert.equal(seen?.subagentBaseline, baseline, "passed by reference");
+    assert.deepEqual(seen?.subagentBaseline?.(), ["x"]);
+    assert.equal(calls, 1);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Empty category lists
 // ---------------------------------------------------------------------------
 
 describe("composeProfile — empty category lists", () => {
   it("instantiates nothing and returns empty contributions", () => {
     const { units, calls } = makeUnits();
-    const result = composeProfile(EMPTY_PROFILE, units, DEPS);
+    const result = composeProfile(EMPTY_PROFILE, units, BASE_CAPS);
 
     assert.deepEqual(calls, []);
     assert.deepEqual(result, {
@@ -380,6 +557,7 @@ describe("composeProfile — empty category lists", () => {
       commands: {},
       gate: null,
       gateNeedsCaller: false,
+      report: { activated: [], skipped: [] },
     });
   });
 });
@@ -391,7 +569,7 @@ describe("composeProfile — empty category lists", () => {
 describe("composeProfile — unknown profile names", () => {
   it("warns once per profile name absent from the unit array", () => {
     const { units, calls } = makeUnits();
-    const result = composeProfile(UNKNOWN_PROFILE, units, DEPS);
+    const result = composeProfile(UNKNOWN_PROFILE, units, BASE_CAPS);
 
     const warns = _getBufferForTesting().filter(
       (e) => e.event === "unknown_unit",
@@ -423,7 +601,7 @@ describe("composeProfile — unknown profile names", () => {
 
   it("warns nothing when every profile name is known", () => {
     const { units } = makeUnits();
-    composeProfile(ALL_UNITS_PROFILE, units, DEPS);
+    composeProfile(ALL_UNITS_PROFILE, units, BASE_CAPS);
     const warns = _getBufferForTesting().filter(
       (e) => e.event === "unknown_unit",
     );
@@ -442,7 +620,7 @@ describe("composeProfile — active set", () => {
       seen = activeSet;
       return makeHookContributions();
     });
-    composeProfile(ALL_UNITS_PROFILE, [unit], DEPS);
+    composeProfile(ALL_UNITS_PROFILE, [unit], BASE_CAPS);
 
     assert.ok(seen, "factory must receive the active set");
     assert.deepEqual([...seen.agents], ["dolphin", "beaver", "mola"]);

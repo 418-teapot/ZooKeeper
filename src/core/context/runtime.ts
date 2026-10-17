@@ -11,7 +11,7 @@
  * per-session record on `session.deleted` events — including the
  * session's binding in the shared agent registry
  * (`core/session-agent.ts`, read by units through
- * `Deps.resolveAgent`).  Adding a new session-level record means
+ * `Capabilities.resolveAgent`).  Adding a new session-level record means
  * registering its cleanup in `cleanupSession`, not adding a line to the
  * host's event handler.
  *

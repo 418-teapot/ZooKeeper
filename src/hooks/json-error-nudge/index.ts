@@ -17,10 +17,7 @@ import {
   JSON_ERROR_TOOL_EXCLUDES,
   recoverJsonError,
 } from "../../core/recovery.js";
-import {
-  type HookUnitDescriptor,
-  makeHookContributions,
-} from "../../core/slots.js";
+import { defineHook, makeHookContributions } from "../../core/unit.js";
 
 export {
   JSON_ERROR_PATTERNS,
@@ -34,9 +31,9 @@ export {
  *
  * Contributes the after-exec JSON parse error recovery nudge.
  */
-export const unit: HookUnitDescriptor = {
+export const unit = defineHook({
   name: "json-error-nudge",
-  kind: "hook",
+  needs: [],
   create() {
     return makeHookContributions({
       afterExec: [
@@ -47,4 +44,4 @@ export const unit: HookUnitDescriptor = {
       ],
     });
   },
-};
+});

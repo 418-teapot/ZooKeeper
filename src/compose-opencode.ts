@@ -38,30 +38,29 @@
 
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { createV1ToolHost } from "./adapters/opencode/tool-host.js";
 import { getAgentName } from "./core/client/agent.js";
+import type { ComposedResult } from "./core/compose.js";
+import { runIsolated } from "./core/compose.js";
 import type { ModeProfile } from "./core/config-types.js";
+import type { Capabilities } from "./core/ports/index.js";
 import { scanSkillDirectories } from "./core/skills.js";
+import {
+  collectToolDefinitionChanges,
+  createToolDefinitionView,
+  runToolDefinitionContributions,
+} from "./core/tool-definition.js";
 import type {
   AfterExecInput,
   AfterExecOutput,
   AgentContribution,
   CommandInput,
-  ComposedResult,
-  Deps,
   TextCompleteInput,
   TextCompleteOutput,
   ToolBeforeInput,
   ToolBeforeOutput,
   ToolDefinitionView,
   TransformOutput,
-} from "./core/slots.js";
-import { runIsolated } from "./core/slots.js";
-import {
-  collectToolDefinitionChanges,
-  createToolDefinitionView,
-  runToolDefinitionContributions,
-} from "./core/tool-definition.js";
+} from "./core/unit.js";
 import { log } from "./utils/logger.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -89,7 +88,7 @@ export const COMMAND_HANDLED = new Error(
 function logPluginInit(
   agents: Record<string, any>,
   skills: string[],
-  limits: Deps["limits"],
+  limits: Partial<Capabilities>["limits"],
 ): void {
   log("plugin", "plugin_init", "", undefined, "info", {
     agents: Object.keys(agents),
@@ -364,13 +363,9 @@ function transformSessionID(output: TransformOutput): string {
  */
 export function assembleOpenCodeHooks(
   composed: ComposedResult,
-  deps: Deps,
+  deps: Partial<Capabilities>,
   profile: ModeProfile | null,
 ): Record<string, any> {
-  const fullDeps: Deps = {
-    ...deps,
-    toolHost: deps.toolHost ?? createV1ToolHost(deps.client, deps.resolveAgent),
-  };
   return {
     ...(Object.keys(composed.tools).length > 0 ? { tool: composed.tools } : {}),
 
@@ -379,7 +374,7 @@ export function assembleOpenCodeHooks(
       logPluginInit(
         agents,
         composed.skills.map((s) => s.name),
-        fullDeps.limits,
+        deps.limits,
       );
       // No active profile → no profile-driven registration at all.
       if (profile === null) return;

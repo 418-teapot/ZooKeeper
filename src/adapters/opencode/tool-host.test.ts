@@ -36,7 +36,7 @@ afterEach(() => {
 /**
  * Build a session → agent resolver backed by a plain map.
  *
- * The resolver is the production wiring shape (`Deps.resolveAgent`
+ * The resolver is the production wiring shape (`Capabilities.resolveAgent`
  * reads the session-agent registry); tests keep their own map so the
  * "resolver must not write back" contract stays observable.
  */

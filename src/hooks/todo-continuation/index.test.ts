@@ -13,7 +13,9 @@
  */
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import type { Deps } from "../../core/slots.js";
+import { composeProfile } from "../../core/compose.js";
+import type { ModeProfile } from "../../core/config-types.js";
+import type { Capabilities } from "../../core/ports/index.js";
 import type { TodoStateStore } from "../../core/todo/store.js";
 import type { TodoPhase } from "../../core/todo/types.js";
 import { fakeStore } from "../../testkits/hooks.js";
@@ -52,7 +54,7 @@ const MIXED_PHASES: TodoPhase[] = [
 ];
 
 /** Assemble a partial deps object for unit-level tests. */
-function makeDeps(partial: Record<string, unknown>): Deps {
+function makeDeps(partial: Record<string, unknown>): Partial<Capabilities> {
   return {
     limits: {},
     contextConfig: {},
@@ -61,7 +63,7 @@ function makeDeps(partial: Record<string, unknown>): Deps {
     directory: "",
     resolveAgent: () => undefined,
     ...partial,
-  } as unknown as Deps;
+  } as unknown as Partial<Capabilities>;
 }
 
 /**
@@ -71,7 +73,7 @@ function makeDeps(partial: Record<string, unknown>): Deps {
  * @param hadActivity - Whether the settled turn made any tool call.
  * @returns The handler's decision.
  */
-async function settle(deps: Deps, hadActivity = true) {
+async function settle(deps: Partial<Capabilities>, hadActivity = true) {
   const composed = unit.create(deps, {
     agents: new Set(),
     skills: new Set(),
@@ -121,15 +123,24 @@ describe("todo-continuation unit — descriptor", () => {
     assert.equal(composed.onSettled[0].maxWakes, 5);
   });
 
-  it("contributes no settle handler without a valid config", () => {
-    const composed = unit.create(makeDeps({ continuationConfig: undefined }), {
-      agents: new Set(),
-      skills: new Set(),
-      hooks: new Set(["todo-continuation"]),
-      tools: new Set(),
-      commands: new Set(),
-    });
-    assert.deepEqual(composed.onSettled, []);
+  it("is skipped by the composition without a valid config", () => {
+    const profile: ModeProfile = {
+      name: "test",
+      agents: [],
+      skills: [],
+      hooks: ["todo-continuation"],
+      tools: [],
+      commands: [],
+    };
+    const result = composeProfile(
+      profile,
+      [unit],
+      makeDeps({ continuationConfig: undefined }),
+    );
+    assert.deepEqual(result.onSettled, []);
+    assert.deepEqual(result.report.skipped, [
+      { name: "todo-continuation", missing: ["continuationConfig"] },
+    ]);
   });
 });
 

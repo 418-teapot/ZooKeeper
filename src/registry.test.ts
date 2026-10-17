@@ -13,12 +13,13 @@ import assert from "node:assert/strict";
 import { mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, it } from "node:test";
-import type { ActiveSet, Deps } from "./core/slots.js";
+import type { Capabilities } from "./core/ports/index.js";
+import type { ActiveSet } from "./core/unit.js";
 import { discoverSkillUnits } from "./registry.js";
 import { makeTmpDir } from "./testkits/tmp.js";
 
 /** Minimal typed create() arguments; skill units ignore both. */
-const DEPS: Deps = {
+const DEPS: Partial<Capabilities> = {
   limits: {},
   contextConfig: {},
   client: {},

@@ -135,7 +135,7 @@ K8s 把控制论带进了软件工程：`Desired State → Observe → Compare �
 
 ## 4. 引擎（core/loop）
 
-引擎约 270 行，全部职责在 `src/core/loop/engine.ts`（含 `StopCause` 这一纯事实类型）；策略契约类型定义在 `src/core/slots.ts:517-564`。
+引擎约 270 行，全部职责在 `src/core/loop/engine.ts`；策略契约类型（含 `StopCause` 这一纯事实类型）定义在 `src/core/loop/settle.ts`。
 
 ### 4.1 接口
 
@@ -182,7 +182,7 @@ interface LoopEngine {
 ### 5.1 策略契约
 
 ```ts
-// src/core/slots.ts
+// src/core/loop/settle.ts
 interface SettledInput {              // 策略视野：停稳事实，无 cause 无预算
   sessionID: string;
   hadActivity: boolean;               // 本轮是否发生过任何工具调用（观测事实）

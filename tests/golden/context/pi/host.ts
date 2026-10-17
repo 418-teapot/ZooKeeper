@@ -54,10 +54,8 @@ import {
   type Block,
   type SessionState,
 } from "../../../../src/core/context/state.js";
-import type {
-  Deps,
-  TransformContribution,
-} from "../../../../src/core/slots.js";
+import type { Capabilities } from "../../../../src/core/ports/index.js";
+import type { TransformContribution } from "../../../../src/core/unit.js";
 import { REGISTRY } from "../../../../src/registry.js";
 import { createCompressTool } from "../../../../src/tools/compress.js";
 import { createDecompressTool } from "../../../../src/tools/decompress.js";
@@ -97,7 +95,7 @@ function composePruningTransform(
     tools: hasCompressTool ? ["compress"] : [],
     commands: [],
   };
-  const deps: Deps = {
+  const deps: Partial<Capabilities> = {
     limits: {},
     contextConfig: config,
     // pi has no SDK client — the dedup producer has no session-prompt

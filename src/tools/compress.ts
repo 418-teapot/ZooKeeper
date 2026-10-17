@@ -61,7 +61,7 @@ import {
 } from "../core/context/runtime.js";
 import type { Block, SessionState } from "../core/context/state.js";
 import { type NumberedItem, numberView } from "../core/context/view-refs.js";
-import type { ToolUnitDescriptor } from "../core/slots.js";
+import { defineTool } from "../core/unit.js";
 import { log } from "../utils/logger.js";
 
 type JsonSchemaStringArg = {
@@ -450,34 +450,18 @@ export function createCompressTool(
  * The tool contribution carries the batch range-mode compress adapter;
  * `name` doubles as the registry key and the tool key.
  */
-export const unit: ToolUnitDescriptor = {
+export const unit = defineTool({
   name: "compress",
-  kind: "tool",
-  create(deps) {
-    const host = deps.toolHost;
-    const metadata = buildCompressToolSpec(deps.contextConfig);
-    if (host === undefined) {
-      return {
-        kind: "tool",
-        tools: [
-          {
-            name: "compress",
-            ...metadata,
-            execute: async () => {
-              throw new Error(
-                "compress 在当前宿主上不可用：没有宿主工具服务就无法定位会话与上下文视图。" +
-                  "重试本工具无法解决，请告知用户或改用可用的宿主。",
-              );
-            },
-          },
-        ],
-      };
-    }
+  needs: ["toolHost", "contextConfig"],
+  create(caps) {
     return {
       kind: "tool",
       tools: [
-        { name: "compress", ...createCompressTool(host, deps.contextConfig) },
+        {
+          name: "compress",
+          ...createCompressTool(caps.toolHost, caps.contextConfig),
+        },
       ],
     };
   },
-};
+});

@@ -17,7 +17,8 @@ import type {
   ContextPruningConfig,
   ModeProfile,
 } from "../core/config-types.js";
-import type { Deps, ToolContribution } from "../core/slots.js";
+import type { Capabilities } from "../core/ports/index.js";
+import type { ToolContribution } from "../core/unit.js";
 import { buildPlugin } from "../opencode.js";
 import { REGISTRY } from "../registry.js";
 
@@ -71,7 +72,7 @@ export function composeToolHooks(
   tools: string[],
 ): Record<string, ToolContribution> | undefined {
   const resolveAgent = (): string | undefined => undefined;
-  const deps: Deps = {
+  const deps: Partial<Capabilities> = {
     limits: {},
     contextConfig,
     client,

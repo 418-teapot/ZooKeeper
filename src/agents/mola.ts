@@ -1,4 +1,4 @@
-import type { ActiveSet, AgentUnitDescriptor } from "../core/slots.js";
+import { type ActiveSet, defineAgent } from "../core/unit.js";
 import { envToolsRules } from "./env-tools.js";
 import {
   DELEGATION_DISCIPLINE_TEXT,
@@ -88,13 +88,13 @@ export function buildMolaPrompt(activeSet: ActiveSet): string {
  * received `activeSet` is forwarded to `buildMolaPrompt` so the prompt
  * adapts to the active mode profile (poly vs mono).
  */
-export const unit: AgentUnitDescriptor = {
+export const unit = defineAgent({
   name: "mola",
-  kind: "agent",
-  create(_deps, activeSet) {
+  needs: [],
+  create(_caps, activeSet) {
     return {
       kind: "agent",
       agents: [{ name: "mola", prompt: buildMolaPrompt(activeSet) }],
     };
   },
-};
+});

@@ -17,8 +17,12 @@ import assert from "node:assert/strict";
 import { afterEach, describe, it } from "node:test";
 import { registerProfileToolsInConfig } from "../compose-opencode.js";
 import type { ToolHost } from "../core/client/tool-host.js";
+import { composeProfile } from "../core/compose.js";
 import { parseContextConfig } from "../core/config-parse.js";
-import type { ContextPruningConfig } from "../core/config-types.js";
+import type {
+  ContextPruningConfig,
+  ModeProfile,
+} from "../core/config-types.js";
 import type { HostMessage, Projection } from "../core/context/lens.js";
 import {
   _resetForTesting as _resetModelLimitsForTesting,
@@ -684,28 +688,30 @@ describe("config hook — primary_tools", () => {
 // ---------------------------------------------------------------------------
 
 describe("decompress tool unsupported host", () => {
-  it("throws a single-line Chinese tool error when the host has no tool services", async () => {
-    const tool = decompressUnit.create(
-      {
-        limits: {},
-        contextConfig: ENABLED_CONFIG,
-        client: {},
-        directory: "",
-        resolveAgent: () => undefined,
-        toolHost: undefined,
-      },
-      {} as any,
-    ).tools[0];
+  it("is skipped by the composition when the host has no tool services", () => {
+    const profile: ModeProfile = {
+      name: "test",
+      agents: [],
+      skills: [],
+      hooks: [],
+      tools: ["decompress"],
+      commands: [],
+    };
 
-    // An unself-healable wiring fault is a real tool failure, never a
-    // success-shaped returned string.
-    await assert.rejects(
-      () => tool.execute({ blockId: "b1" }, mockToolContext),
-      (err: unknown) =>
-        err instanceof Error &&
-        !err.message.includes("\n") &&
-        /在当前宿主上不可用/.test(err.message) &&
-        /重试本工具无法解决/.test(err.message),
-    );
+    const result = composeProfile(profile, [decompressUnit], {
+      limits: {},
+      contextConfig: ENABLED_CONFIG,
+      client: {},
+      directory: "",
+      resolveAgent: () => undefined,
+      toolHost: undefined,
+    });
+
+    // A host without tool services never registers the tool: the unit is
+    // skipped before its factory runs and the missing port is reported.
+    assert.deepEqual(result.tools, {});
+    assert.deepEqual(result.report.skipped, [
+      { name: "decompress", missing: ["toolHost"] },
+    ]);
   });
 });

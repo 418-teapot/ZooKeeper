@@ -37,8 +37,8 @@ import {
   validateAnswer,
 } from "../core/ask.js";
 import { createSequencer } from "../core/sequencer.js";
-import type { ToolContribution, ToolUnitDescriptor } from "../core/slots.js";
 import { stripTerminalSequences } from "../core/terminal-sequences.js";
+import { defineTool, type ToolContribution } from "../core/unit.js";
 import { log } from "../utils/logger.js";
 
 // ---------------------------------------------------------------------------
@@ -427,16 +427,14 @@ export function createAskTool(
  * present exactly when the extension runs inside pi, so on OpenCode the
  * create() returns no tools and `ask` never registers (fail-closed).
  */
-export const unit: ToolUnitDescriptor = {
+export const unit = defineTool({
   name: "ask",
-  kind: "tool",
-  create(deps) {
-    if (deps.askFormHost === undefined) {
-      return { kind: "tool", tools: [] };
-    }
+  needs: ["askFormHost"],
+  wants: ["askTimeoutSeconds"],
+  create(caps) {
     return {
       kind: "tool",
-      tools: [createAskTool(deps.askFormHost, deps.askTimeoutSeconds)],
+      tools: [createAskTool(caps.askFormHost, caps.askTimeoutSeconds)],
     };
   },
-};
+});

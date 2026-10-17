@@ -60,7 +60,7 @@ import { log } from "../../utils/logger.js";
 import type { ToastPayload, ToolHost } from "../client/tool-host.js";
 import type { ContextPruningConfig } from "../config-types.js";
 import { MANUAL_COMPRESS_TEMPLATE } from "../prompts.js";
-import type { TransformOutput } from "../slots.js";
+import type { TransformOutput } from "../unit.js";
 import { computeProtectedStartOrdinal } from "./compress.js";
 import { formatTokens } from "./context-report.js";
 import { fold } from "./fold.js";

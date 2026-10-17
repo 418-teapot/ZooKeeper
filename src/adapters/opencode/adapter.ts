@@ -25,7 +25,7 @@ import type { ContextMessageEntry } from "./types.js";
  *
  * The returned adapter is typed over `unknown`; every method casts the
  * opaque conversation to the v1 `ContextMessageEntry[]` it actually is.
- * This keeps the `Deps.adapter` boundary host-agnostic while allowing the
+ * This keeps the `Capabilities.adapter` boundary host-agnostic while allowing the
  * OpenCode host to pass its native messages shape unchanged.
  *
  * @returns The v1 host adapter.

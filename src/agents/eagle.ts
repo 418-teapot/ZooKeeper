@@ -1,4 +1,4 @@
-import type { AgentUnitDescriptor } from "../core/slots.js";
+import { defineAgent } from "../core/unit.js";
 import { envToolsRules } from "./env-tools.js";
 import { MSG_REF_NO_ECHO } from "./parts.js";
 
@@ -65,13 +65,13 @@ ${envToolsRules()}
  *
  * Contributes the review-agent prompt for prompt injection.
  */
-export const unit: AgentUnitDescriptor = {
+export const unit = defineAgent({
   name: "eagle",
-  kind: "agent",
+  needs: [],
   create() {
     return {
       kind: "agent",
       agents: [{ name: "eagle", prompt: EAGLE_PROMPT }],
     };
   },
-};
+});

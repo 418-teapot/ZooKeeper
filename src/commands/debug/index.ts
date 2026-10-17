@@ -17,7 +17,7 @@
  * @module
  */
 
-import type { CommandUnitDescriptor } from "../../core/slots.js";
+import { defineCommand } from "../../core/unit.js";
 import { defaultAutoDebugFs } from "../../hooks/auto-debug/workspace-fs.js";
 import { defaultZdebugExec } from "../../hooks/auto-debug/zdebug-exec.js";
 import { notifySessionError } from "../notify.js";
@@ -32,12 +32,13 @@ import { handleDebugCommand } from "./command.js";
  * normally — the handled short-route sentinel is thrown by a later
  * adapter layer.
  */
-export const unit: CommandUnitDescriptor = {
+export const unit = defineCommand({
   name: "debug",
-  kind: "command",
-  create(deps) {
-    const zdebugExec = deps.zdebugExec ?? defaultZdebugExec;
-    const fs = deps.autoDebugFs ?? defaultAutoDebugFs;
+  needs: ["directory"],
+  wants: ["zdebugExec", "autoDebugFs", "toolHost", "messageInjector"],
+  create(caps) {
+    const zdebugExec = caps.zdebugExec ?? defaultZdebugExec;
+    const fs = caps.autoDebugFs ?? defaultAutoDebugFs;
     return {
       kind: "command",
       commands: [
@@ -47,19 +48,19 @@ export const unit: CommandUnitDescriptor = {
           handle: async (input) => {
             try {
               await handleDebugCommand(
-                deps.toolHost,
+                caps.toolHost,
                 input.sessionID,
                 input.arguments,
                 {
                   zdebugExec,
                   fs,
-                  directory: deps.directory,
-                  messageInjector: deps.messageInjector,
+                  directory: caps.directory,
+                  messageInjector: caps.messageInjector,
                 },
               );
             } catch (err) {
               await notifySessionError(
-                deps.toolHost,
+                caps.toolHost,
                 input.sessionID,
                 err,
                 "debug-command",
@@ -71,4 +72,4 @@ export const unit: CommandUnitDescriptor = {
       ],
     };
   },
-};
+});

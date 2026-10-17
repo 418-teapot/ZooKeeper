@@ -15,12 +15,9 @@ import {
 } from "./compose-opencode.js";
 import { composeProfile } from "./core/compose.js";
 import { initPluginLogger, parseLimits } from "./core/config-parse.js";
+import type { Capabilities } from "./core/ports/index.js";
 import { sessionAgentRegistry } from "./core/session-agent.js";
-import type {
-  Deps,
-  TextCompleteOutput,
-  TransformOutput,
-} from "./core/slots.js";
+import type { TextCompleteOutput, TransformOutput } from "./core/unit.js";
 import { buildPlugin } from "./opencode.js";
 import { _getBufferForTesting, _resetForTesting } from "./utils/logger.js";
 
@@ -576,7 +573,7 @@ describe("runAfterHandlers", () => {
 // ---------------------------------------------------------------------------
 
 /** Minimal deps: only `limits`/`contextConfig` are read at assembly. */
-const DEPS: Deps = {
+const DEPS: Partial<Capabilities> = {
   limits: {},
   contextConfig: {},
   client: {},

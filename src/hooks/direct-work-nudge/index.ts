@@ -12,10 +12,7 @@ export {
 } from "../../core/prompts.js";
 
 import { resolveTodoSource } from "../../core/client/todo.js";
-import {
-  type HookUnitDescriptor,
-  makeHookContributions,
-} from "../../core/slots.js";
+import { defineHook, makeHookContributions } from "../../core/unit.js";
 import { nudgeDirectWork, nudgeDirectWorkForAgent } from "./hook";
 
 export { nudgeDirectWork, nudgeDirectWorkForAgent };
@@ -24,18 +21,19 @@ export { nudgeDirectWork, nudgeDirectWorkForAgent };
  * Direct-work-nudge hook unit descriptor.
  *
  * Contributes the after-exec nudge, gated on the session's resolved
- * agent (dolphin only) via `Deps.resolveAgent` (fail-closed: an
+ * agent (dolphin only) via `Capabilities.resolveAgent` (fail-closed: an
  * unresolved session is treated as "not dolphin").
  *
  * The todo source is resolved once per composition via
  * `resolveTodoSource` (state store, then capable host client, else no
  * todo contribution).
  */
-export const unit: HookUnitDescriptor = {
+export const unit = defineHook({
   name: "direct-work-nudge",
-  kind: "hook",
-  create(deps) {
-    const source = resolveTodoSource(deps);
+  needs: ["client", "directory", "resolveAgent"],
+  wants: ["todoStore"],
+  create(caps) {
+    const source = resolveTodoSource(caps);
     return makeHookContributions({
       afterExec: [
         {
@@ -43,11 +41,11 @@ export const unit: HookUnitDescriptor = {
           handle: (input, output) =>
             nudgeDirectWorkForAgent(input, output, {
               todoSource: source,
-              planDir: deps.directory,
-              agent: deps.resolveAgent(input.sessionID),
+              planDir: caps.directory,
+              agent: caps.resolveAgent(input.sessionID),
             }),
         },
       ],
     });
   },
-};
+});

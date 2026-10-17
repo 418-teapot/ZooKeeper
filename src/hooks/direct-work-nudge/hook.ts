@@ -32,7 +32,7 @@ import { log } from "../../utils/logger.js";
  *
  * Fires on edit/write/grep/glob tool calls regardless of agent identity.
  * Agent gating is the caller's responsibility — the hook unit resolves
- * the session's agent through `Deps.resolveAgent` before calling this
+ * the session's agent through `Capabilities.resolveAgent` before calling this
  * function.
  *
  * Non-null output gets the nudge appended. Non-matching tools are skipped.
@@ -119,7 +119,7 @@ export async function nudgeDirectWork(
 /**
  * Agent-gated wrapper around `nudgeDirectWork` (dolphin only).
  *
- * The hook unit resolves the session's agent via `Deps.resolveAgent`
+ * The hook unit resolves the session's agent via `Capabilities.resolveAgent`
  * and passes it here.  When the agent is not the orchestrator
  * (`ORCHESTRATOR_AGENT_NAME`; including unknown), the nudge is skipped and
  * one debug entry (`nudge_skipped` / `not_dolphin`) is logged — mirroring

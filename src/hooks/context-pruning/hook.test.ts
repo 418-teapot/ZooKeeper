@@ -29,6 +29,8 @@ import assert from "node:assert/strict";
 import { afterEach, describe, it } from "node:test";
 import { createV1Adapter } from "../../adapters/opencode/adapter.js";
 import type { ToolHost } from "../../core/client/tool-host.js";
+import { composeProfile } from "../../core/compose.js";
+import type { ModeProfile } from "../../core/config-types.js";
 import type { HostAdapter, HostMessage } from "../../core/context/lens.js";
 import { project } from "../../core/context/lens.js";
 import { PRUNED_TOOL_OUTPUT_REPLACEMENT } from "../../core/context/message-parts.js";
@@ -55,7 +57,8 @@ import {
 } from "../../core/context/runtime.js";
 import { computeSpanHash } from "../../core/context/spanhash.js";
 import { allocateBlockId, markKey } from "../../core/context/state.js";
-import type { ActiveSet, Deps } from "../../core/slots.js";
+import type { Capabilities } from "../../core/ports/index.js";
+import type { ActiveSet } from "../../core/unit.js";
 import { _getBufferForTesting, _resetForTesting } from "../../utils/logger.js";
 import { unit } from "./index.js";
 
@@ -1962,7 +1965,7 @@ describe("unit.create enablement", () => {
   };
 
   it("contributes the transform handler when an adapter is wired", () => {
-    const deps: Deps = {
+    const deps: Partial<Capabilities> = {
       limits: {},
       contextConfig: {},
       client: {},
@@ -1981,8 +1984,8 @@ describe("unit.create enablement", () => {
     assert.ok(!_getBufferForTesting().some((e) => e.event === "unit_disabled"));
   });
 
-  it("contributes no transform handler when adapter is undefined (fail-closed)", () => {
-    const deps: Deps = {
+  it("is skipped by the composition when adapter is undefined (fail-closed)", () => {
+    const deps: Partial<Capabilities> = {
       limits: {},
       contextConfig: {},
       client: {
@@ -1993,12 +1996,20 @@ describe("unit.create enablement", () => {
       directory: "/tmp/zoo",
       resolveAgent: () => undefined,
     };
+    const profile: ModeProfile = {
+      name: "test",
+      agents: [],
+      skills: [],
+      hooks: ["context-pruning"],
+      tools: [],
+      commands: [],
+    };
 
-    const contributions = unit.create(deps, activeSet);
+    const result = composeProfile(profile, [unit], deps);
 
-    assert.equal(contributions.kind, "hook");
-    assert.equal(contributions.transform.length, 0);
-    assert.deepEqual(contributions.afterExec, []);
-    assert.deepEqual(contributions.toolDefinition, []);
+    assert.deepEqual(result.transform, []);
+    assert.deepEqual(result.report.skipped, [
+      { name: "context-pruning", missing: ["adapter"] },
+    ]);
   });
 });

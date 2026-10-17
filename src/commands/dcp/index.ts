@@ -7,7 +7,7 @@
  * @module
  */
 
-import type { CommandUnitDescriptor } from "../../core/slots.js";
+import { defineCommand } from "../../core/unit.js";
 import { notifySessionError } from "../notify.js";
 import { handleDcpCommand } from "./command.js";
 
@@ -18,10 +18,11 @@ import { handleDcpCommand } from "./command.js";
  * surfaced via `notifySessionError` and the handler returns normally —
  * the handled short-route sentinel is thrown by a later adapter layer.
  */
-export const unit: CommandUnitDescriptor = {
+export const unit = defineCommand({
   name: "dcp",
-  kind: "command",
-  create(deps, activeSet) {
+  needs: ["contextConfig"],
+  wants: ["toolHost"],
+  create(caps, activeSet) {
     return {
       kind: "command",
       commands: [
@@ -31,15 +32,15 @@ export const unit: CommandUnitDescriptor = {
           handle: async (input) => {
             try {
               await handleDcpCommand(
-                deps.toolHost,
+                caps.toolHost,
                 input.sessionID,
                 input.arguments,
-                deps.contextConfig,
+                caps.contextConfig,
                 activeSet.tools.has("compress"),
               );
             } catch (err) {
               await notifySessionError(
-                deps.toolHost,
+                caps.toolHost,
                 input.sessionID,
                 err,
                 "context-command",
@@ -51,4 +52,4 @@ export const unit: CommandUnitDescriptor = {
       ],
     };
   },
-};
+});

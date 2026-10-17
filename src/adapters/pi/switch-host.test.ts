@@ -11,7 +11,7 @@
  */
 import assert from "node:assert/strict";
 import { afterEach, describe, it } from "node:test";
-import type { PiSwitchNewSessionOps } from "../../core/slots.js";
+import type { SwitchNewSessionOps } from "../../core/ports/switch.js";
 import type { PiCommandCtx } from "./handoff-target.js";
 import {
   _resetPendingSwitchOpsForTesting,
@@ -112,7 +112,7 @@ describe("createPiSwitchHost — session replacement", () => {
 
     await host.newSession({
       parentSession: "sess-old",
-      withSession: (ops: PiSwitchNewSessionOps) => {
+      withSession: (ops: SwitchNewSessionOps) => {
         ops.setActiveTools(["edit"]);
         ops.setWidget("zoo", ["mola"]);
       },
@@ -159,7 +159,7 @@ describe("createPiSwitchHost — process handoff slot", () => {
     const oldHost = makeDeps({ getCommandCtx: () => replacingCtx() });
     const old = createPiSwitchHost(oldHost.deps);
     await old.host.newSession({
-      withSession: (ops: PiSwitchNewSessionOps) => ops.setActiveTools(["lynx"]),
+      withSession: (ops: SwitchNewSessionOps) => ops.setActiveTools(["lynx"]),
     });
 
     const freshHost = makeDeps();
@@ -171,7 +171,7 @@ describe("createPiSwitchHost — process handoff slot", () => {
     const oldHost = makeDeps({ getCommandCtx: () => replacingCtx() });
     const old = createPiSwitchHost(oldHost.deps);
     await old.host.newSession({
-      withSession: (ops: PiSwitchNewSessionOps) => ops.setActiveTools(["lynx"]),
+      withSession: (ops: SwitchNewSessionOps) => ops.setActiveTools(["lynx"]),
     });
 
     _resetPendingSwitchOpsForTesting();

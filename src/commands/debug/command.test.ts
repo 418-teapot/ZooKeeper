@@ -14,11 +14,11 @@ import type { ToastPayload, ToolHost } from "../../core/client/tool-host.js";
 import type {
   AutoDebugDirEntry,
   AutoDebugFs,
-  CommandUnitDescriptor,
-  MessageInjector,
   ZdebugExec,
   ZdebugExecResult,
-} from "../../core/slots.js";
+} from "../../core/ports/autodebug.js";
+import type { MessageInjector } from "../../core/ports/handoff.js";
+import type { CommandUnitDescriptor } from "../../core/unit.js";
 import { _resetForTesting } from "../../utils/logger.js";
 import {
   buildStartupText,
@@ -133,7 +133,7 @@ function makeInjector(options: { error?: Error } = {}): {
   };
 }
 
-/** Build a `create`-compatible Deps/ActiveSet pair for the debug unit. */
+/** Build a `create`-compatible Capabilities/ActiveSet pair for the debug unit. */
 function makeDeps(
   overrides: Partial<Parameters<CommandUnitDescriptor["create"]>[0]> = {},
 ): Parameters<CommandUnitDescriptor["create"]>[0] {

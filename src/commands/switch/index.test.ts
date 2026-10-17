@@ -14,12 +14,15 @@ import { mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, it } from "node:test";
-import type { CommandUnitDescriptor, PiSwitchHost } from "../../core/slots.js";
+import { composeProfile } from "../../core/compose.js";
+import type { ModeProfile } from "../../core/config-types.js";
+import type { SwitchHost } from "../../core/ports/switch.js";
 import {
   _resetForTesting,
   getPrimary,
   setPrimary,
 } from "../../core/subagent/identity.js";
+import type { CommandUnitDescriptor } from "../../core/unit.js";
 import {
   _resetForTesting as _resetLoggerForTesting,
   initLogger,
@@ -61,7 +64,7 @@ afterEach(() => {
  * writes (and `getActive` reads) so tests can observe the
  * non-accumulation property across switches.  `newSession` records its
  * options and invokes the `withSession` callback against a synthetic
- * per-fresh-session facade (`PiSwitchNewSessionOps`), so tests can
+ * per-fresh-session facade (`SwitchNewSessionOps`), so tests can
  * observe exactly what the switch does inside `withSession`.
  *
  * The host's OWN `setActiveTools` / `setWidget` record into `hostCalls`
@@ -71,7 +74,7 @@ afterEach(() => {
  * this design prevents.
  */
 function mockHost(initialTools: string[] = []): {
-  host: PiSwitchHost;
+  host: SwitchHost;
   calls: {
     newSession: Array<{ parentSession?: string }>;
     /** Facade ops.setWidget calls inside withSession. */
@@ -104,7 +107,7 @@ function mockHost(initialTools: string[] = []): {
   };
   const baseline = [...initialTools];
   let active = [...initialTools];
-  const host: PiSwitchHost = {
+  const host: SwitchHost = {
     getBaselineTools: () => [...baseline],
     // The process-level host methods record separately: they must never
     // run inside `withSession` (pi invalidates them on replacement).
@@ -139,7 +142,7 @@ function mockHost(initialTools: string[] = []): {
   };
 }
 
-/** Build a `create`-compatible Deps/ActiveSet pair for the switch unit. */
+/** Build a `create`-compatible Capabilities/ActiveSet pair for the switch unit. */
 function makeDeps(
   overrides: Partial<Parameters<CommandUnitDescriptor["create"]>[0]> = {},
 ): Parameters<CommandUnitDescriptor["create"]>[0] {
@@ -174,7 +177,7 @@ describe("switch unit — command set follows config", () => {
     const { host } = mockHost();
     const contributions = unit.create(
       makeDeps({
-        piSwitchHost: host,
+        switchHost: host,
         agentModes: { dolphin: "primary", mola: "primary", beaver: "subagent" },
       }),
       makeActiveSet(["dolphin", "mola", "beaver"]),
@@ -190,7 +193,7 @@ describe("switch unit — command set follows config", () => {
     const { host } = mockHost();
     const contributions = unit.create(
       makeDeps({
-        piSwitchHost: host,
+        switchHost: host,
         agentModes: { mola: "primary", dolphin: "primary", lynx: "subagent" },
       }),
       makeActiveSet(["mola", "dolphin", "lynx"]),
@@ -205,7 +208,7 @@ describe("switch unit — command set follows config", () => {
     const { host } = mockHost();
     const contributions = unit.create(
       makeDeps({
-        piSwitchHost: host,
+        switchHost: host,
         agentModes: { beaver: "subagent" },
       }),
       makeActiveSet(["beaver"]),
@@ -217,20 +220,31 @@ describe("switch unit — command set follows config", () => {
   it("contributes zero commands when agentModes is absent", () => {
     const { host } = mockHost();
     const contributions = unit.create(
-      makeDeps({ piSwitchHost: host }),
+      makeDeps({ switchHost: host }),
       makeActiveSet(["dolphin", "mola"]),
     );
     assert.deepEqual(contributions.commands, []);
   });
 
-  it("contributes zero commands without the pi switch host (OpenCode)", () => {
-    // OpenCode never sets piSwitchHost — no /<agent> command registers.
-    const contributions = unit.create(
+  it("is skipped by the composition when the pi switch host is absent (OpenCode)", () => {
+    // OpenCode never sets switchHost — no /<agent> command registers.
+    const profile: ModeProfile = {
+      name: "test",
+      agents: [],
+      skills: [],
+      hooks: [],
+      tools: [],
+      commands: ["switch"],
+    };
+    const result = composeProfile(
+      profile,
+      [unit],
       makeDeps({ agentModes: { dolphin: "primary" } }),
-      makeActiveSet(["dolphin"]),
     );
-    assert.equal(contributions.kind, "command");
-    assert.deepEqual(contributions.commands, []);
+    assert.deepEqual(result.commands, {});
+    assert.deepEqual(result.report.skipped, [
+      { name: "switch", missing: ["switchHost"] },
+    ]);
   });
 });
 
@@ -243,7 +257,7 @@ describe("switch unit — new-session switch flow", () => {
     const { host, calls } = mockHost(["webfetch", "edit", "bash"]);
     const contributions = unit.create(
       makeDeps({
-        piSwitchHost: host,
+        switchHost: host,
         agentModes: { dolphin: "primary", mola: "primary" },
         agentPermissions: { dolphin: ["webfetch", "websearch"] },
       }),
@@ -271,7 +285,7 @@ describe("switch unit — new-session switch flow", () => {
     const { host, calls } = mockHost(["webfetch", "edit", "bash"]);
     const contributions = unit.create(
       makeDeps({
-        piSwitchHost: host,
+        switchHost: host,
         agentModes: { dolphin: "primary", mola: "primary" },
         agentPermissions: { dolphin: ["webfetch", "websearch"] },
       }),
@@ -299,7 +313,7 @@ describe("switch unit — new-session switch flow", () => {
     const { host, calls } = mockHost(["webfetch", "edit"]);
     const contributions = unit.create(
       makeDeps({
-        piSwitchHost: host,
+        switchHost: host,
         agentModes: { dolphin: "primary", mola: "primary" },
         // mola has no tool-level denies (sub-table only).
         agentPermissions: { mola: [] },
@@ -321,7 +335,7 @@ describe("switch unit — new-session switch flow", () => {
   it("skips the tool trim when the baseline is unavailable", async () => {
     const { calls } = mockHost();
     // A host without a captured baseline returns undefined.
-    const bareHost: PiSwitchHost = {
+    const bareHost: SwitchHost = {
       getBaselineTools: () => undefined,
       setActiveTools: (names) => calls.setActiveTools.push(names),
       setWidget: (key, lines) => {
@@ -349,7 +363,7 @@ describe("switch unit — new-session switch flow", () => {
     // Filtering it would wipe every tool (fail-open), so the trim must
     // be skipped and the active set must never become `[]`.
     const { calls } = mockHost();
-    const emptyBaselineHost: PiSwitchHost = {
+    const emptyBaselineHost: SwitchHost = {
       getBaselineTools: () => [],
       setActiveTools: (names) => calls.setActiveTools.push(names),
       setWidget: (key, lines) => {
@@ -389,7 +403,7 @@ describe("switch unit — new-session switch flow", () => {
     const { host, calls, hostCalls } = mockHost(["webfetch", "edit", "bash"]);
     const contributions = unit.create(
       makeDeps({
-        piSwitchHost: host,
+        switchHost: host,
         agentModes: { dolphin: "primary", mola: "primary" },
         agentPermissions: { dolphin: ["webfetch", "websearch"] },
       }),
@@ -419,7 +433,7 @@ describe("switch unit — new-session switch flow", () => {
     // created, so the primary must return to the previous value.
     const { calls } = mockHost();
     let withSessionRan = false;
-    const cancellingHost: PiSwitchHost = {
+    const cancellingHost: SwitchHost = {
       getBaselineTools: () => [],
       setActiveTools: (names) => calls.setActiveTools.push(names),
       setWidget: (key, lines) => {
@@ -457,7 +471,7 @@ describe("switch unit — new-session switch flow", () => {
       setWidget: (key: string, lines: string[] | undefined) => {
         calls.withSessionWidget.push([key, lines]);
       },
-    } as unknown as PiSwitchHost;
+    } as unknown as SwitchHost;
     setPrimary("mola");
     await assert.rejects(
       () => applySwitch("dolphin", ["webfetch"], bareHost, "sess"),

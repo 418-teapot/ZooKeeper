@@ -25,10 +25,10 @@ import { join } from "node:path";
 import type { ToolHost } from "../../core/client/tool-host.js";
 import type {
   AutoDebugFs,
-  MessageInjector,
   ZdebugExec,
   ZdebugExecResult,
-} from "../../core/slots.js";
+} from "../../core/ports/autodebug.js";
+import type { MessageInjector } from "../../core/ports/handoff.js";
 import { log } from "../../utils/logger.js";
 
 /** Directory under the workspace holding the per-Case subdirectories. */
@@ -46,7 +46,7 @@ const CASE_ID_PATTERN = /^CASE-(\d+)$/;
  */
 export const MAX_CASE_ID_ATTEMPTS = 100;
 
-/** Deps the `/debug` handler needs from its unit factory. */
+/** Capabilities the `/debug` handler needs from its unit factory. */
 export interface DebugCommandOptions {
   /** Injected `zdebug` runner (defaults to the subprocess wrapper). */
   zdebugExec: ZdebugExec;

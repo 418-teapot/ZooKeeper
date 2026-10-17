@@ -9,14 +9,14 @@
  */
 
 import { executeHandoff } from "../../core/handoff.js";
-import type { CommandUnitDescriptor } from "../../core/slots.js";
+import { defineCommand } from "../../core/unit.js";
 import { notifySessionError } from "../notify.js";
 
 /**
  * `/go` command unit descriptor.
  *
  * The command contribution wraps `executeHandoff` with the host-specific
- * `handoffTarget` from `Deps`; when no handoff target is wired the
+ * `handoffTarget` from `Capabilities`; when no handoff target is wired the
  * command fails closed with the missing-client error.  Failures are
  * surfaced via `notifySessionError` through the host tool host (on
  * OpenCode the v1 tool host posts the identical ignored noReply message
@@ -25,10 +25,11 @@ import { notifySessionError } from "../notify.js";
  * normally — the handled short-route sentinel is thrown by a later
  * adapter layer.
  */
-export const unit: CommandUnitDescriptor = {
+export const unit = defineCommand({
   name: "go",
-  kind: "command",
-  create(deps) {
+  needs: ["handoffTarget", "directory"],
+  wants: ["toolHost"],
+  create(caps) {
     return {
       kind: "command",
       commands: [
@@ -37,21 +38,14 @@ export const unit: CommandUnitDescriptor = {
           description: "Approve plan and handoff to execution",
           handle: async (input) => {
             try {
-              const handoffTarget = deps.handoffTarget;
-              if (!handoffTarget) {
-                throw new Error(
-                  "Session creation API is not available. " +
-                    "Ensure the ZooKeeper plugin is properly loaded.",
-                );
-              }
               await executeHandoff({
-                handoffTarget,
+                handoffTarget: caps.handoffTarget,
                 sessionID: input.sessionID,
-                directory: deps.directory,
+                directory: caps.directory,
               });
             } catch (err) {
               await notifySessionError(
-                deps.toolHost,
+                caps.toolHost,
                 input.sessionID,
                 err,
                 "go-command",
@@ -63,4 +57,4 @@ export const unit: CommandUnitDescriptor = {
       ],
     };
   },
-};
+});

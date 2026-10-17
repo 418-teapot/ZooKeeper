@@ -26,11 +26,14 @@
  * @module
  */
 
-import type { PiSwitchHost, PiSwitchNewSessionOps } from "../../core/slots.js";
+import type {
+  SwitchHost,
+  SwitchNewSessionOps,
+} from "../../core/ports/switch.js";
 import { getPrimary, setPrimary } from "../../core/subagent/identity.js";
 import { log } from "../../utils/logger.js";
 
-export type { PiSwitchHost } from "../../core/slots.js";
+export type { SwitchHost } from "../../core/ports/switch.js";
 
 /**
  * Apply the primary-agent switch to the pi host.
@@ -75,7 +78,7 @@ export type { PiSwitchHost } from "../../core/slots.js";
 export async function applySwitch(
   name: string,
   deniedTools: readonly string[],
-  host: PiSwitchHost,
+  host: SwitchHost,
   sessionID: string,
 ): Promise<void> {
   const previous = getPrimary();
@@ -130,7 +133,7 @@ export async function applySwitch(
   try {
     result = await host.newSession({
       parentSession: sessionID,
-      withSession: (ops: PiSwitchNewSessionOps) => {
+      withSession: (ops: SwitchNewSessionOps) => {
         // 3. Post-replacement work runs through the per-fresh-session
         // facade only — the process-level host API is stale here.
         if (nextTools !== undefined) {

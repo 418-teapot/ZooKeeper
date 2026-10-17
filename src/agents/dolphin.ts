@@ -1,5 +1,5 @@
 import type { PromptVariantPair } from "../core/prompt-variant.js";
-import type { ActiveSet, AgentUnitDescriptor } from "../core/slots.js";
+import { type ActiveSet, defineAgent } from "../core/unit.js";
 import { envToolsRules } from "./env-tools.js";
 import {
   BEAVER_AGENT_LINE,
@@ -295,10 +295,10 @@ export function buildDolphinPrompt(activeSet: ActiveSet): string {
  * The received `activeSet` is forwarded to the prompt builder so the prompt
  * reflects the active profile's collaboration capabilities.
  */
-export const unit: AgentUnitDescriptor = {
+export const unit = defineAgent({
   name: "dolphin",
-  kind: "agent",
-  create(_deps, activeSet) {
+  needs: [],
+  create(_caps, activeSet) {
     return {
       kind: "agent",
       agents: [
@@ -310,4 +310,4 @@ export const unit: AgentUnitDescriptor = {
       ],
     };
   },
-};
+});

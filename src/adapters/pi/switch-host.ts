@@ -2,7 +2,7 @@
  * Pi host adapter — the `/<agent>` primary-switch host surface.
  *
  * The primary-switch command unit drives pi's session-replacement API
- * through the `PiSwitchHost` contract.  This module builds that surface
+ * through the `SwitchHost` contract.  This module builds that surface
  * from the pi entry point's live state: the shared untrimmed tool
  * baseline, the process-wide active tool set, the fleet widget (a `zoo`
  * widget write is a "primary changed" nudge, not a text update), the live
@@ -21,7 +21,10 @@
  * @module
  */
 
-import type { PiSwitchHost, PiSwitchNewSessionOps } from "../../core/slots.js";
+import type {
+  SwitchHost,
+  SwitchNewSessionOps,
+} from "../../core/ports/switch.js";
 import type { PiCommandCtx } from "./handoff-target.js";
 import type { PiToolHostContext } from "./tool-host.js";
 
@@ -131,7 +134,7 @@ export interface PiSwitchHostDeps {
  */
 export interface PiSwitchHostController {
   /** The host surface for the composition deps. */
-  host: PiSwitchHost;
+  host: SwitchHost;
   /** Apply and clear the pending post-replacement operations. */
   drainPendingOps(): void;
 }
@@ -165,7 +168,7 @@ export function createPiSwitchHost(
     ui?.setWidget?.(key, lines, { placement: "aboveEditor" });
   };
 
-  const host: PiSwitchHost = {
+  const host: SwitchHost = {
     getBaselineTools: () => deps.getBaselineTools(),
     setActiveTools: (names) => deps.setActiveTools(names),
     setWidget: (key, lines) => writeWidget(deps.getUi(), key, lines),
@@ -211,7 +214,7 @@ export function createPiSwitchHost(
           // replaced.
           deps.setContext(newCtx);
           const freshUi: PiSwitchUi = newCtx.ui;
-          const ops: PiSwitchNewSessionOps = {
+          const ops: SwitchNewSessionOps = {
             setWidget: (key, lines) => writeWidget(freshUi, key, lines),
             setActiveTools: (names) => store.stash({ activeTools: names }),
           };

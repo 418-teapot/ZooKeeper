@@ -67,21 +67,21 @@ import type {
   PiToolResultEvent,
   PiToolResultResult,
 } from "./adapters/pi/types.js";
+import type { ComposedResult } from "./core/compose.js";
+import { runIsolated, runIsolatedSync } from "./core/compose.js";
 import { setModelLimit } from "./core/context/model-limits.js";
-import type {
-  ComposedResult,
-  TextCompleteContribution,
-  TextCompleteInput,
-  TextCompleteOutput,
-  ToolContribution,
-  ToolDefinitionContribution,
-} from "./core/slots.js";
-import { runIsolated, runIsolatedSync } from "./core/slots.js";
 import {
   collectToolDefinitionChanges,
   createToolDefinitionView,
   runToolDefinitionContributions,
 } from "./core/tool-definition.js";
+import type {
+  TextCompleteContribution,
+  TextCompleteInput,
+  TextCompleteOutput,
+  ToolContribution,
+  ToolDefinitionContribution,
+} from "./core/unit.js";
 import { loadHtmlConverter } from "./core/webfetch/native.js";
 import type { HtmlConverter } from "./core/webfetch/pipeline.js";
 import { log } from "./utils/logger.js";
@@ -113,7 +113,7 @@ import type {
   AfterExecInput,
   AfterExecOutput,
   TransformOutput,
-} from "./core/slots.js";
+} from "./core/unit.js";
 
 // ---------------------------------------------------------------------------
 // Native fetch converter

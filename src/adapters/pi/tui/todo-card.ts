@@ -382,7 +382,7 @@ export function renderResult(
 }
 
 // ---------------------------------------------------------------------------
-// Deps-shaped wrapper
+// Capabilities-shaped wrapper
 // ---------------------------------------------------------------------------
 
 /**
@@ -390,7 +390,7 @@ export function renderResult(
  *
  * Mirrors `buildSubagentCardRenderer`: the loose `(args, theme, context)`
  * / `(result, options, theme, context)` signatures are what pi's tool
- * registration forwards, matched to the `Deps["todoRenderer"]` port shape.
+ * registration forwards, matched to the `Capabilities["todoRenderer"]` port shape.
  * `renderCall` renders a plain-text title, so it ignores the theme.
  */
 export function buildTodoCardRenderer(): {

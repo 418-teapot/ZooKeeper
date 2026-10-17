@@ -42,7 +42,11 @@ import { unit as dcpCommandUnit } from "./commands/dcp/index.js";
 import { unit as debugCommandUnit } from "./commands/debug/index.js";
 import { unit as goCommandUnit } from "./commands/go/index.js";
 import { unit as switchCommandUnit } from "./commands/switch/index.js";
-import type { SkillUnitDescriptor, UnitDescriptor } from "./core/slots.js";
+import {
+  defineSkill,
+  type SkillUnitDescriptor,
+  type UnitDescriptor,
+} from "./core/unit.js";
 import { unit as autoDebugUnit } from "./hooks/auto-debug/index.js";
 import { unit as contextPruningUnit } from "./hooks/context-pruning/index.js";
 import { unit as directWorkNudgeUnit } from "./hooks/direct-work-nudge/index.js";
@@ -120,13 +124,13 @@ export function discoverSkillUnits(skillsDir: string): SkillUnitDescriptor[] {
  * A data-only skill unit: registers the directory name, nothing else.
  */
 function makeSkillUnit(name: string): SkillUnitDescriptor {
-  return {
+  return defineSkill({
     name,
-    kind: "skill",
+    needs: [],
     create() {
       return { kind: "skill", skills: [{ name }] };
     },
-  };
+  });
 }
 
 /**

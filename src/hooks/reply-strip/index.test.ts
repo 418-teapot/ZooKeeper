@@ -11,7 +11,8 @@ import assert from "node:assert/strict";
 import { afterEach, describe, it } from "node:test";
 import { composeProfile } from "../../core/compose.js";
 import type { ModeProfile } from "../../core/config-types.js";
-import type { Deps, TextCompleteOutput } from "../../core/slots.js";
+import type { Capabilities } from "../../core/ports/index.js";
+import type { TextCompleteOutput } from "../../core/unit.js";
 import { REGISTRY } from "../../registry.js";
 import { _getBufferForTesting, _resetForTesting } from "../../utils/logger.js";
 import { unit } from "./index.js";
@@ -20,7 +21,7 @@ afterEach(() => {
   _resetForTesting();
 });
 
-const DEPS: Deps = {
+const DEPS: Partial<Capabilities> = {
   limits: {},
   contextConfig: {},
   client: {},

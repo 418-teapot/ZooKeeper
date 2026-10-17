@@ -15,10 +15,7 @@ export {
 } from "../../core/prompts.js";
 
 import { resolveTodoSource } from "../../core/client/todo.js";
-import {
-  type HookUnitDescriptor,
-  makeHookContributions,
-} from "../../core/slots.js";
+import { defineHook, makeHookContributions } from "../../core/unit.js";
 import { nudgePostSubagent } from "./hook.js";
 
 export { nudgePostSubagent };
@@ -31,19 +28,20 @@ export { nudgePostSubagent };
  * `resolveTodoSource` (state store, then capable host client, else no
  * todo contribution).
  */
-export const unit: HookUnitDescriptor = {
+export const unit = defineHook({
   name: "post-subagent-nudge",
-  kind: "hook",
-  create(deps) {
-    const source = resolveTodoSource(deps);
+  needs: ["client", "directory"],
+  wants: ["todoStore"],
+  create(caps) {
+    const source = resolveTodoSource(caps);
     return makeHookContributions({
       afterExec: [
         {
           name: "nudgePostSubagent",
           handle: (input, output) =>
-            nudgePostSubagent(source, input, output, deps.directory),
+            nudgePostSubagent(source, input, output, caps.directory),
         },
       ],
     });
   },
-};
+});

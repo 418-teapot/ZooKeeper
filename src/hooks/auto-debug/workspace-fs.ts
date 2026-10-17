@@ -10,7 +10,10 @@
  */
 
 import { readdir } from "node:fs/promises";
-import type { AutoDebugDirEntry, AutoDebugFs } from "../../core/slots.js";
+import type {
+  AutoDebugDirEntry,
+  AutoDebugFs,
+} from "../../core/ports/autodebug.js";
 
 /** Whether an error is a "path does not exist" failure. */
 function isMissing(err: unknown): boolean {

@@ -26,26 +26,23 @@ import {
   buildPiCommandRegistrationPlan,
   loadPiHtmlConverter,
 } from "../../compose-pi.js";
-import type { ToolHost } from "../../core/client/tool-host.js";
-import { composeProfile } from "../../core/compose.js";
 import {
-  parseAgentColors,
-  parseAgentModes,
-  parseAgentPermissions,
-  parseAskConfig,
-  parseAutoDebugConfig,
-  parseContextConfig,
-  parseContinuationConfig,
-  parseLimits,
-  parseModeProfile,
-} from "../../core/config-parse.js";
+  configCapabilities,
+  parseCommonConfig,
+} from "../../core/capabilities.js";
+import type { ToolHost } from "../../core/client/tool-host.js";
+import type { ComposedResult } from "../../core/compose.js";
+import { composeProfile } from "../../core/compose.js";
+import { parseAgentColors, parseAskConfig } from "../../core/config-parse.js";
 import type { AgentModeMap, ModeProfile } from "../../core/config-types.js";
 import type { HostAdapter } from "../../core/context/lens.js";
 import { createLoopEngine } from "../../core/loop/index.js";
+import type { AgentPermissionMap } from "../../core/permissions/deny-tools.js";
 import { parseSkillPermissions } from "../../core/permissions/skill-permissions.js";
+import type { Capabilities } from "../../core/ports/index.js";
+import type { SwitchHost } from "../../core/ports/switch.js";
 import { sessionAgentRegistry } from "../../core/session-agent.js";
 import { scanSkillDirectories } from "../../core/skills.js";
-import type { ComposedResult, Deps, PiSwitchHost } from "../../core/slots.js";
 import type { SubagentDriver } from "../../core/subagent/driver.js";
 import {
   derivePrimaries,
@@ -134,7 +131,7 @@ const __dirname = dirname(realpathSync(fileURLToPath(import.meta.url)));
  * @param profile - The active mode profile, or `null` when absent.
  * @param agentModes - Per-agent role map (`[agent.*].mode`), parsed
  *   fail-closed by `parseAgentModes`.
- * @returns The resolver handed to `Deps.resolveAgent`.
+ * @returns The resolver handed to `Capabilities.resolveAgent`.
  */
 export function buildPiResolveAgent(
   profile: ModeProfile | null,
@@ -186,7 +183,7 @@ export function buildPiResolveAgent(
  * The full registry is fed to the selection engine — pi composes every
  * category and consumes the agent, skill, after-exec, transform, and
  * command slots (the `unknown_unit` warning fires when a profile name
- * has no matching registry unit).  `Deps` are adapted to the pi host:
+ * has no matching registry unit).  `Capabilities` are adapted to the pi host:
  * `client` is empty, `directory` is the process working directory,
  * `resolveAgent` identifies each session through the shared
  * session-agent registry (subagent child sessions → their delegated
@@ -214,14 +211,14 @@ export function buildPiContributions(
   hostDeps?: {
     adapter?: HostAdapter<unknown>;
     toolHost?: ToolHost;
-    piSwitchHost?: PiSwitchHost;
+    switchHost?: SwitchHost;
     getCommandCtx?: () => PiCommandCtx | null | undefined;
     /**
      * Host user-message injector for the `/debug` command (only supplied
      * by the real pi entry point).  Undefined without it — `/debug`
      * reports the Case was created but could not auto-start.
      */
-    messageInjector?: Deps["messageInjector"];
+    messageInjector?: Partial<Capabilities>["messageInjector"];
     /**
      * Host subagent driver (only supplied by the real pi entry point).
      * Undefined without it — the subagent tool unit then contributes no
@@ -233,7 +230,7 @@ export function buildPiContributions(
      * entry point).  Undefined without it — the subagent tool stays
      * text-only.
      */
-    subagentRenderer?: Deps["subagentRenderer"];
+    subagentRenderer?: Partial<Capabilities>["subagentRenderer"];
     /**
      * Per-session todo state store (only on the pi host).  Built by the
      * entry point over its own transcript scan, so each extension instance
@@ -242,13 +239,13 @@ export function buildPiContributions(
      * (fail-closed, the subagent precedent), so `todo` never registers on
      * a host that cannot restore todo state from its transcript.
      */
-    todoStore?: Deps["todoStore"];
+    todoStore?: Partial<Capabilities>["todoStore"];
     /**
      * Host todo transcript-card renderer (only supplied by the real pi
      * entry point).  Undefined without it — the todo tool stays
      * text-only.
      */
-    todoRenderer?: Deps["todoRenderer"];
+    todoRenderer?: Partial<Capabilities>["todoRenderer"];
     /**
      * Lazily supplies the host's full untrimmed tool-name baseline for
      * subagent capability computation.  The baseline cannot be captured at
@@ -269,26 +266,26 @@ export function buildPiContributions(
      */
     directory?: string;
     /** Test seam: `zdebug` runner for the auto-debug strategy. */
-    zdebugExec?: Deps["zdebugExec"];
+    zdebugExec?: Partial<Capabilities>["zdebugExec"];
     /**
      * Native HTML→Markdown converter loader for the fetch tool (only
      * supplied by the real pi entry point).  Undefined without it — the
      * fetch tool unit contributes no tools (fail-closed, matching
      * OpenCode).
      */
-    loadHtmlConverter?: Deps["loadHtmlConverter"];
+    loadHtmlConverter?: Partial<Capabilities>["loadHtmlConverter"];
     /**
      * Host head truncator for the fetch tool (only supplied by the real pi
      * entry point).  Undefined without it — the fetch tool unit contributes
      * no tools (fail-closed, matching OpenCode).
      */
-    truncateHead?: Deps["truncateHead"];
+    truncateHead?: Partial<Capabilities>["truncateHead"];
     /**
      * Host form presentation for the ask tool (only supplied by the real pi
      * entry point).  Undefined without it — the ask tool unit contributes
      * no tools (fail-closed, matching OpenCode).
      */
-    askFormHost?: Deps["askFormHost"];
+    askFormHost?: Partial<Capabilities>["askFormHost"];
   },
   rawConfig?: any,
 ): {
@@ -296,27 +293,13 @@ export function buildPiContributions(
   composed: ComposedResult;
   limits: ValidationLimits;
   agentModes: AgentModeMap;
-  agentPermissions: ReturnType<typeof parseAgentPermissions>;
+  agentPermissions: AgentPermissionMap;
 } {
-  const limits = parseLimits(zooConfig);
-  const contextConfig = parseContextConfig(zooConfig);
-  // The auto-continuation budget, parsed fail to skip.  The owning
-  // strategy reads it through deps and declares it as its own wake
-  // allowance (`maxWakes`); the engine is never configured with it.
-  const continuationConfig = parseContinuationConfig(zooConfig);
-  // The auto-debug wake budget, parsed fail to skip.  The owning strategy
-  // reads it through deps and contributes no settle handler when the
-  // section is absent or invalid.
-  const autoDebugConfig = parseAutoDebugConfig(zooConfig);
+  const common = parseCommonConfig(zooConfig, rawConfig);
+  const { modeProfile, agentModes, agentPermissions, limits } = common;
   // The ask-tool timeout (seconds), parsed fail to skip.  Injected only
   // here (pi host) — the ask tool is not registered on OpenCode.
   const askConfig = parseAskConfig(zooConfig);
-  const modeProfile = parseModeProfile(zooConfig);
-  // The `agent` table lives at the top level of config.toml, so the
-  // fail-closed mode map and tool-level deny map are parsed from the
-  // whole parsed root (empty maps when no raw config was supplied).
-  const agentModes = parseAgentModes(rawConfig ?? {});
-  const agentPermissions = parseAgentPermissions(rawConfig ?? {});
 
   // The default primary (first in profile array order among the
   // agent-modes-marked primaries), used to seed the identity machinery
@@ -325,15 +308,10 @@ export function buildPiContributions(
   // (fail-closed at handoff time).
   const primaries = derivePrimaries(modeProfile?.agents ?? [], agentModes);
 
-  const deps: Deps = {
-    limits,
-    contextConfig,
-    continuationConfig,
-    autoDebugConfig,
-    agentModes,
-    agentPermissions,
+  const deps: Partial<Capabilities> = {
+    ...configCapabilities(common),
     askTimeoutSeconds: askConfig?.timeoutSeconds,
-    piSwitchHost: hostDeps?.piSwitchHost,
+    switchHost: hostDeps?.switchHost,
     // The pi subagent driver (in-process SDK session execution).  Only the
     // real pi entry point supplies one; unit tests and other hosts omit it
     // so the subagent tool never registers (fail-closed).
@@ -348,14 +326,10 @@ export function buildPiContributions(
     // point supplies one; without it the tool stays text-only.
     todoRenderer: hostDeps?.todoRenderer,
     // The full untrimmed tool baseline for subagent capability computation,
-    // read lazily: a getter so the supplier (pi's `getActiveTools`) runs at
-    // first subagent execution — which is always post-bind — never at
-    // extension-load time (pi forbids action methods then).  The tool unit
-    // reads this field only inside its `execute`, so composition itself
-    // never triggers the capture.
-    get subagentBaseline(): string[] | undefined {
-      return hostDeps?.subagentBaseline?.();
-    },
+    // passed through as a thunk: the unit invokes it inside `execute`,
+    // which is always post-load, so the supplier (pi's `getActiveTools`,
+    // forbidden during extension loading) never runs at assembly time.
+    subagentBaseline: hostDeps?.subagentBaseline,
     // The per-agent model map for subagent sessions, materialised by the
     // installer into `~/.pi/agent/agents.json` as `{provider, model}`
     // pairs (mapped values are concatenated `"provider/model"` strings).
@@ -504,7 +478,7 @@ export async function buildPiHandlers(
      */
     directory?: string;
     /** Test seam: `zdebug` runner for the auto-debug strategy. */
-    zdebugExec?: Deps["zdebugExec"];
+    zdebugExec?: Partial<Capabilities>["zdebugExec"];
   },
 ): Promise<PiEventHandlers> {
   // Mutable holder updated by every event handler so the pi adapter and
@@ -690,13 +664,13 @@ export async function buildPiHandlers(
         },
       })
     : undefined;
-  const piSwitchHost: PiSwitchHost | undefined = switchController?.host;
+  const switchHost: SwitchHost | undefined = switchController?.host;
   const { profile, composed, limits, agentPermissions } = buildPiContributions(
     zooConfig,
     {
       adapter,
       toolHost,
-      piSwitchHost,
+      switchHost,
       // Test seams: workspace root and `zdebug` runner for the auto-debug
       // strategy.  Both default to the real host behaviour when omitted.
       directory: overrides?.directory,

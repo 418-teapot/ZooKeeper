@@ -27,10 +27,7 @@
  */
 
 import { resolveTodoSource } from "../../core/client/todo.js";
-import {
-  type HookUnitDescriptor,
-  makeHookContributions,
-} from "../../core/slots.js";
+import { defineHook, makeHookContributions } from "../../core/unit.js";
 import { decide } from "./decide.js";
 
 /**
@@ -41,15 +38,13 @@ import { decide } from "./decide.js";
  * strategy's verdict.  All other slots stay empty.  Without a valid
  * `[zoo.continuation].max_wakes` the `onSettled` slot stays empty too.
  */
-export const unit: HookUnitDescriptor = {
+export const unit = defineHook({
   name: "todo-continuation",
-  kind: "hook",
-  create(deps) {
-    const maxWakes = deps.continuationConfig?.maxWakes;
-    if (maxWakes === undefined) {
-      return makeHookContributions();
-    }
-    const source = resolveTodoSource(deps);
+  needs: ["continuationConfig"],
+  wants: ["client", "todoStore"],
+  create(caps) {
+    const maxWakes = caps.continuationConfig.maxWakes;
+    const source = resolveTodoSource(caps);
     return makeHookContributions({
       onSettled: [
         {
@@ -63,4 +58,4 @@ export const unit: HookUnitDescriptor = {
       ],
     });
   },
-};
+});

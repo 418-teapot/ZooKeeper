@@ -28,7 +28,7 @@
 
 import { basename, join } from "node:path";
 import type { Decision } from "../../core/loop/index.js";
-import type { AutoDebugFs, ZdebugExec } from "../../core/slots.js";
+import type { AutoDebugFs, ZdebugExec } from "../../core/ports/autodebug.js";
 import { log } from "../../utils/logger.js";
 
 /** Why the auto-debug strategy withheld a wake. */

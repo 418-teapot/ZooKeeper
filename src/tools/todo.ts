@@ -19,7 +19,7 @@
  * session record), so a restart, a branch, or a compaction restores exactly
  * the state that was in effect at that point — and nothing is ever written to
  * a file.  The in-memory store is only a cache; it is the host-owned
- * `Deps.todoStore` instance, fed through the store's own single restore
+ * `Capabilities.todoStore` instance, fed through the store's own single restore
  * path.
  *
  * A call is one read-modify-write cycle over that cache, so the whole cycle
@@ -51,11 +51,6 @@
  */
 
 import type { ToolHost } from "../core/client/tool-host.js";
-import type {
-  Deps,
-  ToolContribution,
-  ToolUnitDescriptor,
-} from "../core/slots.js";
 import { applyEntries } from "../core/todo/apply.js";
 import { serializeSnapshot } from "../core/todo/serialize.js";
 import type { TodoStateStore } from "../core/todo/store.js";
@@ -66,6 +61,7 @@ import type {
   TodoOperation,
   TodoPhase,
 } from "../core/todo/types.js";
+import { defineTool, type ToolContribution } from "../core/unit.js";
 import { log } from "../utils/logger.js";
 
 /** The nine operations accepted by the state machine. */
@@ -656,18 +652,14 @@ export function createTodoTool(
  * contributes no tools, so the `todo` tool never registers on a host that
  * cannot restore todo state from its transcript.
  */
-export const unit: ToolUnitDescriptor = {
+export const unit = defineTool({
   name: "todo",
-  kind: "tool",
-  create(deps: Deps) {
-    const host = deps.toolHost;
-    const store = deps.todoStore;
-    if (host === undefined || store === undefined) {
-      return { kind: "tool", tools: [] };
-    }
+  needs: ["todoStore", "toolHost"],
+  wants: ["todoRenderer"],
+  create(caps) {
     return {
       kind: "tool",
-      tools: [createTodoTool(host, store, deps.todoRenderer)],
+      tools: [createTodoTool(caps.toolHost, caps.todoStore, caps.todoRenderer)],
     };
   },
-};
+});

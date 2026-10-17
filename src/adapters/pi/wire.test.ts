@@ -121,11 +121,9 @@ describe("buildPiContributions — profile-driven selection", () => {
       "function",
       "composed gate must be a function when delegation judges are enabled",
     );
-    // Tool/command units instantiate but pi never consumes their slots.
-    assert.deepEqual(Object.keys(composed.tools).sort(), [
-      "compress",
-      "decompress",
-    ]);
+    // Tool units require a tool host; this profile-driven composition
+    // carries none, so no tool activates.  Commands still compose.
+    assert.deepEqual(Object.keys(composed.tools).sort(), []);
     assert.deepEqual(Object.keys(composed.commands).sort(), ["dcp", "go"]);
   });
 
@@ -242,8 +240,8 @@ describe("buildPiContributions — profile-driven selection", () => {
   });
 
   it("the same todo-listing profile with no host ports → no todo tool", () => {
-    // Without the transcript scan the unit fails closed, so the composed
-    // tool surface stays exactly the host-port-free tools.
+    // Without the tool host the todo unit is skipped, so the composed
+    // tool surface stays empty.
     const zoo = {
       ...POLY_ZOO,
       mode: {
@@ -252,10 +250,7 @@ describe("buildPiContributions — profile-driven selection", () => {
     };
     const { composed } = buildPiContributions(zoo);
     assert.equal(composed.tools.todo, undefined);
-    assert.deepEqual(Object.keys(composed.tools).sort(), [
-      "compress",
-      "decompress",
-    ]);
+    assert.deepEqual(Object.keys(composed.tools).sort(), []);
   });
 });
 
@@ -865,7 +860,7 @@ describe("buildPiHandlers — primary-switch command wiring", () => {
    * running pi.ts's `newSession` wrapper's `withSession` callback against
    * the fresh `ReplacedSessionContext` (whose `ui.setWidget` forwards to
    * the recording callback).  The wrapper builds the
-   * `PiSwitchNewSessionOps` facade: `setWidget` binds to the fresh ui
+   * `SwitchNewSessionOps` facade: `setWidget` binds to the fresh ui
    * immediately; the tool trim is stashed into the module-level pending
    * slot and applied when the new session's first `before_agent_start`
    * drains it.

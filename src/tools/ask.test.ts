@@ -29,7 +29,10 @@ import {
   presentAskForm,
 } from "../adapters/pi/ask-form.js";
 import type { AskResult, NormalizedQuestion } from "../core/ask.js";
-import type { ActiveSet, Deps } from "../core/slots.js";
+import { composeProfile } from "../core/compose.js";
+import type { ModeProfile } from "../core/config-types.js";
+import type { Capabilities } from "../core/ports/index.js";
+import type { ActiveSet } from "../core/unit.js";
 import { formHarness } from "../testkits/ask-form.js";
 import { assembleAskResults, guardAnswers, parseAskArgs, unit } from "./ask.js";
 
@@ -577,10 +580,12 @@ describe("ask tool — contribution", () => {
 // ---------------------------------------------------------------------------
 
 describe("ask tool — unit descriptor", () => {
-  it("contributes zero tools without the form host (OpenCode)", () => {
-    const contributions = unit.create(makeDeps({}), activeSet());
-    assert.equal(contributions.kind, "tool");
-    assert.deepEqual(contributions.tools, []);
+  it("skips the unit and reports askFormHost without the form host (OpenCode)", () => {
+    const result = composeProfile(ASK_TOOL_PROFILE, [unit], makeDeps({}));
+    assert.deepEqual(result.tools, {});
+    assert.deepEqual(result.report.skipped, [
+      { name: "ask", missing: ["askFormHost"] },
+    ]);
   });
 
   it("contributes the ask tool when the form host is present", () => {
@@ -612,10 +617,10 @@ describe("ask tool — unit descriptor", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Deps helpers (same shape the neighbour tool tests use)
+// Capabilities helpers (same shape the neighbour tool tests use)
 // ---------------------------------------------------------------------------
 
-const FORM_HOST: NonNullable<Deps["askFormHost"]> = {
+const FORM_HOST: NonNullable<Partial<Capabilities>["askFormHost"]> = {
   present: presentAskForm,
 };
 
@@ -630,7 +635,9 @@ function unitTools() {
   return contributions.tools;
 }
 
-function makeDeps(overrides: Partial<Deps> = {}): Deps {
+function makeDeps(
+  overrides: Partial<Partial<Capabilities>> = {},
+): Partial<Capabilities> {
   return {
     limits: {
       minWords: 1,
@@ -645,7 +652,7 @@ function makeDeps(overrides: Partial<Deps> = {}): Deps {
     directory: "/tmp/zoo",
     resolveAgent: () => undefined,
     ...overrides,
-  } as unknown as Deps;
+  } as unknown as Partial<Capabilities>;
 }
 
 function activeSet(): ActiveSet {
@@ -657,3 +664,13 @@ function activeSet(): ActiveSet {
     commands: new Set(),
   };
 }
+
+/** A minimal mode profile enabling exactly the ask tool unit. */
+const ASK_TOOL_PROFILE: ModeProfile = {
+  name: "test",
+  agents: [],
+  skills: [],
+  hooks: [],
+  tools: ["ask"],
+  commands: [],
+};

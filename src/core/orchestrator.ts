@@ -15,8 +15,8 @@
  * The agent name of the system's orchestrator.
  *
  * Invariant: the orchestrator is always dolphin.  Callers resolve a
- * session's agent (through `Deps.resolveAgent`) and compare it to this name
- * to decide whether the session belongs to the orchestrator; an unresolved
- * session is not the orchestrator (fail-closed).
+ * session's agent (through `Capabilities.resolveAgent`) and compare it to
+ * this name to decide whether the session belongs to the orchestrator; an
+ * unresolved session is not the orchestrator (fail-closed).
  */
 export const ORCHESTRATOR_AGENT_NAME = "dolphin";

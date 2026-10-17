@@ -7,11 +7,12 @@
  */
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import type { ActiveSet, Deps } from "../core/slots.js";
+import type { Capabilities } from "../core/ports/index.js";
+import type { ActiveSet } from "../core/unit.js";
 import { buildMolaPrompt, unit } from "./mola.js";
 
 /** Minimal deps for unit descriptor instantiation. */
-const DEPS: Deps = {
+const DEPS: Partial<Capabilities> = {
   limits: {},
   contextConfig: {},
   client: {},

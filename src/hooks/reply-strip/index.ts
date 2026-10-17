@@ -20,12 +20,12 @@
 
 import { stripLineStartRefs } from "../../core/context/reply-strip.js";
 import {
-  type HookUnitDescriptor,
+  defineHook,
   makeHookContributions,
   type TextCompleteContribution,
   type TextCompleteInput,
   type TextCompleteOutput,
-} from "../../core/slots.js";
+} from "../../core/unit.js";
 import { log } from "../../utils/logger.js";
 
 /**
@@ -72,12 +72,12 @@ export function createReplyStripHandler(): TextCompleteContribution {
  * composition: an absent unit contributes no handler and no host event
  * key.
  */
-export const unit: HookUnitDescriptor = {
+export const unit = defineHook({
   name: "reply-strip",
-  kind: "hook",
+  needs: [],
   create() {
     return makeHookContributions({
       textComplete: [createReplyStripHandler()],
     });
   },
-};
+});

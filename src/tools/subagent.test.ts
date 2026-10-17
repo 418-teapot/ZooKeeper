@@ -21,9 +21,11 @@
 import assert from "node:assert/strict";
 import { afterEach, beforeEach, describe, it } from "node:test";
 import type { ToolHost } from "../core/client/tool-host.js";
+import { composeProfile } from "../core/compose.js";
+import type { ModeProfile } from "../core/config-types.js";
 import type { Projection } from "../core/context/lens.js";
 import { project } from "../core/context/lens.js";
-import type { ActiveSet, Deps } from "../core/slots.js";
+import type { Capabilities } from "../core/ports/index.js";
 import type {
   SubagentDriver,
   SubagentProgress,
@@ -39,6 +41,7 @@ import {
   resetRegistry,
   topLevelRuns,
 } from "../core/subagent/registry.js";
+import type { ActiveSet } from "../core/unit.js";
 import {
   _getBufferForTesting,
   _resetForTesting as _resetLoggerForTesting,
@@ -93,8 +96,10 @@ function fakeDriver(result: SubagentResult): {
   return { driver, calls };
 }
 
-/** Build a `create`-compatible Deps with the given overrides. */
-function makeDeps(overrides: Partial<Deps> = {}): Deps {
+/** Build a `create`-compatible Capabilities with the given overrides. */
+function makeDeps(
+  overrides: Partial<Partial<Capabilities>> = {},
+): Partial<Capabilities> {
   return {
     limits: {},
     contextConfig: {},
@@ -115,7 +120,10 @@ function makeDeps(overrides: Partial<Deps> = {}): Deps {
 }
 
 /** The contributed subagent tool for a set of deps and an active set. */
-function tool(deps: Deps, activeSet: ActiveSet = emptyActiveSet()) {
+function tool(
+  deps: Partial<Capabilities>,
+  activeSet: ActiveSet = emptyActiveSet(),
+) {
   const contributions = unit.create(deps, activeSet);
   assert.equal(contributions.kind, "tool");
   assert.equal(contributions.tools.length, 1, "exactly one tool contributed");
@@ -137,17 +145,23 @@ function emptyActiveSet(): ActiveSet {
 // Fail-closed registration
 // ---------------------------------------------------------------------------
 
+/** A minimal mode profile enabling exactly the subagent tool unit. */
+const SUBAGENT_TOOL_PROFILE: ModeProfile = {
+  name: "test",
+  agents: [],
+  skills: [],
+  hooks: [],
+  tools: ["subagent"],
+  commands: [],
+};
+
 describe("subagent tool unit — fail-closed registration", () => {
-  it("contributes zero tools when no subagentDriver is in deps (OpenCode)", () => {
-    const contributions = unit.create(makeDeps(), {
-      agents: new Set(),
-      skills: new Set(),
-      hooks: new Set(),
-      tools: new Set(),
-      commands: new Set(),
-    });
-    assert.equal(contributions.kind, "tool");
-    assert.deepEqual(contributions.tools, []);
+  it("skips the unit and reports subagentDriver when no driver is in deps (OpenCode)", () => {
+    const result = composeProfile(SUBAGENT_TOOL_PROFILE, [unit], makeDeps());
+    assert.deepEqual(result.tools, {});
+    assert.deepEqual(result.report.skipped, [
+      { name: "subagent", missing: ["subagentDriver"] },
+    ]);
   });
 });
 
@@ -245,7 +259,7 @@ describe("subagent tool execute — successful delegation", () => {
     const t = tool(
       makeDeps({
         subagentDriver: driver,
-        subagentBaseline: ["bash", "edit", "webfetch", "websearch"],
+        subagentBaseline: () => ["bash", "edit", "webfetch", "websearch"],
         agentPermissions: { beaver: ["webfetch", "websearch"] },
       }),
     );
@@ -278,7 +292,7 @@ describe("subagent tool execute — successful delegation", () => {
     const t = tool(
       makeDeps({
         subagentDriver: driver,
-        subagentBaseline: ["edit", "webfetch", "bash", "subagent"],
+        subagentBaseline: () => ["edit", "webfetch", "bash", "subagent"],
         agentPermissions: { beaver: ["webfetch", "websearch"] },
       }),
     );

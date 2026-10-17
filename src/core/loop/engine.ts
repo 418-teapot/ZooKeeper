@@ -36,15 +36,7 @@ import type {
   SettledContribution,
   SettledInput,
   SettleRequest,
-} from "../slots.js";
-
-/**
- * Why the agent's turn ended, as reported by a host.
- *
- * The engine consumes it for its settle interlock; only `"settled"`
- * proceeds to strategy consultation.
- */
-export type StopCause = "settled" | "awaiting-input" | "aborted";
+} from "./settle.js";
 
 /**
  * Why the engine withheld a wake before consulting a strategy.
@@ -56,19 +48,6 @@ export type EngineSilenceReason =
   | "not-settled"
   | "budget-exhausted"
   | "awaiting-activity";
-
-/**
- * A verdict for one settled turn.
- *
- * `wake` carries the text to deliver; `silence` carries a
- * machine-readable reason.  The reason vocabulary is the contributor's:
- * the engine knows only its own {@link EngineSilenceReason}, a strategy
- * names its own gates.  The generic parameter lets a strategy pin its
- * reason type while the engine consumes the widened default.
- */
-export type Decision<R extends string = string> =
-  | { kind: "wake"; text: string }
-  | { kind: "silence"; reason: R };
 
 /**
  * The winning strategy's verdict, labelled with the strategy that won.

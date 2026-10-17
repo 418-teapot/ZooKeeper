@@ -24,21 +24,12 @@ import { buildInfraHooks } from "./adapters/opencode/infra-hooks.js";
 import { createOpenCodeMessageInjector } from "./adapters/opencode/message-injector.js";
 import { createV1ToolHost } from "./adapters/opencode/tool-host.js";
 import { assembleOpenCodeHooks } from "./compose-opencode.js";
+import { configCapabilities, parseCommonConfig } from "./core/capabilities.js";
 import { composeProfile } from "./core/compose.js";
-import {
-  initPluginLogger,
-  parseAgentModes,
-  parseAgentPermissions,
-  parseAutoDebugConfig,
-  parseContextConfig,
-  parseContinuationConfig,
-  parseLimits,
-  parseModeProfile,
-} from "./core/config-parse.js";
-import type { ModeProfile } from "./core/config-types.js";
+import { initPluginLogger } from "./core/config-parse.js";
+import type { Capabilities } from "./core/ports/index.js";
 import { filterDisjointVariants } from "./core/prompt-variant.js";
 import { sessionAgentRegistry } from "./core/session-agent.js";
-import type { Deps } from "./core/slots.js";
 import { derivePrimaries } from "./core/subagent/identity.js";
 import { REGISTRY } from "./registry.js";
 import { log } from "./utils/logger.js";
@@ -68,20 +59,11 @@ export async function buildPlugin(
   rawConfig?: any,
   overrides?: {
     /** Test seam: `zdebug` runner for the auto-debug strategy. */
-    zdebugExec?: Deps["zdebugExec"];
+    zdebugExec?: Partial<Capabilities>["zdebugExec"];
   },
 ) {
-  const limits = parseLimits(zooConfig);
-  const contextConfig = parseContextConfig(zooConfig);
-  const modeProfile: ModeProfile | null = parseModeProfile(zooConfig);
-  // The `agent` table lives at the top level of config.toml, so the
-  // fail-closed mode map is parsed from the whole parsed root (empty map
-  // when no raw config was supplied).
-  const agentModes = parseAgentModes(rawConfig ?? {});
-  // Tool-level deny map for the primary-switch unit.  Populated for
-  // parity with the pi host; OpenCode never provides `piSwitchHost`, so
-  // the switch unit contributes no commands there regardless.
-  const agentPermissions = parseAgentPermissions(rawConfig ?? {});
+  const common = parseCommonConfig(zooConfig, rawConfig);
+  const { modeProfile, agentModes } = common;
   const client = input.client;
   const directory: string = (input as any).directory ?? "";
 
@@ -90,16 +72,11 @@ export async function buildPlugin(
   // `sessionAgentRegistry` is the shared session → agent registry held
   // by core/session-agent.ts; the infrastructure hooks populate it via
   // `message.updated` events and the units read it through
-  // `deps.resolveAgent`.
+  // `resolveAgent`.
   const resolveAgent = (sessionID: string): string | undefined =>
     sessionAgentRegistry.resolve(sessionID);
-  const deps: Deps = {
-    limits,
-    contextConfig,
-    continuationConfig: parseContinuationConfig(zooConfig),
-    autoDebugConfig: parseAutoDebugConfig(zooConfig),
-    agentModes,
-    agentPermissions,
+  const provided: Partial<Capabilities> = {
+    ...configCapabilities(common),
     client,
     directory,
     zdebugExec: overrides?.zdebugExec,
@@ -113,8 +90,8 @@ export async function buildPlugin(
     ),
     messageInjector: createOpenCodeMessageInjector(client, resolveAgent),
   };
-  const composed = composeProfile(modeProfile, REGISTRY, deps);
-  const profileHooks = assembleOpenCodeHooks(composed, deps, modeProfile);
+  const composed = composeProfile(modeProfile, REGISTRY, provided);
+  const profileHooks = assembleOpenCodeHooks(composed, provided, modeProfile);
 
   // Assemble the model-family wordings from every enabled agent, tracking
   // the contributing agent so a dropped pair can be traced.  The union is

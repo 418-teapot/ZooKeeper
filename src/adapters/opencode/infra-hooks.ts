@@ -15,13 +15,13 @@
 import { setModelLimit } from "../../core/context/model-limits.js";
 import { cleanupSession } from "../../core/context/runtime.js";
 import { createLoopEngine } from "../../core/loop/index.js";
+import type { SettledContribution } from "../../core/loop/settle.js";
 import { ORCHESTRATOR_AGENT_NAME } from "../../core/orchestrator.js";
 import {
   applyModelVariant,
   type PromptVariantPair,
 } from "../../core/prompt-variant.js";
 import { sessionAgentRegistry } from "../../core/session-agent.js";
-import type { SettledContribution } from "../../core/slots.js";
 import { log } from "../../utils/logger.js";
 import { ABORT_ERROR_NAMES, newInjectedMessageID } from "./message-shape.js";
 import { classifyStopCause } from "./settle-cause.js";

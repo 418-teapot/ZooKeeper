@@ -8,16 +8,16 @@
  */
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import type {
-  ToolArgDefinition,
-  ToolDefinitionContribution,
-  ToolDefinitionView,
-} from "./slots.js";
 import {
   collectToolDefinitionChanges,
   createToolDefinitionView,
   runToolDefinitionContributions,
 } from "./tool-definition.js";
+import type {
+  ToolArgDefinition,
+  ToolDefinitionContribution,
+  ToolDefinitionView,
+} from "./unit.js";
 
 /** The view's argument map, asserted present. */
 function argsOf(view: ToolDefinitionView): Record<string, ToolArgDefinition> {

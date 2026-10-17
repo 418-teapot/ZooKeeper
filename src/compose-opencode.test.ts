@@ -12,7 +12,7 @@ import {
   applyToolDefinitionView,
   toToolDefinitionView,
 } from "./compose-opencode.js";
-import type { ToolArgDefinition, ToolDefinitionView } from "./core/slots.js";
+import type { ToolArgDefinition, ToolDefinitionView } from "./core/unit.js";
 
 /** The view's argument map, asserted present. */
 function argsOf(view: ToolDefinitionView): Record<string, ToolArgDefinition> {

@@ -48,7 +48,7 @@ import {
   getContextStateManager,
   setPendingViewChange,
 } from "../core/context/runtime.js";
-import type { ToolUnitDescriptor } from "../core/slots.js";
+import { defineTool } from "../core/unit.js";
 import { log } from "../utils/logger.js";
 
 type JsonSchemaStringArg = {
@@ -280,37 +280,18 @@ export function createDecompressTool(
  * The tool contribution carries the decompression adapter; `name`
  * doubles as the registry key and the tool key.
  */
-export const unit: ToolUnitDescriptor = {
+export const unit = defineTool({
   name: "decompress",
-  kind: "tool",
-  create(deps) {
-    const host = deps.toolHost;
-    const metadata = buildDecompressToolSpec(deps.contextConfig);
-    if (host === undefined) {
-      return {
-        kind: "tool",
-        tools: [
-          {
-            name: "decompress",
-            ...metadata,
-            execute: async () => {
-              throw new Error(
-                "decompress 在当前宿主上不可用：没有宿主工具服务就无法定位会话与上下文视图。" +
-                  "重试本工具无法解决，请告知用户或改用可用的宿主。",
-              );
-            },
-          },
-        ],
-      };
-    }
+  needs: ["toolHost", "contextConfig"],
+  create(caps) {
     return {
       kind: "tool",
       tools: [
         {
           name: "decompress",
-          ...createDecompressTool(host, deps.contextConfig),
+          ...createDecompressTool(caps.toolHost, caps.contextConfig),
         },
       ],
     };
   },
-};
+});

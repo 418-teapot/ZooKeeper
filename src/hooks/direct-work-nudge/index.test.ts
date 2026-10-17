@@ -12,7 +12,7 @@
 import assert from "node:assert/strict";
 import { afterEach, beforeEach, describe, it } from "node:test";
 import type { TodoSource } from "../../core/client/todo.js";
-import type { Deps } from "../../core/slots.js";
+import type { Capabilities } from "../../core/ports/index.js";
 import type { TodoPhase } from "../../core/todo/types.js";
 import { restoreEnv, saveEnv } from "../../testkits/env.js";
 import {
@@ -885,8 +885,8 @@ describe("options.todoSource drives the todo progress check", () => {
 // ---------------------------------------------------------------------------
 
 /** Assemble a partial deps object for unit-level tests. */
-function makeDeps(partial: Record<string, unknown>): Deps {
-  return partial as unknown as Deps;
+function makeDeps(partial: Record<string, unknown>): Partial<Capabilities> {
+  return partial as unknown as Partial<Capabilities>;
 }
 
 /** Activation sets enabling only this unit — create() does not consult them. */
@@ -905,7 +905,7 @@ const EMPTY_SETS = {
  * @param sid - Session ID for the simulated tool call.
  * @returns The mutated output object.
  */
-async function runComposedEdit(deps: Deps, sid: string) {
+async function runComposedEdit(deps: Partial<Capabilities>, sid: string) {
   const composed = unit.create(deps, EMPTY_SETS);
   assert.equal(composed.afterExec.length, 1);
   const output: { output?: string } = { output: "edited a file" };

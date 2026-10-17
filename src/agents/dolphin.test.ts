@@ -8,7 +8,8 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { ORCHESTRATOR_AGENT_NAME } from "../core/orchestrator.js";
-import type { ActiveSet, Deps } from "../core/slots.js";
+import type { Capabilities } from "../core/ports/index.js";
+import type { ActiveSet } from "../core/unit.js";
 import {
   buildDolphinPrompt,
   DOLPHIN_PROMPT_VARIANTS,
@@ -16,7 +17,7 @@ import {
 } from "./dolphin.js";
 
 /** Minimal deps for unit descriptor instantiation. */
-const DEPS: Deps = {
+const DEPS: Partial<Capabilities> = {
   limits: {},
   contextConfig: {},
   client: {},

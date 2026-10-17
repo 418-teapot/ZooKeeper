@@ -6,10 +6,7 @@
  * @module
  */
 
-import {
-  type HookUnitDescriptor,
-  makeHookContributions,
-} from "../../core/slots.js";
+import { defineHook, makeHookContributions } from "../../core/unit.js";
 import { judgeDelegationTarget } from "./hook.js";
 
 export { judgeDelegationTarget };
@@ -22,9 +19,9 @@ export { judgeDelegationTarget };
  * engine and runs only for `subagent` tool calls at the gate
  * boundary.
  */
-export const unit: HookUnitDescriptor = {
+export const unit = defineHook({
   name: "subagent-delegation",
-  kind: "hook",
+  needs: [],
   create() {
     return makeHookContributions({
       delegation: [
@@ -36,4 +33,4 @@ export const unit: HookUnitDescriptor = {
       ],
     });
   },
-};
+});

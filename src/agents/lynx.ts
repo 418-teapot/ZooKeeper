@@ -1,4 +1,4 @@
-import type { AgentUnitDescriptor } from "../core/slots.js";
+import { defineAgent } from "../core/unit.js";
 import { envToolsRules } from "./env-tools.js";
 import { MSG_REF_NO_ECHO } from "./parts.js";
 
@@ -50,13 +50,13 @@ ${envToolsRules()}
  *
  * Contributes the exploration-agent prompt for prompt injection.
  */
-export const unit: AgentUnitDescriptor = {
+export const unit = defineAgent({
   name: "lynx",
-  kind: "agent",
+  needs: [],
   create() {
     return {
       kind: "agent",
       agents: [{ name: "lynx", prompt: LYNX_PROMPT }],
     };
   },
-};
+});

@@ -1,16 +1,16 @@
 /**
- * Tests for `makeHookContributions` in `src/core/slots.ts`.
+ * Tests for the composition-time infrastructure: `makeHookContributions`
+ * (`src/core/unit.ts`) and the isolated contribution runners
+ * (`src/core/compose.ts`).
  *
- * Covers the default-empty slot set and partial overrides.
+ * Covers the default-empty slot set, partial overrides, and crash
+ * isolation of the runners.
  */
 import assert from "node:assert/strict";
 import { afterEach, describe, it } from "node:test";
 import { _getBufferForTesting, _resetForTesting } from "../utils/logger.js";
-import {
-  makeHookContributions,
-  runIsolated,
-  runIsolatedSync,
-} from "./slots.js";
+import { runIsolated, runIsolatedSync } from "./compose.js";
+import { makeHookContributions } from "./unit.js";
 
 afterEach(() => {
   _resetForTesting();

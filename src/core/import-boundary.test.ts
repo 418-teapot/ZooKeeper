@@ -7,7 +7,7 @@
  * that no static import/export specifier contains `/adapters/` or names a
  * host-only package (`@earendil-works/`, `@opencode-ai/`, `@opentui/`,
  * `solid-js`).  Those layers are shared across hosts and reach host
- * capabilities only through the `Deps` ports, so this enforces the
+ * capabilities only through the `Capabilities` ports, so this enforces the
  * host-agnostic invariant.
  *
  * Blind spots:

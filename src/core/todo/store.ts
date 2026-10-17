@@ -18,7 +18,7 @@
  *
  * Ownership is per host-extension instance: the host entry point creates
  * one store per extension factory execution and injects it through
- * `Deps.todoStore`, so each session (main or subagent child) reads and
+ * `Capabilities.todoStore`, so each session (main or subagent child) reads and
  * writes only the store backed by its own transcript.  A process-wide
  * singleton would let a late compose replace the candidate source and
  * make one session's cache miss scan another session's transcript.

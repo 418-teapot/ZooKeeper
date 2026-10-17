@@ -11,13 +11,15 @@
 import assert from "node:assert/strict";
 import { join } from "node:path";
 import { describe, it } from "node:test";
+import { composeProfile } from "../../core/compose.js";
+import type { ModeProfile } from "../../core/config-types.js";
 import type {
   AutoDebugDirEntry,
   AutoDebugFs,
-  Deps,
   ZdebugExec,
   ZdebugExecResult,
-} from "../../core/slots.js";
+} from "../../core/ports/autodebug.js";
+import type { Capabilities } from "../../core/ports/index.js";
 import { unit } from "./index.js";
 
 const WORKSPACE = "/ws";
@@ -88,7 +90,7 @@ function execFake(exitCode: number): ZdebugExec {
 }
 
 /** Assemble a partial deps object for unit-level tests. */
-function makeDeps(partial: Record<string, unknown>): Deps {
+function makeDeps(partial: Record<string, unknown>): Partial<Capabilities> {
   return {
     limits: {},
     contextConfig: {},
@@ -97,11 +99,11 @@ function makeDeps(partial: Record<string, unknown>): Deps {
     directory: WORKSPACE,
     resolveAgent: () => undefined,
     ...partial,
-  } as unknown as Deps;
+  } as unknown as Partial<Capabilities>;
 }
 
 /** Compose the unit and run its `onSettled` handler. */
-async function settle(deps: Deps) {
+async function settle(deps: Partial<Capabilities>) {
   const composed = unit.create(deps, {
     agents: new Set(),
     skills: new Set(),
@@ -153,15 +155,24 @@ describe("auto-debug unit — descriptor", () => {
     assert.equal(composed.onSettled[0].maxWakes, 7);
   });
 
-  it("contributes no settle handler without a valid config", () => {
-    const composed = unit.create(makeDeps({ autoDebugConfig: undefined }), {
-      agents: new Set(),
-      skills: new Set(),
-      hooks: new Set(["auto-debug"]),
-      tools: new Set(),
-      commands: new Set(),
-    });
-    assert.deepEqual(composed.onSettled, []);
+  it("is skipped by the composition without a valid config", () => {
+    const profile: ModeProfile = {
+      name: "test",
+      agents: [],
+      skills: [],
+      hooks: ["auto-debug"],
+      tools: [],
+      commands: [],
+    };
+    const result = composeProfile(
+      profile,
+      [unit],
+      makeDeps({ autoDebugConfig: undefined }),
+    );
+    assert.deepEqual(result.onSettled, []);
+    assert.deepEqual(result.report.skipped, [
+      { name: "auto-debug", missing: ["autoDebugConfig"] },
+    ]);
   });
 });
 

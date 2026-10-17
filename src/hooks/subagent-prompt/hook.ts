@@ -19,7 +19,7 @@ import {
 import type { DelegationRefusal, DelegationRequest } from "../../core/gate.js";
 import { applyNudge } from "../../core/nudge.js";
 import { SUBAGENT_GUIDANCE_HEADER } from "../../core/prompts.js";
-import type { ToolDefinitionView } from "../../core/slots.js";
+import type { ToolDefinitionView } from "../../core/unit.js";
 import {
   type ValidationLimits,
   validateSubagentPrompt,

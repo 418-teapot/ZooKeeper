@@ -6,12 +6,12 @@
  * delegate a task to a subagent (e.g. beaver / lynx / spider).  The tool
  * itself is host-independent: everything host-specific — how the sub-session
  * is created, how its messages stream, how termination is wired — lives
- * behind the `SubagentDriver` supplied through `Deps`, exactly like the pi
+ * behind the `SubagentDriver` supplied through `Capabilities`, exactly like the pi
  * switch surfaces.
  *
- * The unit contributes the `subagent` tool ONLY when a driver is present in
- * deps.  A host without a driver (OpenCode, which keeps its native `task`
- * tool) gets zero tools — the tool never registers there (fail-closed).
+ * The unit declares `subagentDriver` as a need, so composition skips it
+ * on hosts without a driver (OpenCode, which keeps its native `task`
+ * tool) — the tool never registers there (fail-closed).
  *
  * The tool contains no delegation policy and no prompt-formatting policy:
  * the composed delegation gate (contributed by hook-unit judges) is
@@ -35,7 +35,7 @@
  *    (never throws, never runs the driver).
  * 3. Computes the TARGET agent's capability set as `baseline − deniedTools`
  *    via `computeCapabilitySet`, where the baseline is the host's full
- *    untrimmed tool list (`deps.subagentBaseline`) and the denies come from
+ *    untrimmed tool list (`caps.subagentBaseline()`) and the denies come from
  *    the target's parsed `[agent.<name>].permission` tool-level denies.
  *    A missing baseline yields an empty set — permissions are never
  *    invented (fail-closed).
@@ -47,7 +47,7 @@
  *    result; the card body projects the run's log), and drives the
  *    lifecycle orchestration (`runSubagent`), forwarding the parent abort
  *    signal when the tool context carries one.
- * 5. Resolves the sub-session model (strict mode): `deps.subagentModels`
+ * 5. Resolves the sub-session model (strict mode): `caps.subagentModels`
  *    (agents.json, whose mapped values are `"provider/model"` strings) is
  *    the SOLE source.  A missing entry for the target
  *    fails closed with an actionable Chinese error and never runs the
@@ -61,11 +61,7 @@
  */
 
 import { computeCapabilitySet } from "../core/permissions/capability.js";
-import type {
-  Deps,
-  ToolContribution,
-  ToolUnitDescriptor,
-} from "../core/slots.js";
+import type { Capabilities } from "../core/ports/index.js";
 import type {
   SubagentDriver,
   SubagentResult,
@@ -74,6 +70,7 @@ import { resolveIdentity } from "../core/subagent/identity.js";
 import type { UpdateRunPatch } from "../core/subagent/registry.js";
 import { finishRun, startRun, updateRun } from "../core/subagent/registry.js";
 import { runSubagent } from "../core/subagent/run.js";
+import { defineTool, type ToolContribution } from "../core/unit.js";
 import { log } from "../utils/logger.js";
 
 type SubagentToolInput = {
@@ -209,7 +206,7 @@ function formatSubagentResult(result: SubagentResult): string {
  * tool stays text-only.
  *
  * @param driver - The host driver that executes the subagent.
- * @param deps - The dependency surfaces the tool needs: `toolHost` for the
+ * @param caps - The capability surfaces the tool needs: `toolHost` for the
  *   parent session id, `subagentBaseline` for the capability baseline,
  *   `agentModes` for the declared subagent role of the target,
  *   `agentPermissions` for the target's tool-level denies, and
@@ -218,22 +215,24 @@ function formatSubagentResult(result: SubagentResult): string {
  */
 export function createSubagentTool(
   driver: SubagentDriver,
-  deps: Pick<
-    Deps,
-    | "toolHost"
-    | "subagentBaseline"
-    | "agentModes"
-    | "agentPermissions"
-    | "subagentRenderer"
-    | "subagentModels"
-    | "onSubagentRunChange"
+  caps: Partial<
+    Pick<
+      Capabilities,
+      | "toolHost"
+      | "subagentBaseline"
+      | "agentModes"
+      | "agentPermissions"
+      | "subagentRenderer"
+      | "subagentModels"
+      | "onSubagentRunChange"
+    >
   >,
 ): ToolContribution {
-  const renderer = deps.subagentRenderer;
+  const renderer = caps.subagentRenderer;
   // Nudge the host's fleet widget after every registry mutation (the pi
   // entry point wires this to the widget's refresh).
   const notifyRunChange = (): void => {
-    deps.onSubagentRunChange?.();
+    caps.onSubagentRunChange?.();
   };
   return {
     name: "subagent",
@@ -280,9 +279,9 @@ export function createSubagentTool(
       // another mode (e.g. a primary) fails closed with an explanatory
       // text (never throws, never runs the driver).  The valid target
       // set comes from the parsed config only — no hardcoded agent list.
-      const targetMode = deps.agentModes?.[input.agent];
+      const targetMode = caps.agentModes?.[input.agent];
       if (targetMode !== "subagent") {
-        const sessionID = deps.toolHost?.resolveSessionId(toolCtx) ?? "";
+        const sessionID = caps.toolHost?.resolveSessionId(toolCtx) ?? "";
         log(
           "subagent-tool",
           "target_role_blocked",
@@ -301,9 +300,9 @@ export function createSubagentTool(
       // 3. Capability set for the TARGET agent: `baseline − deniedTools`.
       // A missing baseline yields an empty set (fail-closed — permissions
       // are never invented).
-      const deniedTools = deps.agentPermissions?.[input.agent] ?? [];
+      const deniedTools = caps.agentPermissions?.[input.agent] ?? [];
       const tools = computeCapabilitySet({
-        baseline: deps.subagentBaseline,
+        baseline: caps.subagentBaseline?.(),
         deniedTools,
       });
 
@@ -313,7 +312,7 @@ export function createSubagentTool(
       // falling back to the tool context's own `abort` field; otherwise a
       // fresh never-aborting signal is used (the driver owns the real
       // termination wiring).
-      const sessionID = deps.toolHost?.resolveSessionId(toolCtx);
+      const sessionID = caps.toolHost?.resolveSessionId(toolCtx);
       const parentSession =
         typeof sessionID === "string" && sessionID.length > 0
           ? sessionID
@@ -328,7 +327,7 @@ export function createSubagentTool(
             : new AbortController().signal;
 
       // 5. Model resolution for the sub-session (strict mode): the target's
-      //    `[agent.<name>].model` from agents.json (`deps.subagentModels`,
+      //    `[agent.<name>].model` from agents.json (`caps.subagentModels`,
       //    materialised by the installer as a `{provider, model}` pair whose
       //    mapped value is the concatenated `"provider/model"` string — the
       //    TS runtime never resolves `{env:}` tokens itself) is the SOLE
@@ -336,9 +335,9 @@ export function createSubagentTool(
       //    absent from it, fails closed with an actionable Chinese error and
       //    never runs the driver — there is no inheritance and no default
       //    fallback.
-      const configuredModel = deps.subagentModels?.[input.agent];
+      const configuredModel = caps.subagentModels?.[input.agent];
       if (typeof configuredModel !== "string" || configuredModel.length === 0) {
-        const sessionID = deps.toolHost?.resolveSessionId(toolCtx) ?? "";
+        const sessionID = caps.toolHost?.resolveSessionId(toolCtx) ?? "";
         log("subagent-tool", "model_missing", sessionID, undefined, "warn", {
           caller,
           target: input.agent,
@@ -499,22 +498,25 @@ export function createSubagentTool(
  * Subagent delegation tool unit descriptor.
  *
  * The tool contribution carries the subagent delegation adapter; the unit
- * contributes it ONLY when a host driver is present in deps — without one
- * (OpenCode) zero tools are contributed (fail-closed).
+ * declares `subagentDriver` as a need, so composition skips the unit on
+ * hosts without one (OpenCode) — zero tools are contributed (fail-closed).
  */
-export const unit: ToolUnitDescriptor = {
+export const unit = defineTool({
   name: "subagent",
-  kind: "tool",
-  create(deps) {
-    const driver = deps.subagentDriver;
-    if (!driver) {
-      // No host driver (OpenCode) — contribute no tools so the `subagent`
-      // tool never registers there; OpenCode keeps its native `task` tool.
-      return { kind: "tool", tools: [] };
-    }
+  needs: ["subagentDriver"],
+  wants: [
+    "toolHost",
+    "subagentBaseline",
+    "agentModes",
+    "agentPermissions",
+    "subagentRenderer",
+    "subagentModels",
+    "onSubagentRunChange",
+  ],
+  create(caps) {
     return {
       kind: "tool",
-      tools: [createSubagentTool(driver, deps)],
+      tools: [createSubagentTool(caps.subagentDriver, caps)],
     };
   },
-};
+});

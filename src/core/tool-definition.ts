@@ -19,7 +19,7 @@ import type {
   ToolArgDefinition,
   ToolDefinitionContribution,
   ToolDefinitionView,
-} from "./slots.js";
+} from "./unit.js";
 
 /**
  * Build the host-neutral view from a native tool definition.
