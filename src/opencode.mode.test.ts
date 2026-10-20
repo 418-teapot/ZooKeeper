@@ -257,14 +257,40 @@ describe("poly full profile — registration parity", () => {
   });
 
   it("tool.execute.before runs the gate delegation judge (blocked delegation)", async () => {
-    const client = { getSession: async () => ({ agent: "beaver" }) };
+    // The real OpenCode SDK client exposes `session.get` and has no
+    // `getSession`: the caller must come from the gate's async capability
+    // (registry miss → `session.get` fallback), not a fabricated method.
+    const client = { session: { get: async () => ({ agent: "beaver" }) } };
     const plugin = await makePlugin(POLY_ZOO, { client });
     await assert.rejects(
       plugin["tool.execute.before"](
         { tool: "task", sessionID: "s", callID: "c" },
         { args: { subagent_type: "kiwi" } },
       ),
-      /not allowed/,
+      /beaver can only delegate to lynx and spider/,
+    );
+  });
+
+  it("tool.execute.before allows an allowlisted delegation (registry caller)", async () => {
+    sessionAgentRegistry.bind("s", "beaver");
+    const plugin = await makePlugin();
+    await plugin["tool.execute.before"](
+      { tool: "task", sessionID: "s", callID: "c" },
+      { args: { subagent_type: "spider" } },
+    );
+  });
+
+  it("tool.execute.before refuses when the caller cannot be resolved", async () => {
+    // A session the host cannot attribute to any agent must not slip past
+    // the allowlist — the delegation judge fails closed.
+    const client = { session: { get: async () => ({}) } };
+    const plugin = await makePlugin(POLY_ZOO, { client });
+    await assert.rejects(
+      plugin["tool.execute.before"](
+        { tool: "task", sessionID: "s", callID: "c" },
+        { args: { subagent_type: "kiwi" } },
+      ),
+      /无法确定调用者身份/,
     );
   });
 
@@ -555,16 +581,10 @@ describe("event-key composition by enabled hook set", () => {
       /Subagent prompt format error/,
     );
 
-    // No delegation judge is enabled — a denied delegation passes.
-    const client = { getSession: async () => ({ agent: "beaver" }) };
-    const plugin2 = await makePlugin(
-      {
-        ...POLY_ZOO,
-        mode: { poly: { ...POLY_PROFILE, hooks: ["subagent-prompt"] } },
-      },
-      { client },
-    );
-    await plugin2["tool.execute.before"](
+    // No delegation judge is enabled — a denied delegation passes even
+    // for a caller the allowlist would otherwise restrict.
+    sessionAgentRegistry.bind("s", "beaver");
+    await plugin["tool.execute.before"](
       { tool: "task", sessionID: "s", callID: "c" },
       { args: { subagent_type: "kiwi" } },
     );
@@ -572,14 +592,13 @@ describe("event-key composition by enabled hook set", () => {
   });
 
   it("subagent-delegation only → delegation validation, no prompt validation", async () => {
-    const client = { getSession: async () => ({ agent: "beaver" }) };
-    const plugin = await makePlugin(
-      {
-        ...POLY_ZOO,
-        mode: { poly: { ...POLY_PROFILE, hooks: ["subagent-delegation"] } },
-      },
-      { client },
-    );
+    // The caller is read from the registry the `message.updated` handler
+    // writes, exactly as on the live host.
+    sessionAgentRegistry.bind("s", "beaver");
+    const plugin = await makePlugin({
+      ...POLY_ZOO,
+      mode: { poly: { ...POLY_PROFILE, hooks: ["subagent-delegation"] } },
+    });
 
     assert.equal(plugin["tool.definition"], undefined);
 

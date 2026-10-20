@@ -100,6 +100,13 @@ export interface PiEventHandlerDeps {
   drainPendingSwitchOps(): void;
   /** Drop a session's cached todo state after a tree navigation. */
   invalidateTodo(sessionId: string): void;
+  /**
+   * Resolve the caller of a delegation through pi's identity core (the
+   * same source the subagent tool uses).  No session argument: pi binds
+   * the identity per async chain, not per session.  `undefined` means
+   * unresolvable, which the delegation judge refuses.
+   */
+  resolveCallerAgent(): Promise<string | undefined>;
 }
 
 /**
@@ -317,7 +324,7 @@ export function createPiEventHandlers(
       if (ctx) contextHolder.current = ctx as PiToolHostContext;
       return messageEndHandler(event, ctx);
     },
-    toolCall(event, ctx?) {
+    async toolCall(event, ctx?) {
       if (ctx) contextHolder.current = ctx as PiToolHostContext;
       const gate = deps.composed.gate;
       // No strategy (valid profile) → allow.  The key is not registered in
@@ -332,10 +339,12 @@ export function createPiEventHandlers(
         event.input && typeof event.input === "object" ? event.input : {};
       const target = typeof raw.agent === "string" ? raw.agent : undefined;
       const prompt = typeof raw.prompt === "string" ? raw.prompt : undefined;
-      // The caller comes from the identity core only when at least one
+      // The caller comes from the identity resolver only when at least one
       // judge needs it; otherwise it is left undefined (OpenCode parity).
+      // An unresolvable caller stays `undefined`, which the judge refuses
+      // (fail-closed).
       const caller = deps.composed.gateNeedsCaller
-        ? resolveIdentity()?.name
+        ? await deps.resolveCallerAgent()
         : undefined;
 
       const refusal = gate({ caller, target, prompt });

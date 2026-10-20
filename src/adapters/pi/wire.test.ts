@@ -545,7 +545,7 @@ describe("buildPiHandlers — registerTool wiring", () => {
     // the subagent-prompt judge (the other composed judge) lets it through
     // and the allowlist judge is the one that refuses.
     setPrimary("beaver");
-    const refusal = handlers.toolCall(
+    const refusal = await handlers.toolCall(
       {
         type: "tool_call",
         toolName: "subagent",

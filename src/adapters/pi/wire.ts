@@ -294,6 +294,13 @@ export function buildPiContributions(
   limits: ValidationLimits;
   agentModes: AgentModeMap;
   agentPermissions: AgentPermissionMap;
+  /**
+   * The host's caller resolver, handed to the `tool_call` gate.  pi
+   * answers from the identity core (the current primary, or a bound
+   * subagent identity) — the same source the subagent tool uses to name
+   * the caller — so it needs no session argument.
+   */
+  resolveCallerAgent: () => Promise<string | undefined>;
 } {
   const common = parseCommonConfig(zooConfig, rawConfig);
   const { modeProfile, agentModes, agentPermissions, limits } = common;
@@ -307,6 +314,16 @@ export function buildPiContributions(
   // primary set leaves the handoff target's default primary undefined
   // (fail-closed at handoff time).
   const primaries = derivePrimaries(modeProfile?.agents ?? [], agentModes);
+
+  // The shared session → agent resolver.  Event handlers read it
+  // synchronously; the delegation gate uses the asynchronous form below.
+  // The gate resolves the CALLER through the identity core (the same
+  // source the subagent tool uses): pi's identity is bound per async
+  // chain, not per session id, so the session argument is unused — the
+  // port is host-neutral and OpenCode needs it.
+  const resolveAgent = buildPiResolveAgent(modeProfile, agentModes);
+  const resolveCallerAgent = async (): Promise<string | undefined> =>
+    resolveIdentity()?.name;
 
   const deps: Partial<Capabilities> = {
     ...configCapabilities(common),
@@ -362,7 +379,8 @@ export function buildPiContributions(
     client: {},
     zdebugExec: hostDeps?.zdebugExec,
     directory: hostDeps?.directory ?? process.cwd(),
-    resolveAgent: buildPiResolveAgent(modeProfile, agentModes),
+    resolveAgent,
+    resolveCallerAgent,
     toolHost: hostDeps?.toolHost,
     // The `/go` handoff target.  `getCommandCtx` reads the mutable pi
     // command-context holder, refreshed by the command handler before
@@ -402,6 +420,7 @@ export function buildPiContributions(
     limits,
     agentModes,
     agentPermissions,
+    resolveCallerAgent,
   };
 }
 
@@ -665,7 +684,7 @@ export async function buildPiHandlers(
       })
     : undefined;
   const switchHost: SwitchHost | undefined = switchController?.host;
-  const { profile, composed, limits, agentPermissions } = buildPiContributions(
+  const contributions = buildPiContributions(
     zooConfig,
     {
       adapter,
@@ -754,6 +773,8 @@ export async function buildPiHandlers(
     },
     rawConfig,
   );
+  const { profile, composed, limits, agentPermissions, resolveCallerAgent } =
+    contributions;
 
   // Loop-engine wiring.  The composed strategies judge a stopped turn;
   // each declares its own wake allowance (`maxWakes`) and reads its own
@@ -1039,5 +1060,6 @@ export async function buildPiHandlers(
     seedTodoView,
     drainPendingSwitchOps: () => switchController?.drainPendingOps(),
     invalidateTodo: (sessionId) => todoStore?.invalidate(sessionId),
+    resolveCallerAgent,
   });
 }

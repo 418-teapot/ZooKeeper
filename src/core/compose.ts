@@ -87,9 +87,9 @@ export interface ComposedResult {
   /**
    * Whether any composed judge needs the `caller` request field.
    *
-   * Aggregated from the judges' `needsCaller` flags.  The OpenCode host
-   * uses this to decide whether the asynchronous caller resolution runs
-   * before judging — it is skipped entirely when no judge needs it.
+   * Aggregated from the judges' `needsCaller` flags.  The consuming
+   * host uses this to decide whether the asynchronous caller resolution
+   * runs before judging — it is skipped entirely when no judge needs it.
    */
   gateNeedsCaller: boolean;
   /** Enabled tools, keyed by tool name. */

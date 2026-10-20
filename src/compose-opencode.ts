@@ -38,7 +38,6 @@
 
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { getAgentName } from "./core/client/agent.js";
 import type { ComposedResult } from "./core/compose.js";
 import { runIsolated } from "./core/compose.js";
 import type { ModeProfile } from "./core/config-types.js";
@@ -457,16 +456,17 @@ export function assembleOpenCodeHooks(
               tool: normalizeToolName(input.tool),
             };
             // Delegation gate — the strategy contributed by hook-unit
-            // judges runs only for the subagent tool.  Each judge
-            // handles its own field-absence skip, so the gate runs
-            // whenever the tool is subagent, regardless of whether the
-            // caller could be resolved.  The caller is resolved only
-            // when at least one judge needs it (an asynchronous session
-            // query otherwise skipped).
+            // judges runs only for the subagent tool.  The caller is
+            // resolved only when at least one judge needs it (an
+            // asynchronous host query otherwise skipped); an unresolvable
+            // caller stays `undefined`, which the judge refuses
+            // (fail-closed).
             if (composed.gate !== null && mapped.tool === "subagent") {
-              const caller = composed.gateNeedsCaller
-                ? await getAgentName(deps.client, mapped.sessionID)
-                : undefined;
+              const caller =
+                composed.gateNeedsCaller &&
+                deps.resolveCallerAgent !== undefined
+                  ? await deps.resolveCallerAgent(mapped.sessionID)
+                  : undefined;
               const target =
                 typeof output.args?.subagent_type === "string"
                   ? output.args.subagent_type

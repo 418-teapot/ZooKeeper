@@ -350,12 +350,14 @@ export interface PiEventHandlers {
   /**
    * `tool_call`: enforce the composed delegation gate on `subagent` calls.
    * A refusal blocks the call and surfaces the reason as an error tool
-   * result; every other tool call passes through untouched.
+   * result; every other tool call passes through untouched.  Asynchronous
+   * because the caller identity comes from the host's session → agent
+   * capability (pi awaits handler results).
    */
   toolCall(
     event: PiToolCallEvent,
     ctx?: PiToolCallContext,
-  ): PiToolCallResult | undefined;
+  ): Promise<PiToolCallResult | undefined>;
   /** `session_start`: seed the `zoo` widget at startup / resume. */
   sessionStart(evt?: unknown, ctx?: unknown): Promise<void>;
   /** `session_tree`: drop the todo cache after a tree navigation. */

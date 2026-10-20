@@ -21,10 +21,15 @@
 /**
  * A delegation request judged by the gate.
  *
- * Fields are optional to represent "absent" at the caller boundary: a
- * judge that depends on a missing field skips that judgment (returns
- * `null`), preserving each host's original skip semantics.  The request
- * is host-agnostic — the decision depends only on these fields.
+ * Fields are optional to represent "absent" at the caller boundary.
+ * Skipping is the default boundary semantics — a judge that depends on
+ * a missing field returns `null` (allow) rather than refusing.  It is
+ * not a requirement, though: a judge may fail closed on a field it
+ * cannot decide without (the delegation allowlist refuses an
+ * unresolved `caller`).  What a missing field means is therefore each
+ * judge's own choice; the port only guarantees the absence is
+ * representable.  The request is host-agnostic — the decision depends
+ * only on these fields.
  *
  * A judge that needs `caller` declares it via `needsCaller` (see
  * `DelegationJudgeContribution`) so the consuming host knows whether the

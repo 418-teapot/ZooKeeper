@@ -30,4 +30,16 @@ export interface SessionPort {
    * "not the orchestrator".
    */
   resolveAgent: (sessionID: string) => string | undefined;
+  /**
+   * Resolve the agent driving a session, including the host's own
+   * authoritative fallback (OpenCode queries the session API; pi resolves
+   * through its identity core).
+   *
+   * Asynchronous because that fallback is a host call.  This is the port
+   * the delegation gate uses to identify the caller: unlike `resolveAgent`
+   * (a pure registry read for event handlers), it also resolves a session
+   * the registry has not observed yet.  Returns `undefined` when the
+   * session cannot be attributed to an agent — callers must fail closed.
+   */
+  resolveCallerAgent: (sessionID: string) => Promise<string | undefined>;
 }

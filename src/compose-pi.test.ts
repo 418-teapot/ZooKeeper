@@ -1061,7 +1061,7 @@ function stubHandlers(
     toolResult: async () => undefined,
     contextHandler: async () => undefined,
     messageEnd: () => undefined,
-    toolCall: () => undefined,
+    toolCall: async () => undefined,
     sessionStart: async () => {},
     sessionTree: () => {},
     hasSettledHandlers,

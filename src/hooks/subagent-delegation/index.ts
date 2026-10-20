@@ -17,11 +17,14 @@ export { judgeDelegationTarget };
  * Contributes the delegation-target judge; all handler slots stay
  * empty.  The judge is composed into the host gate by the selection
  * engine and runs only for `subagent` tool calls at the gate
- * boundary.
+ * boundary.  The unit requires the host's asynchronous caller resolver:
+ * without it the judge could never identify the caller and would have
+ * to refuse every delegation, so the assembly-time capability check
+ * disables the unit instead.
  */
 export const unit = defineHook({
   name: "subagent-delegation",
-  needs: [],
+  needs: ["resolveCallerAgent"],
   create() {
     return makeHookContributions({
       delegation: [

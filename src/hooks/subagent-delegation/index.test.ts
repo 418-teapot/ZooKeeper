@@ -1,33 +1,54 @@
 /**
  * Tests for the subagent delegation judge (`src/hooks/subagent-delegation`).
  *
- * Tests `judgeDelegationTarget()` as a pure judge, covering the skip
- * boundary semantics (a missing caller — unresolvable session agent —
- * or a missing target — the `subagent_type` argument was not a string —
- * allows) and the allowlist decision for both mola and beaver.  The
- * tool-name filtering (only `subagent` calls are judged) is the gate
+ * Tests `judgeDelegationTarget()` as a pure judge, covering the fail-closed
+ * caller semantics (an unresolvable caller refuses rather than skipping the
+ * allowlist), the allow boundary for a missing target (the `subagent_type`
+ * argument was not a string), the allowlist decision for both mola and
+ * beaver, and the assembly-time capability gate on the unit descriptor.
+ * The tool-name filtering (only `subagent` calls are judged) is the gate
  * consumer's responsibility, not the judge's.
  */
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { judgeDelegationTarget } from "./index.js";
+import { composeProfile } from "../../core/compose.js";
+import type { ModeProfile } from "../../core/config-types.js";
+import type { Capabilities } from "../../core/ports/index.js";
+import { judgeDelegationTarget, unit } from "./index.js";
 
 // ---------------------------------------------------------------------------
-// Missing caller / target — skipped (allow)
+// Missing caller — fail-closed (refuse)
 // ---------------------------------------------------------------------------
 
-describe("judgeDelegationTarget — missing context", () => {
-  it("allows when the caller cannot be resolved", () => {
+describe("judgeDelegationTarget — missing caller", () => {
+  it("refuses when the caller cannot be resolved", () => {
+    const refusal = judgeDelegationTarget({
+      caller: undefined,
+      target: "beaver",
+    });
+    assert.ok(refusal !== null, "an unknown caller must be refused");
+    assert.ok(refusal.reason.includes("无法确定调用者身份"));
+  });
+
+  it("refuses when the caller is an empty string", () => {
+    const refusal = judgeDelegationTarget({ caller: "", target: "beaver" });
+    assert.ok(refusal !== null, "an empty caller must be refused");
+    assert.ok(refusal.reason.includes("无法确定调用者身份"));
+  });
+
+  it("still allows a resolvable caller to an allowlisted target", () => {
     assert.equal(
-      judgeDelegationTarget({ caller: undefined, target: "beaver" }),
+      judgeDelegationTarget({ caller: "beaver", target: "lynx" }),
       null,
     );
   });
+});
 
-  it("allows when the caller is an empty string", () => {
-    assert.equal(judgeDelegationTarget({ caller: "", target: "beaver" }), null);
-  });
+// ---------------------------------------------------------------------------
+// Missing target — skipped (allow), the format layer owns it
+// ---------------------------------------------------------------------------
 
+describe("judgeDelegationTarget — missing target", () => {
   it("allows when the target is missing from the request", () => {
     assert.equal(
       judgeDelegationTarget({ caller: "mola", target: undefined }),
@@ -37,6 +58,51 @@ describe("judgeDelegationTarget — missing context", () => {
 
   it("allows when the target is an empty string", () => {
     assert.equal(judgeDelegationTarget({ caller: "mola", target: "" }), null);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Assembly-time capability gate
+// ---------------------------------------------------------------------------
+
+/** Minimal capability bag without the caller-resolution port. */
+const BASE_CAPS: Partial<Capabilities> = {
+  limits: {},
+  contextConfig: {},
+  client: {},
+  directory: "/tmp/zoo",
+  resolveAgent: () => undefined,
+};
+
+/** A profile enabling only the subagent-delegation hook unit. */
+const HOOK_PROFILE: ModeProfile = {
+  name: "test",
+  agents: [],
+  skills: [],
+  hooks: ["subagent-delegation"],
+  tools: [],
+  commands: [],
+};
+
+describe("subagent-delegation unit — capability gate", () => {
+  it("skips the unit when the host cannot resolve a caller", () => {
+    const result = composeProfile(HOOK_PROFILE, [unit], BASE_CAPS);
+    assert.equal(result.gate, null);
+    assert.deepEqual(result.report.skipped, [
+      { name: "subagent-delegation", missing: ["resolveCallerAgent"] },
+    ]);
+  });
+
+  it("composes the judge when the host provides the caller resolver", () => {
+    const result = composeProfile(HOOK_PROFILE, [unit], {
+      ...BASE_CAPS,
+      resolveCallerAgent: async () => "beaver",
+    });
+    assert.deepEqual(result.report.skipped, []);
+    assert.equal(result.gateNeedsCaller, true);
+    const refusal = result.gate?.({ caller: "beaver", target: "kiwi" });
+    assert.ok(refusal !== null && refusal !== undefined);
+    assert.ok(refusal.reason.includes("not allowed"));
   });
 });
 

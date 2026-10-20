@@ -928,7 +928,7 @@ describe("buildPiHandlers — tool_call delegation gate", () => {
     );
     assert.equal(ungated.hasGateHandlers, false);
     assert.equal(
-      ungated.toolCall(subagentCall("mola"), SESSION_CTX),
+      await ungated.toolCall(subagentCall("mola"), SESSION_CTX),
       undefined,
     );
   });
@@ -939,7 +939,7 @@ describe("buildPiHandlers — tool_call delegation gate", () => {
 
     // A non-subagent tool passes through untouched.
     assert.equal(
-      handlers.toolCall(
+      await handlers.toolCall(
         {
           type: "tool_call",
           toolName: "bash",
@@ -953,10 +953,10 @@ describe("buildPiHandlers — tool_call delegation gate", () => {
 
     // beaver may delegate to lynx; mola is blocked by the allowlist judge.
     assert.equal(
-      handlers.toolCall(subagentCall("lynx"), SESSION_CTX),
+      await handlers.toolCall(subagentCall("lynx"), SESSION_CTX),
       undefined,
     );
-    const refusal = handlers.toolCall(subagentCall("mola"), SESSION_CTX);
+    const refusal = await handlers.toolCall(subagentCall("mola"), SESSION_CTX);
     assert.equal(refusal?.block, true);
     const reason = refusal?.reason ?? "";
     assert.ok(reason.includes("beaver can only delegate to"));

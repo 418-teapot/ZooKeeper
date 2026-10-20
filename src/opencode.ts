@@ -22,7 +22,10 @@ import { createV1Adapter } from "./adapters/opencode/adapter.js";
 import { createOpenCodeHandoffTarget } from "./adapters/opencode/handoff-target.js";
 import { buildInfraHooks } from "./adapters/opencode/infra-hooks.js";
 import { createOpenCodeMessageInjector } from "./adapters/opencode/message-injector.js";
-import { createV1ToolHost } from "./adapters/opencode/tool-host.js";
+import {
+  createV1ToolHost,
+  resolveSessionAgent,
+} from "./adapters/opencode/tool-host.js";
 import { assembleOpenCodeHooks } from "./compose-opencode.js";
 import { configCapabilities, parseCommonConfig } from "./core/capabilities.js";
 import { composeProfile } from "./core/compose.js";
@@ -75,12 +78,18 @@ export async function buildPlugin(
   // `resolveAgent`.
   const resolveAgent = (sessionID: string): string | undefined =>
     sessionAgentRegistry.resolve(sessionID);
+  // The asynchronous counterpart the delegation gate uses to identify the
+  // caller: the registry read above, then the host's own `session.get` —
+  // the OpenCode SDK exposes no other session-access method.
+  const resolveCallerAgent = (sessionID: string): Promise<string | undefined> =>
+    resolveSessionAgent(sessionID, client, resolveAgent);
   const provided: Partial<Capabilities> = {
     ...configCapabilities(common),
     client,
     directory,
     zdebugExec: overrides?.zdebugExec,
     resolveAgent,
+    resolveCallerAgent,
     toolHost: createV1ToolHost(client, resolveAgent),
     adapter: createV1Adapter(),
     handoffTarget: createOpenCodeHandoffTarget(
