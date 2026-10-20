@@ -1,54 +1,42 @@
 /**
- * Pi host adapter — render a folded view and region edits into a new pi
- * message array.
+ * Pi host adapter — apply region edits and materialize the core render
+ * plan into a new pi message array.
  *
- * The render path is fully pure: it deep-copies the input conversation,
- * applies `RegionEdit`s through the lens, injects per-round `[mN] ` line
- * refs into injectable regions, and materializes folded blocks as synthetic
- * user messages.  The original input array and its message objects are
- * never mutated.
+ * Both entry points are fully pure: the input conversation is
+ * deep-copied once, the caller's write lands in the copies, and the
+ * original array and its message objects are never mutated.
  *
- * Summary materialization follows the same label format as the OpenCode
- * v1 adapter: `[Block bN · K 条] 标题` with the block summary body on
- * the next line and
- * a leading `[mN] ` prefix when the summary occupies a visible view line.
+ * Materialization contributes host message construction and delivery
+ * only.  The plan (`core/context/render-plan.ts`) decides which
+ * messages survive, which one carries each unit's `[mN] ` line ref and
+ * what a folded block's summary text is; this module applies the line
+ * refs through the pi lens and turns each entry into a pi message.
  *
  * @module
  */
 
-import type {
-  BlockSpan,
-  HostMessage,
-  RegionEdit,
-  ViewItem,
-} from "../../core/context/lens.js";
-import { blockIdOf, type SessionState } from "../../core/context/state.js";
-import { formatSummaryText, numberView } from "../../core/context/view-refs.js";
-import {
-  applyRegionEdits,
-  injectLinePrefix,
-} from "../../core/context/writable-regions.js";
+import type { RegionEdit, RenderEntry } from "../../core/context/lens.js";
+import { applyLineInjections } from "../../core/context/render-plan.js";
+import { applyRegionEdits } from "../../core/context/writable-regions.js";
 import { history } from "./history.js";
 import type { PiAgentMessage, PiUserMessage } from "./types.js";
 
 /**
- * Apply region edits through the lens.
+ * Deep-copy a pi conversation.
  *
- * Edits whose anchor cannot be resolved are skipped defensively.
+ * @param messages - The conversation to copy.
+ * @returns Fresh message objects, in the same order.
  */
-export function applyEditsToLens(
-  lens: HostMessage[],
-  edits: RegionEdit[],
-): void {
-  applyRegionEdits(lens, edits);
+function copyMessages(messages: PiAgentMessage[]): PiAgentMessage[] {
+  return messages.map((message) => structuredClone(message) as PiAgentMessage);
 }
 
 /**
  * Apply region edits to a pi conversation, returning a new array.
  *
- * The input array and its message objects are never modified: a deep copy
- * is made, edits are written through the lens into the copy, and the
- * copy is returned.
+ * The input array and its message objects are never modified: a deep
+ * copy is made, edits are written through the lens into the copy, and
+ * the copy is returned.
  *
  * @param messages - The pi conversation before edits.
  * @param edits - Region text replacements.
@@ -58,123 +46,38 @@ export function applyEdits(
   messages: PiAgentMessage[],
   edits: RegionEdit[],
 ): PiAgentMessage[] {
-  const copies = messages.map(
-    (message) => structuredClone(message) as PiAgentMessage,
-  );
-  const lens = history(copies).messages;
-  applyEditsToLens(lens, edits);
+  const copies = copyMessages(messages);
+  applyRegionEdits(history(copies).messages, edits);
   return copies;
 }
 
 /**
- * Materialize a folded block summary as a synthetic pi user message.
- */
-export function materializeSummary(
-  block: BlockSpan & { id?: number },
-  lineNumber?: number,
-): PiUserMessage {
-  return { role: "user", content: formatSummaryText(block, lineNumber) };
-}
-
-/**
- * Build a rendered view from already-copied messages.
+ * Materialize a render plan into a new pi message array.
  *
- * The input array is treated as owned copies: the function mutates the
- * copies through the lens (line-number prefix injection) but never
- * touches the original conversation.  Callers must clone before calling.
+ * The copies' lens receives the plan's line refs (the plan already
+ * chose the target message of each visible unit), then each entry emits
+ * its pi message: a source entry keeps the addressed copy, a summary
+ * entry becomes a synthetic user message carrying the planned text.
+ *
+ * @param messages - The pi conversation after the release-phase edits.
+ * @param plan - The render plan, in view order.
+ * @returns A new pi message array representing the rendered view.
  */
-function buildRenderedView(
-  copies: PiAgentMessage[],
-  items: ViewItem[],
-  state: SessionState,
+export function materialize(
+  messages: PiAgentMessage[],
+  plan: RenderEntry[],
 ): PiAgentMessage[] {
-  const lens = history(copies).messages;
-  // Number with the same hidden predicate the context-pruning hook uses
-  // when it publishes the round view: that published view is the
-  // authoritative coordinate system the compression tools resolve `mN`
-  // refs against, so the numbers rendered here must match it.  View item
-  // intervals address the transcript, so they index the lens; a lens slot
-  // that is missing (a transcript hole) is treated as hidden.
-  const numbered = numberView(
-    items,
-    (ordinal) => lens[ordinal]?.hidden ?? true,
-  );
-  const lineByItem = new Map<ViewItem, number>();
-  for (const { n, item } of numbered) {
-    lineByItem.set(item, n);
-  }
+  const copies = copyMessages(messages);
+  applyLineInjections(history(copies).messages, plan);
 
   const out: PiAgentMessage[] = [];
-  for (const item of items) {
-    if (item.type === "summary") {
-      const id = blockIdOf(state, item.block.start, item.block.end);
-      out.push(materializeSummary({ ...item.block, id }, lineByItem.get(item)));
+  for (const entry of plan) {
+    if (entry.kind === "summary") {
+      const summary: PiUserMessage = { role: "user", content: entry.text };
+      out.push(summary);
       continue;
     }
-    // An original item is one fold unit — a contiguous message interval
-    // the fold layer keeps indivisible.  Every member renders, and the
-    // unit's single line number is injected once, into the first member
-    // that carries an injectable region (an assistant text prefix ahead
-    // of a later tool result, by message order).
-    const line = lineByItem.get(item);
-    let lineInjected = false;
-    for (let ordinal = item.start; ordinal < item.end; ordinal++) {
-      if (!lineInjected && line !== undefined) {
-        lineInjected = injectLinePrefix(lens[ordinal], line);
-      }
-      out.push(copies[ordinal]);
-    }
+    out.push(copies[entry.ordinal]);
   }
   return out;
-}
-
-/**
- * Render a folded view into a new pi message array.
- *
- * The input array is treated as already edited: a deep copy is made,
- * per-round line-number prefixes are injected into injectable regions,
- * and folded blocks materialize as synthetic user messages.  The
- * original input is never mutated.
- *
- * @param messages - The pi conversation after release-phase edits.
- * @param items - The folded view items, in view order.
- * @param state - The session state (block map, for summary ids).
- * @returns A new pi message array representing the rendered view.
- */
-export function renderView(
-  messages: PiAgentMessage[],
-  items: ViewItem[],
-  state: SessionState,
-): PiAgentMessage[] {
-  const copies = messages.map(
-    (message) => structuredClone(message) as PiAgentMessage,
-  );
-  return buildRenderedView(copies, items, state);
-}
-
-/**
- * Render a pruning round into a new pi message array.
- *
- * Clones the conversation once, applies the region edits through the
- * lens, then renders the folded view on the same copies.  The original
- * input and every message object are never mutated.
- *
- * @param messages - The pi conversation from the `context` event.
- * @param items - The folded view items, in view order.
- * @param edits - Region text replacements.
- * @param state - The session state (block map, for summary ids).
- * @returns A new pi message array representing the rendered view.
- */
-export function render(
-  messages: PiAgentMessage[],
-  items: ViewItem[],
-  edits: RegionEdit[],
-  state: SessionState,
-): PiAgentMessage[] {
-  const copies = messages.map(
-    (message) => structuredClone(message) as PiAgentMessage,
-  );
-  const lens = history(copies).messages;
-  applyEditsToLens(lens, edits);
-  return buildRenderedView(copies, items, state);
 }

@@ -16,14 +16,12 @@ import type {
   HostAdapter,
   Projection,
   RegionEdit,
-  ViewItem,
+  RenderEntry,
 } from "../../core/context/lens.js";
-import type { SessionState } from "../../core/context/state.js";
 import { history } from "./history.js";
 import {
   applyEdits as applyEditsToMessages,
-  render as renderPi,
-  renderView as renderPiView,
+  materialize as materializePiPlan,
 } from "./render.js";
 import type { PiAgentMessage, PiUserMessage } from "./types.js";
 
@@ -51,20 +49,11 @@ export function createPiAdapter(
     ): PiAgentMessage[] {
       return applyEditsToMessages(conversation, edits);
     },
-    renderView(
+    materialize(
       conversation: PiAgentMessage[],
-      items: ViewItem[],
-      state: unknown,
+      plan: RenderEntry[],
     ): PiAgentMessage[] {
-      return renderPiView(conversation, items, state as SessionState);
-    },
-    render(
-      conversation: PiAgentMessage[],
-      items: ViewItem[],
-      edits: RegionEdit[],
-      state: unknown,
-    ): PiAgentMessage[] {
-      return renderPi(conversation, items, edits, state as SessionState);
+      return materializePiPlan(conversation, plan);
     },
     sessionId(_conversation: PiAgentMessage[]): string | undefined {
       return getSessionId();

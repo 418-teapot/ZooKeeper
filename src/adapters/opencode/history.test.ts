@@ -21,7 +21,7 @@
  *    messages that are safe through the whole core chain (canon, span
  *    hashing, fold, first-user search) and are skipped by estimation.
  *    Line-number injection is exercised on null-derived hidden messages
- *    in `apply-view.test.ts`.
+ *    in `render.test.ts`.
  * 5. Injection provenance — `isInjectableRegion` marks exactly the
  *    text-derived content and tool-output regions, never the
  *    estimation-only content derived from step-start/snapshot/file

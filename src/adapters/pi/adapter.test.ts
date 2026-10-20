@@ -4,17 +4,19 @@
  * Coverage:
  * - `applyEdits` returns a new array and leaves the input untouched while
  *   writing edits through the lens.
- * - `renderView` returns a new array and leaves the input untouched while
- *   materializing summaries and injecting line refs.
- * - `render` composes `applyEdits` then `renderView` without mutating input.
+ * - `materialize` returns a new array and leaves the input untouched while
+ *   applying the plan's line refs and constructing summary messages.
+ * - `applyEdits` followed by `materialize` composes without mutating input.
  * - `appendUserMessage` appends a synthetic user message to a new array.
  * - `sessionId` delegates to the provider supplied at construction.
  */
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import type { RegionEdit, ViewItem } from "../../core/context/lens.js";
+import { planViewRender } from "../../core/context/render-plan.js";
 import { computeSpanHash } from "../../core/context/spanhash.js";
 import type { SessionState } from "../../core/context/state.js";
+import { numberView } from "../../core/context/view-refs.js";
 import { makeState } from "../../testkits/context.js";
 import {
   assistantMessage,
@@ -61,7 +63,6 @@ function seedBlock(
 // ---------------------------------------------------------------------------
 // Adapter contract
 // ---------------------------------------------------------------------------
-
 describe("createPiAdapter", () => {
   it("sessionId delegates to the construction-time provider", () => {
     const adapter = createPiAdapter(() => "sess-pi-42");
@@ -112,9 +113,34 @@ describe("pi adapter applyEdits", () => {
   });
 });
 
-describe("pi adapter renderView", () => {
+describe("pi adapter materialize", () => {
+  const adapter = createPiAdapter(() => "sess");
+
+  /**
+   * Plan the view the way the pipeline does and materialize it.
+   *
+   * @param messages - The pi conversation to render.
+   * @param items - The folded view items.
+   * @param state - The session state.
+   * @returns The materialized conversation.
+   */
+  function materializeRound(
+    messages: PiAgentMessage[],
+    items: ViewItem[],
+    state: SessionState,
+  ): PiAgentMessage[] {
+    const lens = history(messages).messages;
+    const numbered = numberView(
+      items,
+      (ordinal) => lens[ordinal]?.hidden ?? true,
+    );
+    return adapter.materialize(
+      messages,
+      planViewRender(lens, items, numbered, state),
+    );
+  }
+
   it("returns a new array and leaves the input untouched", () => {
-    const adapter = createPiAdapter(() => "sess");
     const messages: PiAgentMessage[] = [
       userMessage("question"),
       assistantMessage([textPart("answer")]),
@@ -127,14 +153,14 @@ describe("pi adapter renderView", () => {
       end: ordinal + 1,
     }));
 
-    const out = adapter.renderView(messages, items, state);
+    const out = materializeRound(messages, items, state);
 
     assert.notEqual(out, messages);
     assert.deepEqual(messages, snapshot);
+    assert.equal((out[0] as PiUserMessage).content, "[m1] question");
   });
 
   it("materializes a folded block as a synthetic user message", () => {
-    const adapter = createPiAdapter(() => "sess");
     const messages: PiAgentMessage[] = [
       userMessage("question"),
       assistantMessage([textPart("answer one")]),
@@ -151,7 +177,7 @@ describe("pi adapter renderView", () => {
       { type: "original", start: 3, end: 4 },
     ];
 
-    const out = adapter.renderView(messages, items, state);
+    const out = materializeRound(messages, items, state);
 
     assert.equal(out.length, 3);
     assert.equal((out[0] as PiUserMessage).content, "[m1] question");
@@ -164,11 +190,8 @@ describe("pi adapter renderView", () => {
       "[m3] answer two",
     );
   });
-});
 
-describe("pi adapter render", () => {
-  it("composes applyEdits and renderView without mutating input", () => {
-    const adapter = createPiAdapter(() => "sess");
+  it("composes applyEdits and materialize without mutating input", () => {
     const messages: PiAgentMessage[] = [
       userMessage("question"),
       assistantMessage([toolCallPart("call-1", "bash", { cmd: "ls" })]),
@@ -185,7 +208,11 @@ describe("pi adapter render", () => {
       { messageOrdinal: 2, regionIndex: 0, text: "pruned output" },
     ];
 
-    const out = adapter.render(messages, items, edits, state);
+    const out = materializeRound(
+      adapter.applyEdits(messages, edits),
+      items,
+      state,
+    );
 
     assert.notEqual(out, messages);
     assert.deepEqual(messages, snapshot);

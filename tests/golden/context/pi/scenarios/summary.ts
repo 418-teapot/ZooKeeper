@@ -2,7 +2,8 @@
  * Golden scenario — pi summary materialization semantics.
  *
  * PI-SUMMARY-01 pins down how the pi render layer materializes folded
- * blocks (`materializeSummary` in `src/adapters/pi/render.ts`): the
+ * blocks (the core render plan in `src/core/context/render-plan.ts`
+ * composes the summary text, `src/adapters/pi/render.ts` wraps it): the
  * summary renders as a synthetic pi USER message whose string content
  * carries the `[mN] ` line prefix, the `[Block bN · K 条]` label and
  * the summary body — there is no `isCompacted`/summary flag on the

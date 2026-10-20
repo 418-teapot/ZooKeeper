@@ -14,12 +14,12 @@
  * span hash (persistent), and the view line number (transient, valid for
  * the current round only).
  *
- * The module renders but never materializes: original items receive
- * their prefix through the lens, while summary messages are the host
- * adapters' job (`src/adapters/<host>/render.ts`) — `formatSummaryText`
- * composes the summary item's shared text (the label, optionally
- * prefixed with `refPrefix(n)`, followed by the summary body) and the
- * adapter wraps that text into its host message shape.
+ * The module renders but never materializes: the render plan
+ * (`core/context/render-plan.ts`) turns a numbered view into the
+ * per-item materialization steps, and the host adapters only wrap each
+ * step in their own message shape.  `formatSummaryText` composes the
+ * summary item's shared text (the label, optionally prefixed with
+ * `refPrefix(n)`, followed by the summary body) for that plan.
  *
  * Hidden messages occupy an ordinal but are skipped by numbering and
  * injection: they stay visible in the view with their raw text and no

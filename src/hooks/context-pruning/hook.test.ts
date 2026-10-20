@@ -1891,11 +1891,19 @@ describe("pure adapter pipeline support", () => {
       }
       return edited.map((m) => ({ ...m, text: `${m.text}(applied)` }));
     },
-    renderView(messages) {
-      return messages.map((m) => ({ ...m, text: `${m.text}(view)` }));
-    },
-    render(messages, items, edits, state) {
-      return this.renderView(this.applyEdits(messages, edits), items, state);
+    materialize(messages, plan) {
+      return plan.map((entry) =>
+        entry.kind === "summary"
+          ? {
+              id: "summary",
+              sessionId: messages[0]?.sessionId,
+              text: entry.text,
+            }
+          : {
+              ...messages[entry.ordinal],
+              text: `${messages[entry.ordinal].text}(view)`,
+            },
+      );
     },
     sessionId(messages) {
       return messages[0]?.sessionId;
@@ -1946,7 +1954,7 @@ describe("pure adapter pipeline support", () => {
     );
     assert.ok(
       result[1].text.includes("(view)"),
-      "renderView return was threaded to the final output",
+      "materialize return was threaded to the final output",
     );
   });
 });

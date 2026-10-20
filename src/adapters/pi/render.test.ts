@@ -2,19 +2,25 @@
  * Tests for the pi render adapter (`render.ts`).
  *
  * Coverage:
- * - each block kind maps through `history` and renders back correctly;
- * - `RegionEdit`s are applied to the right region and unresolvable anchors
- *   are skipped;
+ * - each block kind maps through `history` and materializes back
+ *   correctly;
+ * - `RegionEdit`s are applied to the right region and unresolvable
+ *   anchors are skipped;
  * - line-number prefixes are injected only on injectable regions;
- * - folded blocks materialize as synthetic user messages with the correct
- *   label and prefix format;
+ * - a folded block materializes as a synthetic user message carrying the
+ *   planned summary text;
  * - a fold unit that spans an assistant message and its tool results
  *   occupies one line and keeps every member in the output;
  * - the input array and every input message object are left untouched.
+ *
+ * The plan itself (numbering, line placement, summary text) is covered by
+ * the core tests (`core/context/render-plan.test.ts`); these tests pair
+ * it with the pi message shape and delivery.
  */
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import type { RegionEdit, ViewItem } from "../../core/context/lens.js";
+import { planViewRender } from "../../core/context/render-plan.js";
 import { computeSpanHash } from "../../core/context/spanhash.js";
 import type { SessionState } from "../../core/context/state.js";
 import { numberView } from "../../core/context/view-refs.js";
@@ -29,7 +35,7 @@ import {
   userMessage,
 } from "../../testkits/pi-messages.js";
 import { history } from "./history.js";
-import { materializeSummary, render, renderView } from "./render.js";
+import { applyEdits, materialize } from "./render.js";
 import type {
   PiAgentMessage,
   PiAssistantMessage,
@@ -65,6 +71,28 @@ function seedBlock(
   });
 }
 
+/**
+ * Run one publish phase over a pi conversation: number the view the way
+ * the pipeline does, plan it, and materialize the plan.
+ *
+ * @param messages - The pi conversation after the release-phase edits.
+ * @param items - The folded view items, in view order.
+ * @param state - The session state (block map, for summary ids).
+ * @returns The materialized pi message array.
+ */
+function materializeRound(
+  messages: PiAgentMessage[],
+  items: ViewItem[],
+  state: SessionState,
+): PiAgentMessage[] {
+  const lens = history(messages).messages;
+  const numbered = numberView(
+    items,
+    (ordinal) => lens[ordinal]?.hidden ?? true,
+  );
+  return materialize(messages, planViewRender(lens, items, numbered, state));
+}
+
 // ---------------------------------------------------------------------------
 // Render output
 // ---------------------------------------------------------------------------
@@ -86,7 +114,7 @@ describe("pi render", () => {
       end: ordinal + 1,
     }));
 
-    const out = render(messages, items, [], state);
+    const out = materializeRound(messages, items, state);
 
     assert.equal((out[0] as PiUserMessage).content, "[m1] question");
     assert.equal(
@@ -154,7 +182,7 @@ describe("pi render", () => {
       "fixture: the published view skips the hidden ordinal and stays dense",
     );
 
-    const out = renderView(messages, items, state);
+    const out = materializeRound(messages, items, state);
 
     // The rendered prefixes match the published numbering line for line:
     // dense over visible entries, no hole where the hidden entry sits.
@@ -189,7 +217,7 @@ describe("pi render", () => {
       { messageOrdinal: 0, text: "missing region index" },
     ];
 
-    const out = render(messages, items, edits, state);
+    const out = materializeRound(applyEdits(messages, edits), items, state);
 
     assert.equal((out[0] as PiUserMessage).content, "[m1] question");
     assert.equal(
@@ -215,7 +243,7 @@ describe("pi render", () => {
       { type: "original", start: 3, end: 4 },
     ];
 
-    const out = render(messages, items, [], state);
+    const out = materializeRound(messages, items, state);
 
     assert.equal(out.length, 3);
     assert.equal((out[0] as PiUserMessage).content, "[m1] question");
@@ -250,7 +278,7 @@ describe("pi render", () => {
       { type: "original", start: 3, end: 4 },
     ];
 
-    const out = render(messages, items, [], state);
+    const out = materializeRound(messages, items, state);
 
     // The block interval [1, 3) renders as-is — no expansion, so the
     // block id stays resolvable and the covered count is unchanged.
@@ -284,7 +312,7 @@ describe("pi render", () => {
       { type: "original", start: 3, end: 4 },
     ];
 
-    const out = render(messages, items, [], state);
+    const out = materializeRound(messages, items, state);
 
     // Both members of the unit survive (assistant + toolResult).
     assert.equal(out.length, 4);
@@ -323,7 +351,7 @@ describe("pi render", () => {
       end: ordinal + 1,
     }));
 
-    const out = render(messages, items, [], state);
+    const out = materializeRound(messages, items, state);
 
     assert.notEqual(out, messages);
     assert.deepEqual(messages, snapshot);
@@ -359,7 +387,7 @@ describe("pi render", () => {
       end: ordinal + 1,
     }));
 
-    const out = render(messages, items, [], state);
+    const out = materializeRound(messages, items, state);
 
     // Every input message survives the round trip (content conservation).
     assert.equal(out.length, messages.length);
@@ -376,38 +404,5 @@ describe("pi render", () => {
     });
     // The input conversation itself is never mutated.
     assert.deepEqual(messages, snapshot);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Summary materialization helper
-// ---------------------------------------------------------------------------
-
-describe("materializeSummary", () => {
-  it("produces a user message with label, block id and summary body", () => {
-    const message = materializeSummary(
-      { start: 2, end: 5, title: "topic", summary: "body", id: 3 },
-      7,
-    );
-    assert.equal(message.role, "user");
-    assert.equal(message.content, "[m7] [Block b3 · 3 条] topic\nbody");
-  });
-
-  it("omits the block id when it is not provided", () => {
-    const message = materializeSummary({
-      start: 2,
-      end: 5,
-      title: "topic",
-      summary: "body",
-    });
-    assert.equal(message.content, "[Block 3 条] topic\nbody");
-  });
-
-  it("omits the body line when summary is empty", () => {
-    const message = materializeSummary(
-      { start: 0, end: 1, title: "topic", summary: "", id: 1 },
-      1,
-    );
-    assert.equal(message.content, "[m1] [Block b1 · 1 条] topic");
   });
 });

@@ -96,9 +96,10 @@ export interface Projection {
  *
  * The lens exposes text only — no structure, no ids, no host fields.
  * Text replacement is expressed as `RegionEdit` data; writing edits
- * into a conversation is the host adapter's job (`HostAdapter.render`),
- * never a core capability.  Tool-call pairing does not travel on
- * regions — it is first-class table data (see `Projection`).
+ * into a conversation is the host adapter's job
+ * (`HostAdapter.applyEdits`), never a core capability.  Tool-call
+ * pairing does not travel on regions — it is first-class table data
+ * (see `Projection`).
  */
 export interface TextRegion {
   kind: RegionKind;
@@ -177,13 +178,32 @@ export type ViewItem =
   | { type: "summary"; block: BlockSpan };
 
 /**
+ * One step of a materialized view, in view order.
+ *
+ * A `source` entry keeps a transcript message as it stands (the ordinal
+ * addresses the lens/conversation position) and carries the line ref
+ * when this message is the unit's injection target.  A `summary` entry
+ * replaces a folded block with text that is already fully rendered —
+ * label, optional line ref and summary body — plus the block-map id
+ * behind that label, for hosts whose synthetic message ids carry the
+ * stable block identity; a block the map no longer holds arrives with
+ * no id and hosts fall back to their defensive placeholder.
+ *
+ * The plan is computed by the core (see `render-plan.ts`); a host
+ * adapter only applies it (`HostAdapter.materialize`).
+ */
+export type RenderEntry =
+  | { kind: "source"; ordinal: number; line?: number }
+  | { kind: "summary"; text: string; id?: number };
+
+/**
  * One region text replacement in a host conversation.
  *
  * Addresses a region by message ordinal and, when the message carries
  * more than one region, the region index within the message.  `text` is
  * the full replacement, not a delta.  Edits are pure data: applying
  * them — writing the text into the addressed region — is the host
- * adapter's job (`HostAdapter.render`).
+ * adapter's job (`HostAdapter.applyEdits`).
  */
 export interface RegionEdit {
   /** Ordinal of the message whose region text is replaced. */
@@ -198,10 +218,13 @@ export interface RegionEdit {
  * Host-adapter contract over a host conversation type.
  *
  * The core talks to a host only through this interface: the host
- * projects its conversation into lens messages (`history`) and renders a
- * folded view plus the round's region edits back into the conversation
- * (`render`).  Summary materialization is an internal detail of a host's
- * render implementation, not a cross-host seam.  The view stays a pure
+ * projects its conversation into lens messages (`history`), writes the
+ * round's region edits into the conversation (`applyEdits`), and turns
+ * the core's render plan into its message shape (`materialize`).  The
+ * plan — which messages survive, which line ref each visible unit
+ * carries, what a folded block's summary text is — is computed by the
+ * core (`core/context/render-plan.ts`); the host contributes only
+ * cloning, message construction and delivery.  The view stays a pure
  * function recomputed every round — the adapter never caches one.
  *
  * All mutating methods return the conversation after the operation.  The
@@ -209,10 +232,6 @@ export interface RegionEdit {
  * always use the returned object and must not rely on in-place mutation.
  * Measurement of a conversation is a host-side concern and is not covered
  * by this contract.
- *
- * `state` is typed as `unknown` because `SessionState` lives in
- * `state.ts`, which imports `BlockSpan` from this module; importing
- * `SessionState` here would create an import cycle.
  */
 export interface HostAdapter<THostConversation> {
   /**
@@ -237,40 +256,23 @@ export interface HostAdapter<THostConversation> {
     edits: RegionEdit[],
   ): THostConversation;
   /**
-   * Materialize the folded view into the host conversation.
+   * Materialize a render plan into the host conversation.
    *
    * Runs after producers/fold so the final view replaces or restructures
-   * messages.  The input may be mutated in place or replaced; callers must
-   * use the returned conversation.
+   * messages.  The host applies the plan's line refs through its own lens
+   * (`applyLineInjections`) and emits each entry in its message shape: a
+   * `source` entry keeps the addressed message, a `summary` entry becomes
+   * a synthetic message carrying the planned text.  The input may be
+   * mutated in place or replaced; callers must use the returned
+   * conversation.
    *
-   * @param conversation - The host conversation before rendering.
-   * @param items - The folded view items, in view order.
-   * @param state - The session state used for summary materialization.
-   * @returns The conversation after rendering.
+   * @param conversation - The host conversation before materialization.
+   * @param plan - The render plan, in view order.
+   * @returns The conversation after materialization.
    */
-  renderView(
+  materialize(
     conversation: THostConversation,
-    items: ViewItem[],
-    state: unknown,
-  ): THostConversation;
-  /**
-   * Render the folded view and region edits into the host conversation.
-   *
-   * Equivalent to `applyEdits(conversation, edits)` followed by
-   * `renderView(conversation, items, state)`.  The input may be mutated in
-   * place or replaced; callers must use the returned conversation.
-   *
-   * @param conversation - The host conversation before rendering.
-   * @param items - The folded view items, in view order.
-   * @param edits - Region text replacements to apply.
-   * @param state - The session state used for summary materialization.
-   * @returns The conversation after rendering.
-   */
-  render(
-    conversation: THostConversation,
-    items: ViewItem[],
-    edits: RegionEdit[],
-    state: unknown,
+    plan: RenderEntry[],
   ): THostConversation;
   /** Extract the session identifier from the first message, if any. */
   sessionId(conversation: THostConversation): string | undefined;

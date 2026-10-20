@@ -28,8 +28,10 @@
  *    arms the pending-view-change flag that forces the next release.
  * 5. **Publish + materialize** — the round's folded view is numbered and
  *    published to the compression tools (`core/context/round-view.ts`,
- *    frozen), then `adapter.renderView` rebuilds the host messages in
- *    place (synthetic summary messages, per-round `[mN] ` line refs).
+ *    frozen), the render plan is computed over that numbering
+ *    (`core/context/render-plan.ts`), and `adapter.materialize` turns the
+ *    plan into the host's messages (synthetic summary messages, per-round
+ *    `[mN] ` line refs).
  * 6. **Nudge / manual compress** — `evaluateNudge` decides and renders
  *    the context-pressure reminder (transform-only synthetic message
  *    appended at the END via `adapter.appendUserMessage`, never
@@ -81,6 +83,7 @@ import {
   type ReleaseOptions,
   reclaimedTokens,
 } from "./release.js";
+import { planViewRender } from "./render-plan.js";
 import { publishRoundView } from "./round-view.js";
 import {
   consumePendingViewChange,
@@ -456,17 +459,22 @@ function foldPhase(ctx: PipelinePhaseContext): void {
  * Per-round line refs used by the nudge, the manual-compress window and
  * the compression tools (line numbers are transient — valid for this
  * round only).  Numbering and the round-view publication run BEFORE
- * the view is rendered: the frozen snapshot handed to the tools must
- * carry the transcript exactly as the fold hashed it, and `renderView`
- * rewrites the host messages in place (line-number prefixes, synthetic
- * summary messages) — publishing afterwards would capture a view the
- * fold never hashed.
+ * the view is materialized: the frozen snapshot handed to the tools must
+ * carry the transcript exactly as the fold hashed it, and materializing
+ * rewrites the host messages (line-number prefixes, synthetic summary
+ * messages) — publishing afterwards would capture a view the fold never
+ * hashed.
+ *
+ * The render plan is computed here, once, over the lens the round's
+ * edits landed in; the adapter only applies it.  Numbering is the
+ * published numbering, so the refs the model reads and the refs the
+ * tools resolve cannot drift apart.
  */
 function publishPhase(ctx: PipelinePhaseContext): void {
   const { adapter, sessionId, state } = ctx;
   const numbered = numberView(
     ctx.foldedItems,
-    (ordinal) => ctx.view[ordinal].hidden,
+    (ordinal) => ctx.view[ordinal]?.hidden ?? true,
   );
 
   // Hand the compression tools this round's address space: the
@@ -476,11 +484,14 @@ function publishPhase(ctx: PipelinePhaseContext): void {
   // host.
   publishRoundView(sessionId, { projection: ctx.snapshot, numbered });
 
-  // Rebuilds the host messages through the adapter (synthetic summary
-  // messages, per-round dense `[mN] ` line refs on the injectable
-  // regions).  The returned array is threaded through every subsequent
-  // step.
-  ctx.messages = adapter.renderView(ctx.messages, ctx.foldedItems, state);
+  // Rebuilds the host messages through the adapter: the plan says which
+  // messages survive, which carries each unit's dense `[mN] ` line ref,
+  // and what each folded block's summary text is.  The returned array is
+  // threaded through every subsequent step.
+  ctx.messages = adapter.materialize(
+    ctx.messages,
+    planViewRender(ctx.view, ctx.foldedItems, numbered, state),
+  );
 
   ctx.numbered = numbered;
   if (numbered.length > 0) {

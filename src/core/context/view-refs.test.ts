@@ -8,9 +8,9 @@
  * swallowed blocks occupying no line, and restart-free reproducibility
  * (no persistence reconciliation).  The three-branch injection placement
  * and the pure-prefix injection semantics live in the writable-region
- * protocol tests (`writable-regions.test.ts`); the host renderer tests
- * (`src/adapters/opencode/apply-view.test.ts`,
- * `src/adapters/opencode/render.test.ts`,
+ * protocol tests (`writable-regions.test.ts`); the render plan tests
+ * (`render-plan.test.ts`) cover the placement over a fold unit, and the
+ * host renderer tests (`src/adapters/opencode/render.test.ts`,
  * `src/adapters/pi/render.test.ts`) cover them end to end through the
  * adapters' write-back.  Hidden messages stay visible in
  * the view but occupy

@@ -2,7 +2,7 @@
  * OpenCode v1 host adapter factory.
  *
  * Wraps the concrete v1 lens functions (`history`, `applyEdits`,
- * `renderView`) in the host-agnostic `HostAdapter<unknown>` contract.
+ * `materialize`) in the host-agnostic `HostAdapter<unknown>` contract.
  * All v1-specific casts live here, so the pruning handler stays
  * host-free.
  *
@@ -13,11 +13,10 @@ import type {
   HostAdapter,
   Projection,
   RegionEdit,
-  ViewItem,
+  RenderEntry,
 } from "../../core/context/lens.js";
-import type { SessionState } from "../../core/context/state.js";
 import { history } from "./history.js";
-import { applyEdits, renderView } from "./render.js";
+import { applyEdits, materialize } from "./render.js";
 import type { ContextMessageEntry } from "./types.js";
 
 /**
@@ -39,29 +38,8 @@ export function createV1Adapter(): HostAdapter<unknown> {
       applyEdits(conversation as ContextMessageEntry[], edits);
       return conversation;
     },
-    renderView(
-      conversation: unknown,
-      items: ViewItem[],
-      state: unknown,
-    ): unknown {
-      return renderView(
-        conversation as ContextMessageEntry[],
-        items,
-        state as SessionState,
-      );
-    },
-    render(
-      conversation: unknown,
-      items: ViewItem[],
-      edits: RegionEdit[],
-      state: unknown,
-    ): unknown {
-      applyEdits(conversation as ContextMessageEntry[], edits);
-      return renderView(
-        conversation as ContextMessageEntry[],
-        items,
-        state as SessionState,
-      );
+    materialize(conversation: unknown, plan: RenderEntry[]): unknown {
+      return materialize(conversation as ContextMessageEntry[], plan);
     },
     sessionId(conversation: unknown): string | undefined {
       return (conversation as ContextMessageEntry[] | null | undefined)?.[0]

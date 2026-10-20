@@ -1,32 +1,31 @@
 /**
- * V1 render entry points — region edits + fold-view materialization.
+ * V1 render entry points — region edits and render-plan
+ * materialization.
  *
- * `render` materializes a pruning round into the v1 messages array:
- * each `RegionEdit` is written through the lens (`history`'s writable
- * regions, so the backing v1 part is mutated in place), then the folded
- * view is rendered — dense line-number prefixes, synthetic summary
- * messages, and the in-place array restructure.  The input `entries`
- * array is mutated in place and returned.
+ * The render algorithm itself is host-agnostic and lives in the core
+ * (`core/context/render-plan.ts`): the plan says which messages
+ * survive, which one carries each visible unit's `[mN] ` line ref,
+ * which raw text a hidden unit keeps, and what each folded block's
+ * summary text is.  This module contributes only the v1 delivery:
  *
- * The two steps are also exported separately so a caller can apply the
- * release-phase edits early and render the view later (`applyEdits` +
- * `renderView` — the ordering hook.ts uses: edit application must
- * precede the producers and the nudge eligibility scan, which read the
- * placeholder text through the lens).  Splitting the steps changes
- * nothing observable: the combined `render` applies the same edits and
- * renders the same view.
+ * - `applyEdits` writes the round's region edits into the addressed v1
+ *   parts (so the release placeholders are observable through the lens
+ *   before the producers and the eligibility scan run);
+ * - `materialize` applies the plan's line refs through the v1 lens,
+ *   rebuilds the array in plan order — a summary entry becomes a
+ *   synthetic user entry, a source entry keeps its v1 message — and
+ *   swaps it into the input array in place.
+ *
+ * Both steps are also exported separately so a caller can apply the
+ * release-phase edits early and materialize later; the pipeline does
+ * exactly that, and splitting the steps changes nothing observable.
  *
  * @module
  */
 
-import type { RegionEdit, ViewItem } from "../../core/context/lens.js";
-import { blockIdOf, type SessionState } from "../../core/context/state.js";
-import { numberView } from "../../core/context/view-refs.js";
-import {
-  applyRegionEdits,
-  injectLinePrefix,
-} from "../../core/context/writable-regions.js";
-import { materializeSummary } from "./apply-view.js";
+import type { RegionEdit, RenderEntry } from "../../core/context/lens.js";
+import { applyLineInjections } from "../../core/context/render-plan.js";
+import { applyRegionEdits } from "../../core/context/writable-regions.js";
 import { history } from "./history.js";
 import type { ContextMessageEntry } from "./types.js";
 
@@ -47,87 +46,60 @@ export function applyEdits(
   entries: ContextMessageEntry[],
   edits: RegionEdit[],
 ): void {
-  const lens = history(entries).messages;
-  applyRegionEdits(lens, edits);
+  applyRegionEdits(history(entries).messages, edits);
 }
 
 /**
- * Materialize a folded view into the v1 messages array in place.
+ * Build the v1 synthetic summary entry for a planned summary.
  *
- * Walks the view items in order and rebuilds the array: original items
- * keep their v1 message object (content differences already landed via
- * the lens — this phase only restructures), summary items insert the
- * synthetic message of `materializeSummary` at the item's position
- * (the covered interval's messages are dropped with it), and every
- * visible item — original or summary — receives its per-round line
- * number.  Hidden original items stay in the view with raw text and no
- * prefix; they occupy no line.
+ * The id is the block-derived placeholder `zoo-fold-bN`: it carries no
+ * addressing semantics (the label owns block identity for the model),
+ * but the numeric suffix is the stable block id host-side tooling reads
+ * to tell synthetic messages apart.  A block whose id is not in the
+ * session map falls back to `b0`.
+ *
+ * @param text - The planned summary text.
+ * @param id - The block id behind the planned label, when known.
+ * @returns The synthetic v1 message.
+ */
+function summaryEntry(text: string, id?: number): ContextMessageEntry {
+  return {
+    info: { role: "user", id: `zoo-fold-b${id ?? 0}`, synthetic: true },
+    parts: [{ type: "text", text }],
+  };
+}
+
+/**
+ * Materialize a render plan into the v1 messages array in place.
+ *
+ * The plan's line refs are written through the v1 lens first, then the
+ * array is rebuilt in plan order: an original entry keeps its v1
+ * message object (content differences already landed via the lens —
+ * this phase only restructures), and a summary entry inserts the
+ * synthetic message carrying the planned summary text.
  *
  * The input `entries` array is replaced in place (whole-array swap), so
  * callers holding the array reference observe the folded view.
  *
  * @param entries - The v1 messages array (mutated in place).
- * @param items - The folded view items, in view order.
- * @param state - The session state (block map, for summary ids).
+ * @param plan - The render plan, in view order.
  * @returns The mutated `entries` array.
  */
-export function renderView(
+export function materialize(
   entries: ContextMessageEntry[],
-  items: ViewItem[],
-  state: SessionState,
+  plan: RenderEntry[],
 ): ContextMessageEntry[] {
-  const lens = history(entries).messages;
-  const numbered = numberView(items, (ordinal) => lens[ordinal].hidden);
-  const lineByItem = new Map<ViewItem, number>();
-  for (const { n, item } of numbered) {
-    lineByItem.set(item, n);
-  }
+  applyLineInjections(history(entries).messages, plan);
 
   const out: ContextMessageEntry[] = [];
-  for (const item of items) {
-    if (item.type === "summary") {
-      const id = blockIdOf(state, item.block.start, item.block.end);
-      out.push(materializeSummary({ ...item.block, id }, lineByItem.get(item)));
-      continue;
-    }
-    // An original item covers one fold unit.  On the OpenCode projection
-    // a unit is always a single message (a tool call and its result share
-    // one message), so the interval loop pushes exactly one entry and the
-    // unit's line number lands on it when it has an injectable region.
-    const line = lineByItem.get(item);
-    let lineInjected = false;
-    for (let ordinal = item.start; ordinal < item.end; ordinal++) {
-      if (!lineInjected && line !== undefined) {
-        injectLinePrefix(lens[ordinal], line);
-        lineInjected = true;
-      }
-      out.push(entries[ordinal]);
-    }
+  for (const entry of plan) {
+    out.push(
+      entry.kind === "summary"
+        ? summaryEntry(entry.text, entry.id)
+        : entries[entry.ordinal],
+    );
   }
   entries.length = 0;
   entries.push(...out);
   return entries;
-}
-
-/**
- * Render a pruning round into the v1 messages array in place.
- *
- * Applies the region edits, then renders the folded view (see
- * `applyEdits` and `renderView` — this is their sequence in one call).
- *
- * @param entries - The v1 messages array (mutated in place).
- * @param items - The folded view items, in view order.
- * @param edits - Region text replacements, applied before the view
- *   render.
- * @param state - The session state (block map, for summary ids).
- * @returns The mutated `entries` array.
- */
-export function render(
-  entries: ContextMessageEntry[],
-  items: ViewItem[],
-  edits: RegionEdit[],
-  state: SessionState,
-): ContextMessageEntry[] {
-  applyEdits(entries, edits);
-  return renderView(entries, items, state);
 }

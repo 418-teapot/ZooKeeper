@@ -1,7 +1,7 @@
 /**
  * Message and content-part builders for the opencode adapter tests.
  *
- * The opencode adapter test files (`render.test.ts`, `apply-view.test.ts`,
+ * The opencode adapter test files (`render.test.ts`,
  * `history.test.ts`, and `tui/controller.test.ts`) construct v1 fixture
  * parts through these builders.  `toolPart` and `textPart` carry the
  * superset of the fields the in-scope call sites use; the omitted
