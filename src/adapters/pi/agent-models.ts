@@ -57,14 +57,18 @@ export function parseAgentsJson(
   try {
     root = JSON.parse(text);
   } catch {
-    log("config", "agents_json_invalid", "", undefined, "warn", {
+    log.warn({
+      hook: "config",
+      event: "agents_json_invalid",
       path,
       reason: "invalid-json",
     });
     return {};
   }
   if (root === null || typeof root !== "object" || Array.isArray(root)) {
-    log("config", "agents_json_invalid", "", undefined, "warn", {
+    log.warn({
+      hook: "config",
+      event: "agents_json_invalid",
       path,
       reason: "non-object-root",
     });
@@ -72,7 +76,9 @@ export function parseAgentsJson(
   }
   const agents = (root as Record<string, unknown>).agents;
   if (agents === null || typeof agents !== "object" || Array.isArray(agents)) {
-    log("config", "agents_json_invalid", "", undefined, "warn", {
+    log.warn({
+      hook: "config",
+      event: "agents_json_invalid",
       path,
       reason: "non-object-agents",
     });

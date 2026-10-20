@@ -102,7 +102,9 @@ export async function presentAskForm(opts: {
     // pi rejects `ui.custom` when its factory throws or the host tears the
     // form down by force: nothing was ever reported, so every question is
     // unavailable for a system-side reason rather than a user refusal.
-    log("ask-tool", "custom_rejected", "", undefined, "warn", {
+    log.warn({
+      hook: "ask-tool",
+      event: "custom_rejected",
       error: error instanceof Error ? error.message : String(error),
     });
     return fallbackResults(questions, "aborted");

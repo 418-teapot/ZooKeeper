@@ -115,14 +115,12 @@ export function createOpenCodeHandoffTarget(
       });
       if (createResult.error || !createResult.data?.id) {
         const errMsg = createResult.error ?? "no session ID returned";
-        log(
-          "go-command",
-          "session_create_failed",
-          ctx.parentage,
-          undefined,
-          "error",
-          { error: String(errMsg) },
-        );
+        log.error({
+          hook: "go-command",
+          event: "session_create_failed",
+          sessionId: ctx.parentage,
+          error: String(errMsg),
+        });
         throw new Error(`Failed to create execution session: ${errMsg}`);
       }
       return { id: createResult.data.id };
@@ -175,16 +173,18 @@ export function createOpenCodeHandoffTarget(
               ],
             },
           });
-          log("go-command", "confirm_injected", session.id, undefined, "info");
+          log.info({
+            hook: "go-command",
+            event: "confirm_injected",
+            sessionId: session.id,
+          });
         } catch (err) {
-          log(
-            "go-command",
-            "confirm_inject_failed",
-            session.id,
-            undefined,
-            "warn",
-            { error: String(err) },
-          );
+          log.warn({
+            hook: "go-command",
+            event: "confirm_inject_failed",
+            sessionId: session.id,
+            error: String(err),
+          });
         }
       }
     },
@@ -202,7 +202,11 @@ export function createOpenCodeHandoffTarget(
     async focus(session) {
       if (client?.route?.navigate) {
         client.route.navigate("home");
-        log("go-command", "navigated_home", session.id, undefined, "info");
+        log.info({
+          hook: "go-command",
+          event: "navigated_home",
+          sessionId: session.id,
+        });
       }
       if (client?.tui?.publish) {
         await client.tui.publish({
@@ -211,7 +215,10 @@ export function createOpenCodeHandoffTarget(
             properties: { sessionID: session.id },
           },
         });
-        log("go-command", "tui_switched", session.id, undefined, "info", {
+        log.info({
+          hook: "go-command",
+          event: "tui_switched",
+          sessionId: session.id,
           newSessionID: session.id,
         });
       }

@@ -70,7 +70,7 @@ import { resolveIdentity } from "../core/subagent/identity.js";
 import type { UpdateRunPatch } from "../core/subagent/registry.js";
 import { finishRun, startRun, updateRun } from "../core/subagent/registry.js";
 import { runSubagent } from "../core/subagent/run.js";
-import { defineTool, type ToolContribution } from "../core/unit.js";
+import { defineTool, type ToolDefinition } from "../core/unit.js";
 import { log } from "../utils/logger.js";
 
 type SubagentToolInput = {
@@ -227,7 +227,7 @@ export function createSubagentTool(
       | "onSubagentRunChange"
     >
   >,
-): ToolContribution {
+): ToolDefinition {
   const renderer = caps.subagentRenderer;
   // Nudge the host's fleet widget after every registry mutation (the pi
   // entry point wires this to the widget's refresh).
@@ -235,7 +235,6 @@ export function createSubagentTool(
     caps.onSubagentRunChange?.();
   };
   return {
-    name: "subagent",
     description:
       "将任务委派给一个专用的子 agent 执行。子 agent 使用全新上下文，不会继承当前会话，需要在 prompt 中提供完整的背景、目标、约束和验收标准。该工具会同步等待子 agent 完成，并返回其最终回复。",
     args: {
@@ -282,18 +281,14 @@ export function createSubagentTool(
       const targetMode = caps.agentModes?.[input.agent];
       if (targetMode !== "subagent") {
         const sessionID = caps.toolHost?.resolveSessionId(toolCtx) ?? "";
-        log(
-          "subagent-tool",
-          "target_role_blocked",
-          sessionID,
-          undefined,
-          "warn",
-          {
-            caller,
-            target: input.agent,
-            reason: "not-a-subagent",
-          },
-        );
+        log.warn({
+          hook: "subagent-tool",
+          event: "target_role_blocked",
+          sessionId: sessionID,
+          caller,
+          target: input.agent,
+          reason: "not-a-subagent",
+        });
         return `"${input.agent}" 不是可委派的子 agent：仅在配置中声明 mode = "subagent" 的 agent 才能作为委派目标。`;
       }
 
@@ -338,7 +333,10 @@ export function createSubagentTool(
       const configuredModel = caps.subagentModels?.[input.agent];
       if (typeof configuredModel !== "string" || configuredModel.length === 0) {
         const sessionID = caps.toolHost?.resolveSessionId(toolCtx) ?? "";
-        log("subagent-tool", "model_missing", sessionID, undefined, "warn", {
+        log.warn({
+          hook: "subagent-tool",
+          event: "model_missing",
+          sessionId: sessionID,
           caller,
           target: input.agent,
         });
@@ -443,14 +441,12 @@ export function createSubagentTool(
               } catch (err) {
                 const message =
                   err instanceof Error ? err.message : String(err);
-                log(
-                  "subagent-tool",
-                  "progress_update_failed",
-                  parentSession ?? "",
-                  undefined,
-                  "warn",
-                  { error: message },
-                );
+                log.warn({
+                  hook: "subagent-tool",
+                  event: "progress_update_failed",
+                  sessionId: parentSession,
+                  error: message,
+                });
               }
             }
           },
@@ -474,19 +470,15 @@ export function createSubagentTool(
         notifyRunChange();
       }
 
-      log(
-        "subagent-tool",
-        "subagent_done",
-        parentSession ?? "",
-        undefined,
-        "info",
-        {
-          agent: input.agent,
-          description: input.description,
-          kind: result.kind,
-          tools: tools.length,
-        },
-      );
+      log.info({
+        hook: "subagent-tool",
+        event: "subagent_done",
+        sessionId: parentSession,
+        agent: input.agent,
+        description: input.description,
+        kind: result.kind,
+        tools: tools.length,
+      });
 
       // 9. Map the outcome onto the tool text.
       return formatSubagentResult(result);
@@ -514,9 +506,6 @@ export const unit = defineTool({
     "onSubagentRunChange",
   ],
   create(caps) {
-    return {
-      kind: "tool",
-      tools: [createSubagentTool(caps.subagentDriver, caps)],
-    };
+    return createSubagentTool(caps.subagentDriver, caps);
   },
 });

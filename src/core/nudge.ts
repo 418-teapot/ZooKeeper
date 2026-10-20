@@ -107,7 +107,13 @@ export interface NudgeContext {
  */
 function emitSkip(ctx: NudgeContext, skip?: NudgeSkip): void {
   if (!skip?.event) return;
-  log(ctx.hook, skip.event, ctx.sessionID, ctx.callID, "debug", skip.fields);
+  log.debug({
+    ...skip.fields,
+    hook: ctx.hook,
+    event: skip.event,
+    sessionId: ctx.sessionID,
+    callId: ctx.callID,
+  });
 }
 
 /**
@@ -119,7 +125,13 @@ function emitSkip(ctx: NudgeContext, skip?: NudgeSkip): void {
  */
 function finish(ctx: NudgeContext, rule: NudgeRule, text: string): void {
   ctx.output.output = `${ctx.output.output ?? ""}\n\n${text}`;
-  log(ctx.hook, rule.event, ctx.sessionID, ctx.callID, "info", rule.fields?.());
+  log.info({
+    ...rule.fields?.(),
+    hook: ctx.hook,
+    event: rule.event,
+    sessionId: ctx.sessionID,
+    callId: ctx.callID,
+  });
 }
 
 // ---------------------------------------------------------------------------

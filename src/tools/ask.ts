@@ -38,7 +38,7 @@ import {
 } from "../core/ask.js";
 import { createSequencer } from "../core/sequencer.js";
 import { stripTerminalSequences } from "../core/terminal-sequences.js";
-import { defineTool, type ToolContribution } from "../core/unit.js";
+import { defineTool, type ToolDefinition } from "../core/unit.js";
 import { log } from "../utils/logger.js";
 
 // ---------------------------------------------------------------------------
@@ -273,7 +273,9 @@ export function guardAnswers(
     if (question === undefined || result === undefined) return result;
     const check = validateAnswer(question, result);
     if (check.valid) return result;
-    log("ask-tool", "invalid_answer", "", undefined, "warn", {
+    log.warn({
+      hook: "ask-tool",
+      event: "invalid_answer",
       index: i,
       errors: check.errors,
     });
@@ -310,19 +312,18 @@ function handBack(
  * @param host - The injected form host that mounts and collects the form.
  * @param timeoutSeconds - The `[zoo.ask].timeout` budget (undefined → the
  *   form waits for the user indefinitely).
- * @returns The tool contribution (its calls are serialised — the dialog
+ * @returns The tool definition (its calls are serialised — the dialog
  *   owns the terminal).
  */
 export function createAskTool(
   host: AskFormHost,
   timeoutSeconds?: number,
-): ToolContribution {
+): ToolDefinition {
   // The resource this tool protects is one user-facing dialog, so the
   // exclusion is kept per tool instance rather than declared to the host.
   const runSerialized = createSequencer();
 
   return {
-    name: "ask",
     description:
       "向用户提问并等待回答：只有在缺少用户决策就无法继续时才能使用。一次可提交多个问题，每个问题支持单选/多选、可选描述、推荐项，并默认允许自由输入。用户拒答或超时都会作为正常结果返回，不要据此反复追问。",
     args: {
@@ -425,16 +426,13 @@ export function createAskTool(
  *
  * The unit contributes its tool ONLY on the pi host — `askFormHost` is
  * present exactly when the extension runs inside pi, so on OpenCode the
- * create() returns no tools and `ask` never registers (fail-closed).
+ * create() returns no tool and `ask` never registers (fail-closed).
  */
 export const unit = defineTool({
   name: "ask",
   needs: ["askFormHost"],
   wants: ["askTimeoutSeconds"],
   create(caps) {
-    return {
-      kind: "tool",
-      tools: [createAskTool(caps.askFormHost, caps.askTimeoutSeconds)],
-    };
+    return createAskTool(caps.askFormHost, caps.askTimeoutSeconds);
   },
 });

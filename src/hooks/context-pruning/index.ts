@@ -15,7 +15,7 @@ import {
   contextPruningTransformHandler,
   handleContextPruning,
 } from "../../core/context/pipeline.js";
-import { defineHook, makeHookContributions } from "../../core/unit.js";
+import { defineHook } from "../../core/unit.js";
 
 export { contextPruningTransformHandler, handleContextPruning };
 
@@ -43,7 +43,7 @@ export const unit = defineHook({
   wants: ["toolHost"],
   create(caps, activeSet) {
     const adapter = caps.adapter;
-    return makeHookContributions({
+    return {
       transform: [
         {
           name: "contextPruning",
@@ -58,6 +58,6 @@ export const unit = defineHook({
           },
         },
       ],
-    });
+    };
   },
 });

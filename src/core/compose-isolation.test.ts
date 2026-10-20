@@ -1,45 +1,17 @@
 /**
- * Tests for the composition-time infrastructure: `makeHookContributions`
- * (`src/core/unit.ts`) and the isolated contribution runners
- * (`src/core/compose.ts`).
+ * Tests for the composition-time infrastructure: the isolated
+ * contribution runners (`src/core/compose.ts`).
  *
- * Covers the default-empty slot set, partial overrides, and crash
- * isolation of the runners.
+ * Covers crash isolation of the runners; the `define*` helpers whose
+ * output they consume are covered by `src/core/unit.test.ts`.
  */
 import assert from "node:assert/strict";
 import { afterEach, describe, it } from "node:test";
 import { _getBufferForTesting, _resetForTesting } from "../utils/logger.js";
 import { runIsolated, runIsolatedSync } from "./compose.js";
-import { makeHookContributions } from "./unit.js";
 
 afterEach(() => {
   _resetForTesting();
-});
-
-describe("makeHookContributions", () => {
-  it("defaults every hook slot to an empty array", () => {
-    const contributions = makeHookContributions();
-
-    assert.equal(contributions.kind, "hook");
-    assert.deepEqual(contributions.afterExec, []);
-    assert.deepEqual(contributions.transform, []);
-    assert.deepEqual(contributions.textComplete, []);
-    assert.deepEqual(contributions.toolDefinition, []);
-    assert.deepEqual(contributions.delegation, []);
-    assert.deepEqual(contributions.onSettled, []);
-  });
-
-  it("applies the named slot and keeps omitted slots empty", () => {
-    const handler = { name: "x", handle: async () => {} };
-    const contributions = makeHookContributions({ afterExec: [handler] });
-
-    assert.deepEqual(contributions.afterExec, [handler]);
-    assert.deepEqual(contributions.transform, []);
-    assert.deepEqual(contributions.textComplete, []);
-    assert.deepEqual(contributions.toolDefinition, []);
-    assert.deepEqual(contributions.delegation, []);
-    assert.deepEqual(contributions.onSettled, []);
-  });
 });
 
 /** Count the buffered `handler_crashed` entries. */

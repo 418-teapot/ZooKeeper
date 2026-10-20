@@ -21,7 +21,7 @@
  * @module
  */
 
-import { defineTool, type ToolContribution } from "../core/unit.js";
+import { defineTool, type ToolDefinition } from "../core/unit.js";
 import {
   fetchWebContent,
   type HtmlConverter,
@@ -96,14 +96,13 @@ function validateFetchArgs(args: unknown): FetchToolInput {
  *
  * @param converter - The native HTML→Markdown converter.
  * @param truncate - The host head truncator.
- * @returns The fetch tool contribution.
+ * @returns The fetch tool definition.
  */
 export function createFetchTool(
   converter: HtmlConverter,
   truncate: TruncateHeadFn,
-): ToolContribution {
+): ToolDefinition {
   return {
-    name: "fetch",
     description:
       "获取指定 URL 的内容并返回。HTML 页面会转换为 Markdown，纯文本、Markdown、JSON 和 XML 则按原格式返回。仅支持公网 http/https 地址，每次重定向都会重新进行安全校验，以防止 SSRF 攻击。返回内容最多包含 2000 行或 50KB，超出部分会被截断；截断时，完整内容会保存到临时文件，并在返回结果中附带文件路径。",
     args: {
@@ -146,12 +145,7 @@ export const unit = defineTool({
   needs: ["loadHtmlConverter", "truncateHead"],
   create(caps) {
     const converter = caps.loadHtmlConverter();
-    if (converter === null) {
-      return { kind: "tool", tools: [] };
-    }
-    return {
-      kind: "tool",
-      tools: [createFetchTool(converter, caps.truncateHead)],
-    };
+    if (converter === null) return null;
+    return createFetchTool(converter, caps.truncateHead);
   },
 });

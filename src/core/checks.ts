@@ -86,7 +86,10 @@ export function checkPlanProgress(
 
     return null;
   } catch (err) {
-    log("checks", "plan_check_failed", sessionID, undefined, "warn", {
+    log.warn({
+      hook: "checks",
+      event: "plan_check_failed",
+      sessionId: sessionID,
       error: String(err),
     });
     return null;
@@ -136,7 +139,10 @@ export async function checkTodoProgress(
         return null;
     }
   } catch (err) {
-    log("checks", "todo_check_failed", sessionID, undefined, "warn", {
+    log.warn({
+      hook: "checks",
+      event: "todo_check_failed",
+      sessionId: sessionID,
       error: String(err),
     });
     return null;

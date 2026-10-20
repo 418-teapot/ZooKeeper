@@ -549,7 +549,9 @@ export async function buildPiHandlers(
             sessionManager.getBranch() as PiHistoryEntry[],
           );
         } catch (err) {
-          log("plugin", "todo_history_failed", "", undefined, "warn", {
+          log.warn({
+            hook: "plugin",
+            event: "todo_history_failed",
             error: String(err),
           });
           throw err;
@@ -831,7 +833,9 @@ export async function buildPiHandlers(
     piApi?.setActiveTools?.(next);
     const removed = denied.filter((tool) => baseline.includes(tool));
     if (removed.length > 0) {
-      log("permissions", "primary_tools_trimmed", "", undefined, "info", {
+      log.info({
+        hook: "permissions",
+        event: "primary_tools_trimmed",
         agent: primary,
         removed,
       });
@@ -909,7 +913,9 @@ export async function buildPiHandlers(
   // pi log records which profile-driven composition was loaded.  Sessionless
   // (load-time) entry: it buffers and flushes into the first pi session's
   // file once that session materialises.
-  log("plugin", "plugin_init", "", undefined, "info", {
+  log.info({
+    hook: "plugin",
+    event: "plugin_init",
     agents: composed.agents.map((agent) => agent.name),
     skills: composed.skills.map((skill) => skill.name),
     limits,

@@ -15,7 +15,7 @@ export {
 } from "../../core/prompts.js";
 
 import { resolveTodoSource } from "../../core/client/todo.js";
-import { defineHook, makeHookContributions } from "../../core/unit.js";
+import { defineHook } from "../../core/unit.js";
 import { nudgePostSubagent } from "./hook.js";
 
 export { nudgePostSubagent };
@@ -34,7 +34,7 @@ export const unit = defineHook({
   wants: ["todoStore"],
   create(caps) {
     const source = resolveTodoSource(caps);
-    return makeHookContributions({
+    return {
       afterExec: [
         {
           name: "nudgePostSubagent",
@@ -42,6 +42,6 @@ export const unit = defineHook({
             nudgePostSubagent(source, input, output, caps.directory),
         },
       ],
-    });
+    };
   },
 });

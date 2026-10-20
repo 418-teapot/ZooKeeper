@@ -1,4 +1,3 @@
-import { defineAgent } from "../core/unit.js";
 import { envToolsRules } from "./env-tools.js";
 import {
   DELEGATION_DISCIPLINE_TEXT,
@@ -60,19 +59,3 @@ ${DELEGATION_DISCIPLINE_TEXT}
 ${envToolsRules()}
 </Contract>
 `;
-
-/**
- * Beaver agent unit descriptor.
- *
- * Contributes the implementation-agent prompt for prompt injection.
- */
-export const unit = defineAgent({
-  name: "beaver",
-  needs: [],
-  create() {
-    return {
-      kind: "agent",
-      agents: [{ name: "beaver", prompt: BEAVER_PROMPT }],
-    };
-  },
-});

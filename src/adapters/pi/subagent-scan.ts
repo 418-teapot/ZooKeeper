@@ -775,17 +775,14 @@ function rebuildLevel(
 
     if (nestedPath === undefined) continue;
     if (nested === undefined) {
-      log(
-        "subagent-scan",
-        "nested_session_unreadable",
-        parentSession,
-        scanned.id,
-        "warn",
-        {
-          runId: scanned.id,
-          sessionPath: scanned.sessionPath ?? nestedPath,
-        },
-      );
+      log.warn({
+        hook: "subagent-scan",
+        event: "nested_session_unreadable",
+        sessionId: parentSession,
+        callId: scanned.id,
+        runId: scanned.id,
+        sessionPath: scanned.sessionPath ?? nestedPath,
+      });
       continue;
     }
     // The nested runs execute inside the parent run's sub-session, so their
@@ -799,18 +796,15 @@ function rebuildLevel(
     // global across branches, so a session file reached through two
     // different parents is only ever scanned once.
     if (visited.has(nestedParent)) {
-      log(
-        "subagent-scan",
-        "nested_session_cycle",
-        parentSession,
-        scanned.id,
-        "warn",
-        {
-          runId: scanned.id,
-          childSession: nestedParent,
-          sessionPath: scanned.sessionPath ?? nestedPath,
-        },
-      );
+      log.warn({
+        hook: "subagent-scan",
+        event: "nested_session_cycle",
+        sessionId: parentSession,
+        callId: scanned.id,
+        runId: scanned.id,
+        childSession: nestedParent,
+        sessionPath: scanned.sessionPath ?? nestedPath,
+      });
       continue;
     }
     visited.add(nestedParent);

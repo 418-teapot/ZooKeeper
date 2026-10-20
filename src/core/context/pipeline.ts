@@ -290,7 +290,10 @@ function releasePhase(ctx: PipelinePhaseContext): void {
   const released = flipReleasedMarks(state, releaseOptions);
 
   if (released.releasedCount > 0) {
-    log("context-pruning", "marks_released", sessionId, undefined, "info", {
+    log.info({
+      hook: "context-pruning",
+      event: "marks_released",
+      sessionId,
       releasedCount: released.releasedCount,
       releasedTokens: released.releasedTokens,
       pendingTokensBefore: curPendingTokens,
@@ -356,7 +359,10 @@ function producersPhase(ctx: PipelinePhaseContext): void {
         prunedOrdinals,
       });
       if (result.created > 0) {
-        log("context-pruning", "dedup_marked", sessionId, undefined, "info", {
+        log.info({
+          hook: "context-pruning",
+          event: "dedup_marked",
+          sessionId,
           markedCount: result.created,
           markedTokens: result.tokens,
         });
@@ -383,17 +389,13 @@ function producersPhase(ctx: PipelinePhaseContext): void {
         prunedOrdinals,
       });
       if (result.created > 0) {
-        log(
-          "context-pruning",
-          "purge-errors_marked",
+        log.info({
+          hook: "context-pruning",
+          event: "purge-errors_marked",
           sessionId,
-          undefined,
-          "info",
-          {
-            markedCount: result.created,
-            markedTokens: result.tokens,
-          },
-        );
+          markedCount: result.created,
+          markedTokens: result.tokens,
+        });
       }
     }
   }
@@ -423,23 +425,19 @@ function foldPhase(ctx: PipelinePhaseContext): void {
       // The fold already decided the span is invalid; re-derive the
       // reason here so the log says why, not just that.
       const check = checkSpan(snapshot, block);
-      log(
-        "context-pruning",
-        "compress_block_stale",
+      log.warn({
+        hook: "context-pruning",
+        event: "compress_block_stale",
         sessionId,
-        undefined,
-        "warn",
-        {
-          blockId: id,
-          start: block.start,
-          end: block.end,
-          reason: check.reason,
-          storedHash: check.storedHash,
-          currentHash: check.currentHash,
-          historyLength: check.historyLength,
-          ...(block.title !== undefined ? { title: block.title } : {}),
-        },
-      );
+        blockId: id,
+        start: block.start,
+        end: block.end,
+        reason: check.reason,
+        storedHash: check.storedHash,
+        currentHash: check.currentHash,
+        historyLength: check.historyLength,
+        ...(block.title !== undefined ? { title: block.title } : {}),
+      });
     }
     markStale(state, folded.expiredBlockIds);
   }
@@ -497,7 +495,10 @@ function publishPhase(ctx: PipelinePhaseContext): void {
   if (numbered.length > 0) {
     // Line-ref allocation (per-round dense line numbers) — the
     // observability sentinel for a completed pruning round.
-    log("context-pruning", "refs_assigned", sessionId, undefined, "info", {
+    log.info({
+      hook: "context-pruning",
+      event: "refs_assigned",
+      sessionId,
       assigned: numbered.length,
     });
   }
@@ -544,7 +545,10 @@ function nudgePhase(ctx: PipelinePhaseContext): void {
 
   // Log the decision payload — every field is the post-write snapshot
   // the core evaluation persisted.
-  log("context-pruning", "nudge_injected", sessionId, undefined, "info", {
+  log.info({
+    hook: "context-pruning",
+    event: "nudge_injected",
+    sessionId,
     // `nudgeLevel` instead of `level` — the logger reserves `level`
     // for the entry's log level.
     nudgeLevel: decision.level,
@@ -630,36 +634,30 @@ function manualCompressPhase(ctx: PipelinePhaseContext): void {
     );
     state.pendingManualTrigger = false;
 
-    log(
-      "context-pruning",
-      "manual_compress_injected",
+    log.info({
+      hook: "context-pruning",
+      event: "manual_compress_injected",
       sessionId,
-      undefined,
-      "info",
-      {
-        ...(eligibility
-          ? {
-              startRef: eligibility.startRef,
-              endRef: eligibility.endRef,
-              reclaimTokens: eligibility.reclaimTokens,
-            }
-          : { eligibility: null }),
-      },
-    );
+      ...(eligibility
+        ? {
+            startRef: eligibility.startRef,
+            endRef: eligibility.endRef,
+            reclaimTokens: eligibility.reclaimTokens,
+          }
+        : { eligibility: null }),
+    });
   } else {
     // Compress tool / section unavailable — a stale trigger can never
     // produce a meaningful command.  Clear the flag so it never fires
     // later (the /dcp compress registration gate normally prevents
     // this state).
     state.pendingManualTrigger = false;
-    log(
-      "context-pruning",
-      "manual_compress_skipped",
+    log.warn({
+      hook: "context-pruning",
+      event: "manual_compress_skipped",
       sessionId,
-      undefined,
-      "warn",
-      { reason: "compress tool not registered or thresholds missing" },
-    );
+      reason: "compress tool not registered or thresholds missing",
+    });
   }
 }
 
@@ -682,7 +680,10 @@ function persistPhase(ctx: PipelinePhaseContext): void {
     if (mark.effective) prunedToolCount += 1;
   }
   const totalEff = reclaimedTokens(state);
-  log("context-pruning", "prune_completed", sessionId, undefined, "info", {
+  log.info({
+    hook: "context-pruning",
+    event: "prune_completed",
+    sessionId,
     prunedToolCount,
     totalPruneTokens: totalEff,
     totalReclaimedTokens: totalEff,
@@ -817,7 +818,10 @@ export function handleContextPruning(
         : undefined,
     );
   } catch (err) {
-    log("plugin", "handler_crashed", sessionID, undefined, "error", {
+    log.error({
+      hook: "plugin",
+      event: "handler_crashed",
+      sessionId: sessionID,
       handler: "contextPruning",
       error: String(err),
     });

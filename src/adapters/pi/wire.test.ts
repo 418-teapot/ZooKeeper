@@ -2752,7 +2752,7 @@ describe("buildPiHandlers — plugin_init load-time event", () => {
 
       // The first sessioned entry establishes the primary pi session;
       // the buffered plugin_init now flushes into its file.
-      log("plugin", "handler", "pi-sess", undefined, "info");
+      log.info({ hook: "plugin", event: "handler", sessionId: "pi-sess" });
       _flushForTesting();
 
       const primaryFile = join(logDir, "pi-pi-sess.log");

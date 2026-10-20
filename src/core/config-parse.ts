@@ -67,7 +67,9 @@ function findBadKey(checks: KeyCheck[]): KeyCheck | undefined {
  * @param bad - The offending key-check row.
  */
 function warnSectionInvalid(section: string, bad: KeyCheck): void {
-  log("config", `${section}_config_invalid`, "", undefined, "warn", {
+  log.warn({
+    hook: "config",
+    event: `${section}_config_invalid`,
     key: bad[0],
     value: bad[1],
   });
@@ -105,7 +107,9 @@ function warnModeFileInvalid(
   reason: string,
   extra?: Record<string, unknown>,
 ): void {
-  log("config", "mode_file_invalid", "", undefined, "warn", {
+  log.warn({
+    hook: "config",
+    event: "mode_file_invalid",
     path: resolveModeFilePath(),
     reason,
     ...extra,
@@ -524,7 +528,9 @@ export function parseAgentModes(rawConfig: any): AgentModeMap {
  *   key is absent).
  */
 function warnAgentModeInvalid(agent: string, mode: unknown): void {
-  log("config", "agent_mode_invalid", "", undefined, "warn", {
+  log.warn({
+    hook: "config",
+    event: "agent_mode_invalid",
     key: agent,
     value: mode,
   });
@@ -622,7 +628,9 @@ function parseHexColor(value: unknown): string | null {
  *   key is absent).
  */
 function warnAgentColorInvalid(agent: string, color: unknown): void {
-  log("config", "agent_color_invalid", "", undefined, "warn", {
+  log.warn({
+    hook: "config",
+    event: "agent_color_invalid",
     key: agent,
     value: color,
   });

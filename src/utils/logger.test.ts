@@ -68,7 +68,7 @@ describe("logger", () => {
   describe("testing seams", () => {
     it("_resetForTesting resets all module state", () => {
       _setLogPathForTesting("/some/path");
-      log("h", "e", "s", undefined, "info");
+      log.info({ hook: "h", event: "e", sessionId: "s" });
       assert.equal(_getBufferForTesting().length, 1);
 
       _resetForTesting();
@@ -79,7 +79,7 @@ describe("logger", () => {
     it("_setLogPathForTesting overrides the log file path", () => {
       const logPath = path.join(testDir, "custom.log");
       _setLogPathForTesting(logPath);
-      log("h", "e", "s", undefined, "info");
+      log.info({ hook: "h", event: "e", sessionId: "s" });
       _flushForTesting();
 
       assert.ok(fs.existsSync(logPath));
@@ -89,8 +89,8 @@ describe("logger", () => {
       const logPath = path.join(testDir, "test.log");
       _setLogPathForTesting(logPath);
 
-      log("h", "e", "s", undefined, "info");
-      log("h", "e", "s", undefined, "info");
+      log.info({ hook: "h", event: "e", sessionId: "s" });
+      log.info({ hook: "h", event: "e", sessionId: "s" });
 
       const snapshot = _getBufferForTesting();
       assert.equal(snapshot.length, 2);
@@ -112,7 +112,7 @@ describe("logger", () => {
       _setLogPathForTesting(logPath);
 
       for (let i = 0; i < 49; i++) {
-        log("h", "e", "s", undefined, "info");
+        log.info({ hook: "h", event: "e", sessionId: "s" });
       }
 
       assert.equal(fs.existsSync(logPath), false);
@@ -124,7 +124,7 @@ describe("logger", () => {
       _setLogPathForTesting(logPath);
 
       for (let i = 0; i < 50; i++) {
-        log("h", "e", "s", undefined, "info");
+        log.info({ hook: "h", event: "e", sessionId: "s" });
       }
 
       assert.ok(fs.existsSync(logPath), "file should exist after auto-flush");
@@ -136,8 +136,8 @@ describe("logger", () => {
       const logPath = path.join(testDir, "test.log");
       _setLogPathForTesting(logPath);
 
-      log("h", "e", "s", undefined, "info");
-      log("h", "e", "s", undefined, "info");
+      log.info({ hook: "h", event: "e", sessionId: "s" });
+      log.info({ hook: "h", event: "e", sessionId: "s" });
       assert.equal(_getBufferForTesting().length, 2);
       assert.equal(fs.existsSync(logPath), false);
 
@@ -153,7 +153,7 @@ describe("logger", () => {
       _setLogPathForTesting(logPath);
 
       for (let i = 0; i < 25; i++) {
-        log("h", "e", "s", undefined, "info");
+        log.info({ hook: "h", event: "e", sessionId: "s" });
       }
       assert.equal(_getBufferForTesting().length, 25);
 
@@ -161,7 +161,7 @@ describe("logger", () => {
       assert.equal(countLines(logPath), 25);
 
       for (let i = 0; i < 10; i++) {
-        log("h", "e", "s", undefined, "info");
+        log.info({ hook: "h", event: "e", sessionId: "s" });
       }
       _flushForTesting();
       assert.equal(countLines(logPath), 35);
@@ -182,7 +182,7 @@ describe("logger", () => {
       const logPath = path.join(testDir, "test.log");
       _setLogPathForTesting(logPath);
 
-      log("h", "e", "s", undefined, "debug");
+      log.debug({ hook: "h", event: "e", sessionId: "s" });
       _flushForTesting();
 
       assert.equal(fs.existsSync(logPath), false);
@@ -193,7 +193,7 @@ describe("logger", () => {
       const logPath = path.join(testDir, "test.log");
       _setLogPathForTesting(logPath);
 
-      log("h", "e", "s", undefined, "info");
+      log.info({ hook: "h", event: "e", sessionId: "s" });
       _flushForTesting();
 
       assert.ok(fs.existsSync(logPath));
@@ -203,7 +203,7 @@ describe("logger", () => {
       const logPath = path.join(testDir, "test.log");
       _setLogPathForTesting(logPath);
 
-      log("h", "e", "s", undefined, "warn");
+      log.warn({ hook: "h", event: "e", sessionId: "s" });
       _flushForTesting();
 
       assert.ok(fs.existsSync(logPath));
@@ -213,7 +213,7 @@ describe("logger", () => {
       const logPath = path.join(testDir, "test.log");
       _setLogPathForTesting(logPath);
 
-      log("h", "e", "s", undefined, "error");
+      log.error({ hook: "h", event: "e", sessionId: "s" });
       _flushForTesting();
 
       assert.ok(fs.existsSync(logPath));
@@ -223,7 +223,7 @@ describe("logger", () => {
       const logPath = path.join(testDir, "test.log");
       _setLogPathForTesting(logPath);
 
-      log("h", "e", "s");
+      log.debug({ hook: "h", event: "e", sessionId: "s" });
       _flushForTesting();
 
       assert.equal(fs.existsSync(logPath), false);
@@ -234,7 +234,7 @@ describe("logger", () => {
       _setLogPathForTesting(logPath);
 
       process.env.ZOO_DEBUG = "1";
-      log("h", "e", "s", undefined, "debug");
+      log.debug({ hook: "h", event: "e", sessionId: "s" });
       _flushForTesting();
 
       assert.ok(fs.existsSync(logPath));
@@ -245,7 +245,7 @@ describe("logger", () => {
       _setLogPathForTesting(logPath);
 
       process.env.ZOO_DEBUG = "true";
-      log("h", "e", "s", undefined, "debug");
+      log.debug({ hook: "h", event: "e", sessionId: "s" });
       _flushForTesting();
 
       assert.ok(fs.existsSync(logPath));
@@ -256,7 +256,7 @@ describe("logger", () => {
       _setLogPathForTesting(logPath);
 
       process.env.ZOO_DEBUG = "yes";
-      log("h", "e", "s", undefined, "debug");
+      log.debug({ hook: "h", event: "e", sessionId: "s" });
       _flushForTesting();
 
       assert.ok(fs.existsSync(logPath));
@@ -266,10 +266,10 @@ describe("logger", () => {
       const logPath = path.join(testDir, "test.log");
       _setLogPathForTesting(logPath);
 
-      log("h", "e", "s", undefined, "debug");
-      log("h", "e", "s", undefined, "info");
-      log("h", "e", "s", undefined, "warn");
-      log("h", "e", "s", undefined, "error");
+      log.debug({ hook: "h", event: "e", sessionId: "s" });
+      log.info({ hook: "h", event: "e", sessionId: "s" });
+      log.warn({ hook: "h", event: "e", sessionId: "s" });
+      log.error({ hook: "h", event: "e", sessionId: "s" });
       _flushForTesting();
 
       const lines = fs.readFileSync(logPath, "utf-8").trimEnd().split("\n");
@@ -278,6 +278,54 @@ describe("logger", () => {
         const entry = JSON.parse(line);
         assert.notEqual(entry.level, "debug");
       }
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // Level methods
+  // -----------------------------------------------------------------------
+
+  describe("Level methods", () => {
+    it("derives the entry level from the method name", () => {
+      const logPath = path.join(testDir, "test.log");
+      _setLogPathForTesting(logPath);
+      process.env.ZOO_DEBUG = "1";
+
+      log.debug({ hook: "h", event: "e", sessionId: "s" });
+      log.info({ hook: "h", event: "e", sessionId: "s" });
+      log.warn({ hook: "h", event: "e", sessionId: "s" });
+      log.error({ hook: "h", event: "e", sessionId: "s" });
+      _flushForTesting();
+
+      const levels = fs
+        .readFileSync(logPath, "utf-8")
+        .trimEnd()
+        .split("\n")
+        .map((line) => JSON.parse(line).level);
+      assert.deepEqual(levels, ["debug", "info", "warn", "error"]);
+    });
+
+    it("flattens caller fields into the entry top level", () => {
+      const logPath = path.join(testDir, "test.log");
+      _setLogPathForTesting(logPath);
+
+      log.warn({
+        hook: "h",
+        event: "e",
+        sessionId: "s",
+        reason: "boom",
+        count: 2,
+      });
+      _flushForTesting();
+
+      const parsed = JSON.parse(fs.readFileSync(logPath, "utf-8").trim());
+      assert.equal(parsed.reason, "boom");
+      assert.equal(parsed.count, 2);
+      assert.equal(
+        parsed.extra,
+        undefined,
+        "caller fields must not be nested under an extra key",
+      );
     });
   });
 
@@ -291,7 +339,7 @@ describe("logger", () => {
       _setLogPathForTesting(logPath);
 
       for (let i = 0; i < 5; i++) {
-        log("h", "e", "s", undefined, "info");
+        log.info({ hook: "h", event: "e", sessionId: "s" });
       }
       _flushForTesting();
 
@@ -313,7 +361,7 @@ describe("logger", () => {
       const logPath = path.join(testDir, "test.log");
       _setLogPathForTesting(logPath);
 
-      log("my-hook", "my-event", "sid-123", undefined, "info");
+      log.info({ hook: "my-hook", event: "my-event", sessionId: "sid-123" });
       _flushForTesting();
 
       const parsed = JSON.parse(fs.readFileSync(logPath, "utf-8").trim());
@@ -332,7 +380,7 @@ describe("logger", () => {
       const logPath = path.join(testDir, "test.log");
       _setLogPathForTesting(logPath);
 
-      log("h", "e", "s", "call-456", "info");
+      log.info({ hook: "h", event: "e", sessionId: "s", callId: "call-456" });
       _flushForTesting();
 
       const parsed = JSON.parse(fs.readFileSync(logPath, "utf-8").trim());
@@ -353,7 +401,7 @@ describe("logger", () => {
       const logPath = path.join(testDir, "test.log");
       _setLogPathForTesting(logPath);
 
-      log("h", "e", "s", undefined, "info");
+      log.info({ hook: "h", event: "e", sessionId: "s" });
       _flushForTesting();
 
       const parsed = JSON.parse(fs.readFileSync(logPath, "utf-8").trim());
@@ -364,7 +412,10 @@ describe("logger", () => {
       const logPath = path.join(testDir, "test.log");
       _setLogPathForTesting(logPath);
 
-      log("h", "e", "s", undefined, "info", {
+      log.info({
+        hook: "h",
+        event: "e",
+        sessionId: "s",
         myField: "myValue",
         num: 42,
       });
@@ -378,52 +429,36 @@ describe("logger", () => {
       assert.equal(parsed.num, 42);
     });
 
-    it("ignores extra fields that conflict with reserved fields", () => {
+    it("keeps the writer-owned fields out of reach of caller fields", () => {
       const logPath = path.join(testDir, "test.log");
       _setLogPathForTesting(logPath);
 
-      log("h", "e", "s", undefined, "warn", {
+      // `level`, `timestamp` and `host` are written by the logger itself;
+      // a caller field of the same name must not override them.
+      log.warn({
+        hook: "h",
+        event: "e",
+        sessionId: "s",
         level: "error",
-        event: "override-event",
+        timestamp: "fake",
+        host: "fake-host",
         custom: "ok",
       });
       _flushForTesting();
 
       const parsed = JSON.parse(fs.readFileSync(logPath, "utf-8").trim());
-      // Reserved values take precedence
       assert.equal(parsed.level, "warn");
-      assert.equal(parsed.event, "e");
+      assert.notEqual(parsed.timestamp, "fake");
+      assert.notEqual(parsed.host, "fake-host");
       // Non-reserved extra is still present
       assert.equal(parsed.custom, "ok");
-    });
-
-    it("ignores all reserved extra fields (timestamp, level, host, hook, sessionId, callId)", () => {
-      const logPath = path.join(testDir, "test.log");
-      _setLogPathForTesting(logPath);
-
-      log("real-hook", "real-event", "real-sid", "real-call", "info", {
-        timestamp: "fake",
-        level: "error",
-        host: "fake-host",
-        hook: "fake-hook",
-        sessionId: "fake-sid",
-        callId: "fake-call",
-      });
-      _flushForTesting();
-
-      const parsed = JSON.parse(fs.readFileSync(logPath, "utf-8").trim());
-      assert.equal(parsed.timestamp.startsWith("20"), true);
-      assert.equal(parsed.level, "info");
-      assert.equal(parsed.hook, "real-hook");
-      assert.equal(parsed.sessionId, "real-sid");
-      assert.equal(parsed.callId, "real-call");
     });
 
     it("timestamp is ISO 8601 UTC format (ends with Z)", () => {
       const logPath = path.join(testDir, "test.log");
       _setLogPathForTesting(logPath);
 
-      log("h", "e", "s", undefined, "info");
+      log.info({ hook: "h", event: "e", sessionId: "s" });
       _flushForTesting();
 
       const parsed = JSON.parse(fs.readFileSync(logPath, "utf-8").trim());
@@ -437,7 +472,7 @@ describe("logger", () => {
       const logPath = path.join(testDir, "test.log");
       _setLogPathForTesting(logPath);
 
-      log("h", "e", "s", undefined, "warn");
+      log.warn({ hook: "h", event: "e", sessionId: "s" });
       _flushForTesting();
 
       const parsed = JSON.parse(fs.readFileSync(logPath, "utf-8").trim());
@@ -465,8 +500,8 @@ describe("logger", () => {
 
       try {
         // Called before initLogger: `_host` is still "".
-        log("h", "e", "s", undefined, "info");
-        log("h", "e", "s", undefined, "info");
+        log.info({ hook: "h", event: "e", sessionId: "s" });
+        log.info({ hook: "h", event: "e", sessionId: "s" });
         _flushForTesting();
 
         assert.equal(
@@ -531,7 +566,7 @@ describe("logger", () => {
       const dirB = path.join(testDir, "dirB");
 
       initLogger("opencode", { logDir: dirA });
-      log("h", "e", "sess-1", undefined, "warn");
+      log.warn({ hook: "h", event: "e", sessionId: "sess-1" });
       _flushForTesting();
       assert.ok(
         fs.existsSync(path.join(dirA, "opencode-sess-1.log")),
@@ -546,8 +581,8 @@ describe("logger", () => {
       // Post-re-init sessionless entry: with a stale primary session it
       // would land in dirB/pi-sess-1.log; after the reset it stays
       // buffered until the re-established primary session.
-      log("config", "load_warn", "", undefined, "warn");
-      log("h", "e", "sess-2", undefined, "warn");
+      log.warn({ hook: "config", event: "load_warn" });
+      log.warn({ hook: "h", event: "e", sessionId: "sess-2" });
       _flushForTesting();
 
       assert.ok(
@@ -576,7 +611,7 @@ describe("logger", () => {
 
       const logPath = path.join(testDir, "defaults.log");
       _setLogPathForTesting(logPath);
-      log("h", "e", "s", undefined, "info");
+      log.info({ hook: "h", event: "e", sessionId: "s" });
       _flushForTesting();
       assert.ok(fs.existsSync(logPath));
     });
@@ -588,7 +623,7 @@ describe("logger", () => {
 
       // Write enough data that would trigger rotation if maxFileSize were set
       for (let i = 0; i < 10; i++) {
-        log("h", "e", "s", undefined, "info");
+        log.info({ hook: "h", event: "e", sessionId: "s" });
       }
       _flushForTesting();
 
@@ -612,7 +647,7 @@ describe("logger", () => {
       initLogger("opencode", { logDir: testDir, maxFileSize: 200 });
 
       for (let i = 0; i < 3; i++) {
-        log("h", "e", "s", undefined, "info");
+        log.info({ hook: "h", event: "e", sessionId: "s" });
       }
       _flushForTesting();
 
@@ -651,7 +686,7 @@ describe("logger", () => {
     it("writes entries with a session id to <host>-<sessionId>.log", () => {
       initLogger("opencode", { logDir: testDir });
 
-      log("h", "e", "sess-1", undefined, "info");
+      log.info({ hook: "h", event: "e", sessionId: "sess-1" });
       _flushForTesting();
 
       const expectedFile = path.join(testDir, "opencode-sess-1.log");
@@ -669,7 +704,7 @@ describe("logger", () => {
     it("sessionless entries create NO file while no session exists", () => {
       initLogger("opencode", { logDir: testDir });
 
-      log("config", "load_warn", "", undefined, "warn");
+      log.warn({ hook: "config", event: "load_warn" });
       _flushForTesting();
 
       // No session has materialised: the entry must stay buffered — never
@@ -689,7 +724,11 @@ describe("logger", () => {
     it("pi-host entries land in pi-<sessionId>.log", () => {
       initLogger("pi", { logDir: testDir });
 
-      log("plugin", "handler_crashed", "pi-sess", undefined, "error");
+      log.error({
+        hook: "plugin",
+        event: "handler_crashed",
+        sessionId: "pi-sess",
+      });
       _flushForTesting();
 
       const expectedFile = path.join(testDir, "pi-pi-sess.log");
@@ -712,10 +751,10 @@ describe("logger", () => {
 
       // Load-time sessionless entries (e.g. pi's plugin_init) buffered
       // before any session exists.
-      log("config", "load_warn", "", undefined, "warn");
-      log("config", "load_warn2", "", undefined, "warn");
+      log.warn({ hook: "config", event: "load_warn" });
+      log.warn({ hook: "config", event: "load_warn2" });
       // The first sessioned entry establishes the primary session.
-      log("plugin", "handler", "pi-sess", undefined, "info");
+      log.info({ hook: "plugin", event: "handler", sessionId: "pi-sess" });
       _flushForTesting();
 
       const primaryFile = path.join(testDir, "pi-pi-sess.log");
@@ -742,9 +781,9 @@ describe("logger", () => {
     it("a second session does NOT receive the sessionless backlog", () => {
       initLogger("opencode", { logDir: testDir });
 
-      log("config", "load_warn", "", undefined, "warn");
-      log("h", "e", "sess-a", undefined, "info"); // establishes primary
-      log("h", "e", "sess-b", undefined, "info"); // second session
+      log.warn({ hook: "config", event: "load_warn" });
+      log.info({ hook: "h", event: "e", sessionId: "sess-a" }); // establishes primary
+      log.info({ hook: "h", event: "e", sessionId: "sess-b" }); // second session
       _flushForTesting();
 
       const primaryFile = path.join(testDir, "opencode-sess-a.log");
@@ -771,9 +810,9 @@ describe("logger", () => {
     it("groups entries of the same session in one file across flushes", () => {
       initLogger("opencode", { logDir: testDir });
 
-      log("h", "e", "sess-1", undefined, "info");
+      log.info({ hook: "h", event: "e", sessionId: "sess-1" });
       _flushForTesting();
-      log("h", "e", "sess-1", undefined, "info");
+      log.info({ hook: "h", event: "e", sessionId: "sess-1" });
       _flushForTesting();
 
       const expectedFile = path.join(testDir, "opencode-sess-1.log");
@@ -783,8 +822,8 @@ describe("logger", () => {
     it("splits entries across different session shards", () => {
       initLogger("opencode", { logDir: testDir });
 
-      log("h", "e", "sess-a", undefined, "info");
-      log("h", "e", "sess-b", undefined, "info");
+      log.info({ hook: "h", event: "e", sessionId: "sess-a" });
+      log.info({ hook: "h", event: "e", sessionId: "sess-b" });
       _flushForTesting();
 
       assert.equal(
@@ -805,8 +844,8 @@ describe("logger", () => {
     it("sessionless entries stay buffered (not dropped) until attribution is possible", () => {
       initLogger("opencode", { logDir: testDir });
 
-      log("config", "early_warn", "", undefined, "warn");
-      log("config", "early_warn2", "", undefined, "warn");
+      log.warn({ hook: "config", event: "early_warn" });
+      log.warn({ hook: "config", event: "early_warn2" });
       assert.equal(_getBufferForTesting().length, 2);
 
       _flushForTesting();
@@ -825,10 +864,10 @@ describe("logger", () => {
     it("never creates a <host>.log file under any session mix", () => {
       initLogger("opencode", { logDir: testDir });
 
-      log("config", "a", "", undefined, "warn");
-      log("h", "e", "sess-x", undefined, "info");
-      log("config", "b", "", undefined, "warn");
-      log("h", "e", "sess-y", undefined, "info");
+      log.warn({ hook: "config", event: "a" });
+      log.info({ hook: "h", event: "e", sessionId: "sess-x" });
+      log.warn({ hook: "config", event: "b" });
+      log.info({ hook: "h", event: "e", sessionId: "sess-y" });
       _flushForTesting();
 
       const files = fs.readdirSync(testDir).filter((f) => f.endsWith(".log"));
@@ -844,7 +883,7 @@ describe("logger", () => {
       // A crafted session id with directory components must not escape
       // _logDir: only the basename is used, mirroring the Rust read side
       // (zutil::resolve_session_path).
-      log("h", "e", "../evil", undefined, "warn");
+      log.warn({ hook: "h", event: "e", sessionId: "../evil" });
       _flushForTesting();
 
       const expectedFile = path.join(testDir, "opencode-evil.log");
@@ -883,7 +922,7 @@ describe("logger", () => {
       });
 
       for (let i = 0; i < 3; i++) {
-        log("h", "e", "s", undefined, "info");
+        log.info({ hook: "h", event: "e", sessionId: "s" });
       }
       _flushForTesting();
 
@@ -904,13 +943,13 @@ describe("logger", () => {
       });
 
       for (let i = 0; i < 3; i++) {
-        log("h", "e", "s", undefined, "info");
+        log.info({ hook: "h", event: "e", sessionId: "s" });
       }
       _flushForTesting();
       assert.ok(fs.existsSync(`${logPath}.1`));
 
       for (let i = 0; i < 3; i++) {
-        log("h", "e", "s", undefined, "info");
+        log.info({ hook: "h", event: "e", sessionId: "s" });
       }
       _flushForTesting();
 
@@ -930,7 +969,7 @@ describe("logger", () => {
 
       for (let batch = 0; batch < 3; batch++) {
         for (let i = 0; i < 3; i++) {
-          log("h", "e", "s", undefined, "info");
+          log.info({ hook: "h", event: "e", sessionId: "s" });
         }
         _flushForTesting();
       }
@@ -954,7 +993,7 @@ describe("logger", () => {
         maxBackups: 2,
       });
 
-      log("h", "e", "s", undefined, "info");
+      log.info({ hook: "h", event: "e", sessionId: "s" });
       _flushForTesting();
 
       assert.ok(fs.existsSync(logPath));
@@ -976,7 +1015,7 @@ describe("logger", () => {
       });
 
       for (let i = 0; i < 3; i++) {
-        log("h", "e", "s", undefined, "info");
+        log.info({ hook: "h", event: "e", sessionId: "s" });
       }
       _flushForTesting();
 
@@ -1070,7 +1109,7 @@ describe("logger", () => {
       const badPath = path.join(testDir, "nonexistent-dir", "test.log");
       _setLogPathForTesting(badPath);
 
-      log("h", "e", "s", undefined, "info");
+      log.info({ hook: "h", event: "e", sessionId: "s" });
       // Should not throw
       _flushForTesting();
       // No assertion needed beyond not throwing — the error is silently swallowed
@@ -1084,7 +1123,7 @@ describe("logger", () => {
       // Make the file read-only
       fs.chmodSync(logPath, 0o444);
       _setLogPathForTesting(logPath);
-      log("h", "e", "s", undefined, "info");
+      log.info({ hook: "h", event: "e", sessionId: "s" });
       // Should not throw
       _flushForTesting();
 
@@ -1096,7 +1135,7 @@ describe("logger", () => {
       const badPath = path.join("/", "nonexistent-dir", "test.log");
       _setLogPathForTesting(badPath);
 
-      log("h", "e", "s", undefined, "info");
+      log.info({ hook: "h", event: "e", sessionId: "s" });
       _flushForTesting();
       // If we reach here, no exception was thrown
       assert.ok(true);

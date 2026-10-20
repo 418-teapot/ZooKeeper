@@ -34,6 +34,24 @@ import { basename, join, resolve } from "node:path";
 // Types
 // ---------------------------------------------------------------------------
 
+/**
+ * A structured log record.
+ *
+ * `hook` and `event` identify the emitting site; `sessionId` and `callId`
+ * are optional because load-time and sessionless entries have no session
+ * and not every entry belongs to a tool call.  Any other key is written as
+ * an additional field on the JSON line.
+ */
+export type LogEntry = {
+  hook: string;
+  event: string;
+  /** Absent = no session (e.g. load-time config warnings). */
+  sessionId?: string;
+  /** Absent = no call (e.g. non-tool events). */
+  callId?: string;
+  [field: string]: unknown;
+};
+
 export interface LoggerOptions {
   logDir: string;
   /** When undefined, file rotation is disabled. */
@@ -88,6 +106,9 @@ function isDebugEnabled(): boolean {
   );
 }
 
+/** Severity of a log entry; one method per level is exposed on `log`. */
+type LogLevel = "debug" | "info" | "warn" | "error";
+
 const LEVEL_ORDER: Record<string, number> = {
   debug: 0,
   info: 1,
@@ -105,7 +126,7 @@ const LEVEL_ORDER: Record<string, number> = {
  * @param level - The level of the candidate entry.
  * @returns `true` if the entry should be written.
  */
-function shouldLog(level: string): boolean {
+function shouldLog(level: LogLevel): boolean {
   const minLevel = isDebugEnabled() ? "debug" : "info";
   return (LEVEL_ORDER[level] ?? 0) >= (LEVEL_ORDER[minLevel] ?? 0);
 }
@@ -395,7 +416,16 @@ export function initLogger(host: string, opts?: Partial<LoggerOptions>): void {
 }
 
 /**
- * Write a structured log entry.
+ * Writer-owned fields; caller fields with these names are dropped.
+ *
+ * Only the keys `writeEntry` assigns after destructuring are listed:
+ * `hook`, `sessionId`, `event` and `callId` are destructured off the entry
+ * before the remaining fields are collected, so they never reach this set.
+ */
+const RESERVED_FIELDS = new Set(["timestamp", "level", "host"]);
+
+/**
+ * Buffer one entry at the given level.
  *
  * The entry is buffered in memory and flushed to disk when either the
  * buffer reaches 50 entries or after 500ms (whichever comes first).  Each
@@ -406,25 +436,13 @@ export function initLogger(host: string, opts?: Partial<LoggerOptions>): void {
  * file.  Before any session exists, sessionless entries remain buffered and
  * are dropped at process exit if no session ever materialises.
  *
- * @param hook - The hook module name (e.g. `"subagent-prompt"`).
- * @param event - The event name (e.g. `"reminder_injected"`).
- * @param sessionId - The current session identifier.
- * @param callId - Optional call identifier tied to the current tool
- *   execution, written as a fixed JSON field when present.
- * @param level - Log level: `"debug"`, `"info"`, `"warn"`, or `"error"`.
- *   Defaults to `"debug"`.
- * @param extra - Optional additional fields merged into the JSON line.
+ * @param lvl - The level recorded for the entry.
+ * @param entry - The record to write; unknown keys become extra fields.
  */
-export function log(
-  hook: string,
-  event: string,
-  sessionId: string,
-  callId?: string,
-  level?: string,
-  extra?: Record<string, unknown>,
-): void {
-  const lvl = level ?? "debug";
+function writeEntry(lvl: LogLevel, entry: LogEntry): void {
   if (!shouldLog(lvl)) return;
+
+  const { hook, event, sessionId = "", callId, ...fields } = entry;
 
   // The host is fixed at `initLogger` time.  When `log` runs before
   // `initLogger` the host is still the empty string, so the entry would
@@ -453,10 +471,10 @@ export function log(
     _primarySessionId = sessionId;
   }
 
-  // Build the entry: fixed fields come first so the JSON key order
-  // is deterministic.  Extra fields whose keys collide with fixed
+  // Build the line: fixed fields come first so the JSON key order is
+  // deterministic.  Caller fields whose keys collide with those fixed
   // fields are dropped — fixed fields always take precedence.
-  const entry: Record<string, unknown> = {
+  const line: Record<string, unknown> = {
     timestamp: new Date().toISOString(),
     level: lvl,
     host: _host,
@@ -465,30 +483,42 @@ export function log(
     event,
   };
   if (callId !== undefined) {
-    entry.callId = callId;
+    line.callId = callId;
   }
-  if (extra) {
-    const reserved = new Set([
-      "timestamp",
-      "level",
-      "host",
-      "hook",
-      "sessionId",
-      "event",
-      "callId",
-    ]);
-    for (const [k, v] of Object.entries(extra)) {
-      if (!reserved.has(k)) entry[k] = v;
-    }
+  for (const [k, v] of Object.entries(fields)) {
+    if (!RESERVED_FIELDS.has(k)) line[k] = v;
   }
 
-  _buffer.push(entry);
+  _buffer.push(line);
 
   // Flush synchronously when the buffer is full to bound memory usage.
   if (_buffer.length >= 50) {
     flushBuffer();
   }
 }
+
+/**
+ * Structured logger, one method per level.
+ *
+ * The severity is part of the method name, so an unknown level cannot be
+ * expressed.  Each call takes a single record: `hook`, `event` and the
+ * optional `sessionId`/`callId` identify the entry, and any remaining key
+ * is written as an additional field on the JSON line.
+ */
+export const log = {
+  debug(entry: LogEntry): void {
+    writeEntry("debug", entry);
+  },
+  info(entry: LogEntry): void {
+    writeEntry("info", entry);
+  },
+  warn(entry: LogEntry): void {
+    writeEntry("warn", entry);
+  },
+  error(entry: LogEntry): void {
+    writeEntry("error", entry);
+  },
+};
 
 /**
  * Force a synchronous flush of the buffered log entries to disk.

@@ -158,7 +158,10 @@ export function createPiToolHost(
      */
     async notify(_sessionId: string, text: string): Promise<void> {
       if (!appendEntry) {
-        log("tool-host", "notify_skipped", _sessionId, undefined, "debug", {
+        log.debug({
+          hook: "tool-host",
+          event: "notify_skipped",
+          sessionId: _sessionId,
           reason: "appendEntry unavailable",
         });
         return;
@@ -168,7 +171,10 @@ export function createPiToolHost(
         const data: PiNoticeEntryData = { content: text };
         appendEntry("zoo-notice", data);
       } catch (err) {
-        log("tool-host", "notify_failed", _sessionId, undefined, "warn", {
+        log.warn({
+          hook: "tool-host",
+          event: "notify_failed",
+          sessionId: _sessionId,
           error: String(err),
         });
       }
@@ -192,7 +198,10 @@ export function createPiToolHost(
     toast(_sessionId: string, toast: ToastPayload): void {
       const ui = contextHolder.current?.ui;
       if (ui === undefined || typeof ui.notify !== "function") {
-        log("tool-host", "toast_skipped", _sessionId, undefined, "debug", {
+        log.debug({
+          hook: "tool-host",
+          event: "toast_skipped",
+          sessionId: _sessionId,
           reason: "ui.notify unavailable",
         });
         return;
@@ -201,7 +210,10 @@ export function createPiToolHost(
       try {
         ui.notify(formatToastMessage(toast), toast.level);
       } catch (err) {
-        log("tool-host", "toast_failed", _sessionId, undefined, "warn", {
+        log.warn({
+          hook: "tool-host",
+          event: "toast_failed",
+          sessionId: _sessionId,
           error: String(err),
         });
       }

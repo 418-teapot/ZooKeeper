@@ -75,7 +75,10 @@ export function createOpenCodeMessageInjector(
           "无法解析当前会话的 agent，已取消自动启动以避免切换会话身份。",
         );
       }
-      log("debug-command", "inject_start", sessionID, undefined, "info", {
+      log.info({
+        hook: "debug-command",
+        event: "inject_start",
+        sessionId: sessionID,
         agent,
       });
       await client.session.promptAsync({

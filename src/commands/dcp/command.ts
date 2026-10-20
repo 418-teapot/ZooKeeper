@@ -198,7 +198,10 @@ export async function handleDcpCommand(
     storageMessageCount: storageCount,
   });
 
-  log("context-command", "report_computed", sessionID, undefined, "info", {
+  log.info({
+    hook: "context-command",
+    event: "report_computed",
+    sessionId: sessionID,
     total: report.total,
     exact: report.exact,
     heuristic: report.heuristic,
@@ -275,7 +278,10 @@ async function handleCompressSubcommand(
   const state = getRuntimeFlaggedState(sessionID);
   state.pendingManualTrigger = true;
 
-  log("context-command", "compress_armed", sessionID, undefined, "info", {
+  log.info({
+    hook: "context-command",
+    event: "compress_armed",
+    sessionId: sessionID,
     trigger: "pendingManualTrigger",
   });
 

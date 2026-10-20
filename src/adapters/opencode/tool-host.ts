@@ -133,14 +133,12 @@ export function createV1ToolHost(
         const res = await client.session.messages({ path: { id: sessionId } });
         rawMessages = res;
       } catch (err) {
-        log(
-          "tool-host",
-          "fetch_messages_failed",
+        log.error({
+          hook: "tool-host",
+          event: "fetch_messages_failed",
           sessionId,
-          undefined,
-          "error",
-          { error: String(err) },
-        );
+          error: String(err),
+        });
         throw new Error(
           `无法获取会话消息：${err instanceof Error ? err.message : String(err)}`,
         );
@@ -197,7 +195,10 @@ export function createV1ToolHost(
             body,
           });
         } catch (err) {
-          log("tool-host", "notify_failed", sessionId, undefined, "warn", {
+          log.warn({
+            hook: "tool-host",
+            event: "notify_failed",
+            sessionId,
             error: String(err),
           });
         }
@@ -217,11 +218,17 @@ export function createV1ToolHost(
           await send();
           return;
         }
-        log("tool-host", "notify_suppressed", sessionId, undefined, "warn", {
+        log.warn({
+          hook: "tool-host",
+          event: "notify_suppressed",
+          sessionId,
           reason: "agent unresolved",
         });
       } catch (err) {
-        log("tool-host", "notify_suppressed", sessionId, undefined, "warn", {
+        log.warn({
+          hook: "tool-host",
+          event: "notify_suppressed",
+          sessionId,
           reason: "agent unresolved",
           error: String(err),
         });
@@ -246,14 +253,20 @@ export function createV1ToolHost(
     toast(sessionId: string, toast: ToastPayload): void {
       const tui = client.tui;
       if (tui === undefined || typeof tui.showToast !== "function") {
-        log("tool-host", "toast_skipped", sessionId, undefined, "debug", {
+        log.debug({
+          hook: "tool-host",
+          event: "toast_skipped",
+          sessionId,
           reason: "tui.showToast unavailable",
         });
         return;
       }
 
       const warnFailure = (err: unknown): void => {
-        log("tool-host", "toast_failed", sessionId, undefined, "warn", {
+        log.warn({
+          hook: "tool-host",
+          event: "toast_failed",
+          sessionId,
           error: String(err),
         });
       };
@@ -317,6 +330,10 @@ export async function resolveSessionAgent(
   }
 
   // (c) Unknown — log debug entry and return undefined.
-  log("tool-host", "notify_no_agent", sessionID, undefined, "debug", {});
+  log.debug({
+    hook: "tool-host",
+    event: "notify_no_agent",
+    sessionId: sessionID,
+  });
   return undefined;
 }

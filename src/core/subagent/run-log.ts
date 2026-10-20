@@ -350,7 +350,7 @@ export class RunLog {
     if (this.reportedListenerError) return;
     this.reportedListenerError = true;
     const message = error instanceof Error ? error.message : String(error);
-    log("run-log", "listener_threw", "", undefined, "warn", { message });
+    log.warn({ hook: "run-log", event: "listener_threw", message });
   }
 
   /**

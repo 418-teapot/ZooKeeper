@@ -859,7 +859,10 @@ export function createPiSubagentDriver(
           typeof sessionManager.getSessionFile === "function"
             ? sessionManager.getSessionFile()
             : undefined;
-        log("subagent-driver", "session_start", sessionId, undefined, "debug", {
+        log.debug({
+          hook: "subagent-driver",
+          event: "session_start",
+          sessionId,
           agent: request.agent,
           ...(sessionPath !== undefined ? { sessionPath } : {}),
         });
@@ -871,17 +874,13 @@ export function createPiSubagentDriver(
         const resolved = await resolveModel(request.model);
         if (resolved === undefined) {
           const errorMessage = `子 agent 模型解析失败：配置的模型 "${request.model}" 无法在 pi 模型注册表中解析（provider 或 id 不存在）。请检查 ~/.pi/agent/agents.json 中 "${request.agent}" 的 provider/model 配置后重试。`;
-          log(
-            "subagent-driver",
-            "model_resolution_failed",
+          log.warn({
+            hook: "subagent-driver",
+            event: "model_resolution_failed",
             sessionId,
-            undefined,
-            "warn",
-            {
-              agent: request.agent,
-              model: request.model,
-            },
-          );
+            agent: request.agent,
+            model: request.model,
+          });
           const result: SubagentResult = {
             kind: "error",
             text: "",
@@ -950,7 +949,10 @@ export function createPiSubagentDriver(
         return result;
       } catch (err) {
         const errorMessage = err instanceof Error ? err.message : String(err);
-        log("subagent-driver", "sdk_error", sessionId, undefined, "warn", {
+        log.warn({
+          hook: "subagent-driver",
+          event: "sdk_error",
+          sessionId,
           agent: request.agent,
           error: errorMessage,
         });

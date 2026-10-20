@@ -1,4 +1,3 @@
-import { defineAgent } from "../core/unit.js";
 import { envToolsRules } from "./env-tools.js";
 import { MSG_REF_NO_ECHO } from "./parts.js";
 
@@ -36,19 +35,3 @@ export const KIWI_PROMPT = `<Role>
 ${envToolsRules()}
 </Contract>
 `;
-
-/**
- * Kiwi agent unit descriptor.
- *
- * Contributes the analysis-agent prompt for prompt injection.
- */
-export const unit = defineAgent({
-  name: "kiwi",
-  needs: [],
-  create() {
-    return {
-      kind: "agent",
-      agents: [{ name: "kiwi", prompt: KIWI_PROMPT }],
-    };
-  },
-});

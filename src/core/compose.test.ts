@@ -16,11 +16,12 @@ import type { Capabilities } from "./ports/index.js";
 import type {
   ActiveSet,
   CapabilityKey,
+  HookUnitContributions,
   UnitContributions,
   UnitDescriptor,
   UnitKind,
 } from "./unit.js";
-import { makeHookContributions } from "./unit.js";
+import { defineHook } from "./unit.js";
 
 afterEach(() => {
   _resetForTesting();
@@ -61,21 +62,21 @@ function makeUnits(): { units: UnitDescriptor[]; calls: string[] } {
       calls.push("wiki-query");
       return { kind: "skill", skills: [{ name: "wiki-query" }] };
     }),
-    mockUnit("subagent-prompt", "hook", () => {
+    mockHookUnit("subagent-prompt", () => {
       calls.push("subagent-prompt");
-      return makeHookContributions({
+      return {
         afterExec: [{ name: "nudgeSubagentOutput", handle: async () => {} }],
         toolDefinition: [
           { name: "enhanceSubagentDefinition", handle: async () => {} },
         ],
         delegation: [{ name: "judgeSubagentPrompt", judge: () => null }],
-      });
+      };
     }),
-    mockUnit("context-pruning", "hook", () => {
+    mockHookUnit("context-pruning", () => {
       calls.push("context-pruning");
-      return makeHookContributions({
+      return {
         transform: [{ name: "contextPruning", handle: async () => {} }],
-      });
+      };
     }),
     mockUnit("compress", "tool", () => {
       calls.push("compress");
@@ -136,6 +137,22 @@ function mockUnit(
   wants: readonly CapabilityKey[] = [],
 ): UnitDescriptor {
   return { name, kind, needs, wants, create } as UnitDescriptor;
+}
+
+/**
+ * A hook unit whose factory names only the slots it contributes to.
+ *
+ * Hook units go through `defineHook` rather than the raw descriptor, so
+ * the mocks exercise the same slot completion the real registry does.
+ */
+function mockHookUnit(
+  name: string,
+  create: (
+    deps: Partial<Capabilities>,
+    activeSet: ActiveSet,
+  ) => Partial<Omit<HookUnitContributions, "kind">>,
+): UnitDescriptor {
+  return defineHook({ name, needs: [], create });
 }
 
 /** Profile listing every unit in the registry. */
@@ -266,17 +283,15 @@ describe("composeProfile — gateNeedsCaller aggregation", () => {
   });
 
   it("is true when any enabled judge needs the caller", () => {
-    const unit = mockUnit("subagent-delegation", "hook", () =>
-      makeHookContributions({
-        delegation: [
-          {
-            name: "judgeDelegationTarget",
-            needsCaller: true,
-            judge: () => null,
-          },
-        ],
-      }),
-    );
+    const unit = mockHookUnit("subagent-delegation", () => ({
+      delegation: [
+        {
+          name: "judgeDelegationTarget",
+          needsCaller: true,
+          judge: () => null,
+        },
+      ],
+    }));
     const profile: ModeProfile = {
       name: "td",
       agents: [],
@@ -616,9 +631,9 @@ describe("composeProfile — unknown profile names", () => {
 describe("composeProfile — active set", () => {
   it("passes profile-derived enablement sets to unit factories", () => {
     let seen: ActiveSet | undefined;
-    const unit = mockUnit("subagent-prompt", "hook", (_deps, activeSet) => {
+    const unit = mockHookUnit("subagent-prompt", (_deps, activeSet) => {
       seen = activeSet;
-      return makeHookContributions();
+      return {};
     });
     composeProfile(ALL_UNITS_PROFILE, [unit], BASE_CAPS);
 

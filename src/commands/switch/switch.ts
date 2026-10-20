@@ -86,7 +86,10 @@ export async function applySwitch(
   // Same-agent no-op: the identity is already the target, so no
   // replacement session is needed.
   if (previous === name) {
-    log("switch-command", "primary_switched", sessionID, undefined, "info", {
+    log.info({
+      hook: "switch-command",
+      event: "primary_switched",
+      sessionId: sessionID,
       name,
       skipped: true,
     });
@@ -160,7 +163,10 @@ export async function applySwitch(
     );
   }
 
-  log("switch-command", "primary_switched", sessionID, undefined, "info", {
+  log.info({
+    hook: "switch-command",
+    event: "primary_switched",
+    sessionId: sessionID,
     name,
     removed,
   });

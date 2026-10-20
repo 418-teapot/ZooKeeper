@@ -12,7 +12,7 @@ export {
 } from "../../core/prompts.js";
 
 import { resolveTodoSource } from "../../core/client/todo.js";
-import { defineHook, makeHookContributions } from "../../core/unit.js";
+import { defineHook } from "../../core/unit.js";
 import { nudgeDirectWork, nudgeDirectWorkForAgent } from "./hook";
 
 export { nudgeDirectWork, nudgeDirectWorkForAgent };
@@ -34,7 +34,7 @@ export const unit = defineHook({
   wants: ["todoStore"],
   create(caps) {
     const source = resolveTodoSource(caps);
-    return makeHookContributions({
+    return {
       afterExec: [
         {
           name: "nudgeDirectWork",
@@ -46,6 +46,6 @@ export const unit = defineHook({
             }),
         },
       ],
-    });
+    };
   },
 });

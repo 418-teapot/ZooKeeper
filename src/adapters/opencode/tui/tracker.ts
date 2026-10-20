@@ -191,14 +191,12 @@ export function createSubAgentTracker(
           .catch((err) => {
             // Silently degrade — never throw from a timer.
             // Log so persistent API failures stay diagnosable.
-            log(
-              "opencode-tui",
-              "sub_poll_error",
-              parentSessionId,
-              undefined,
-              "warn",
-              { error: String(err) },
-            );
+            log.warn({
+              hook: "opencode-tui",
+              event: "sub_poll_error",
+              sessionId: parentSessionId,
+              error: String(err),
+            });
           })
           .finally(() => {
             pendingTokenFetches.delete(partId);
@@ -206,14 +204,12 @@ export function createSubAgentTracker(
       } catch (err) {
         // Silently degrade — never throw from a timer.
         // Log so persistent API failures stay diagnosable.
-        log(
-          "opencode-tui",
-          "sub_poll_error",
-          parentSessionId,
-          undefined,
-          "warn",
-          { error: String(err) },
-        );
+        log.warn({
+          hook: "opencode-tui",
+          event: "sub_poll_error",
+          sessionId: parentSessionId,
+          error: String(err),
+        });
       }
     }, 500);
     pollTimers.set(partId, timer);
@@ -462,7 +458,10 @@ export function createSubAgentTracker(
         }
       }
     } catch (err) {
-      log("opencode-tui", "sub_scan_error", sessionId, undefined, "warn", {
+      log.warn({
+        hook: "opencode-tui",
+        event: "sub_scan_error",
+        sessionId,
         error: String(err),
       });
     }

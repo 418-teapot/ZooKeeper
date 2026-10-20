@@ -179,7 +179,10 @@ export function createLoopEngine(
     async run(request: SettleRequest): Promise<Wake | null> {
       const { sessionID, cause, hadActivity } = request;
       if (cause !== "settled") {
-        log("loop", "settle_interlock", sessionID, undefined, "debug", {
+        log.debug({
+          hook: "loop",
+          event: "settle_interlock",
+          sessionId: sessionID,
           reason: "not-settled",
         });
         return null;
@@ -198,14 +201,20 @@ export function createLoopEngine(
           // A text-only reply to this strategy's wake is not progress:
           // skip the strategy, spend no budget, keep the lock.  The
           // other strategies are still consulted.
-          log("loop", "settle_interlock", sessionID, undefined, "debug", {
+          log.debug({
+            hook: "loop",
+            event: "settle_interlock",
+            sessionId: sessionID,
             reason: "awaiting-activity",
             handler: name,
           });
           continue;
         }
         if ((counts?.get(name) ?? 0) >= maxWakes) {
-          log("loop", "settle_interlock", sessionID, undefined, "debug", {
+          log.debug({
+            hook: "loop",
+            event: "settle_interlock",
+            sessionId: sessionID,
             reason: "budget-exhausted",
             handler: name,
           });
@@ -216,12 +225,18 @@ export function createLoopEngine(
           if (decision.kind === "wake") return { name, text: decision.text };
           // A silence is otherwise invisible to field diagnosis: record
           // the contributing unit and the gate that suppressed the wake.
-          log("loop", "settle_silent", sessionID, undefined, "debug", {
+          log.debug({
+            hook: "loop",
+            event: "settle_silent",
+            sessionId: sessionID,
             handler: name,
             reason: decision.reason,
           });
         } catch (err) {
-          log("plugin", "handler_crashed", sessionID, undefined, "error", {
+          log.error({
+            hook: "plugin",
+            event: "handler_crashed",
+            sessionId: sessionID,
             handler: name,
             error: String(err),
           });

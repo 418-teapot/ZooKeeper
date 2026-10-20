@@ -14,7 +14,7 @@ export {
   validateSubagentPrompt,
 } from "../../core/validate.js";
 
-import { defineHook, makeHookContributions } from "../../core/unit.js";
+import { defineHook } from "../../core/unit.js";
 import {
   enhanceSubagentDefinition,
   judgeSubagentPrompt,
@@ -34,7 +34,7 @@ export const unit = defineHook({
   name: "subagent-prompt",
   needs: ["limits"],
   create(caps) {
-    return makeHookContributions({
+    return {
       afterExec: [
         {
           name: "nudgeSubagentOutput",
@@ -54,6 +54,6 @@ export const unit = defineHook({
           judge: (req) => judgeSubagentPrompt(req, caps.limits),
         },
       ],
-    });
+    };
   },
 });

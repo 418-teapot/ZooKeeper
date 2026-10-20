@@ -17,7 +17,9 @@
  *      (onSettled).
  *   2. tool units — compress, decompress, subagent, ask.
  *   3. command units — go, dcp, switch, debug.
- *   4. agent units — the seven prompt-injection units.
+ *   4. agent units — the two behavioral agents plus the five
+ *      prompt-only agents generated from the table in
+ *      `agents/prompt-agents.ts`.
  *   5. skill units — one data-only unit per directory under
  *      skills/, discovered at module load (see below).
  *
@@ -31,13 +33,9 @@
 import { readdirSync, realpathSync, statSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { unit as beaverUnit } from "./agents/beaver.js";
 import { unit as dolphinUnit } from "./agents/dolphin.js";
-import { unit as eagleUnit } from "./agents/eagle.js";
-import { unit as kiwiUnit } from "./agents/kiwi.js";
-import { unit as lynxUnit } from "./agents/lynx.js";
 import { unit as molaUnit } from "./agents/mola.js";
-import { unit as spiderUnit } from "./agents/spider.js";
+import { promptAgentUnits } from "./agents/prompt-agents.js";
 import { unit as dcpCommandUnit } from "./commands/dcp/index.js";
 import { unit as debugCommandUnit } from "./commands/debug/index.js";
 import { unit as goCommandUnit } from "./commands/go/index.js";
@@ -184,11 +182,7 @@ export const REGISTRY: UnitDescriptor[] = [
   // ── Agent units ─────────────────────────────────────────────────
   dolphinUnit,
   molaUnit,
-  beaverUnit,
-  lynxUnit,
-  spiderUnit,
-  eagleUnit,
-  kiwiUnit,
+  ...promptAgentUnits,
   // ── Skill units ─────────────────────────────────────────────────
   ...skillUnits,
 ];

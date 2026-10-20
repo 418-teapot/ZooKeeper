@@ -138,7 +138,7 @@ export function loadPiHtmlConverter(
 ): HtmlConverter | null {
   const converter = loadConverter();
   if (converter === null) {
-    log("fetch-tool", "converter_unavailable", "", undefined, "warn", {});
+    log.warn({ hook: "fetch-tool", event: "converter_unavailable" });
     return null;
   }
   return converter;
@@ -677,24 +677,32 @@ export function registerPiHandlers(
     on(event, RESIDENT_HANDLERS[event](handlers));
   }
   if (handlers.hasGateHandlers) {
-    log("subagent-tool", "events_registered", "", undefined, "info", {
+    log.info({
+      hook: "subagent-tool",
+      event: "events_registered",
       events: [...PI_GATE_EVENT_KEYS],
     });
     for (const event of PI_GATE_EVENT_KEYS) {
       on(event, GATE_HANDLERS[event](handlers));
     }
   } else {
-    log("subagent-tool", "events_skipped", "", undefined, "info", {
+    log.info({
+      hook: "subagent-tool",
+      event: "events_skipped",
       reason: "feature-disabled",
     });
   }
   if (!handlers.hasSettledHandlers) {
-    log("loop", "events_skipped", "", undefined, "info", {
+    log.info({
+      hook: "loop",
+      event: "events_skipped",
       reason: "feature-disabled",
     });
     return;
   }
-  log("loop", "events_registered", "", undefined, "info", {
+  log.info({
+    hook: "loop",
+    event: "events_registered",
     events: [...PI_SETTLE_EVENT_KEYS],
   });
   for (const event of PI_SETTLE_EVENT_KEYS) {

@@ -1,4 +1,3 @@
-import { defineAgent } from "../core/unit.js";
 import { envToolsRules } from "./env-tools.js";
 import { MSG_REF_NO_ECHO } from "./parts.js";
 
@@ -51,19 +50,3 @@ export const SPIDER_PROMPT = `<Role>
 ${envToolsRules()}
 </Contract>
 `;
-
-/**
- * Spider agent unit descriptor.
- *
- * Contributes the web-research-agent prompt for prompt injection.
- */
-export const unit = defineAgent({
-  name: "spider",
-  needs: [],
-  create() {
-    return {
-      kind: "agent",
-      agents: [{ name: "spider", prompt: SPIDER_PROMPT }],
-    };
-  },
-});

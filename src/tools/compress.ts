@@ -61,46 +61,22 @@ import {
 } from "../core/context/runtime.js";
 import type { Block, SessionState } from "../core/context/state.js";
 import { type NumberedItem, numberView } from "../core/context/view-refs.js";
-import { defineTool } from "../core/unit.js";
+import {
+  defineTool,
+  type ToolContribution,
+  type ToolDefinition,
+} from "../core/unit.js";
 import { log } from "../utils/logger.js";
-
-type JsonSchemaStringArg = {
-  type: "string";
-  description: string;
-};
-
-type JsonSchemaObjectArg = {
-  type: "object";
-  description: string;
-  properties: {
-    fromRef: JsonSchemaStringArg;
-    toRef: JsonSchemaStringArg;
-    title: JsonSchemaStringArg;
-    summary: JsonSchemaStringArg;
-  };
-  required: string[];
-};
-
-type CompressToolArgs = {
-  ranges: {
-    type: "array";
-    description: string;
-    items: JsonSchemaObjectArg;
-  };
-};
 
 type CompressToolInput = {
   ranges: CompressRangeInput[];
 };
 
-export type CompressToolDefinition = {
-  description: string;
-  args: CompressToolArgs;
-  required?: string[];
-  execute(args: unknown, toolCtx: unknown): Promise<string>;
-};
-
-export type CompressToolSpec = Omit<CompressToolDefinition, "execute">;
+/** The compress tool's host-independent metadata. */
+type CompressToolMetadata = Pick<
+  ToolContribution,
+  "description" | "args" | "required"
+>;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -224,9 +200,9 @@ function createdBlockIds(state: SessionState, created: Block[]): number[] {
  * @param _contextConfig - The parsed context-pruning config.
  * @returns The tool description and args schema.
  */
-function buildCompressToolSpec(
+function buildCompressToolMetadata(
   _contextConfig: ContextPruningConfig,
-): CompressToolSpec {
+): CompressToolMetadata {
   return {
     description:
       "将一段或多段连续的、不再需要逐字保留的历史消息压缩为摘要。每一段的压缩范围不能有重叠，且都应是独立的主题。" +
@@ -280,9 +256,9 @@ function buildCompressToolSpec(
 export function createCompressTool(
   host: ToolHost,
   contextConfig: ContextPruningConfig,
-): CompressToolDefinition {
+): ToolDefinition {
   return {
-    ...buildCompressToolSpec(contextConfig),
+    ...buildCompressToolMetadata(contextConfig),
     async execute(args, toolCtx) {
       const sessionID = host.resolveSessionId(toolCtx);
       if (sessionID === undefined) {
@@ -346,7 +322,10 @@ export function createCompressTool(
           (ordinal) => snapshot.messages[ordinal].hidden,
         );
       } else {
-        log("compress-tool", "no_round_view", sessionID, undefined, "warn", {
+        log.warn({
+          hook: "compress-tool",
+          event: "no_round_view",
+          sessionId: sessionID,
           reason: "no published round view and no host history fallback",
         });
         // Not a retryable model error: the line numbers the model holds
@@ -417,7 +396,10 @@ export function createCompressTool(
       setPendingViewChange(sessionID);
       manager.save(sessionID);
 
-      log("compress-tool", "compress_created", sessionID, undefined, "info", {
+      log.info({
+        hook: "compress-tool",
+        event: "compress_created",
+        sessionId: sessionID,
         blockIds: createdBlockIds(state, result.created),
         rangeCount: result.created.length,
         messageCount: msgCount,
@@ -433,7 +415,10 @@ export function createCompressTool(
       try {
         await host.notify(sessionID, notifyMsg);
       } catch (err) {
-        log("compress-tool", "notify_failed", sessionID, undefined, "warn", {
+        log.warn({
+          hook: "compress-tool",
+          event: "notify_failed",
+          sessionId: sessionID,
           error: String(err),
         });
       }
@@ -454,14 +439,6 @@ export const unit = defineTool({
   name: "compress",
   needs: ["toolHost", "contextConfig"],
   create(caps) {
-    return {
-      kind: "tool",
-      tools: [
-        {
-          name: "compress",
-          ...createCompressTool(caps.toolHost, caps.contextConfig),
-        },
-      ],
-    };
+    return createCompressTool(caps.toolHost, caps.contextConfig);
   },
 });

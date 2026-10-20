@@ -27,7 +27,7 @@
  */
 
 import { resolveTodoSource } from "../../core/client/todo.js";
-import { defineHook, makeHookContributions } from "../../core/unit.js";
+import { defineHook } from "../../core/unit.js";
 import { decide } from "./decide.js";
 
 /**
@@ -45,7 +45,7 @@ export const unit = defineHook({
   create(caps) {
     const maxWakes = caps.continuationConfig.maxWakes;
     const source = resolveTodoSource(caps);
-    return makeHookContributions({
+    return {
       onSettled: [
         {
           name: "todoContinuation",
@@ -56,6 +56,6 @@ export const unit = defineHook({
           },
         },
       ],
-    });
+    };
   },
 });

@@ -1,4 +1,3 @@
-import { defineAgent } from "../core/unit.js";
 import { envToolsRules } from "./env-tools.js";
 import { MSG_REF_NO_ECHO } from "./parts.js";
 
@@ -44,19 +43,3 @@ export const LYNX_PROMPT = `<Role>
 ${envToolsRules()}
 </Contract>
 `;
-
-/**
- * Lynx agent unit descriptor.
- *
- * Contributes the exploration-agent prompt for prompt injection.
- */
-export const unit = defineAgent({
-  name: "lynx",
-  needs: [],
-  create() {
-    return {
-      kind: "agent",
-      agents: [{ name: "lynx", prompt: LYNX_PROMPT }],
-    };
-  },
-});

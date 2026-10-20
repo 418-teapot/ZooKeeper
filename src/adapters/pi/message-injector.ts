@@ -69,14 +69,12 @@ export function createPiMessageInjector(pi: PiMessageSender): MessageInjector {
       // surface as an unhandled rejection.
       if (isThenable(pending)) {
         void pending.catch((err: unknown) => {
-          log(
-            "debug-command",
-            "inject_async_failed",
-            sessionID,
-            undefined,
-            "warn",
-            { error: err instanceof Error ? err.message : String(err) },
-          );
+          log.warn({
+            hook: "debug-command",
+            event: "inject_async_failed",
+            sessionId: sessionID,
+            error: err instanceof Error ? err.message : String(err),
+          });
         });
       }
     },

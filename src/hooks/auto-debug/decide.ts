@@ -274,7 +274,10 @@ export async function decide(
     // own silence rather than collapsing it into the empty-workspace gate.
     // The underlying error is logged so a persistent discovery-error is
     // diagnosable, without leaking it into the user-visible verdict.
-    log("auto-debug", "discovery_error", context.sessionID, undefined, "warn", {
+    log.warn({
+      hook: "auto-debug",
+      event: "discovery_error",
+      sessionId: context.sessionID,
       error: String(err),
     });
     return { kind: "silence", reason: "discovery-error" };
@@ -305,14 +308,12 @@ export async function decide(
     // The probe's own failure is otherwise indistinguishable from a
     // legitimate non-zero report; log it so a persistent verify-error is
     // diagnosable.
-    log(
-      "auto-debug",
-      "status_probe_error",
-      context.sessionID,
-      undefined,
-      "warn",
-      { error: String(err) },
-    );
+    log.warn({
+      hook: "auto-debug",
+      event: "status_probe_error",
+      sessionId: context.sessionID,
+      error: String(err),
+    });
     return verifyError();
   }
 
@@ -331,14 +332,12 @@ export async function decide(
     // The re-run's own failure is otherwise indistinguishable from a
     // legitimate non-zero report; log it so a persistent verify-error is
     // diagnosable.
-    log(
-      "auto-debug",
-      "experiment_run_error",
-      context.sessionID,
-      undefined,
-      "warn",
-      { error: String(err) },
-    );
+    log.warn({
+      hook: "auto-debug",
+      event: "experiment_run_error",
+      sessionId: context.sessionID,
+      error: String(err),
+    });
     return verifyError();
   }
 

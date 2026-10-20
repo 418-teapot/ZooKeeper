@@ -6,7 +6,7 @@
  * @module
  */
 
-import { defineHook, makeHookContributions } from "../../core/unit.js";
+import { defineHook } from "../../core/unit.js";
 import { judgeDelegationTarget } from "./hook.js";
 
 export { judgeDelegationTarget };
@@ -26,7 +26,7 @@ export const unit = defineHook({
   name: "subagent-delegation",
   needs: ["resolveCallerAgent"],
   create() {
-    return makeHookContributions({
+    return {
       delegation: [
         {
           name: "judgeDelegationTarget",
@@ -34,6 +34,6 @@ export const unit = defineHook({
           judge: judgeDelegationTarget,
         },
       ],
-    });
+    };
   },
 });

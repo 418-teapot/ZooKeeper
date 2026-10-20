@@ -169,7 +169,11 @@ export function buildInfraHooks(deps: InfraHookDeps) {
         if (decision === null) return;
 
         if (typeof client?.session?.promptAsync !== "function") {
-          log("loop", "wake_inject_unavailable", sessionID, undefined, "warn");
+          log.warn({
+            hook: "loop",
+            event: "wake_inject_unavailable",
+            sessionId: sessionID,
+          });
           return;
         }
         // Count the reminder before dispatch so a delivery failure
@@ -188,7 +192,10 @@ export function buildInfraHooks(deps: InfraHookDeps) {
               parts: [{ type: "text", text: decision.text }],
             },
           });
-          log("loop", "wake_injected", sessionID, undefined, "info", {
+          log.info({
+            hook: "loop",
+            event: "wake_injected",
+            sessionId: sessionID,
             handler: decision.name,
             used: engine.used(sessionID, decision.name),
             cause: outcome.cause,
@@ -196,7 +203,10 @@ export function buildInfraHooks(deps: InfraHookDeps) {
           });
         } catch (err) {
           injectedEchoMessages.delete(sessionID);
-          log("loop", "wake_inject_failed", sessionID, undefined, "warn", {
+          log.warn({
+            hook: "loop",
+            event: "wake_inject_failed",
+            sessionId: sessionID,
             error: String(err),
           });
         }

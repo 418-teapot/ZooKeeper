@@ -317,7 +317,10 @@ export async function handleDebugCommand(
       buildStartupText(caseId, objective),
     );
   } catch (err) {
-    log("debug-command", "inject_failed", sessionID, undefined, "warn", {
+    log.warn({
+      hook: "debug-command",
+      event: "inject_failed",
+      sessionId: sessionID,
       caseId,
       error: reasonOf(err),
     });

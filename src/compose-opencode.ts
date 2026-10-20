@@ -89,7 +89,9 @@ function logPluginInit(
   skills: string[],
   limits: Partial<Capabilities>["limits"],
 ): void {
-  log("plugin", "plugin_init", "", undefined, "info", {
+  log.info({
+    hook: "plugin",
+    event: "plugin_init",
     agents: Object.keys(agents),
     skills,
     limits,
@@ -118,7 +120,9 @@ export function injectAgentPrompts(
     if (typeof agent !== "object" || agent === null) continue;
     if (contribution.prompt) {
       agent.prompt = contribution.prompt;
-      log("plugin", "agent_loaded", "", undefined, "debug", {
+      log.debug({
+        hook: "plugin",
+        event: "agent_loaded",
         agent: contribution.name,
         prompt_len: contribution.prompt.length,
       });
@@ -477,19 +481,16 @@ export function assembleOpenCodeHooks(
                   : undefined;
               const refusal = composed.gate({ caller, target, prompt });
               if (refusal !== null) {
-                log(
-                  "delegation",
-                  "gate_blocked",
-                  mapped.sessionID,
-                  mapped.callID,
-                  "warn",
-                  {
-                    caller: caller ?? null,
-                    target: target ?? null,
-                    judge: refusal.judge,
-                    reason: refusal.reason,
-                  },
-                );
+                log.warn({
+                  hook: "delegation",
+                  event: "gate_blocked",
+                  sessionId: mapped.sessionID,
+                  callId: mapped.callID,
+                  caller: caller ?? null,
+                  target: target ?? null,
+                  judge: refusal.judge,
+                  reason: refusal.reason,
+                });
                 throw new Error(refusal.reason);
               }
             }

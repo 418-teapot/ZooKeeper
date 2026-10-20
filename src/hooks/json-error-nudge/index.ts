@@ -17,7 +17,7 @@ import {
   JSON_ERROR_TOOL_EXCLUDES,
   recoverJsonError,
 } from "../../core/recovery.js";
-import { defineHook, makeHookContributions } from "../../core/unit.js";
+import { defineHook } from "../../core/unit.js";
 
 export {
   JSON_ERROR_PATTERNS,
@@ -35,13 +35,13 @@ export const unit = defineHook({
   name: "json-error-nudge",
   needs: [],
   create() {
-    return makeHookContributions({
+    return {
       afterExec: [
         {
           name: "recoverJsonError",
           handle: (input, output) => recoverJsonError(input, output),
         },
       ],
-    });
+    };
   },
 });

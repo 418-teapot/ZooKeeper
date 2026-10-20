@@ -1,4 +1,3 @@
-import { defineAgent } from "../core/unit.js";
 import { envToolsRules } from "./env-tools.js";
 import { MSG_REF_NO_ECHO } from "./parts.js";
 
@@ -59,19 +58,3 @@ export const EAGLE_PROMPT = `<Role>
 ${envToolsRules()}
 </Contract>
 `;
-
-/**
- * Eagle agent unit descriptor.
- *
- * Contributes the review-agent prompt for prompt injection.
- */
-export const unit = defineAgent({
-  name: "eagle",
-  needs: [],
-  create() {
-    return {
-      kind: "agent",
-      agents: [{ name: "eagle", prompt: EAGLE_PROMPT }],
-    };
-  },
-});

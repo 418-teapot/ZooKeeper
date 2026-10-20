@@ -48,30 +48,22 @@ import {
   getContextStateManager,
   setPendingViewChange,
 } from "../core/context/runtime.js";
-import { defineTool } from "../core/unit.js";
+import {
+  defineTool,
+  type ToolContribution,
+  type ToolDefinition,
+} from "../core/unit.js";
 import { log } from "../utils/logger.js";
-
-type JsonSchemaStringArg = {
-  type: "string";
-  description: string;
-};
-
-type DecompressToolArgs = {
-  blockId: JsonSchemaStringArg;
-};
 
 type DecompressToolInput = {
   blockId: string;
 };
 
-export type DecompressToolDefinition = {
-  description: string;
-  args: DecompressToolArgs;
-  required?: string[];
-  execute(args: unknown, toolCtx: unknown): Promise<string>;
-};
-
-export type DecompressToolSpec = Omit<DecompressToolDefinition, "execute">;
+/** The decompress tool's host-independent metadata. */
+type DecompressToolMetadata = Pick<
+  ToolContribution,
+  "description" | "args" | "required"
+>;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -115,9 +107,9 @@ function validateDecompressArgs(args: unknown): DecompressToolInput {
  * @param _contextConfig - The parsed context-pruning config.
  * @returns The tool description and args schema.
  */
-function buildDecompressToolSpec(
+function buildDecompressToolMetadata(
   _contextConfig: ContextPruningConfig,
-): DecompressToolSpec {
+): DecompressToolMetadata {
   return {
     description:
       "根据块 ID 恢复被压缩块隐藏的原始消息；恢复将在下一轮上下文中生效，原文过长时会拒绝恢复。" +
@@ -149,9 +141,9 @@ function buildDecompressToolSpec(
 export function createDecompressTool(
   host: ToolHost,
   contextConfig: ContextPruningConfig,
-): DecompressToolDefinition {
+): ToolDefinition {
   return {
-    ...buildDecompressToolSpec(contextConfig),
+    ...buildDecompressToolMetadata(contextConfig),
     async execute(args, toolCtx) {
       const sessionID = host.resolveSessionId(toolCtx);
       if (sessionID === undefined) {
@@ -185,18 +177,14 @@ export function createDecompressTool(
       // takes this path too: its summary survives, its original span
       // does not, and `recallOutput` says so.
       if (target.kind === "recall") {
-        log(
-          "decompress-tool",
-          "decompress_recalled",
-          sessionID,
-          undefined,
-          "info",
-          {
-            blockId: target.blockId,
-            kind: "recall",
-            status: target.block.status,
-          },
-        );
+        log.info({
+          hook: "decompress-tool",
+          event: "decompress_recalled",
+          sessionId: sessionID,
+          blockId: target.blockId,
+          kind: "recall",
+          status: target.block.status,
+        });
         return recallOutput(target.block, target.blockId);
       }
 
@@ -243,19 +231,15 @@ export function createDecompressTool(
       setPendingViewChange(sessionID);
       manager.save(sessionID);
 
-      log(
-        "decompress-tool",
-        "decompress_restored",
-        sessionID,
-        undefined,
-        "info",
-        {
-          blockId: restored.blockId,
-          kind: "restore",
-          messageCount: restored.messageCount,
-          deltaTokens: delta,
-        },
-      );
+      log.info({
+        hook: "decompress-tool",
+        event: "decompress_restored",
+        sessionId: sessionID,
+        blockId: restored.blockId,
+        kind: "restore",
+        messageCount: restored.messageCount,
+        deltaTokens: delta,
+      });
 
       // Ignored chat notification (best-effort — the status change is
       // already applied).  Same shape as the compress tool.
@@ -263,7 +247,10 @@ export function createDecompressTool(
       try {
         await host.notify(sessionID, notifyMsg);
       } catch (err) {
-        log("decompress-tool", "notify_failed", sessionID, undefined, "warn", {
+        log.warn({
+          hook: "decompress-tool",
+          event: "notify_failed",
+          sessionId: sessionID,
           error: String(err),
         });
       }
@@ -284,14 +271,6 @@ export const unit = defineTool({
   name: "decompress",
   needs: ["toolHost", "contextConfig"],
   create(caps) {
-    return {
-      kind: "tool",
-      tools: [
-        {
-          name: "decompress",
-          ...createDecompressTool(caps.toolHost, caps.contextConfig),
-        },
-      ],
-    };
+    return createDecompressTool(caps.toolHost, caps.contextConfig);
   },
 });

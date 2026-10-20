@@ -25,7 +25,7 @@
  * @module
  */
 
-import { defineHook, makeHookContributions } from "../../core/unit.js";
+import { defineHook } from "../../core/unit.js";
 import { decide } from "./decide.js";
 import { defaultAutoDebugFs } from "./workspace-fs.js";
 import { defaultZdebugExec } from "./zdebug-exec.js";
@@ -49,7 +49,7 @@ export const unit = defineHook({
       zdebugExec: caps.zdebugExec ?? defaultZdebugExec,
       fs: caps.autoDebugFs ?? defaultAutoDebugFs,
     };
-    return makeHookContributions({
+    return {
       onSettled: [
         {
           name: "autoDebug",
@@ -61,6 +61,6 @@ export const unit = defineHook({
             }),
         },
       ],
-    });
+    };
   },
 });

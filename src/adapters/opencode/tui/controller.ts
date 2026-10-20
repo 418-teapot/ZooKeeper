@@ -269,7 +269,10 @@ export function createContextController(
       // Silently degrade — plugin crash must never escape to
       // the host process.  Log for diagnosability.
       if (seq !== requestSeq) return;
-      log("opencode-tui", "compute_error", sessionId, undefined, "error", {
+      log.error({
+        hook: "opencode-tui",
+        event: "compute_error",
+        sessionId,
         error: String(err),
       });
       setError(true);

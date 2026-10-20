@@ -143,17 +143,14 @@ export async function nudgeDirectWorkForAgent(
   },
 ): Promise<void> {
   if (options.agent !== ORCHESTRATOR_AGENT_NAME) {
-    log(
-      "direct-work-nudge",
-      "nudge_skipped",
-      input.sessionID,
-      input.callID,
-      "debug",
-      {
-        tool: input.tool,
-        reason: "not_dolphin",
-      },
-    );
+    log.debug({
+      hook: "direct-work-nudge",
+      event: "nudge_skipped",
+      sessionId: input.sessionID,
+      callId: input.callID,
+      tool: input.tool,
+      reason: "not_dolphin",
+    });
     return;
   }
   return nudgeDirectWork(input, output, {

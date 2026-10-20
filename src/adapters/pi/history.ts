@@ -110,7 +110,7 @@ function warnUnknownRole(value: unknown): void {
     return;
   }
   reportedRoles.add(role);
-  log("pi-history", "unknown_role", "", undefined, "warn", { role });
+  log.warn({ hook: "pi-history", event: "unknown_role", role });
 }
 
 /**

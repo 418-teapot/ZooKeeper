@@ -39,14 +39,14 @@ export function scanSkillDirectories(
       const fullPath = resolve(skillsDir, entry);
       if (!statSync(fullPath).isDirectory()) continue;
       paths.push(fullPath);
-      log("plugin", "skill_registered", "", undefined, "debug", {
-        skill: entry,
-      });
+      log.debug({ hook: "plugin", event: "skill_registered", skill: entry });
     }
   } catch (err) {
     const code = (err as { code?: string }).code;
     if (code !== "ENOENT") {
-      log("plugin", "skill_register_error", "", undefined, "warn", {
+      log.warn({
+        hook: "plugin",
+        event: "skill_register_error",
         error: String(err),
       });
     }

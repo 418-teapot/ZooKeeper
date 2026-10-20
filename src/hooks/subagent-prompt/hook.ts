@@ -47,7 +47,9 @@ export function enhanceSubagentDefinition(view: ToolDefinitionView): void {
 
   const promptArg = view.args?.prompt;
   if (!promptArg || typeof promptArg !== "object") {
-    log("subagent-prompt", "definition_skipped", "", undefined, "debug", {
+    log.debug({
+      hook: "subagent-prompt",
+      event: "definition_skipped",
       reason: "no_prompt_param",
     });
     return;
@@ -58,14 +60,7 @@ export function enhanceSubagentDefinition(view: ToolDefinitionView): void {
     ? `${existing}\n\n${SUBAGENT_PROMPT_HINT}`
     : SUBAGENT_PROMPT_HINT;
 
-  log(
-    "subagent-prompt",
-    "definition_enhanced",
-    "",
-    undefined,
-    "info",
-    undefined,
-  );
+  log.info({ hook: "subagent-prompt", event: "definition_enhanced" });
 }
 
 /**

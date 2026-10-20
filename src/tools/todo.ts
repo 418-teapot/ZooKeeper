@@ -61,7 +61,7 @@ import type {
   TodoOperation,
   TodoPhase,
 } from "../core/todo/types.js";
-import { defineTool, type ToolContribution } from "../core/unit.js";
+import { defineTool, type ToolDefinition } from "../core/unit.js";
 import { log } from "../utils/logger.js";
 
 /** The nine operations accepted by the state machine. */
@@ -537,7 +537,7 @@ export function parseTodoArgs(args: unknown): TodoEntry[] {
  * @param host - Host tool services (session resolution).
  * @param store - The host-owned todo state store (this session's cache).
  * @param renderer - Optional host transcript-card renderer port.
- * @returns The todo tool contribution.
+ * @returns The todo tool definition.
  */
 export function createTodoTool(
   host: ToolHost,
@@ -551,9 +551,8 @@ export function createTodoTool(
       context?: unknown,
     ): unknown;
   },
-): ToolContribution {
+): ToolDefinition {
   return {
-    name: "todo",
     description: TODO_DESCRIPTION,
     args: {
       op: {
@@ -614,7 +613,10 @@ export function createTodoTool(
         // and no snapshot is written — the transcript keeps pointing at the
         // last state that actually took effect.
         if (result.errors.length > 0) {
-          log("todo-tool", "apply_failed", sessionID, undefined, "info", {
+          log.info({
+            hook: "todo-tool",
+            event: "apply_failed",
+            sessionId: sessionID,
             op,
             errors: result.errors.length,
           });
@@ -627,7 +629,10 @@ export function createTodoTool(
         // the mutating calls only (which is also what the restore scan walks
         // back through).
         if (op === "view") {
-          log("todo-tool", "view", sessionID, undefined, "info", {
+          log.info({
+            hook: "todo-tool",
+            event: "view",
+            sessionId: sessionID,
             tasks: result.phases.reduce((n, p) => n + p.tasks.length, 0),
           });
           return formatSummary(result.phases, [], true);
@@ -637,7 +642,12 @@ export function createTodoTool(
         if (hostCtx !== undefined) {
           hostCtx.details = serializeSnapshot(op, result.phases);
         }
-        log("todo-tool", "applied", sessionID, undefined, "info", { op });
+        log.info({
+          hook: "todo-tool",
+          event: "applied",
+          sessionId: sessionID,
+          op,
+        });
         return formatSummary(result.phases, []);
       });
     },
@@ -657,9 +667,6 @@ export const unit = defineTool({
   needs: ["todoStore", "toolHost"],
   wants: ["todoRenderer"],
   create(caps) {
-    return {
-      kind: "tool",
-      tools: [createTodoTool(caps.toolHost, caps.todoStore, caps.todoRenderer)],
-    };
+    return createTodoTool(caps.toolHost, caps.todoStore, caps.todoRenderer);
   },
 });

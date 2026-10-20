@@ -271,7 +271,9 @@ export function composeProfile(
     const missing = missingNeeds(unit, provided);
     if (missing.length > 0) {
       result.report.skipped.push({ name: unit.name, missing });
-      log("compose", "unit_skipped", "", undefined, "info", {
+      log.info({
+        hook: "compose",
+        event: "unit_skipped",
         name: unit.name,
         missing,
       });
@@ -297,7 +299,9 @@ export function composeProfile(
     for (const category of CATEGORIES) {
       for (const name of profile[category]) {
         if (!known.has(name)) {
-          log("compose", "unknown_unit", "", undefined, "warn", {
+          log.warn({
+            hook: "compose",
+            event: "unknown_unit",
             category,
             name,
           });
@@ -339,7 +343,11 @@ function logHandlerCrash(
   logCtx: IsolationLogContext,
   err: unknown,
 ): void {
-  log("plugin", "handler_crashed", logCtx.sessionID, logCtx.callId, "error", {
+  log.error({
+    hook: "plugin",
+    event: "handler_crashed",
+    sessionId: logCtx.sessionID,
+    callId: logCtx.callId,
     handler: name,
     error: String(err),
   });

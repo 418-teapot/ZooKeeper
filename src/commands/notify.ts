@@ -41,7 +41,12 @@ export async function notifySessionError(
   logEvent: string,
 ): Promise<void> {
   const msg = error instanceof Error ? error.message : String(error);
-  log(logHook, logEvent, sessionID, undefined, "warn", { error: msg });
+  log.warn({
+    hook: logHook,
+    event: logEvent,
+    sessionId: sessionID,
+    error: msg,
+  });
   try {
     await target?.notify?.(sessionID, msg);
   } catch {

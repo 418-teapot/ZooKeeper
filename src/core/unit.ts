@@ -10,6 +10,11 @@
  * central matcher in `core/compose.ts` decides whether the unit runs at
  * all.
  *
+ * The same helpers own the contribution shape: a hook factory names only
+ * the slots it fills, a tool factory returns the definition whose name
+ * the unit supplies, and a prompt-only agent is a name plus a prompt.
+ * No unit registration spells out a contribution envelope by hand.
+ *
  * This module owns the host-agnostic contribution vocabulary (handler and
  * tool shapes) and the descriptor union.  It imports types only.
  *
@@ -195,10 +200,12 @@ export interface ToolDefinitionContribution {
 }
 
 /**
- * An OpenCode tool definition object, structurally equivalent to the
- * current `CompressToolDefinition` / `DecompressToolDefinition`.
+ * One tool record, as the composition result and the host registration
+ * boundary read it.
  *
- * `name` doubles as the registry key and the log label.
+ * A tool unit's factory returns the definition without the name (see
+ * {@link ToolDefinition}); the descriptor adds it back, so `name` doubles
+ * as the unit name, the registry key, and the log label.
  */
 export interface ToolContribution {
   /** Tool name (registry key). */
@@ -279,6 +286,15 @@ export interface ToolContribution {
 }
 
 /**
+ * A tool definition as a tool unit's factory returns it.
+ *
+ * Everything a {@link ToolContribution} carries except the name: the
+ * unit descriptor supplies that from its own `name`, so a tool is named
+ * exactly once.
+ */
+export type ToolDefinition = Omit<ToolContribution, "name">;
+
+/**
  * One slash-command record.
  *
  * Registration and handler are atomic: description and `handle` always
@@ -330,8 +346,8 @@ export interface SkillUnitContributions {
 /**
  * Contributions produced by a hook unit.
  *
- * All handler slots are required arrays — a unit that does not contribute
- * to a slot returns an empty array (see {@link makeHookContributions}).
+ * All handler slots are required arrays — a hook factory names only the
+ * slots it contributes to and {@link defineHook} fills the rest in.
  */
 export interface HookUnitContributions {
   kind: "hook";
@@ -364,19 +380,18 @@ export type UnitContributions =
   | CommandUnitContributions;
 
 /**
- * Build a hook unit's contribution set with every slot defaulted to an
- * empty array and the named slots overridden.
+ * Complete a hook unit's contribution set.
  *
- * A hook unit contributes to at most a few slots; this constructor keeps
- * the unconcerned slots uniformly empty so `create` names only the
- * handlers it actually contributes.  `kind` is fixed to `"hook"` and is
- * never part of `partial`.
+ * A hook unit contributes to at most a few slots, so its factory names
+ * only those and every other slot stays uniformly empty.  `kind` is fixed
+ * here and never part of `partial`.
  *
- * @param partial - The slots to contribute; omitted slots stay empty.
+ * @param partial - The slots the unit contributes; omitted slots stay
+ *   empty.
  * @returns The complete hook contribution set.
  */
-export function makeHookContributions(
-  partial: Partial<Omit<HookUnitContributions, "kind">> = {},
+function completeHookContributions(
+  partial: Partial<Omit<HookUnitContributions, "kind">>,
 ): HookUnitContributions {
   return {
     kind: "hook",
@@ -551,6 +566,31 @@ export function defineAgent<
 }
 
 /**
+ * Define a data-only agent unit: a fixed prompt under the agent's name.
+ *
+ * An agent that carries no runtime behavior contributes nothing but its
+ * prompt, so its descriptor is generated from the name and the prompt
+ * text — the name is written once and reaches both the descriptor and
+ * the contribution.
+ *
+ * @param name - The agent name (registry key).
+ * @param prompt - The prompt text injected into the agent definition.
+ * @returns The agent unit descriptor.
+ */
+export function definePromptAgent(
+  name: string,
+  prompt: string,
+): AgentUnitDescriptor {
+  return defineAgent({
+    name,
+    needs: [],
+    create() {
+      return { kind: "agent", agents: [{ name, prompt }] };
+    },
+  });
+}
+
+/**
  * Define a skill unit.
  *
  * @param d - Name, capability lists, and factory.
@@ -571,6 +611,10 @@ export function defineSkill<
 /**
  * Define a hook unit.
  *
+ * The factory returns only the slots the unit contributes to; the
+ * descriptor completes the set with empty arrays (see
+ * {@link completeHookContributions}).
+ *
  * @param d - Name, capability lists, and factory.
  * @returns The hook unit descriptor.
  */
@@ -581,13 +625,28 @@ export function defineHook<
   name: string;
   needs: N;
   wants?: W;
-  create(caps: UnitCaps<N, W>, activeSet: ActiveSet): HookUnitContributions;
+  create(
+    caps: UnitCaps<N, W>,
+    activeSet: ActiveSet,
+  ): Partial<Omit<HookUnitContributions, "kind">>;
 }): HookUnitDescriptor {
-  return defineUnit("hook", d);
+  return defineUnit("hook", {
+    name: d.name,
+    needs: d.needs,
+    wants: d.wants,
+    create(caps, activeSet) {
+      return completeHookContributions(d.create(caps, activeSet));
+    },
+  });
 }
 
 /**
  * Define a tool unit.
+ *
+ * The factory returns the tool definition itself (or `null` to
+ * contribute no tool, the fail-closed host gate); the descriptor wraps it
+ * into the contribution set and supplies the tool name from the unit
+ * name.
  *
  * @param d - Name, capability lists, and factory.
  * @returns The tool unit descriptor.
@@ -599,9 +658,20 @@ export function defineTool<
   name: string;
   needs: N;
   wants?: W;
-  create(caps: UnitCaps<N, W>, activeSet: ActiveSet): ToolUnitContributions;
+  create(caps: UnitCaps<N, W>, activeSet: ActiveSet): ToolDefinition | null;
 }): ToolUnitDescriptor {
-  return defineUnit("tool", d);
+  return defineUnit("tool", {
+    name: d.name,
+    needs: d.needs,
+    wants: d.wants,
+    create(caps, activeSet) {
+      const tool = d.create(caps, activeSet);
+      return {
+        kind: "tool",
+        tools: tool === null ? [] : [{ name: d.name, ...tool }],
+      };
+    },
+  });
 }
 
 /**

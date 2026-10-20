@@ -116,7 +116,10 @@ export async function executeHandoff(opts: {
     );
   }
 
-  log("go-command", "plan_found", sessionID, undefined, "info", {
+  log.info({
+    hook: "go-command",
+    event: "plan_found",
+    sessionId: sessionID,
     path: plan.path,
     slug: plan.slug,
   });
@@ -126,7 +129,10 @@ export async function executeHandoff(opts: {
     parentage: sessionID,
     title: `Execute: ${plan.slug}`,
   });
-  log("go-command", "session_created", sessionID, undefined, "info", {
+  log.info({
+    hook: "go-command",
+    event: "session_created",
+    sessionId: sessionID,
     newSessionID: session.id,
   });
 
@@ -140,14 +146,20 @@ export async function executeHandoff(opts: {
   // leaves the plan file untouched and `/go` can be re-run.
   const planReference = buildPlanReference(plan.path);
   await handoffTarget.deliver(session, planReference);
-  log("go-command", "prompt_injected", sessionID, undefined, "info", {
+  log.info({
+    hook: "go-command",
+    event: "prompt_injected",
+    sessionId: sessionID,
     newSessionID: session.id,
   });
 
   // --- 5. Mark the plan as executing ---
   const updatedContent = updatePlanStatus(plan.content, "executing");
   writePlan(plan.path, updatedContent);
-  log("go-command", "status_updated", sessionID, undefined, "info", {
+  log.info({
+    hook: "go-command",
+    event: "status_updated",
+    sessionId: sessionID,
     path: plan.path,
     newStatus: "executing",
   });

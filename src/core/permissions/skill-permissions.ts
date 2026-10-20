@@ -95,7 +95,9 @@ export function parseSkillPermissions(rawConfig: any): SkillPermissionMap {
     )) {
       if (value !== "allow" && value !== "deny") {
         if (typeof value !== "string") {
-          log("config", "skill_permission_invalid", "", undefined, "warn", {
+          log.warn({
+            hook: "config",
+            event: "skill_permission_invalid",
             agent: name,
             key: pattern,
             value,

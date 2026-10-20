@@ -223,16 +223,12 @@ export function createFleetWiring(deps: FleetWiringDeps): FleetWiring {
         fleetWidget.refresh();
       })
       .catch((err) => {
-        log(
-          "plugin",
-          "todo_view_refresh_failed",
+        log.warn({
+          hook: "plugin",
+          event: "todo_view_refresh_failed",
           sessionId,
-          undefined,
-          "warn",
-          {
-            error: String(err),
-          },
-        );
+          error: String(err),
+        });
       });
   };
 

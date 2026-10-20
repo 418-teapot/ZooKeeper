@@ -106,7 +106,9 @@ const plugin: TuiPluginModule = {
             api.kv.set(kvKey, next);
           }
         } catch (err) {
-          log("opencode-tui", "kv_write_failed", "", undefined, "debug", {
+          log.debug({
+            hook: "opencode-tui",
+            event: "kv_write_failed",
             error: String(err),
           });
         }
@@ -203,16 +205,12 @@ const plugin: TuiPluginModule = {
           }
         } catch (err) {
           // Silently ignore — default to expanded.
-          log(
-            "opencode-tui",
-            "kv_read_failed",
-            props.sessionId,
-            undefined,
-            "debug",
-            {
-              error: String(err),
-            },
-          );
+          log.debug({
+            hook: "opencode-tui",
+            event: "kv_read_failed",
+            sessionId: props.sessionId,
+            error: String(err),
+          });
         }
 
         // Shared fetch: one API call shared between compute and scan.

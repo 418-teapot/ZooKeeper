@@ -265,14 +265,12 @@ export function createPiEventHandlers(
             sessionManager.buildContextEntries() as PiHistoryEntry[];
           rebuildSubagentRuns(entries, sessionId);
         } catch (err) {
-          log(
-            "plugin",
-            "registry_rebuild_failed",
+          log.warn({
+            hook: "plugin",
+            event: "registry_rebuild_failed",
             sessionId,
-            undefined,
-            "warn",
-            { error: String(err) },
-          );
+            error: String(err),
+          });
         }
       }
       deps.refreshFleetWidget();
@@ -297,7 +295,9 @@ export function createPiEventHandlers(
       }
       const kept = filterAllowedSkills(deps.profileSkills, rules);
       const dropped = deps.profileSkills.length - kept.length;
-      log("resources", "skills_filtered", "", undefined, "info", {
+      log.info({
+        hook: "resources",
+        event: "skills_filtered",
         agent: primary,
         kept: kept.length,
         dropped,
@@ -349,19 +349,15 @@ export function createPiEventHandlers(
 
       const refusal = gate({ caller, target, prompt });
       if (refusal === null) return undefined;
-      log(
-        "subagent-tool",
-        "delegation_blocked",
-        deps.getSessionId() ?? "",
-        undefined,
-        "warn",
-        {
-          caller: caller ?? null,
-          target: target ?? null,
-          judge: refusal.judge,
-          reason: refusal.reason,
-        },
-      );
+      log.warn({
+        hook: "subagent-tool",
+        event: "delegation_blocked",
+        sessionId: deps.getSessionId(),
+        caller: caller ?? null,
+        target: target ?? null,
+        judge: refusal.judge,
+        reason: refusal.reason,
+      });
       return { block: true, reason: refusal.reason };
     },
     sessionTree: (_evt?, ctx?) => {
@@ -433,14 +429,19 @@ export function createPiEventHandlers(
             : uiPromptDepth > 0 || askUnanswered
               ? "awaiting-input"
               : "settled";
-        log("loop", "settle_received", sessionID ?? "", undefined, "debug", {
+        log.debug({
+          hook: "loop",
+          event: "settle_received",
+          sessionId: sessionID,
           cause,
           outcome,
           hadActivity,
         });
         // No live pi session to attribute the reminder to → fail closed.
         if (sessionID === undefined || sessionID.length === 0) {
-          log("loop", "settle_skipped", "", undefined, "debug", {
+          log.debug({
+            hook: "loop",
+            event: "settle_skipped",
             reason: "no-session",
           });
           return {};
@@ -449,7 +450,10 @@ export function createPiEventHandlers(
         // session is driven by its own identity and must not be woken by the
         // root extension.
         if (resolveIdentity()?.kind === "subagent") {
-          log("loop", "settle_skipped", sessionID, undefined, "debug", {
+          log.debug({
+            hook: "loop",
+            event: "settle_skipped",
+            sessionId: sessionID,
             reason: "subagent",
           });
           return {};
@@ -470,7 +474,10 @@ export function createPiEventHandlers(
         // continuation within this run, so the verdict and its effect cannot
         // diverge and no queued reminder outlives the run that produced it.
         deps.engine.record(sessionID, decision.name);
-        log("loop", "wake_injected", sessionID, undefined, "info", {
+        log.info({
+          hook: "loop",
+          event: "wake_injected",
+          sessionId: sessionID,
           handler: decision.name,
           used: deps.engine.used(sessionID, decision.name),
         });
@@ -490,7 +497,10 @@ export function createPiEventHandlers(
           continue: true,
         };
       } catch (err) {
-        log("loop", "settle_failed", sessionID ?? "", undefined, "warn", {
+        log.warn({
+          hook: "loop",
+          event: "settle_failed",
+          sessionId: sessionID,
           error: String(err),
         });
         return {};

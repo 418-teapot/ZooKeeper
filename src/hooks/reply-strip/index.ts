@@ -21,7 +21,6 @@
 import { stripLineStartRefs } from "../../core/context/reply-strip.js";
 import {
   defineHook,
-  makeHookContributions,
   type TextCompleteContribution,
   type TextCompleteInput,
   type TextCompleteOutput,
@@ -48,16 +47,12 @@ export function createReplyStripHandler(): TextCompleteContribution {
       // Detect ref-prefix stripping: when the reply started with an
       // exact `[mN] ` echo, log a warning with the stripped tail.
       if (before !== output.text) {
-        log(
-          "reply-strip",
-          "reply_ref_stripped",
-          input.sessionID,
-          undefined,
-          "warn",
-          {
-            fragment: before.slice(0, 200),
-          },
-        );
+        log.warn({
+          hook: "reply-strip",
+          event: "reply_ref_stripped",
+          sessionId: input.sessionID,
+          fragment: before.slice(0, 200),
+        });
       }
     },
   };
@@ -76,8 +71,6 @@ export const unit = defineHook({
   name: "reply-strip",
   needs: [],
   create() {
-    return makeHookContributions({
-      textComplete: [createReplyStripHandler()],
-    });
+    return { textComplete: [createReplyStripHandler()] };
   },
 });

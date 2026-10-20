@@ -54,7 +54,10 @@ export async function classifyStopCause(
   }
   const fetchMessages = client?.session?.messages;
   if (typeof fetchMessages !== "function") {
-    log("loop", "cause_unobservable", sessionID, undefined, "warn", {
+    log.warn({
+      hook: "loop",
+      event: "cause_unobservable",
+      sessionId: sessionID,
       reason: "session.messages unavailable",
     });
     return null;
@@ -66,14 +69,20 @@ export async function classifyStopCause(
       ? res
       : (res as { data?: unknown } | undefined)?.data;
     if (!Array.isArray(data)) {
-      log("loop", "cause_unobservable", sessionID, undefined, "warn", {
+      log.warn({
+        hook: "loop",
+        event: "cause_unobservable",
+        sessionId: sessionID,
         reason: "messages payload not an array",
       });
       return null;
     }
     messages = data as IdleMessageEntry[];
   } catch (err) {
-    log("loop", "cause_unobservable", sessionID, undefined, "warn", {
+    log.warn({
+      hook: "loop",
+      event: "cause_unobservable",
+      sessionId: sessionID,
       reason: "messages fetch failed",
       error: String(err),
     });

@@ -38,11 +38,21 @@ import type { Block, SessionState } from "../core/context/state.js";
 import { numberView } from "../core/context/view-refs.js";
 import { composeToolHooks, makePlugin, POLY_ZOO } from "../testkits/config.js";
 import { _resetForTesting } from "../utils/logger.js";
-import {
-  type CompressToolDefinition,
-  unit as compressUnit,
-  createCompressTool,
-} from "./compress.js";
+import { unit as compressUnit, createCompressTool } from "./compress.js";
+
+/** The compress tool's `ranges` schema, as the host receives it. */
+interface CompressArgsSchema {
+  ranges: {
+    type: string;
+    description: string;
+    items: {
+      type: string;
+      description: string;
+      required: string[];
+      properties: Record<string, { type: string; description: string }>;
+    };
+  };
+}
 
 // ---------------------------------------------------------------------------
 // Session ids & teardown
@@ -952,8 +962,9 @@ describe("compress tool registration gate", () => {
     ]);
 
     assert.ok(hooks?.compress);
-    const compressArgs = (hooks.compress as unknown as CompressToolDefinition)
-      .args;
+    const compressArgs = (
+      hooks.compress as unknown as { args: CompressArgsSchema }
+    ).args;
     assert.ok(compressArgs.ranges, "ranges arg must be present");
     assert.equal(compressArgs.ranges.type, "array");
     assert.equal(compressArgs.ranges.items.type, "object");
@@ -975,7 +986,8 @@ describe("compress tool registration gate", () => {
     ]);
 
     assert.ok(hooks?.compress);
-    const tool = hooks.compress as unknown as CompressToolDefinition;
+    const tool = hooks.compress;
+    const args = (tool as unknown as { args: CompressArgsSchema }).args;
     assert.ok(
       tool.description.includes("不再需要逐字保留"),
       "description must state that verbatim retention is unnecessary for the compressed ranges",
@@ -1002,48 +1014,46 @@ describe("compress tool registration gate", () => {
       "description must state that a summary-line ref pulls in the whole block",
     );
     assert.ok(
-      tool.args.ranges.description.includes("{fromRef, toRef, title, summary}"),
+      args.ranges.description.includes("{fromRef, toRef, title, summary}"),
       "ranges arg must state the per-item fields",
     );
     assert.ok(
-      tool.args.ranges.description.includes("整批不生效") &&
-        tool.args.ranges.description.includes("全部失败范围"),
+      args.ranges.description.includes("整批不生效") &&
+        args.ranges.description.includes("全部失败范围"),
       "ranges arg must state batch atomicity and that all failures are listed",
     );
     assert.ok(
-      tool.args.ranges.items.description.includes("一段连续的历史消息"),
+      args.ranges.items.description.includes("一段连续的历史消息"),
       "items arg must describe a contiguous run of history",
     );
     assert.ok(
-      tool.args.ranges.items.properties.fromRef.description.includes(
-        "起点行号",
-      ),
+      args.ranges.items.properties.fromRef.description.includes("起点行号"),
       "fromRef arg must point at the starting line number",
     );
     assert.ok(
-      tool.args.ranges.items.properties.fromRef.description.includes(
+      args.ranges.items.properties.fromRef.description.includes(
         "该消息及其之后的内容会被压缩",
       ),
       "fromRef arg must state that the message and everything after it gets compressed",
     );
     assert.ok(
-      tool.args.ranges.items.properties.toRef.description.includes("终点行号"),
+      args.ranges.items.properties.toRef.description.includes("终点行号"),
       "toRef arg must point at the ending line number",
     );
     assert.ok(
-      tool.args.ranges.items.properties.toRef.description.includes(
+      args.ranges.items.properties.toRef.description.includes(
         "该消息及其之前的内容会被压缩",
       ),
       "toRef arg must state that the message and everything before it gets compressed",
     );
     assert.ok(
-      tool.args.ranges.items.properties.title.description.includes(
+      args.ranges.items.properties.title.description.includes(
         "不超过 80 字符的单行",
       ),
       "title arg must state the single-line 80-character limit",
     );
     assert.ok(
-      tool.args.ranges.items.properties.summary.description.includes(
+      args.ranges.items.properties.summary.description.includes(
         "替换压缩范围内的原文",
       ),
       "summary arg must state the original-text replacement role",

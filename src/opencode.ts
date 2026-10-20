@@ -124,7 +124,9 @@ export async function buildPlugin(
           .map((item) => item.agent),
       ),
     ];
-    log("prompt-variant", "conflict_dropped", "", undefined, "warn", {
+    log.warn({
+      hook: "prompt-variant",
+      event: "conflict_dropped",
       dropped: dropped.length,
       sources,
     });

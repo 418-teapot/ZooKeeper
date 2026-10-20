@@ -175,14 +175,12 @@ export function createPiHandoffTarget(opts: {
             // A synchronous/immediate rejection is still observable via the
             // detached promise's warn — deliver never throws for it.
             newCtx.sendUserMessage(planReference).catch((err) => {
-              log(
-                "go-command",
-                "deliver_async_failed",
-                parentage ?? "",
-                undefined,
-                "warn",
-                { error: String(err) },
-              );
+              log.warn({
+                hook: "go-command",
+                event: "deliver_async_failed",
+                sessionId: parentage,
+                error: String(err),
+              });
             });
           },
         });
