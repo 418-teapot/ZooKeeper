@@ -22,13 +22,13 @@
  */
 
 import { join } from "node:path";
-import type { ToolHost } from "../../core/client/tool-host.js";
 import type {
   AutoDebugFs,
   ZdebugExec,
   ZdebugExecResult,
 } from "../../core/ports/autodebug.js";
 import type { MessageInjector } from "../../core/ports/handoff.js";
+import type { ToolHost } from "../../core/ports/tool-host.js";
 import { log } from "../../utils/logger.js";
 
 /** Directory under the workspace holding the per-Case subdirectories. */

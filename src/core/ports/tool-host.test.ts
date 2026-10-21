@@ -1,5 +1,5 @@
 /**
- * Tests for the host tool-services contract (`tool-host.ts`).
+ * Tests for the host tool-services port (`tool-host.ts`).
  *
  * Boundary: the toast message formatter both host adapters render into
  * their UI surface — the `[zoo][source]` tag and the payload text.  The

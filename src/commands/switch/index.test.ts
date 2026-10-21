@@ -149,7 +149,6 @@ function makeDeps(
   return {
     limits: {},
     contextConfig: {},
-    client: {},
     directory: "/tmp/zoo",
     resolveAgent: () => undefined,
     ...overrides,

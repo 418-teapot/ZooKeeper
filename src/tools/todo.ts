@@ -50,7 +50,7 @@
  * @module
  */
 
-import type { ToolHost } from "../core/client/tool-host.js";
+import type { ToolHost } from "../core/ports/tool-host.js";
 import { isRecord } from "../core/records.js";
 import { applyEntries } from "../core/todo/apply.js";
 import { serializeSnapshot } from "../core/todo/serialize.js";

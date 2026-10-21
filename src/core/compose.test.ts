@@ -30,7 +30,6 @@ afterEach(() => {
 const BASE_CAPS: Partial<Capabilities> = {
   limits: {},
   contextConfig: {},
-  client: {},
   directory: "/tmp/zoo",
   resolveAgent: () => undefined,
 };

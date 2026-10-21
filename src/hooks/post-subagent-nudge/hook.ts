@@ -9,9 +9,9 @@
  */
 
 import { checkPlanProgress, checkTodoProgress } from "../../core/checks.js";
-import type { TodoSource } from "../../core/client/todo.js";
 import { applyNudge } from "../../core/nudge.js";
 import { VERIFY_REMINDER } from "../../core/prompts.js";
+import type { TodoSource } from "../../core/todo/source.js";
 
 // ---------------------------------------------------------------------------
 // Handler

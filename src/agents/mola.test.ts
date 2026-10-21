@@ -15,7 +15,6 @@ import { buildMolaPrompt, unit } from "./mola.js";
 const DEPS: Partial<Capabilities> = {
   limits: {},
   contextConfig: {},
-  client: {},
   directory: "",
   resolveAgent: () => undefined,
 };

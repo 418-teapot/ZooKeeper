@@ -43,7 +43,6 @@
  * @module
  */
 
-import type { ToolHost } from "../core/client/tool-host.js";
 import type { ContextPruningConfig } from "../core/config-types.js";
 import {
   type CompressOptions,
@@ -61,6 +60,7 @@ import {
 } from "../core/context/runtime.js";
 import type { Block, SessionState } from "../core/context/state.js";
 import { type NumberedItem, numberView } from "../core/context/view-refs.js";
+import type { ToolHost } from "../core/ports/tool-host.js";
 import {
   defineTool,
   type ToolContribution,

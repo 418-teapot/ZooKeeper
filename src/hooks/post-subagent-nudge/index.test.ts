@@ -9,7 +9,6 @@
 import assert from "node:assert/strict";
 import { rmSync } from "node:fs";
 import { afterEach, describe, it } from "node:test";
-import type { TodoSource } from "../../core/client/todo.js";
 import type { Capabilities } from "../../core/ports/index.js";
 import {
   TODO_DONE_NUDGE,
@@ -17,7 +16,8 @@ import {
   TODO_RESUME_NUDGE,
   VERIFY_REMINDER,
 } from "../../core/prompts.js";
-import { fakeStore, mockClient, sourceOf } from "../../testkits/hooks.js";
+import type { TodoSource } from "../../core/todo/source.js";
+import { sourceOf, storeSource } from "../../testkits/hooks.js";
 import { cleanupPlanDir, writePlanFile } from "../../testkits/plans.js";
 import { makeTmpDir } from "../../testkits/tmp.js";
 import { _getBufferForTesting, _resetForTesting } from "../../utils/logger.js";
@@ -594,7 +594,7 @@ describe("integration: tool.execute.after → nudgePostSubagent", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Composition: unit.create(deps) selects the single todo source
+// Composition: unit.create(deps) reads the assembly-bound todo source
 // ---------------------------------------------------------------------------
 
 /** Assemble a partial deps object for unit-level tests. */
@@ -627,12 +627,11 @@ async function runComposed(
   );
 }
 
-describe("unit.create(deps) todo source selection", () => {
-  it("uses the injected state store on a pi-shaped deps", async () => {
+describe("unit.create(deps) todo source wiring", () => {
+  it("reads the bound store-backed source (pi assembly)", async () => {
     const deps = makeDeps({
-      client: {},
       directory: tmpDir(),
-      todoStore: fakeStore([
+      todoSource: storeSource([
         {
           name: "Implement",
           tasks: [
@@ -648,42 +647,10 @@ describe("unit.create(deps) todo source selection", () => {
     assertHasGeneral(output);
   });
 
-  it("prefers the store over a client that would serve a different list", async () => {
-    // The client list is all completed (resume tier); the store list holds
-    // active work (progress tier). The store must win.
+  it("reads the bound client-backed source (OpenCode assembly)", async () => {
     const deps = makeDeps({
-      client: mockClient([
-        { content: "Old", status: "completed", priority: "high", id: "1" },
-      ]),
       directory: tmpDir(),
-      todoStore: fakeStore([
-        {
-          name: "Implement",
-          tasks: [{ content: "Wire source", status: "in_progress" }],
-        },
-      ]),
-    });
-    const output: { output?: string } = { output: "Task completed" };
-    await runComposed(deps, output);
-    assertHasGeneral(output);
-    assert.equal(
-      output.output?.includes("TODO LIST DONE"),
-      false,
-      "client-served list must not be read",
-    );
-  });
-
-  it("fails closed when neither store nor capable client is supplied", async () => {
-    const deps = makeDeps({ client: {}, directory: tmpDir() });
-    const output: { output?: string } = { output: "Task completed" };
-    await runComposed(deps, output);
-    assertHasVerify(output);
-    assertNoTodoNudge(output);
-  });
-
-  it("serves the todo nudge from the client adapter on OpenCode-shaped deps", async () => {
-    const deps = makeDeps({
-      client: mockClient([
+      todoSource: sourceOf([
         {
           content: "Wire source",
           status: "pending",
@@ -692,7 +659,6 @@ describe("unit.create(deps) todo source selection", () => {
         },
         { content: "Land it", status: "pending", priority: "low", id: "2" },
       ]),
-      directory: tmpDir(),
     });
     const output: { output?: string } = { output: "Task completed" };
     await runComposed(deps, output);
@@ -700,11 +666,20 @@ describe("unit.create(deps) todo source selection", () => {
     assertHasGeneral(output);
   });
 
-  it("keeps the unit name and kind stable", () => {
-    assert.equal(unit.name, "post-subagent-nudge");
-    assert.equal(unit.kind, "hook");
+  it("fails closed when no source is bound", async () => {
+    const deps = makeDeps({ directory: tmpDir() });
+    const output: { output?: string } = { output: "Task completed" };
+    await runComposed(deps, output);
+    assertHasVerify(output);
+    assertNoTodoNudge(output);
   });
 });
+
+/*
+ * The backend choice itself is covered where it is made: OpenCode's
+ * client adapter (`adapters/opencode/todo-source.test.ts`) and the store
+ * adapter (`core/todo/source.test.ts`).
+ */
 
 // ---------------------------------------------------------------------------
 // Plan nudge scenarios

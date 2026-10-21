@@ -17,10 +17,10 @@
  */
 import assert from "node:assert/strict";
 import { afterEach, describe, it } from "node:test";
-import type { ToolHost } from "../core/client/tool-host.js";
 import { composeProfile } from "../core/compose.js";
 import type { ModeProfile } from "../core/config-types.js";
 import type { Capabilities } from "../core/ports/index.js";
+import type { ToolHost } from "../core/ports/tool-host.js";
 import type { TodoSnapshot } from "../core/todo/serialize.js";
 import { createTodoStore } from "../core/todo/store.js";
 import type { TodoPhase } from "../core/todo/types.js";

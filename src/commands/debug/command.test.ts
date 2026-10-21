@@ -10,7 +10,6 @@
  */
 import assert from "node:assert/strict";
 import { afterEach, describe, it } from "node:test";
-import type { ToastPayload, ToolHost } from "../../core/client/tool-host.js";
 import type {
   AutoDebugDirEntry,
   AutoDebugFs,
@@ -18,6 +17,7 @@ import type {
   ZdebugExecResult,
 } from "../../core/ports/autodebug.js";
 import type { MessageInjector } from "../../core/ports/handoff.js";
+import type { ToastPayload, ToolHost } from "../../core/ports/tool-host.js";
 import type { CommandUnitDescriptor } from "../../core/unit.js";
 import { _resetForTesting } from "../../utils/logger.js";
 import {
@@ -140,7 +140,6 @@ function makeDeps(
   return {
     limits: {},
     contextConfig: {},
-    client: {},
     directory: WORKSPACE,
     resolveAgent: () => undefined,
     ...overrides,

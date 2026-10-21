@@ -14,7 +14,7 @@ import { cleanupPlanDir, writePlanFile } from "../testkits/plans.js";
 import { makeTmpDir } from "../testkits/tmp.js";
 import { _getBufferForTesting } from "../utils/logger.js";
 import { checkPlanProgress, checkTodoProgress } from "./checks.js";
-import type { TodoSource } from "./client/todo.js";
+import type { TodoSource } from "./todo/source.js";
 import type { TodoItemView } from "./todo/types.js";
 
 // ---------------------------------------------------------------------------

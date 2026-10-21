@@ -27,7 +27,7 @@ import {
   formatToastMessage,
   type ToastPayload,
   type ToolHost,
-} from "../../core/client/tool-host.js";
+} from "../../core/ports/tool-host.js";
 import { log } from "../../utils/logger.js";
 
 /**

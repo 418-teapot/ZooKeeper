@@ -28,7 +28,6 @@
 import assert from "node:assert/strict";
 import { afterEach, describe, it } from "node:test";
 import { createV1Adapter } from "../../adapters/opencode/adapter.js";
-import type { ToolHost } from "../../core/client/tool-host.js";
 import { composeProfile } from "../../core/compose.js";
 import type { ModeProfile } from "../../core/config-types.js";
 import type { HostAdapter, HostMessage } from "../../core/context/lens.js";
@@ -58,6 +57,7 @@ import {
 import { computeSpanHash } from "../../core/context/spanhash.js";
 import { allocateBlockId, markKey } from "../../core/context/state.js";
 import type { Capabilities } from "../../core/ports/index.js";
+import type { ToolHost } from "../../core/ports/tool-host.js";
 import type { ActiveSet } from "../../core/unit.js";
 import { _getBufferForTesting, _resetForTesting } from "../../utils/logger.js";
 import { unit } from "./index.js";
@@ -1976,7 +1976,6 @@ describe("unit.create enablement", () => {
     const deps: Partial<Capabilities> = {
       limits: {},
       contextConfig: {},
-      client: {},
       directory: "/tmp/zoo",
       resolveAgent: () => undefined,
       adapter,
@@ -1996,11 +1995,6 @@ describe("unit.create enablement", () => {
     const deps: Partial<Capabilities> = {
       limits: {},
       contextConfig: {},
-      client: {
-        session: {
-          get: async () => ({}),
-        },
-      },
       directory: "/tmp/zoo",
       resolveAgent: () => undefined,
     };

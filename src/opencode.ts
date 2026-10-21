@@ -22,6 +22,7 @@ import { createV1Adapter } from "./adapters/opencode/adapter.js";
 import { createOpenCodeHandoffTarget } from "./adapters/opencode/handoff-target.js";
 import { buildInfraHooks } from "./adapters/opencode/infra-hooks.js";
 import { createOpenCodeMessageInjector } from "./adapters/opencode/message-injector.js";
+import { todoSourceFromClient } from "./adapters/opencode/todo-source.js";
 import {
   createV1ToolHost,
   resolveSessionAgent,
@@ -85,7 +86,9 @@ export async function buildPlugin(
     resolveSessionAgent(sessionID, client, resolveAgent);
   const provided: Partial<Capabilities> = {
     ...configCapabilities(common),
-    client,
+    // OpenCode serves the todo read from its SDK client; the assembly is
+    // the single place that binds the backend (pi binds its state store).
+    todoSource: todoSourceFromClient(client),
     directory,
     zdebugExec: overrides?.zdebugExec,
     resolveAgent,

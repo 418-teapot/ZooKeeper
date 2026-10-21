@@ -26,16 +26,15 @@
  * @module
  */
 
-import type { SessionClient } from "../../core/client/session.js";
+import type { Projection } from "../../core/context/lens.js";
 import {
   formatToastMessage,
   type ToastPayload,
   type ToolHost,
-} from "../../core/client/tool-host.js";
-import type { Projection } from "../../core/context/lens.js";
+} from "../../core/ports/tool-host.js";
 import { log } from "../../utils/logger.js";
 import { history } from "./history.js";
-import type { ContextMessageEntry } from "./types.js";
+import type { ContextMessageEntry, SessionClient } from "./types.js";
 
 /**
  * Minimal client interface required by the v1 tool host.

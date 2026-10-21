@@ -22,7 +22,6 @@ import { makeTmpDir } from "./testkits/tmp.js";
 const DEPS: Partial<Capabilities> = {
   limits: {},
   contextConfig: {},
-  client: {},
   directory: "/tmp/zoo",
   resolveAgent: () => undefined,
 };

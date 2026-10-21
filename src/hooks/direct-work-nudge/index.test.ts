@@ -11,16 +11,11 @@
  */
 import assert from "node:assert/strict";
 import { afterEach, beforeEach, describe, it } from "node:test";
-import type { TodoSource } from "../../core/client/todo.js";
 import type { Capabilities } from "../../core/ports/index.js";
+import type { TodoSource } from "../../core/todo/source.js";
 import type { TodoPhase } from "../../core/todo/types.js";
 import { restoreEnv, saveEnv } from "../../testkits/env.js";
-import {
-  fakeStore,
-  type HostTodo,
-  mockClient,
-  sourceOf,
-} from "../../testkits/hooks.js";
+import { type HostTodo, sourceOf, storeSource } from "../../testkits/hooks.js";
 import { cleanupPlanDir, writePlanFile } from "../../testkits/plans.js";
 import { makeTmpDir } from "../../testkits/tmp.js";
 import { _getBufferForTesting, _resetForTesting } from "../../utils/logger.js";
@@ -627,7 +622,6 @@ describe("unit.create wiring — gating through deps.resolveAgent", () => {
       {
         limits: {},
         contextConfig: {},
-        client: {},
         directory: "",
         resolveAgent,
       },
@@ -879,9 +873,8 @@ describe("options.todoSource drives the todo progress check", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Hook unit wiring: the todo source is selected once in create(deps) —
-// the injected state store wins, then a client exposing session.todo,
-// else the unit contributes no todo nudge.
+// Hook unit wiring: the unit reads the assembly-bound `todoSource` port;
+// when no source is bound it contributes no todo nudge.
 // ---------------------------------------------------------------------------
 
 /** Assemble a partial deps object for unit-level tests. */
@@ -916,13 +909,12 @@ async function runComposedEdit(deps: Partial<Capabilities>, sid: string) {
   return output;
 }
 
-describe("unit.create(deps) todo source selection", () => {
-  it("reads the state store on pi-shaped deps (empty client + todoStore)", async () => {
+describe("unit.create(deps) todo source wiring", () => {
+  it("reads the bound store-backed source (pi assembly)", async () => {
     const output = await runComposedEdit(
       makeDeps({
-        client: {},
         directory: "",
-        todoStore: fakeStore(ACTIVE_PHASES),
+        todoSource: storeSource(ACTIVE_PHASES),
         resolveAgent: () => "dolphin",
       }),
       "s-pi",
@@ -930,18 +922,30 @@ describe("unit.create(deps) todo source selection", () => {
     assertHasReminder(output, "the direct-work nudge must still fire");
     assert.ok(
       output.output?.includes(TODO_MARKER),
-      "expected the todo nudge served by the state store",
+      "expected the todo nudge served by the bound store source",
     );
   });
 
-  it("contributes no todo nudge on an incapable client without a store", async () => {
+  it("reads the bound client-backed source (OpenCode assembly)", async () => {
     const output = await runComposedEdit(
       makeDeps({
-        client: {},
         directory: "",
+        todoSource: sourceOf(ACTIVE_HOST_TODOS),
         resolveAgent: () => "dolphin",
       }),
-      "s-no-store",
+      "s-client",
+    );
+    assertHasReminder(output);
+    assert.ok(
+      output.output?.includes(TODO_MARKER),
+      "expected the todo nudge served by the bound client source",
+    );
+  });
+
+  it("contributes no todo nudge when no source is bound", async () => {
+    const output = await runComposedEdit(
+      makeDeps({ directory: "", resolveAgent: () => "dolphin" }),
+      "s-no-source",
     );
     assertHasReminder(output, "the direct-work nudge must still fire");
     assert.ok(
@@ -950,52 +954,11 @@ describe("unit.create(deps) todo source selection", () => {
     );
   });
 
-  it("reads a client exposing session.todo when no store is injected", async () => {
-    const output = await runComposedEdit(
-      makeDeps({
-        client: mockClient(ACTIVE_HOST_TODOS),
-        directory: "",
-        resolveAgent: () => "dolphin",
-      }),
-      "s-client",
-    );
-    assertHasReminder(output);
-    assert.ok(
-      output.output?.includes(TODO_MARKER),
-      "expected the todo nudge served by the host client",
-    );
-  });
-
-  it("prefers the store over a client serving a different list", async () => {
-    // The client list is all completed (resume tier -> "TODO LIST DONE");
-    // the store list holds active work (progress tier).
-    const output = await runComposedEdit(
-      makeDeps({
-        client: mockClient([
-          { content: "Old", status: "completed", priority: "high", id: "1" },
-        ]),
-        directory: "",
-        todoStore: fakeStore(ACTIVE_PHASES),
-        resolveAgent: () => "dolphin",
-      }),
-      "s-both",
-    );
-    assert.ok(
-      output.output?.includes(TODO_MARKER),
-      "expected the store-served todo nudge to win",
-    );
-    assert.ok(
-      !output.output?.includes("TODO LIST DONE"),
-      "the client list must not be read when a store is injected",
-    );
-  });
-
   it("keeps the agent gate closed for subagent sessions", async () => {
     const output = await runComposedEdit(
       makeDeps({
-        client: {},
         directory: "",
-        todoStore: fakeStore(ACTIVE_PHASES),
+        todoSource: storeSource(ACTIVE_PHASES),
         resolveAgent: () => "beaver",
       }),
       "s-child",

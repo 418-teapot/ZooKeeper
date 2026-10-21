@@ -205,10 +205,13 @@ function unitCapabilities(
   provided: Partial<Capabilities>,
 ): Partial<Capabilities> {
   const caps: Partial<Capabilities> = {};
+  // The catalog mixes port types, so a plain keyed read yields their union;
+  // copying through an untyped record keeps the value the host supplied.
+  const target = caps as Record<string, unknown>;
   for (const key of [...unit.needs, ...unit.wants]) {
     // Ports carry behavior (functions / method objects), never lazy
     // accessors, so a plain value copy can never trigger side effects.
-    caps[key] = provided[key];
+    target[key] = provided[key];
   }
   return caps;
 }

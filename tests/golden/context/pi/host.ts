@@ -41,7 +41,7 @@ import {
 } from "../../../../src/adapters/pi/tool-host.js";
 import type { PiAgentMessage } from "../../../../src/adapters/pi/types.js";
 import { buildPiContextHandler } from "../../../../src/compose-pi.js";
-import type { ToolHost } from "../../../../src/core/client/tool-host.js";
+import type { ToolHost } from "../../../../src/core/ports/tool-host.js";
 import { composeProfile } from "../../../../src/core/compose.js";
 import type {
   ContextPruningConfig,
@@ -98,11 +98,6 @@ function composePruningTransform(
   const deps: Partial<Capabilities> = {
     limits: {},
     contextConfig: config,
-    // pi has no SDK client — the dedup producer has no session-prompt
-    // API to notify through, so any dedup notification is skipped.  The
-    // release notification does not depend on the client: it goes
-    // through `toolHost.notify` below.
-    client: {},
     directory: process.cwd(),
     resolveAgent: () => undefined,
     adapter: createPiAdapter(() => sessionID),

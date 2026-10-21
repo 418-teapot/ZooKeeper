@@ -14,13 +14,13 @@
  */
 
 import { checkPlanProgress, checkTodoProgress } from "../../core/checks.js";
-import type { TodoSource } from "../../core/client/todo.js";
 import { applyNudge, type NudgeGuard } from "../../core/nudge.js";
 import { ORCHESTRATOR_AGENT_NAME } from "../../core/orchestrator.js";
 import {
   DIRECT_WORK_NUDGE,
   SEARCH_DELEGATE_NUDGE,
 } from "../../core/prompts.js";
+import type { TodoSource } from "../../core/todo/source.js";
 import { log } from "../../utils/logger.js";
 
 // ---------------------------------------------------------------------------

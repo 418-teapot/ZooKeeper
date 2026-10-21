@@ -35,11 +35,11 @@ import {
   type PiToolResultEvent,
   registerPiHandlers,
 } from "./compose-pi.js";
-import type { ToolHost } from "./core/client/tool-host.js";
 import type { ComposedResult } from "./core/compose.js";
 import { composeProfile } from "./core/compose.js";
 import type { ModeProfile } from "./core/config-types.js";
 import type { Capabilities } from "./core/ports/index.js";
+import type { ToolHost } from "./core/ports/tool-host.js";
 import { _resetForTesting as _resetIdentityForTesting } from "./core/subagent/identity.js";
 import { createTodoStore } from "./core/todo/store.js";
 import type {
@@ -882,7 +882,6 @@ function piCaps(host: Partial<Capabilities> = {}): Partial<Capabilities> {
   return {
     limits: {},
     contextConfig: {},
-    client: {},
     directory: "",
     resolveAgent: () => undefined,
     ...host,

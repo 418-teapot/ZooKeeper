@@ -51,7 +51,7 @@ export type {
 } from "./subagent.js";
 export type { SwitchHost, SwitchNewSessionOps, SwitchPort } from "./switch.js";
 export type { TodoPort } from "./todo.js";
-export type { ToolHostPort } from "./tool-host.js";
+export type { ToastPayload, ToolHost, ToolHostPort } from "./tool-host.js";
 export type { ValidationPort } from "./validation.js";
 
 /**

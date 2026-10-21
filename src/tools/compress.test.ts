@@ -18,7 +18,6 @@
 import assert from "node:assert/strict";
 import { afterEach, describe, it } from "node:test";
 import { registerProfileToolsInConfig } from "../compose-opencode.js";
-import type { ToolHost } from "../core/client/tool-host.js";
 import { composeProfile } from "../core/compose.js";
 import { parseContextConfig } from "../core/config-parse.js";
 import type { ModeProfile } from "../core/config-types.js";
@@ -36,6 +35,7 @@ import {
 } from "../core/context/runtime.js";
 import type { Block, SessionState } from "../core/context/state.js";
 import { numberView } from "../core/context/view-refs.js";
+import type { ToolHost } from "../core/ports/tool-host.js";
 import { composeToolHooks, makePlugin, POLY_ZOO } from "../testkits/config.js";
 import { _resetForTesting } from "../utils/logger.js";
 import { unit as compressUnit, createCompressTool } from "./compress.js";
@@ -1111,7 +1111,6 @@ describe("compress tool unsupported host", () => {
     const result = composeProfile(profile, [compressUnit], {
       limits: {},
       contextConfig: PARSED_CONFIG,
-      client: {},
       directory: "",
       resolveAgent: () => undefined,
       toolHost: undefined,

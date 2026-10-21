@@ -16,35 +16,34 @@
  * settle handler at all (fail-closed at the contribution level), so the
  * engine never consults it and the host registers no settle events.
  *
- * The todo source is resolved once per composition via
- * `resolveTodoSource` (state store, then a capable host client, else
- * `null`).  With no source the read is an empty list, so `decide`
- * silences through its `"empty"` gate — the unit stays inert rather than
- * inventing work.  The unit is enabled purely by the profile hooks list
- * (fail-closed when absent).
+ * The unit consumes the assembly-bound `todoSource` port (a `wants`
+ * capability): the host owns which backend serves the read.  With no
+ * bound source the read is an empty list, so `decide` silences through
+ * its `"empty"` gate — the unit stays inert rather than inventing work.
+ * The unit is enabled purely by the profile hooks list (fail-closed when
+ * absent).
  *
  * @module
  */
 
-import { resolveTodoSource } from "../../core/client/todo.js";
 import { defineHook } from "../../core/unit.js";
 import { decide } from "./decide.js";
 
 /**
  * Todo-continuation hook unit descriptor.
  *
- * Resolves the todo source once and contributes one `onSettled` handler
- * that reads the session's tasks at settle time and returns the todo
+ * Contributes one `onSettled` handler that reads the session's tasks at
+ * settle time through the bound `todoSource` and returns the todo
  * strategy's verdict.  All other slots stay empty.  Without a valid
  * `[zoo.continuation].max_wakes` the `onSettled` slot stays empty too.
  */
 export const unit = defineHook({
   name: "todo-continuation",
   needs: ["continuationConfig"],
-  wants: ["client", "todoStore"],
+  wants: ["todoSource"],
   create(caps) {
     const maxWakes = caps.continuationConfig.maxWakes;
-    const source = resolveTodoSource(caps);
+    const source = caps.todoSource;
     return {
       onSettled: [
         {

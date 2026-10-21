@@ -13,9 +13,11 @@
 import { createV1Adapter } from "../../../../src/adapters/opencode/adapter.js";
 import { history } from "../../../../src/adapters/opencode/history.js";
 import { createV1ToolHost } from "../../../../src/adapters/opencode/tool-host.js";
-import type { ContextMessageEntry } from "../../../../src/adapters/opencode/types.js";
+import type {
+  ContextMessageEntry,
+  SessionClient,
+} from "../../../../src/adapters/opencode/types.js";
 import { handleDcpCommand } from "../../../../src/commands/dcp/command.js";
-import type { SessionClient } from "../../../../src/core/client/session.js";
 import type { ContextPruningConfig } from "../../../../src/core/config-types.js";
 import { computeSpanHash } from "../../../../src/core/context/spanhash.js";
 import {

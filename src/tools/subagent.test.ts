@@ -20,12 +20,12 @@
  */
 import assert from "node:assert/strict";
 import { afterEach, beforeEach, describe, it } from "node:test";
-import type { ToolHost } from "../core/client/tool-host.js";
 import { composeProfile } from "../core/compose.js";
 import type { ModeProfile } from "../core/config-types.js";
 import type { Projection } from "../core/context/lens.js";
 import { project } from "../core/context/lens.js";
 import type { Capabilities } from "../core/ports/index.js";
+import type { ToolHost } from "../core/ports/tool-host.js";
 import type {
   SubagentDriver,
   SubagentProgress,
@@ -111,7 +111,6 @@ function makeDeps(
     // default fixture configures beaver (the usual delegation target) to
     // keep the happy-path cases running the driver.
     subagentModels: { beaver: "Dummy/dummy-small" },
-    client: {},
     directory: "/tmp/zoo",
     resolveAgent: () => undefined,
     toolHost: TOOL_HOST,

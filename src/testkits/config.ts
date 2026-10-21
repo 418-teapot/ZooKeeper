@@ -75,7 +75,6 @@ export function composeToolHooks(
   const deps: Partial<Capabilities> = {
     limits: {},
     contextConfig,
-    client,
     directory: "",
     resolveAgent,
     toolHost: createV1ToolHost(client, resolveAgent),

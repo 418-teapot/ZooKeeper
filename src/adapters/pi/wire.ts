@@ -30,7 +30,6 @@ import {
   configCapabilities,
   parseCommonConfig,
 } from "../../core/capabilities.js";
-import type { ToolHost } from "../../core/client/tool-host.js";
 import type { ComposedResult } from "../../core/compose.js";
 import { composeProfile } from "../../core/compose.js";
 import { parseAgentColors, parseAskConfig } from "../../core/config-parse.js";
@@ -41,6 +40,7 @@ import type { AgentPermissionMap } from "../../core/permissions/deny-tools.js";
 import { parseSkillPermissions } from "../../core/permissions/skill-permissions.js";
 import type { Capabilities } from "../../core/ports/index.js";
 import type { SwitchHost } from "../../core/ports/switch.js";
+import type { ToolHost } from "../../core/ports/tool-host.js";
 import { sessionAgentRegistry } from "../../core/session-agent.js";
 import { scanSkillDirectories } from "../../core/skills.js";
 import type { SubagentDriver } from "../../core/subagent/driver.js";
@@ -52,6 +52,7 @@ import {
 } from "../../core/subagent/identity.js";
 import type { SubagentRun } from "../../core/subagent/registry.js";
 import { findByChildSession } from "../../core/subagent/registry.js";
+import { todoSourceFromStore } from "../../core/todo/source.js";
 import type { FetchCandidates } from "../../core/todo/store.js";
 import { createTodoStore } from "../../core/todo/store.js";
 import type { ValidationLimits } from "../../core/validate.js";
@@ -339,6 +340,15 @@ export function buildPiContributions(
     // The per-instance todo state store (pi host only).  Without it the
     // todo tool unit contributes no tools (fail-closed).
     todoStore: hostDeps?.todoStore,
+    // The todo read port the progress hooks consume.  pi has no SDK client
+    // to read todos from, so the port is bound to the same per-instance
+    // store the todo tool uses.  Undefined without a store: the nudge hooks
+    // keep firing without the todo reminder, and the continuation hook
+    // degrades to an empty list (fail-closed in both cases).
+    todoSource:
+      hostDeps?.todoStore === undefined
+        ? undefined
+        : todoSourceFromStore(hostDeps.todoStore),
     // The pi todo transcript-card renderer.  Only the real pi entry
     // point supplies one; without it the tool stays text-only.
     todoRenderer: hostDeps?.todoRenderer,
@@ -370,13 +380,12 @@ export function buildPiContributions(
     // The ask tool's form host.  Without it the ask tool unit contributes
     // no tools (fail-closed, so `ask` never registers on OpenCode).
     askFormHost: hostDeps?.askFormHost,
-    // pi has no SDK client — the context-pruning transform runs and
+    // pi has no SDK client: the context-pruning transform runs and
     // returns the pruned replacement to pi.  The release notification
-    // does not need the client: it posts through the unified pi tool
+    // does not need a client: it posts through the unified pi tool
     // host's `notify` port as a `zoo-notice` appendEntry entry.  The
     // marking producers (dedup / purge-errors) have no
     // user-visible notification on pi.
-    client: {},
     zdebugExec: hostDeps?.zdebugExec,
     directory: hostDeps?.directory ?? process.cwd(),
     resolveAgent,

@@ -12,7 +12,6 @@
  */
 import assert from "node:assert/strict";
 import { afterEach, describe, it } from "node:test";
-import type { ToolHost } from "../../core/client/tool-host.js";
 import { type HostMessage, project } from "../../core/context/lens.js";
 import { PRUNED_TOOL_OUTPUT_REPLACEMENT } from "../../core/context/message-parts.js";
 import { publishRoundView } from "../../core/context/round-view.js";
@@ -22,6 +21,7 @@ import {
   getRuntimeFlaggedState,
 } from "../../core/context/runtime.js";
 import { markKey } from "../../core/context/state.js";
+import type { ToolHost } from "../../core/ports/tool-host.js";
 import {
   makeAssistantMsg,
   makeMsg,

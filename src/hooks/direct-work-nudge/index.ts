@@ -11,7 +11,6 @@ export {
   SEARCH_DELEGATE_NUDGE,
 } from "../../core/prompts.js";
 
-import { resolveTodoSource } from "../../core/client/todo.js";
 import { defineHook } from "../../core/unit.js";
 import { nudgeDirectWork, nudgeDirectWorkForAgent } from "./hook";
 
@@ -24,23 +23,23 @@ export { nudgeDirectWork, nudgeDirectWorkForAgent };
  * agent (dolphin only) via `Capabilities.resolveAgent` (fail-closed: an
  * unresolved session is treated as "not dolphin").
  *
- * The todo source is resolved once per composition via
- * `resolveTodoSource` (state store, then capable host client, else no
- * todo contribution).
+ * The unit consumes the assembly-bound `todoSource` port directly.  The
+ * port is a `wants` capability: the nudge itself never depends on todo
+ * state, so a host that binds no source still gets the nudge, just
+ * without the todo reminder (the read degrades to "no todo context").
  */
 export const unit = defineHook({
   name: "direct-work-nudge",
-  needs: ["client", "directory", "resolveAgent"],
-  wants: ["todoStore"],
+  needs: ["directory", "resolveAgent"],
+  wants: ["todoSource"],
   create(caps) {
-    const source = resolveTodoSource(caps);
     return {
       afterExec: [
         {
           name: "nudgeDirectWork",
           handle: (input, output) =>
             nudgeDirectWorkForAgent(input, output, {
-              todoSource: source,
+              todoSource: caps.todoSource,
               planDir: caps.directory,
               agent: caps.resolveAgent(input.sessionID),
             }),

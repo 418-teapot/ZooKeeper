@@ -16,9 +16,8 @@ import { describe, it } from "node:test";
 import { composeProfile } from "../../core/compose.js";
 import type { ModeProfile } from "../../core/config-types.js";
 import type { Capabilities } from "../../core/ports/index.js";
-import type { TodoStateStore } from "../../core/todo/store.js";
 import type { TodoPhase } from "../../core/todo/types.js";
-import { fakeStore } from "../../testkits/hooks.js";
+import { storeSource } from "../../testkits/hooks.js";
 import { CONTINUATION_PROMPT } from "./decide.js";
 import { unit } from "./index.js";
 
@@ -59,7 +58,6 @@ function makeDeps(partial: Record<string, unknown>): Partial<Capabilities> {
     limits: {},
     contextConfig: {},
     continuationConfig: { maxWakes: 3 },
-    client: {},
     directory: "",
     resolveAgent: () => undefined,
     ...partial,
@@ -147,7 +145,7 @@ describe("todo-continuation unit — descriptor", () => {
 describe("todo-continuation unit — onSettled judgment", () => {
   it("wakes an active list regardless of turn activity", async () => {
     const decision = await settle(
-      makeDeps({ todoStore: fakeStore(ACTIVE_PHASES) }),
+      makeDeps({ todoSource: storeSource(ACTIVE_PHASES) }),
     );
     assert.equal(decision.kind, "wake");
     if (decision.kind !== "wake") return;
@@ -155,7 +153,7 @@ describe("todo-continuation unit — onSettled judgment", () => {
     assert.ok(decision.text.includes("Wire source"));
 
     const idle = await settle(
-      makeDeps({ todoStore: fakeStore(ACTIVE_PHASES) }),
+      makeDeps({ todoSource: storeSource(ACTIVE_PHASES) }),
       false,
     );
     assert.equal(
@@ -167,7 +165,7 @@ describe("todo-continuation unit — onSettled judgment", () => {
 
   it("propagates store block reasons into the wake text", async () => {
     const decision = await settle(
-      makeDeps({ todoStore: fakeStore(MIXED_PHASES) }),
+      makeDeps({ todoSource: storeSource(MIXED_PHASES) }),
     );
     assert.equal(decision.kind, "wake");
     if (decision.kind !== "wake") return;
@@ -181,7 +179,7 @@ describe("todo-continuation unit — onSettled judgment", () => {
 
   it("silences a settled turn with no active work", async () => {
     const decision = await settle(
-      makeDeps({ todoStore: fakeStore(DONE_PHASES) }),
+      makeDeps({ todoSource: storeSource(DONE_PHASES) }),
     );
     assert.deepEqual(decision, { kind: "silence", reason: "no-active" });
   });
@@ -193,17 +191,11 @@ describe("todo-continuation unit — onSettled judgment", () => {
 
   it("reads the todo list fresh on every settle", async () => {
     let calls = 0;
-    const phases: TodoPhase[] = ACTIVE_PHASES;
-    const store: TodoStateStore = {
-      get: async () => {
-        calls += 1;
-        return phases;
-      },
-      set: () => {},
-      invalidate: () => {},
-      serialize: <T>(fn: () => Promise<T>) => fn(),
+    const source = async () => {
+      calls += 1;
+      return storeSource(ACTIVE_PHASES)("s1");
     };
-    const deps = makeDeps({ todoStore: store });
+    const deps = makeDeps({ todoSource: source });
     await settle(deps);
     await settle(deps);
     assert.equal(calls, 2, "each settle must read the source again");

@@ -23,7 +23,6 @@
  * @module
  */
 
-import type { ToolHost } from "../../core/client/tool-host.js";
 import type { ContextPruningConfig } from "../../core/config-types.js";
 import { formatContextReport } from "../../core/context/context-report.js";
 import {
@@ -44,6 +43,7 @@ import {
   getRuntimeFlaggedState,
 } from "../../core/context/runtime.js";
 import type { SessionState } from "../../core/context/state.js";
+import type { ToolHost } from "../../core/ports/tool-host.js";
 import { log } from "../../utils/logger.js";
 
 // ---------------------------------------------------------------------------

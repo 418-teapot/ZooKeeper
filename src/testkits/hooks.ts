@@ -2,25 +2,23 @@
  * hook-testkit — shared host-shaped fixtures for hook and client tests.
  *
  * The nudge and continuation hook tests exercise their units against the
- * same host boundary: a client whose `session.todo` returns host-shaped
- * items, the `TodoSource` adapter over that client, and a store-shaped
- * fake. Those fixtures live here so the shape is maintained once.
+ * same host boundary: a client whose `session.todo` returns OpenCode-shaped
+ * items plus the `TodoSource` adapter over it, and the store-shaped fake
+ * with its `TodoSource` adapter. Those fixtures live here so the shape is
+ * maintained once.
  */
 import {
+  type HostTodoItem,
   type TinyClient,
-  type TodoSource,
   todoSourceFromClient,
-} from "../core/client/todo.js";
+} from "../adapters/opencode/todo-source.js";
+import type { TodoSource } from "../core/todo/source.js";
+import { todoSourceFromStore } from "../core/todo/source.js";
 import type { TodoStateStore } from "../core/todo/store.js";
 import type { TodoPhase } from "../core/todo/types.js";
 
 /** Host-shaped todo item as returned by `client.session.todo`. */
-export interface HostTodo {
-  content: string;
-  status: string;
-  priority: string;
-  id: string;
-}
+export type HostTodo = HostTodoItem;
 
 /**
  * Build a mock client whose `session.todo` resolves to the given items.
@@ -60,4 +58,15 @@ export function fakeStore(phases: TodoPhase[]): TodoStateStore {
     invalidate: () => {},
     serialize: <T>(fn: () => Promise<T>) => fn(),
   };
+}
+
+/**
+ * Build the store-backed `TodoSource` the pi assembly binds, over a fake
+ * store holding the given phases.
+ *
+ * @param phases - Phases the source serves.
+ * @returns A `TodoSource` over a fake store.
+ */
+export function storeSource(phases: TodoPhase[]): TodoSource {
+  return todoSourceFromStore(fakeStore(phases));
 }

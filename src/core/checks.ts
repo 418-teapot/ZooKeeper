@@ -9,7 +9,6 @@
  */
 
 import { log } from "../utils/logger.js";
-import type { TodoSource } from "./client/todo.js";
 import { allTodosDone, countOpenTodos, findPlanByStatus } from "./plan.js";
 import {
   PLAN_DONE_NUDGE,
@@ -20,6 +19,7 @@ import {
   TODO_RESUME_NUDGE,
 } from "./prompts.js";
 import { decideTodoNudge } from "./todo/nudge.js";
+import type { TodoSource } from "./todo/source.js";
 
 // ---------------------------------------------------------------------------
 // Plan progress check
@@ -104,9 +104,9 @@ export function checkPlanProgress(
  * Check todo list progress and return a nudge string if the orchestrator
  * needs a reminder about todo state.
  *
- * The todo entries are read through the injected `TodoSource` port: which
- * backend serves the read (state store or host client) is decided by the
- * caller at composition time, so this function never inspects a client.
+ * The todo entries are read through the injected `TodoSource` port: the
+ * host assembly decides once which backend serves the read, so this
+ * function never inspects a host client.
  *
  * The reminder tier comes from `decideTodoNudge` and maps onto the prompt
  * constants: `"progress"` -> TODO_PROGRESS_NUDGE, `"done"` -> TODO_DONE_NUDGE,

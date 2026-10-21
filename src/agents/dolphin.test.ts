@@ -20,7 +20,6 @@ import {
 const DEPS: Partial<Capabilities> = {
   limits: {},
   contextConfig: {},
-  client: {},
   directory: "",
   resolveAgent: () => undefined,
 };

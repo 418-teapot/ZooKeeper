@@ -16,7 +16,6 @@
 import assert from "node:assert/strict";
 import { afterEach, describe, it } from "node:test";
 import { registerProfileToolsInConfig } from "../compose-opencode.js";
-import type { ToolHost } from "../core/client/tool-host.js";
 import { composeProfile } from "../core/compose.js";
 import { parseContextConfig } from "../core/config-parse.js";
 import type {
@@ -39,6 +38,7 @@ import {
   type Block,
   RECALL_MAX_CHARS,
 } from "../core/context/state.js";
+import type { ToolHost } from "../core/ports/tool-host.js";
 import { composeToolHooks, makePlugin, POLY_ZOO } from "../testkits/config.js";
 import { projectMessages } from "../testkits/context.js";
 import { _resetForTesting } from "../utils/logger.js";
@@ -701,7 +701,6 @@ describe("decompress tool unsupported host", () => {
     const result = composeProfile(profile, [decompressUnit], {
       limits: {},
       contextConfig: ENABLED_CONFIG,
-      client: {},
       directory: "",
       resolveAgent: () => undefined,
       toolHost: undefined,

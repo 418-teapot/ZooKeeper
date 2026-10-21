@@ -14,7 +14,6 @@ export {
   VERIFY_REMINDER,
 } from "../../core/prompts.js";
 
-import { resolveTodoSource } from "../../core/client/todo.js";
 import { defineHook } from "../../core/unit.js";
 import { nudgePostSubagent } from "./hook.js";
 
@@ -24,22 +23,27 @@ export { nudgePostSubagent };
  * Post-subagent-nudge hook unit descriptor.
  *
  * Contributes the after-exec post-subagent verification and progress nudge.
- * The todo source is resolved once per composition via
- * `resolveTodoSource` (state store, then capable host client, else no
- * todo contribution).
+ * The unit consumes the assembly-bound `todoSource` port directly.  The
+ * port is a `wants` capability: the verification and progress nudges never
+ * depend on todo state, so a host that binds no source still gets them,
+ * just without the todo reminder.
  */
 export const unit = defineHook({
   name: "post-subagent-nudge",
-  needs: ["client", "directory"],
-  wants: ["todoStore"],
+  needs: ["directory"],
+  wants: ["todoSource"],
   create(caps) {
-    const source = resolveTodoSource(caps);
     return {
       afterExec: [
         {
           name: "nudgePostSubagent",
           handle: (input, output) =>
-            nudgePostSubagent(source, input, output, caps.directory),
+            nudgePostSubagent(
+              caps.todoSource ?? null,
+              input,
+              output,
+              caps.directory,
+            ),
         },
       ],
     };
