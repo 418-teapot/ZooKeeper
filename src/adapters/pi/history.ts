@@ -57,6 +57,7 @@ import { project } from "../../core/context/lens.js";
 import { serializeMeasuredValue } from "../../core/context/measure.js";
 import { createWritableRegion } from "../../core/context/writable-regions.js";
 import { log } from "../../utils/logger.js";
+import { projectMessageText } from "./run-facts.js";
 import type {
   PiAgentMessage,
   PiAssistantMessage,
@@ -166,16 +167,6 @@ function writeArguments(block: PiToolCallPart, text: string): void {
   } catch {
     block.arguments = { pruned: text };
   }
-}
-
-/**
- * Extract the joined text of all text parts, ignoring image parts.
- */
-function extractText(parts: PiContentPart[] | undefined): string {
-  return (parts ?? [])
-    .filter((part): part is PiTextPart => part.type === "text")
-    .map((part) => part.text)
-    .join("");
 }
 
 /**
@@ -389,7 +380,7 @@ function toolResultMessageRegions(message: PiToolResultMessage): TextRegion[] {
   return [
     createWritableRegion(
       "tool-output",
-      () => extractText(content),
+      () => projectMessageText(content),
       (text) => {
         if (textIndex >= 0) {
           (content[textIndex] as PiTextPart).text = text;

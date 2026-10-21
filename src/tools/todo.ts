@@ -51,6 +51,7 @@
  */
 
 import type { ToolHost } from "../core/client/tool-host.js";
+import { isRecord } from "../core/records.js";
 import { applyEntries } from "../core/todo/apply.js";
 import { serializeSnapshot } from "../core/todo/serialize.js";
 import type { TodoStateStore } from "../core/todo/store.js";
@@ -230,10 +231,6 @@ ${EXAMPLE_BLOCK}`;
 // ---------------------------------------------------------------------------
 // Argument parsing
 // ---------------------------------------------------------------------------
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
 
 /**
  * Reject with the Chinese guidance prefix.

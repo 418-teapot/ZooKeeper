@@ -10,6 +10,7 @@
  * @module
  */
 
+import { isRecord } from "../records.js";
 import { normalizePhases } from "./normalize.js";
 import type { TodoOperation, TodoPhase } from "./types.js";
 import { clonePhases, isTodoStatus } from "./types.js";
@@ -60,10 +61,6 @@ export function restoreFromHistory(
     if (recovered) return normalizePhases(recovered);
   }
   return [];
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 /**

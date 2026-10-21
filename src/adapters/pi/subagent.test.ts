@@ -66,9 +66,11 @@ function rawMessage(overrides: {
  * A controllable mock pi session.
  *
  * `prompt` resolves immediately (pi's `prompt()` resolves on abort, never
- * rejects).  The `emitOnPrompt` events are delivered to the listener just
- * before `prompt` resolves, so tests drive the event stream from inside
- * the run.  `abort()` releases a hanging `prompt` and marks the run
+ * rejects).  Like pi's agent loop, it echoes the prompt back as a user
+ * `message_end` before the scripted events (which follow when `prompt`
+ * resolves), so a test drives the same event stream a real session emits.
+ * `echoPrompt: false` scripts a host that never echoes the prompt.
+ * `abort()` releases a hanging `prompt` and marks the run
  * aborted, modelling pi's abort → resolved prompt behaviour.
  */
 function mockSession(): {
@@ -80,6 +82,7 @@ function mockSession(): {
     kind: "resolves" | "hang" | "throw";
     message?: string;
     emitOnPrompt?: PiSessionEvent[];
+    echoPrompt?: boolean;
   }) => void;
 } {
   let listener: ((event: PiSessionEvent) => void) | undefined;
@@ -90,6 +93,7 @@ function mockSession(): {
     kind: "resolves" | "hang" | "throw";
     message?: string;
     emitOnPrompt?: PiSessionEvent[];
+    echoPrompt?: boolean;
   } = { kind: "resolves" };
   let releaseHang: (() => void) | undefined;
 
@@ -107,15 +111,27 @@ function mockSession(): {
     },
     async prompt(text) {
       prompts.push(text);
+      if (promptBehavior.kind === "throw") {
+        throw new Error(promptBehavior.message ?? "prompt threw");
+      }
+      // A real session echoes the prompt back before the assistant stream:
+      // pi's agent loop emits `message_start` / `message_end` for the
+      // messages it was handed before entering the loop, so the echo is
+      // part of every started run — including one aborted mid-stream.
+      if (promptBehavior.echoPrompt !== false) {
+        emit([
+          {
+            type: "message_end",
+            message: { role: "user", content: [{ type: "text", text }] },
+          },
+        ]);
+      }
       if (promptBehavior.kind === "hang") {
         await new Promise<void>((resolve) => {
           releaseHang = resolve;
         });
         emit(promptBehavior.emitOnPrompt);
         return;
-      }
-      if (promptBehavior.kind === "throw") {
-        throw new Error(promptBehavior.message ?? "prompt threw");
       }
       emit(promptBehavior.emitOnPrompt);
     },
@@ -155,10 +171,6 @@ function mockSessionManager(id = "child-session"): PiSessionManager {
 /** Events completing a run with a normal assistant stop. */
 function okEvents(text = "ok"): PiSessionEvent[] {
   return [
-    {
-      type: "message_end",
-      message: rawMessage({ role: "user", text: "task" }),
-    },
     {
       type: "message_end",
       message: rawMessage({ role: "assistant", text, stopReason: "stop" }),
@@ -821,9 +833,10 @@ describe("pi subagent driver — progress reports", () => {
 
 describe("pi subagent driver — run fact log", () => {
   it("records the delegation prompt as a leading user_message fact", async () => {
-    // The transcript overlay shows the prompt through this fact, and the
-    // driver appends it at the send point (not from a host event), so it is
-    // the FIRST fact of every run that sends a prompt, stored verbatim.
+    // The transcript overlay shows the prompt through this fact.  It comes
+    // from the user `message_end` the session echoes back for the prompt it
+    // was handed (the same message a replay reads off the session file), so
+    // it is the FIRST fact of a run that sends a prompt, stored verbatim.
     const h = harness();
     const prompt = "SUMMARY: implement X\n\nCONTEXT: nothing\n";
     const log = createRunLog();
@@ -1031,25 +1044,73 @@ describe("pi subagent driver — run fact log", () => {
     });
   });
 
-  it("appends no second fact for a user-role message event or a lifecycle marker", async () => {
-    // The prompt's user_message fact comes from the send point, so a host
-    // that echoes the user message back as a `message_end` event must NOT
-    // produce a duplicate; lifecycle markers still append nothing.
+  it("appends one user_message fact per echoed user message", async () => {
+    // The user fact is projected from the host's own user `message_end`, so
+    // a second user message (a steered input) gets its own fact, and the
+    // prompt itself is never appended twice.
     const h = harness();
     const { facts } = await drive(h, [
       {
         type: "message_end",
-        message: rawMessage({ role: "user", text: "hi" }),
+        message: rawMessage({ role: "user", text: "and now the tests" }),
       },
       { type: "agent_end" },
     ]);
     assert.deepEqual(
       facts.map((fact) => fact.type),
-      ["user_message"],
+      ["user_message", "user_message"],
     );
-    const only = facts[0];
-    assert.ok(only && only.type === "user_message");
-    assert.equal(only.text, "t", "the only user fact is the sent prompt");
+    assert.deepEqual(
+      facts.map((fact) => (fact.type === "user_message" ? fact.text : "")),
+      ["t", "and now the tests"],
+    );
+  });
+
+  it("appends no user fact when the host never echoes the prompt", async () => {
+    // The fact records what the session observed, not what the driver sent:
+    // a session that never emits the user message leaves no user fact, so a
+    // replay of that session and the live run agree.
+    const h = harness();
+    const log = createRunLog();
+    h.s.setPromptBehavior({
+      kind: "resolves",
+      echoPrompt: false,
+      emitOnPrompt: [
+        {
+          type: "message_end",
+          message: rawMessage({
+            role: "assistant",
+            text: "done",
+            stopReason: "stop",
+          }),
+        },
+      ],
+    });
+    await h.driver.run(
+      { agent: "beaver", prompt: "t", tools: [], model: "p/m" },
+      { signal: new AbortController().signal, log },
+    );
+    assert.deepEqual(
+      log.facts().map((fact) => fact.type),
+      ["message_end"],
+      "no user message event, no user fact",
+    );
+  });
+
+  it("appends no user fact when the prompt never reaches the session", async () => {
+    // A pre-aborted run skips `prompt()` entirely, so no user message is
+    // echoed and no user fact exists — the record stays what happened.
+    const h = harness();
+    const log = createRunLog();
+    const controller = new AbortController();
+    controller.abort();
+    h.s.setPromptBehavior({ kind: "resolves", emitOnPrompt: okEvents() });
+    await h.driver.run(
+      { agent: "beaver", prompt: "t", tools: [], model: "p/m" },
+      { signal: controller.signal, log },
+    );
+    assert.deepEqual(log.facts(), []);
+    assert.deepEqual(h.s.prompts, []);
   });
 
   it("fires the log listeners as facts arrive", async () => {

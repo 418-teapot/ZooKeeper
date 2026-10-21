@@ -26,7 +26,7 @@
  */
 
 import type { PiAgentMessage } from "../../../../src/adapters/pi/types.js";
-import { extractText } from "../../../../src/compose-pi.js";
+import { projectMessageText } from "../../../../src/adapters/pi/run-facts.js";
 import { captureToolInput, captureToolOutput } from "../capture-core.js";
 import type { ViewMessageCapture } from "../types.js";
 
@@ -76,7 +76,7 @@ export function captureMessage(message: PiAgentMessage): ViewMessageCapture {
     // The single tool-output region of the message.
     capture.toolParts.push({
       tool: message.toolName,
-      ...captureToolOutput(extractText(message.content)),
+      ...captureToolOutput(projectMessageText(message.content)),
     });
   }
   // The remaining pi roles (bashExecution, custom, branch/compaction

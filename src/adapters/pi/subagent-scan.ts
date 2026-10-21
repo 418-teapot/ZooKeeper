@@ -83,6 +83,7 @@ import {
   TERMINAL_STATUSES,
 } from "../../core/subagent/registry.js";
 import { log } from "../../utils/logger.js";
+import { projectMessageText } from "./run-facts.js";
 
 /** The pi history entry shape returned by `buildContextEntries()`. */
 export interface PiHistoryEntry {
@@ -155,32 +156,6 @@ function asMillis(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value)
     ? value
     : undefined;
-}
-
-/**
- * Extract the joined text of the text content parts of a pi tool result.
- *
- * Only `text` parts count — image / other parts are ignored — mirroring the
- * projection used across the pi adapter.
- *
- * @param content - The pi content parts (array or raw string).
- * @returns The joined text (empty when there is none).
- */
-function resultText(content: unknown): string {
-  if (typeof content === "string") return content;
-  if (!Array.isArray(content)) return "";
-  const parts: string[] = [];
-  for (const part of content) {
-    if (
-      part !== null &&
-      typeof part === "object" &&
-      (part as { type?: unknown }).type === "text"
-    ) {
-      const text = (part as { text?: unknown }).text;
-      if (typeof text === "string") parts.push(text);
-    }
-  }
-  return parts.join("");
 }
 
 /**
@@ -501,7 +476,7 @@ export function extractSubagentRuns(
       }
 
       const isError = result.isError === true;
-      const text = resultText(result.content);
+      const text = projectMessageText(result.content);
       const { childSession, sessionPath } = detailsFacts(result.details);
       runs.push({
         id: callId,

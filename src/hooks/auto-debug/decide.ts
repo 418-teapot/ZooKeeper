@@ -29,6 +29,7 @@
 import { basename, join } from "node:path";
 import type { Decision } from "../../core/loop/index.js";
 import type { AutoDebugFs, ZdebugExec } from "../../core/ports/autodebug.js";
+import { isRecord } from "../../core/records.js";
 import { log } from "../../utils/logger.js";
 
 /** Why the auto-debug strategy withheld a wake. */
@@ -115,11 +116,6 @@ export const ZDEBUG_REMINDER =
 
 /** A resolved Case directory, or the absence of a bindable one. */
 type Discovery = { kind: "none" } | { kind: "found"; caseDir: string };
-
-/** Whether a JSON value is a plain object. */
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
 
 /** Whether a JSON value is a positive integer. */
 function isPositiveInteger(value: unknown): value is number {

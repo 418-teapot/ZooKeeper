@@ -49,11 +49,11 @@
  * @module
  */
 
+import { projectMessageText } from "./adapters/pi/run-facts.js";
 import type {
   ExtensionAPI,
   PiAgentMessage,
   PiCommandContext,
-  PiContentPart,
   PiContextEvent,
   PiContextHandlerContext,
   PiContextResult,
@@ -62,7 +62,6 @@ import type {
   PiMessageEndContext,
   PiMessageEndEvent,
   PiMessageEndResult,
-  PiTextPart,
   PiToolResultContext,
   PiToolResultEvent,
   PiToolResultResult,
@@ -224,23 +223,6 @@ export async function applyToolDefinitionContributions(
 }
 
 // ---------------------------------------------------------------------------
-// Text extraction
-// ---------------------------------------------------------------------------
-
-/**
- * Concatenate the text of all text parts, ignoring image parts.
- *
- * @param parts - The content parts of a pi message or tool result.
- * @returns The joined text (empty when there are no text parts).
- */
-export function extractText(parts: PiContentPart[] | undefined): string {
-  return (parts ?? [])
-    .filter((part): part is PiTextPart => part.type === "text")
-    .map((part) => part.text)
-    .join("");
-}
-
-// ---------------------------------------------------------------------------
 // Model-limit capture from pi's current model
 // ---------------------------------------------------------------------------
 
@@ -341,7 +323,7 @@ export function buildPiToolResultHandler(
     // `content` is required by the pi contract; the fallback only
     // guards against structurally older events at runtime.
     const originalParts = event.content ?? [];
-    const originalText = extractText(originalParts);
+    const originalText = projectMessageText(originalParts);
     const sessionID = ctx?.sessionManager?.getSessionId() ?? "";
 
     const input: AfterExecInput = {

@@ -16,9 +16,9 @@
  * observes first-hand (pi's `tool_execution_start` / `tool_execution_end`
  * and the assistant `message_end` with its content parts and usage), so a
  * driver can append them with minimal adaptation.  The user-message fact is
- * the one exception: a driver appends it at the moment it sends the run's
- * prompt (see `UserMessageFact`), so the instruction is present and ordered
- * first regardless of how — or when — a host echoes it back as an event.  The types are defined
+ * projected from the same place the host's own message stream reports it
+ * (the user message the session received), so a live run and one replayed
+ * from persisted messages record the instruction identically.  The types are defined
  * purely here — apart from the plugin's own file logger (used to report a
  * throwing listener), nothing in this module imports a host or SDK API.
  *
@@ -120,9 +120,9 @@ export interface ToolEndFact extends FactBase {
  *
  * In this plugin's usage it is the delegation instruction the run was
  * started with (and any later input the user steered into the sub-session).
- * The driver appends it at the moment it sends the prompt rather than from a
- * message event, so the transcript always opens with what the subagent was
- * asked to do.
+ * The driver projects it from the user message the session reports, so the
+ * transcript opens with what the subagent was asked to do — the same fact a
+ * replayed run derives from the persisted message.
  *
  * IMPORTANT for projections: this is not an assistant message.  Anything
  * counting turns or reading token usage over the fact stream must skip it

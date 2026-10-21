@@ -43,14 +43,18 @@ import type {
 } from "../../core/subagent/driver.js";
 import type { AgentMessage } from "../../core/subagent/result.js";
 import { classifyOutcome, reduceMessages } from "../../core/subagent/result.js";
-import type {
-  MessagePart,
-  RunLog,
-  TextPart,
-  Usage,
-} from "../../core/subagent/run-log.js";
+import type { RunLog } from "../../core/subagent/run-log.js";
 import { contextTokens } from "../../core/subagent/run-log.js";
 import { log } from "../../utils/logger.js";
+import {
+  messageEndFact,
+  projectMessageParts,
+  projectMessageText,
+  projectUsage,
+  toolEndFact,
+  toolStartFact,
+  userMessageFact,
+} from "./run-facts.js";
 
 /**
  * Duck-type of the pi `AgentSession` surface the driver uses.
@@ -147,13 +151,6 @@ export interface PiDuckMessage {
     cacheRead?: number;
     totalTokens?: number;
   };
-}
-
-/** One content part of a pi message (`TextContent | ThinkingContent | ...`). */
-interface PiContentPart {
-  type?: string;
-  text?: string;
-  thinking?: string;
 }
 
 /**
@@ -263,29 +260,6 @@ function loadSdk(): Promise<PiSdkLike> {
 }
 
 /**
- * Extract the concatenated text of a pi message's text parts.
- *
- * Thinking, image, and tool-call parts are ignored — only text counts as
- * the message's payload.
- *
- * @param content - The message content (parts array or raw string).
- * @returns The joined text (empty when there is none).
- */
-function extractText(content: unknown): string {
-  if (typeof content === "string") return content;
-  if (!Array.isArray(content)) return "";
-  return content
-    .filter(
-      (part): part is PiContentPart =>
-        part !== null &&
-        typeof part === "object" &&
-        (part as PiContentPart).type === "text",
-    )
-    .map((part) => part.text ?? "")
-    .join("");
-}
-
-/**
  * Project one finalized pi message onto the host-neutral `AgentMessage` view.
  *
  * Assistant messages carry their stop reason and error flag (a non-empty
@@ -298,7 +272,7 @@ function extractText(content: unknown): string {
 function projectMessage(raw: unknown): AgentMessage | undefined {
   if (raw === null || typeof raw !== "object") return undefined;
   const message = raw as PiDuckMessage;
-  const text = extractText(message.content);
+  const text = projectMessageText(message.content);
   switch (message.role) {
     case "assistant":
       return {
@@ -338,112 +312,13 @@ function lastAssistantStopReason(messages: AgentMessage[]): string | undefined {
 }
 
 /**
- * The finite numeric usage fields of one pi message (`number` only).
- *
- * @param value - The raw usage field.
- * @returns The number, or `undefined` when absent or not finite.
- */
-function usageNumber(value: unknown): number | undefined {
-  return typeof value === "number" && Number.isFinite(value)
-    ? value
-    : undefined;
-}
-
-/**
- * Map a pi usage envelope onto the run-log usage report.
- *
- * @param usage - The raw per-message usage, when the provider reported one.
- * @returns The usage report, or `undefined` when nothing was reported.
- */
-function toUsage(usage: PiDuckMessage["usage"]): Usage | undefined {
-  if (usage === null || typeof usage !== "object") return undefined;
-  const input = usageNumber(usage.input);
-  const output = usageNumber(usage.output);
-  const cacheRead = usageNumber(usage.cacheRead);
-  const totalTokens = usageNumber(usage.totalTokens);
-  if (
-    input === undefined &&
-    output === undefined &&
-    cacheRead === undefined &&
-    totalTokens === undefined
-  ) {
-    return undefined;
-  }
-  return {
-    ...(input !== undefined ? { input } : {}),
-    ...(output !== undefined ? { output } : {}),
-    ...(cacheRead !== undefined ? { cacheRead } : {}),
-    ...(totalTokens !== undefined ? { totalTokens } : {}),
-  };
-}
-
-/**
- * The text parts of a finalized pi message, or of a pi tool result.
- *
- * Thinking, image, and tool-call parts are dropped: no projection renders
- * them yet, so the run log records only text for these two fact kinds.
- *
- * @param content - The raw content (parts array or plain string).
- * @returns The text parts in order (empty when there are none).
- */
-function toTextParts(content: unknown): TextPart[] {
-  const parts: TextPart[] = [];
-  for (const part of contentParts(content)) {
-    if (part.type === "text" && typeof part.text === "string") {
-      parts.push({ type: "text", text: part.text });
-    }
-  }
-  return parts;
-}
-
-/**
- * The content parts (text + thinking) of a pi message.
- *
- * Used for both a finalized `message_end` and the accumulated partial message
- * a `message_update` carries, so a streamed message and its finalized fact
- * project through one mapping and can never disagree on shape or order.
- * Tool-call and image parts are dropped (no projection renders them).
- *
- * @param content - The raw content (parts array or plain string).
- * @returns The message parts in order (empty when there are none).
- */
-function toMessageParts(content: unknown): MessagePart[] {
-  const parts: MessagePart[] = [];
-  for (const part of contentParts(content)) {
-    if (part.type === "text" && typeof part.text === "string") {
-      parts.push({ type: "text", text: part.text });
-    } else if (part.type === "thinking" && typeof part.thinking === "string") {
-      parts.push({ type: "thinking", thinking: part.thinking });
-    }
-  }
-  return parts;
-}
-
-/**
- * Normalize a pi content payload into its object-shaped parts.
- *
- * pi reports message and tool-result content either as a plain string or as
- * an array of typed parts; anything else yields no parts.
- *
- * @param content - The raw content (parts array or plain string).
- * @returns The parts worth inspecting (a string becomes a single text part).
- */
-function contentParts(content: unknown): PiContentPart[] {
-  if (typeof content === "string") return [{ type: "text", text: content }];
-  if (!Array.isArray(content)) return [];
-  return content.filter(
-    (part): part is PiContentPart => part !== null && typeof part === "object",
-  );
-}
-
-/**
  * Stream one observed pi session event onto the run log's forming head.
  *
  * Assistant content arrives token by token as `message_update` events, each
  * carrying the accumulated partial message — pi's own stream state, whose
  * `content` array already holds every text and thinking block assembled so
  * far, in order.  The driver therefore maps that message with the SAME
- * projection the finalized fact uses (`toMessageParts`) rather than
+ * projection the finalized fact uses (`projectMessageParts`) rather than
  * re-accumulating the `assistantMessageEvent` deltas itself: re-summing
  * would duplicate bookkeeping pi already does, and would have to reinvent
  * the interleaving order pi's content array gives for free.  The log holds
@@ -471,24 +346,27 @@ function streamRunPartial(log: RunLog, event: PiSessionEvent): void {
   if (event.type !== "message_update") return;
   const message = event.message as PiDuckMessage | undefined;
   if (message?.role !== "assistant") return;
-  log.setPartial(toMessageParts(message.content));
+  log.setPartial(projectMessageParts(message.content));
 }
 
 /**
  * Append one observed pi session event to the run's fact log.
  *
  * The log's fact kinds mirror pi's events one-to-one, so the driver appends
- * them without adaptation: `tool_execution_start` records the FULL
- * untruncated call args, `tool_execution_end` records the result's text
- * parts and its error flag, and an assistant `message_end` records the
- * message's content parts with its usage report.  Any other event (user or
- * tool-result messages, lifecycle markers) carries no run-level fact.
+ * them through the shared projection layer without adaptation:
+ * `tool_execution_start` records the FULL untruncated call args,
+ * `tool_execution_end` records the result's text parts and its error flag,
+ * and a `message_end` records what the message was — the user instruction
+ * for a user message, the content parts plus usage report for an assistant
+ * one.  Any other event (tool-result messages, lifecycle markers) carries no
+ * run-level fact.
  *
- * The user-message fact is NOT derived here: pi does echo the sent prompt
- * back as a user `message_end`, but the driver appends that fact once at the
- * send point instead (see `run()`), so the transcript always opens with the
- * instruction.  The assistant-only guard on the `message_end` branch is what
- * keeps that prompt from being recorded twice.
+ * The user-message fact is projected from the host's own user `message_end`,
+ * not appended at the send point: pi's agent loop emits the message it was
+ * handed before it streams, so the same rule serves a live run and one
+ * replayed from the persisted session file (`hydrate.ts`).  The instruction
+ * therefore opens the transcript because it opens the session, not because
+ * the driver injected it.
  *
  * @param log - The run's append-only fact log.
  * @param event - The pi session event.
@@ -496,36 +374,39 @@ function streamRunPartial(log: RunLog, event: PiSessionEvent): void {
 function appendRunFact(log: RunLog, event: PiSessionEvent): void {
   switch (event.type) {
     case "tool_execution_start":
-      log.appendToolStart(
-        event.toolName ?? "tool",
-        event.args ?? {},
-        undefined,
-        event.toolCallId,
+      log.append(
+        toolStartFact(
+          {
+            id: event.toolCallId,
+            name: event.toolName ?? "tool",
+            args: event.args ?? {},
+          },
+          Date.now(),
+        ),
       );
       break;
     case "tool_execution_end":
-      log.appendToolEnd(
-        event.toolName ?? "tool",
-        toTextParts(
-          (event.result as { content?: unknown } | undefined)?.content,
+      log.append(
+        toolEndFact(
+          {
+            toolCallId: event.toolCallId,
+            toolName: event.toolName ?? "tool",
+            content: (event.result as { content?: unknown } | undefined)
+              ?.content,
+            isError: event.isError === true,
+          },
+          Date.now(),
         ),
-        event.isError === true,
-        undefined,
-        event.toolCallId,
       );
       break;
     case "message_end": {
       const message = event.message as PiDuckMessage | undefined;
-      // Assistant messages only.  The user branch is load-bearing, not
-      // dead: pi emits a `message_end` for the prompt it was handed
-      // (pi-agent-core agent-loop), and the run's `user_message` fact is
-      // appended once at the send point — falling through here would render
-      // the instruction twice in the transcript overlay.
-      if (message?.role !== "assistant") break;
-      log.appendMessage(
-        toMessageParts(message.content),
-        toUsage(message.usage),
-      );
+      if (message?.role === "assistant") {
+        log.append(messageEndFact(message.content, message.usage, Date.now()));
+      } else if (message?.role === "user") {
+        const fact = userMessageFact(message.content, Date.now());
+        if (fact !== undefined) log.append(fact);
+      }
       break;
     }
     default:
@@ -827,7 +708,7 @@ export function createPiSubagentDriver(
             // Record this message's context length as the value the report
             // carries (the fact log holds the same numbers; rescanning it
             // per tick would cost O(n) for every advance).
-            const reported = contextTokens(toUsage(message.usage));
+            const reported = contextTokens(projectUsage(message.usage));
             if (reported !== undefined) contextLen = reported;
             report({ done: false });
             break;
@@ -925,13 +806,6 @@ export function createPiSubagentDriver(
         }
 
         if (!aborted) {
-          // Record the instruction the run was started with before sending
-          // it: the transcript overlay projects this fact as the head of the
-          // transcript (pi's native user-message box).  Appending it at the
-          // send point — rather than from the echoed user `message_end` —
-          // fixes both its presence and its position, whatever the host's
-          // event ordering is.
-          runLog?.appendUserMessage(request.prompt);
           await session.prompt(request.prompt);
         }
         if (aborted) {

@@ -14,6 +14,7 @@
  * @module
  */
 
+import { isRecord } from "../../core/records.js";
 import { getRun, TERMINAL_STATUSES } from "../../core/subagent/registry.js";
 
 /**
@@ -70,20 +71,6 @@ export function terminalToolDetails(
 }
 
 /**
- * Whether a value is a plain object usable as a details record.
- *
- * The bridge merges a contribution's structured details into its own
- * result details; only a non-null object can be spread, anything else
- * (a string, a number, an array) is dropped.
- *
- * @param value - The candidate details payload.
- * @returns True when the value can be spread into the details object.
- */
-function isPlainRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-/**
  * Merge a contribution's write-back details into the bridge's own.
  *
  * The contribution's payload adds keys; the bridge's keys always win, so a
@@ -100,7 +87,7 @@ export function mergeTerminalToolDetails(
   contributionDetails: unknown,
 ): Record<string, unknown> {
   return {
-    ...(isPlainRecord(contributionDetails) ? contributionDetails : {}),
+    ...(isRecord(contributionDetails) ? contributionDetails : {}),
     ...terminalToolDetails(toolCallId),
   };
 }

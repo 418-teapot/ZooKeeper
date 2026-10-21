@@ -6,7 +6,7 @@
  * preservation, missing sessionManager), `buildPiContextHandler`
  * (native pi messages passed to transforms, result replacement, model
  * limit capture, empty array, crash isolation), the pure helper
- * `extractText`, the native converter loader (`loadPiHtmlConverter`), the
+ * the native converter loader (`loadPiHtmlConverter`), the
  * command-slot assembly
  * (`buildPiCommandRegistrationPlan`), the event-key registration
  * (`registerPiHandlers`), and the registration-boundary
@@ -26,7 +26,6 @@ import {
   buildPiContextHandler,
   buildPiMessageEndHandler,
   buildPiToolResultHandler,
-  extractText,
   loadPiHtmlConverter,
   PI_GATE_EVENT_KEYS,
   PI_RESIDENT_EVENT_KEYS,
@@ -466,28 +465,6 @@ describe("buildPiContextHandler", () => {
     const crashed = crashedEntries();
     assert.equal(crashed.length, 1);
     assert.equal(crashed[0].handler, "boom");
-  });
-});
-
-// ---------------------------------------------------------------------------
-// extractText
-// ---------------------------------------------------------------------------
-
-describe("extractText", () => {
-  it("joins text parts and ignores images", () => {
-    assert.equal(
-      extractText([
-        { type: "text", text: "a" },
-        { type: "image", data: "x", mimeType: "image/png" },
-        { type: "text", text: "b" },
-      ]),
-      "ab",
-    );
-  });
-
-  it("returns an empty string for empty or missing content", () => {
-    assert.equal(extractText(undefined), "");
-    assert.equal(extractText([]), "");
   });
 });
 

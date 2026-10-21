@@ -32,6 +32,7 @@ import {
 } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { isRecord } from "../records.js";
 import {
   type Block,
   type BlockStatus,
@@ -140,11 +141,6 @@ function parseBlockStatus(value: Record<string, unknown>): BlockStatus | null {
     return value.active ? "active" : "consumed";
   }
   return null;
-}
-
-/** Guard: value is a plain record, not null and not an array. */
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 /** Guard: value is a non-negative integer (ordinals, tokens, stamps). */

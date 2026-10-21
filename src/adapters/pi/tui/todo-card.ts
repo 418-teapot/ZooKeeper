@@ -46,6 +46,7 @@ import {
   truncateToWidth,
 } from "@earendil-works/pi-tui";
 import { type DisplayHue, fitToBudget } from "../../../core/display.js";
+import { isRecord } from "../../../core/records.js";
 import type { TodoOperation, TodoPhase } from "../../../core/todo/types.js";
 import { isTodoPhase } from "../../../core/todo/types.js";
 import {
@@ -133,10 +134,6 @@ interface PiRenderContextLike {
   state?: { frame?: number };
   /** The stable tool-call id (unused here; kept for the port shape). */
   toolCallId?: string;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 // ---------------------------------------------------------------------------

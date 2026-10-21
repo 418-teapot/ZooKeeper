@@ -348,8 +348,9 @@ describe("createTranscriptOverlay — render", () => {
     // The overlay must not care where the facts came from: the same run
     // rebuilt from the persisted sub-session renders the prompt exactly as
     // the in-memory stream does.  `live` is shaped the way the driver shapes
-    // it (prompt fact at the send point, one message_end per assistant
-    // message — including the tool-calling one — plus the tool bookends);
+    // it (prompt fact projected from the echoed user message, one
+    // message_end per assistant message — including the tool-calling one —
+    // plus the tool bookends);
     // `hydrated` is the same run rebuilt from its persisted messages.
     const prompt = "SUMMARY: do the work\n\nACCEPTANCE: it passes";
     const live = createRunLog();
@@ -895,9 +896,10 @@ describe("createTranscriptOverlay — scrolling", () => {
 
 describe("createTranscriptOverlay — live appends", () => {
   it("projects a user_message fact appended after open", () => {
-    // The driver appends the prompt the moment it sends it, which is before
-    // the overlay can open; a later steered input therefore arrives live and
-    // must reach the body through the same projection.
+    // The prompt's fact arrives with the user message the session echoes back
+    // at the start of the run, before the overlay can open; a later steered
+    // input therefore arrives live and must reach the body through the same
+    // projection.
     const { component, log } = overlay();
     log.appendMessage([{ type: "text", text: "first answer" }]);
     log.appendUserMessage("and now add tests", 2);

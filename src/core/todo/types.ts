@@ -8,6 +8,8 @@
  * @module
  */
 
+import { isRecord } from "../records.js";
+
 /** Status of a single todo task. */
 export type TodoStatus =
   | "pending"
@@ -105,10 +107,6 @@ export function isTodoStatus(value: unknown): value is TodoStatus {
     value === "abandoned" ||
     value === "blocked"
   );
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 /**
