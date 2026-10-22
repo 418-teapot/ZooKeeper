@@ -9,11 +9,16 @@ import {
   progressBar,
 } from "../../../core/context/context-report.js";
 import type { TokenBreakdownResult } from "../../../core/context/lens-stats.js";
+import {
+  type SubagentRun,
+  subscribeRunChange,
+  topLevelRuns,
+} from "../../../core/subagent/registry.js";
 import { initLogger, log } from "../../../utils/logger.js";
+import { createSubagentSource } from "../subagent-source.js";
 import { createContextController } from "./controller.js";
-import type { CategoryInfo, SubEntry } from "./subagent.js";
+import type { CategoryInfo } from "./subagent.js";
 import { formatDuration } from "./subagent.js";
-import { createSubAgentTracker } from "./tracker.js";
 
 /**
  * ZooKeeper TUI — sidebar_content live data panel.
@@ -52,9 +57,6 @@ const plugin: TuiPluginModule = {
     const [getTrendLabel, setTrendLabel] = createSignal<string | null>(null);
     const [getTrend, setTrend] = createSignal<number | null>(null);
     const [getCumulative, setCumulative] = createSignal<string>("—");
-    const [getSubEntries, setSubEntries] = createSignal<Map<string, SubEntry>>(
-      new Map(),
-    );
     const [getExpandedSubIds, setExpandedSubIds] = createSignal<Set<string>>(
       new Set(),
     );
@@ -163,6 +165,10 @@ const plugin: TuiPluginModule = {
       // and avoids the complexity of observing whether any running
       // entry exists.
       const [getNowTick, setNowTick] = createSignal(Date.now());
+      // ── Subagent rows: a projection of the core registry ────────
+      // The panel keeps no subagent state of its own — the rows are
+      // re-read from the registry whenever a run changes.
+      const [getSubRuns, setSubRuns] = createSignal<SubagentRun[]>([]);
       // Hover state for the "enter session" button in expanded entries.
       const [getHoveredOpenId, setHoveredOpenId] = createSignal<
         string | undefined
@@ -180,14 +186,10 @@ const plugin: TuiPluginModule = {
         // Start the 1 s real-time clock.
         clockTimer = setInterval(() => setNowTick(Date.now()), 1000);
 
-        // Reset sub-agent map and expand state on every mount.  The
-        // signal lives in the plugin scope (tui()) and would otherwise
-        // carry stale entries across panel remounts (e.g. session
-        // switches or mount/unmount cycles).  Clearing here provides
-        // per-session isolation and eliminates residual "running"
-        // entries left from a previous lifecycle.  Live events and the
-        // historical scan (scanSubEntries) re-populate the map.
-        setSubEntries(new Map());
+        // Reset the projected subagent rows and expand state on every
+        // mount.  Both signals live across panel remounts (e.g. session
+        // switches) and would otherwise carry stale rows.
+        setSubRuns([]);
         setExpandedSubIds(new Set<string>());
 
         // Restore collapsed state from persisted KV storage.
@@ -238,30 +240,32 @@ const plugin: TuiPluginModule = {
         const unsub2 = api.event.on("message.part.updated", onOwnEvent);
         const unsub3 = api.event.on("session.updated", onOwnEvent);
 
-        // ── Sub-agent tracking ────────────────────────────────────
-        // Live task-tool events, the 500ms polling loop, and the
-        // historical scan live in the tracker factory; the panel
-        // wires the handlers onto the event bus and disposes on
-        // cleanup.
-        const tracker = createSubAgentTracker({
+        // ── Subagent facts ────────────────────────────────────────
+        // The panel owns no subagent state machine: the translator writes
+        // host facts into the core run registry, and the rendered rows are
+        // a projection of that registry, refreshed on every run change.
+        // Created and disposed with the panel.
+        const source = createSubagentSource({
           client: api.client,
           state: api.state,
           parentSessionId: props.sessionId,
-          getSubEntries,
-          setSubEntries,
           fetchSessionMessages: controller.fetchSessionMessages,
         });
 
+        const refreshSubRuns = () => setSubRuns(topLevelRuns(props.sessionId));
+        refreshSubRuns();
+
         const unsub4 = api.event.on(
           "message.part.updated",
-          tracker.onToolPartUpdated,
+          source.onToolPartUpdated,
         );
-        const unsub5 = api.event.on("session.idle", tracker.onSessionIdle);
-        const unsub6 = api.event.on("session.error", tracker.onSessionError);
+        const unsub5 = api.event.on("session.idle", source.onSessionIdle);
+        const unsub6 = api.event.on("session.error", source.onSessionError);
+        const unsub7 = subscribeRunChange(refreshSubRuns);
 
-        tracker
-          .scanSubEntries(props.sessionId, messagesPromise)
-          .catch(() => {});
+        // Mount-time reconcile: recover the delegations this session
+        // already performed (the shared fetch is reused).
+        void source.reconcile(messagesPromise);
 
         onCleanup(() => {
           unsub1();
@@ -270,9 +274,10 @@ const plugin: TuiPluginModule = {
           unsub4();
           unsub5();
           unsub6();
+          unsub7();
           controller.dispose();
           if (clockTimer) clearInterval(clockTimer);
-          tracker.dispose();
+          source.dispose();
         });
       });
 
@@ -345,37 +350,39 @@ const plugin: TuiPluginModule = {
         return label + " ".repeat(Math.max(0, width - cellWidth(label)));
       }
 
-      function renderSubEntry(entry: SubEntry) {
-        const expanded = getExpandedSubIds().has(entry.id);
+      function renderSubEntry(run: SubagentRun) {
+        const expanded = getExpandedSubIds().has(run.id);
         const chevron = expanded ? "▾" : "▸";
         // Status is conveyed by the dot colour alone (running=warning,
-        // done=success, error=error) — no redundant status text.
+        // done=success, aborted=muted, error=error) — no redundant status
+        // text, except the explicit "已取消" line for a cancellation.
         const dotColor =
-          entry.status === "running"
+          run.status === "running"
             ? props.theme.warning
-            : entry.status === "done"
+            : run.status === "done"
               ? props.theme.success
-              : props.theme.error;
+              : run.status === "aborted"
+                ? props.theme.textMuted
+                : props.theme.error;
         // Running entries blink: alternate ● / ○ on the 1 s clock tick.
         const dotChar =
-          entry.status === "running" &&
-          Math.floor(getNowTick() / 1000) % 2 === 1
+          run.status === "running" && Math.floor(getNowTick() / 1000) % 2 === 1
             ? "○"
             : "●";
         const tokenStr =
-          entry.tokens !== undefined ? formatTokens(entry.tokens) : "";
+          run.tokens !== undefined ? formatTokens(run.tokens) : "";
 
         // Compute duration string:
         // - Running with startedAt → real-time elapsed (now - startedAt).
         // - Terminal with both times → total duration (endedAt - startedAt).
         // - Missing startedAt → "—".
         let durationStr: string;
-        if (entry.startedAt === undefined) {
+        if (run.startedAt === undefined) {
           durationStr = "—";
-        } else if (entry.status === "running") {
-          durationStr = formatDuration(getNowTick() - entry.startedAt);
-        } else if (entry.endedAt !== undefined) {
-          durationStr = formatDuration(entry.endedAt - entry.startedAt);
+        } else if (run.status === "running") {
+          durationStr = formatDuration(getNowTick() - run.startedAt);
+        } else if (run.endedAt !== undefined) {
+          durationStr = formatDuration(run.endedAt - run.startedAt);
         } else {
           durationStr = "—";
         }
@@ -383,18 +390,18 @@ const plugin: TuiPluginModule = {
         return (
           <box flexDirection="column">
             {/* biome-ignore lint/a11y/noStaticElementInteractions: clickable sub-agent entry row */}
-            <text onMouseUp={() => toggleExpand(entry.id)}>
+            <text onMouseUp={() => toggleExpand(run.id)}>
               <span style={{ fg: props.theme.textMuted }}>{`${chevron} `}</span>
               <span style={{ fg: dotColor }}>{`${dotChar} `}</span>
-              <span style={{ fg: props.theme.text }}>{entry.title}</span>
+              <span style={{ fg: props.theme.text }}>{run.label ?? ""}</span>
             </text>
             {expanded ? (
               <box paddingLeft={2} flexDirection="column">
                 <text fg={props.theme.textMuted}>
-                  {`${padLabel("agent:", 8)}${entry.agent}`}
+                  {`${padLabel("agent:", 8)}${run.agent}`}
                 </text>
                 <text fg={props.theme.textMuted}>
-                  {`${padLabel("模型:", 8)}${entry.model ?? "—"}`}
+                  {`${padLabel("模型:", 8)}${run.model ?? "—"}`}
                 </text>
                 <text fg={props.theme.textMuted}>
                   {`${padLabel("上下文:", 8)}${tokenStr || "—"}`}
@@ -402,22 +409,27 @@ const plugin: TuiPluginModule = {
                 <text fg={props.theme.textMuted}>
                   {`${padLabel("耗时:", 8)}${durationStr}`}
                 </text>
-                {entry.status === "error" ? (
+                {run.status === "error" ? (
                   <text fg={props.theme.textMuted}>
-                    {`${padLabel("错误:", 8)}${entry.error ?? "—"}`}
+                    {`${padLabel("错误:", 8)}${run.error ?? "—"}`}
+                  </text>
+                ) : null}
+                {run.status === "aborted" ? (
+                  <text fg={props.theme.textMuted}>
+                    {`${padLabel("状态:", 8)}已取消`}
                   </text>
                 ) : null}
                 {/* Jump into the child session — same pattern as the
                     subagent-magazine plugin: route.navigate("session"). */}
-                {entry.sessionId ? (
+                {run.childSession ? (
                   // biome-ignore lint/a11y/noStaticElementInteractions lint/a11y/useKeyWithMouseEvents: clickable enter-session link (TUI has no keyboard focus for this element)
                   <text
-                    onMouseOver={() => setHoveredOpenId(entry.id)}
+                    onMouseOver={() => setHoveredOpenId(run.id)}
                     onMouseOut={() => setHoveredOpenId(undefined)}
                     onMouseUp={() => {
-                      if (entry.sessionId) {
+                      if (run.childSession) {
                         api.route.navigate("session", {
-                          sessionID: entry.sessionId,
+                          sessionID: run.childSession,
                         });
                       }
                     }}
@@ -425,7 +437,7 @@ const plugin: TuiPluginModule = {
                     <span
                       style={{
                         fg:
-                          getHoveredOpenId() === entry.id
+                          getHoveredOpenId() === run.id
                             ? props.theme.primary
                             : props.theme.textMuted,
                       }}
@@ -644,42 +656,43 @@ const plugin: TuiPluginModule = {
                     </>
                   )}
                 </box>
-                {/* Sub-agent status section.  The Map is replaced on
-                    every update, so all rows re-render on any token
-                    change — acceptable for small entry counts (<10).
-                    The section header (chevron + name + status counts +
-                    total context) is clickable and collapses the whole
-                    section; the collapsed state is persisted via api.kv.
-                    A concrete <box> container (not a fragment) wraps the
-                    section so Yoga measures its height correctly — a
-                    fragment wrapper caused hit-test coordinates to drift
-                    several rows above the visual position. */}
+                {/* Sub-agent status section.  The rows are a projection of
+                    the core run registry, re-read whenever a run changes,
+                    so all rows re-render on any progress or token change —
+                    acceptable for small run counts (<10).  The section
+                    header (chevron + name + status counts + total context)
+                    is clickable and collapses the whole section; the
+                    collapsed state is persisted via api.kv.  A concrete
+                    <box> container (not a fragment) wraps the section so
+                    Yoga measures its height correctly — a fragment wrapper
+                    caused hit-test coordinates to drift several rows above
+                    the visual position. */}
                 {(() => {
-                  const entries = getSubEntries();
-                  if (entries.size === 0) return null;
+                  const runs = getSubRuns();
+                  if (runs.length === 0) return null;
                   const subCollapsed = getSubCollapsed();
                   let done = 0;
                   let running = 0;
                   let errored = 0;
-                  for (const entry of entries.values()) {
-                    if (entry.status === "done") done++;
-                    else if (entry.status === "running") running++;
+                  let aborted = 0;
+                  for (const run of runs) {
+                    if (run.status === "done") done++;
+                    else if (run.status === "running") running++;
+                    else if (run.status === "aborted") aborted++;
                     else errored++;
                   }
                   // Aggregate token snapshots per child session: a resumed
-                  // task() call creates a new partId entry that shares the
-                  // same sessionId, so keep only the latest (max) snapshot
-                  // per session before summing. Entries without a sessionId
-                  // fall back to their own partId and count individually.
+                  // task() call creates a new part entry that shares the
+                  // same child session, so keep only the latest (max)
+                  // snapshot per session before summing. Runs without a
+                  // child session fall back to their own id and count
+                  // individually.
                   const tokensBySession = new Map<string, number>();
-                  for (const entry of entries.values()) {
-                    const key = entry.sessionId ?? entry.id;
+                  for (const run of runs) {
+                    const key = run.childSession ?? run.id;
                     tokensBySession.set(
                       key,
-                      Math.max(
-                        tokensBySession.get(key) ?? 0,
-                        entry.tokens ?? 0,
-                      ),
+                      Math.max(tokensBySession.get(key) ?? 0, run.tokens ?? 0),
                     );
                   }
                   const totalTokens = [...tokensBySession.values()].reduce(
@@ -692,6 +705,7 @@ const plugin: TuiPluginModule = {
                   const segDone = `● ${done} `;
                   const segRunning = `● ${running} `;
                   const segError = `● ${errored} `;
+                  const segAborted = `● ${aborted} `;
                   return (
                     <box
                       flexDirection="column"
@@ -716,6 +730,11 @@ const plugin: TuiPluginModule = {
                           <span style={{ fg: props.theme.warning }}>
                             {segRunning}
                           </span>
+                          {aborted > 0 ? (
+                            <span style={{ fg: props.theme.textMuted }}>
+                              {segAborted}
+                            </span>
+                          ) : null}
                           <span style={{ fg: props.theme.error }}>
                             {segError}
                           </span>
@@ -732,7 +751,8 @@ const plugin: TuiPluginModule = {
                           {/* Running entries first (newest started
                               first); terminal entries keep insertion
                               order (sort is stable). */}
-                          {[...entries.values()]
+                          {runs
+                            .slice()
                             .sort((a, b) => {
                               const aRun = a.status === "running" ? 0 : 1;
                               const bRun = b.status === "running" ? 0 : 1;
@@ -742,7 +762,7 @@ const plugin: TuiPluginModule = {
                               }
                               return 0;
                             })
-                            .map((entry) => renderSubEntry(entry))}
+                            .map((run) => renderSubEntry(run))}
                         </>
                       )}
                     </box>

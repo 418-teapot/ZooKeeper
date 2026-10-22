@@ -100,6 +100,18 @@ describe("registry — run lifecycle", () => {
     assert.equal(getRun("r1")?.tokens, 10);
   });
 
+  it("updateRun rewrites the label of a running run (later title evidence wins)", () => {
+    startRun({
+      id: "r1",
+      agent: "lynx",
+      parentSession: "main",
+      startedAt: 100,
+      label: "a1b2c3d4",
+    });
+    updateRun("r1", { label: "迁移 tracker" });
+    assert.equal(getRun("r1")?.label, "迁移 tracker");
+  });
+
   it("updateRun records the session path on a running run (enter-inspect while running)", () => {
     startRun({
       id: "r1",
@@ -348,6 +360,19 @@ describe("registry — terminal immutability", () => {
     const run = getRun("r1");
     assert.equal(run?.status, "error");
     assert.equal(run?.error, "boom");
+  });
+
+  it("the label is frozen once the run finishes", () => {
+    startRun({
+      id: "r1",
+      agent: "lynx",
+      parentSession: "main",
+      startedAt: 100,
+      label: "初始标题",
+    });
+    finishRun("r1", { status: "done" });
+    updateRun("r1", { label: "迟到的标题" });
+    assert.equal(getRun("r1")?.label, "初始标题");
   });
 
   it("updateRun and finishRun on unknown ids are silent no-ops", () => {

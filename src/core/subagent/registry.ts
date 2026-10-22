@@ -123,6 +123,13 @@ export interface StartRunInput {
 /** Progress fields patchable on a running run via `updateRun`. */
 export interface UpdateRunPatch {
   /**
+   * The delegation's task description.
+   *
+   * Rewritable while the run is active: a host that learns the title from
+   * a later, stronger source replaces it (the terminal run freezes it).
+   */
+  label?: string;
+  /**
    * The tool name the run is currently executing.
    *
    * Tri-state: a name sets it, `null` clears it (the tool finished), and an
@@ -214,7 +221,6 @@ export function subscribeRunChange(listener: RunChangeListener): () => void {
 }
 
 /** The terminal statuses — no field may change after one is reached. */
-/** The terminal statuses — no field may change after one is reached. */
 export const TERMINAL_STATUSES: ReadonlySet<RunStatus> = new Set([
   "done",
   "error",
@@ -285,6 +291,7 @@ export function updateRun(id: string, patch: UpdateRunPatch): void {
     else run.currentTool = patch.currentTool;
   }
   if (patch.tokens !== undefined) run.tokens = patch.tokens;
+  if (patch.label !== undefined) run.label = patch.label;
   if (patch.model !== undefined) run.model = patch.model;
   if (patch.childSession !== undefined) run.childSession = patch.childSession;
   if (patch.sessionPath !== undefined) run.sessionPath = patch.sessionPath;
