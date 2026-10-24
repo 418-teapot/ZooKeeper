@@ -349,6 +349,15 @@ npm = "@ai-sdk/anthropic"
 baseURL = "{env:MOONSHOT_BASE_URL}"
 apiKey  = "{env:MOONSHOT_API_KEY}"
 
+[provider.MoonShot.models."k3.1-pro"]
+name      = "k3.1-pro"
+id        = "k3.1-pro"
+reasoning = true
+
+[provider.MoonShot.models."k3.1-pro".limit]
+context = 1000000
+output  = 128000
+
 [provider.MoonShot.models.k3]
 name      = "k3"
 id        = "k3"
