@@ -1,10 +1,9 @@
 /**
  * Tests for the fetch tool unit (`src/tools/fetch.ts`).
  *
- * Covers the fail-closed registration gate (no `loadHtmlConverter` or no
- * `truncateHead` in deps → zero tools; a loader that reports the native
- * addon unavailable → zero tools; a usable converter plus truncator →
- * exactly one `fetch` tool), the
+ * Covers the fail-closed registration gate (no `htmlConverter` or no
+ * `truncateHead` bound by the host → the planner skips the unit; both
+ * present → exactly one `fetch` tool), the
  * argument-validation branches (non-object args, missing/empty/non-string
  * `url`, non-positive/non-numeric/an over-ceiling `timeout`) with their
  * Chinese guidance text, the caller abort signal forwarded to the request,
@@ -13,14 +12,13 @@
  */
 import assert from "node:assert/strict";
 import { afterEach, describe, it } from "node:test";
-import { composeProfile } from "../core/compose.js";
 import type { ModeProfile } from "../core/config-types.js";
 import type { Capabilities } from "../core/ports/index.js";
-import type { ActiveSet } from "../core/unit.js";
 import type {
   HtmlConverter,
   TruncateHeadFn,
 } from "../core/webfetch/pipeline.js";
+import { composeForTest, facts } from "../testkits/compose.js";
 import { installFetchMock, restoreFetch } from "../testkits/fetch.js";
 import { createFetchTool, unit as fetchUnit } from "./fetch.js";
 
@@ -40,13 +38,13 @@ const keepAll: TruncateHeadFn = (content) => ({
   outputLines: 1,
 });
 
-/** Build deps carrying optional converter-loader and truncator ports. */
+/** Build deps carrying an optional converter and head-truncator port. */
 function deps(
-  loadHtmlConverter?: () => HtmlConverter | null,
+  htmlConverter?: HtmlConverter,
   truncateHead?: TruncateHeadFn,
 ): Partial<Capabilities> {
   return {
-    loadHtmlConverter,
+    htmlConverter,
     truncateHead,
   } as unknown as Partial<Capabilities>;
 }
@@ -99,31 +97,23 @@ const FETCH_TOOL_PROFILE: ModeProfile = {
 };
 
 describe("fetch unit registration gate", () => {
-  it("skips the unit and reports loadHtmlConverter without a converter loader", () => {
-    const result = composeProfile(
+  it("skips the unit and reports htmlConverter when the host binds none", () => {
+    const result = composeForTest(
       FETCH_TOOL_PROFILE,
       [fetchUnit],
       deps(undefined, keepAll),
     );
     assert.deepEqual(result.tools, {});
     assert.deepEqual(result.report.skipped, [
-      { name: "fetch", missing: ["loadHtmlConverter"] },
+      { name: "fetch", missing: ["htmlConverter"] },
     ]);
   });
 
-  it("contributes no tools when the loader reports no addon", () => {
-    const contributions = fetchUnit.create(
-      deps(() => null, keepAll),
-      {} as ActiveSet,
-    );
-    assert.deepEqual(contributions.tools, []);
-  });
-
   it("skips the unit and reports truncateHead without a head truncator", () => {
-    const result = composeProfile(
+    const result = composeForTest(
       FETCH_TOOL_PROFILE,
       [fetchUnit],
-      deps(() => identity),
+      deps(identity),
     );
     assert.deepEqual(result.tools, {});
     assert.deepEqual(result.report.skipped, [
@@ -131,16 +121,22 @@ describe("fetch unit registration gate", () => {
     ]);
   });
 
-  it("contributes one fetch tool with a usable converter and truncator", () => {
-    const contributions = fetchUnit.create(
-      deps(() => identity, keepAll),
-      {} as ActiveSet,
+  it("contributes exactly one fetch tool once both ports are bound", () => {
+    const result = composeForTest(
+      FETCH_TOOL_PROFILE,
+      [fetchUnit],
+      deps(identity, keepAll),
     );
+    const tools = Object.values(result.tools);
+    assert.equal(tools.length, 1);
+    assert.equal(tools[0]?.name, "fetch");
+    assert.deepEqual(tools[0]?.required, ["url"]);
+    assert.deepEqual(result.report.selected, ["fetch"]);
+  });
+
+  it("never contributes an empty tool set for a selected unit", () => {
+    const contributions = fetchUnit.create(deps(identity, keepAll), facts());
     assert.equal(contributions.tools.length, 1);
-    const tool = contributions.tools[0];
-    assert.ok(tool);
-    assert.equal(tool.name, "fetch");
-    assert.deepEqual(tool.required, ["url"]);
   });
 });
 

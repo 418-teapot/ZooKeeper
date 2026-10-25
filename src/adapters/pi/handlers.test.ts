@@ -355,26 +355,25 @@ describe("buildPiHandlers — prompt injection + skill discovery", () => {
     assert.deepEqual(resources.skillPaths, []);
   });
 
-  it("profile without a primary agent → prompt untouched; skills filtered", async () => {
-    // A stale module-level primary from another test must never inject: a
-    // profile whose only agent has no valid mode has no primary, so the
-    // identity machinery stays off.  Seed a sentinel name outside the
-    // profile so the assertion is order-independent.
+  it("profile without the orchestrator → prompt untouched; no skill paths", async () => {
+    // A stale module-level primary from another test must never inject: the
+    // profile omits the orchestrator, so the selection is invalid and
+    // nothing composes.  Seed a sentinel name outside the profile so the
+    // assertion is order-independent.
     setPrimary("ghost");
     const zoo = {
       mode: {
         poly: { ...POLY_PROFILE, agents: ["mola"], skills: ["git-commit"] },
       },
     };
-    const handlers = await buildPiHandlers(zoo);
+    const handlers = await buildPiHandlers(zoo, undefined, MODES_RAW);
     const result = await handlers.beforeAgentStart({
       systemPrompt: "base",
     });
     assert.equal(result.systemPrompt, "base");
 
     const resources = await handlers.resourcesDiscover();
-    assert.equal(resources.skillPaths.length, 1);
-    assert.ok(resources.skillPaths[0].endsWith("git-commit"));
+    assert.deepEqual(resources.skillPaths, []);
   });
 });
 
@@ -386,6 +385,7 @@ describe("buildPiHandlers — resourcesDiscover skill filtering", () => {
   /** Raw config with skill rules mirroring config.toml's [agent.mola]. */
   const MOLA_SKILLS_RAW = {
     agent: {
+      dolphin: { mode: "primary" },
       mola: {
         mode: "primary",
         permission: {
@@ -454,12 +454,12 @@ describe("buildPiHandlers — resourcesDiscover skill filtering", () => {
     assert.ok(names.includes("git-commit"));
   });
 
-  it("no primary → full profile list contributed unfiltered", async () => {
-    // No rawConfig means no skill rules; a stale sentinel primary from
-    // another test is reset so the identity machinery stays off → the
-    // handler must contribute exactly as before the filtering change.
+  it("no skill rules for the seeded primary → full profile list unfiltered", async () => {
+    // A sentinel primary with no `permission.skill` rules means no
+    // filtering applies, so the handler contributes exactly as before the
+    // filtering change.
     setPrimary("ghost");
-    const handlers = await buildPiHandlers(POLY_ZOO);
+    const handlers = await buildPiHandlers(POLY_ZOO, undefined, MODES_RAW);
     const resources = await handlers.resourcesDiscover();
     assert.equal(resources.skillPaths.length, 11);
   });
@@ -590,10 +590,10 @@ describe("buildPiHandlers — identity-dispatch prompt injection", () => {
     assert.ok(injected.endsWith("base"));
   });
 
-  it("empty primary set → zero injection; resolveAgent undefined", async () => {
-    // Pre-seed a primary that is not in the profile: the empty-primary
-    // profile must fail closed (no setPrimary call) even when a stale
-    // module-level primary exists.
+  it("invalid profile → zero injection; resolveAgent stays unresolved", async () => {
+    // Pre-seed a primary that is not in the profile: an invalid profile
+    // must fail closed (no setPrimary call, nothing composed) even when a
+    // stale module-level primary exists.
     setPrimary("ghost");
     const zoo = {
       mode: {
@@ -607,17 +607,21 @@ describe("buildPiHandlers — identity-dispatch prompt injection", () => {
       },
     };
     const { composed, agentModes } = buildPiContributions(zoo, undefined, {
-      agent: {},
+      agent: { beaver: { mode: "subagent" } },
     });
-    assert.deepEqual(agentModes, {});
-    // beaver is composed (it is in the profile agents list) but no
-    // primary is derived from it — the identity machinery stays off.
-    assert.deepEqual(
-      composed.agents.map((a) => a.name),
-      ["beaver"],
-    );
+    assert.deepEqual(agentModes, { beaver: "subagent" });
+    // beaver is not the orchestrator and the orchestrator is absent, so the
+    // selection is invalid: no agent is composed.
+    assert.deepEqual(composed.agents, []);
+    assert.deepEqual(composed.report.invalid, {
+      orchestrator: "dolphin",
+      cause: "not-enabled",
+      primaries: [],
+    });
 
-    const handlers = await buildPiHandlers(zoo, undefined, { agent: {} });
+    const handlers = await buildPiHandlers(zoo, undefined, {
+      agent: { beaver: { mode: "subagent" } },
+    });
     // resolveIdentity falls back to the stale sentinel, which is not in
     // the profile — zero injection.
     const promptResult = await handlers.beforeAgentStart({
@@ -625,8 +629,8 @@ describe("buildPiHandlers — identity-dispatch prompt injection", () => {
     });
     assert.equal(promptResult.systemPrompt, "base");
 
-    // The unresolvable agent (no primary, no binding) means the
-    // direct-work nudge gate never matches — zero output change.
+    // No orchestrator resolves, so the direct-work nudge gate never
+    // matches — zero output change.
     const toolResult = await handlers.toolResult(
       {
         type: "tool_result",
@@ -647,7 +651,7 @@ describe("buildPiHandlers — identity-dispatch prompt injection", () => {
 
 describe("buildPiHandlers — compose-driven tool_result", () => {
   it("json-error-nudge in hooks → JSON reminder appended to error output", async () => {
-    const handlers = await buildPiHandlers(POLY_ZOO);
+    const handlers = await buildPiHandlers(POLY_ZOO, undefined, MODES_RAW);
     const result = await handlers.toolResult(
       {
         type: "tool_result",
@@ -675,7 +679,7 @@ describe("buildPiHandlers — compose-driven tool_result", () => {
         },
       },
     };
-    const handlers = await buildPiHandlers(zoo);
+    const handlers = await buildPiHandlers(zoo, undefined, MODES_RAW);
     const result = await handlers.toolResult(
       {
         type: "tool_result",
@@ -716,7 +720,7 @@ describe("buildPiHandlers — compose-driven tool_result", () => {
       ...POLY_ZOO,
       mode: { poly: { ...POLY_PROFILE, agents: ["mola"] } },
     };
-    const handlers = await buildPiHandlers(zoo);
+    const handlers = await buildPiHandlers(zoo, undefined, MODES_RAW);
     const result = await handlers.toolResult(
       {
         type: "tool_result",
@@ -733,7 +737,7 @@ describe("buildPiHandlers — compose-driven tool_result", () => {
   it("subagent tool_result → post-subagent nudge fires on the canonical name", async () => {
     // pi registers the delegation tool as "subagent" (the canonical name
     // the core hooks gate on), so the post-subagent nudge fires here.
-    const handlers = await buildPiHandlers(POLY_ZOO);
+    const handlers = await buildPiHandlers(POLY_ZOO, undefined, MODES_RAW);
     const result = await handlers.toolResult(
       {
         type: "tool_result",
@@ -755,7 +759,7 @@ describe("buildPiHandlers — compose-driven tool_result", () => {
     // "subagent" is in the JSON-recovery exclude list: subagent output
     // may legitimately mention JSON errors without the orchestrator
     // having sent invalid JSON arguments.
-    const handlers = await buildPiHandlers(POLY_ZOO);
+    const handlers = await buildPiHandlers(POLY_ZOO, undefined, MODES_RAW);
     const result = await handlers.toolResult(
       {
         type: "tool_result",
@@ -784,7 +788,7 @@ describe("buildPiHandlers — compose-driven tool_result", () => {
         },
       },
     };
-    const handlers = await buildPiHandlers(zoo);
+    const handlers = await buildPiHandlers(zoo, undefined, MODES_RAW);
     const result = await handlers.toolResult(
       {
         type: "tool_result",
@@ -859,7 +863,7 @@ describe("pi regression — subagent child session must not get the direct-work 
 
 describe("buildPiHandlers — compose-driven context handler", () => {
   it("returns the native pi messages, possibly modified by pruning", async () => {
-    const handlers = await buildPiHandlers(POLY_ZOO);
+    const handlers = await buildPiHandlers(POLY_ZOO, undefined, MODES_RAW);
     const result = (await handlers.contextHandler(
       {
         type: "context",
@@ -874,7 +878,7 @@ describe("buildPiHandlers — compose-driven context handler", () => {
   });
 
   it("returns an empty replacement for an empty message array", async () => {
-    const handlers = await buildPiHandlers(POLY_ZOO);
+    const handlers = await buildPiHandlers(POLY_ZOO, undefined, MODES_RAW);
     const result = (await handlers.contextHandler(
       { type: "context", messages: [] },
       SESSION_CTX,

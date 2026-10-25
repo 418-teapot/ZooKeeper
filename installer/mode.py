@@ -26,7 +26,8 @@ def write_mode_state(mode: str, path: Optional[str] = None) -> bool:
     """Persist *mode* as ``{"mode": mode}`` into the mode-state file.
 
     Creates the parent directory when needed.  A write failure prints a
-    Chinese warning and returns ``False`` so the caller can continue.
+    Chinese warning and returns ``False`` so the caller can abort the
+    installation it was about to report as successful.
 
     Args:
         mode: The mode name to store.

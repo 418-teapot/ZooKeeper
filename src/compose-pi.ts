@@ -2,7 +2,7 @@
  * Pi event-key adapter.
  *
  * The only module that understands pi's event keys.  Given the
- * host-agnostic `ComposedResult` produced by `composeProfile`, it builds
+ * host-agnostic `ComposedResult` produced by the assembly pipeline, it builds
  * the handlers and registration inputs pi consumes — the `tool_result`,
  * `context` and `message_end` event handlers, the command registrations,
  * and the tool set after its registration-boundary processing:
@@ -119,21 +119,31 @@ import type {
 // ---------------------------------------------------------------------------
 
 /**
- * Load the native HTML→Markdown converter for the fetch tool.
+ * Loader for the native HTML→Markdown converter.
+ *
+ * The pi entry point supplies one; the assembly probes it once, before
+ * the selection pass, and binds the loaded converter as a value.
+ */
+export type HtmlConverterLoader = () => HtmlConverter | null;
+
+/**
+ * Probe the native HTML→Markdown converter for the fetch tool.
  *
  * Fail-closed in the pi host adapter: when the addon is unavailable
  * (wrong platform, ABI mismatch, not built) the core loader returns
- * `null`, a single warn is logged (`converter_unavailable`), and the fetch
- * tool unit receives no converter — so `fetch` is not registered at all
- * (matching the null-profile principle: a capability that cannot run
- * contributes nothing).
+ * `null`, a single warn is logged (`converter_unavailable`), and the host
+ * declares no `htmlConverter` capability — so the fetch tool unit's needs
+ * are unmet and the planner skips it (matching the null-profile
+ * principle: a capability that cannot run contributes nothing).  The
+ * probe answers a static availability question; a failing fetch at
+ * runtime is never treated as unavailability.
  *
  * @param loadConverter - Loader for the native converter. Defaults to
  *   {@link loadHtmlConverter}; tests inject a stub.
  * @returns The converter, or `null` when unavailable.
  */
 export function loadPiHtmlConverter(
-  loadConverter: () => HtmlConverter | null = loadHtmlConverter,
+  loadConverter: HtmlConverterLoader = loadHtmlConverter,
 ): HtmlConverter | null {
   const converter = loadConverter();
   if (converter === null) {

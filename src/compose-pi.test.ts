@@ -36,7 +36,6 @@ import {
   registerPiHandlers,
 } from "./compose-pi.js";
 import type { ComposedResult } from "./core/compose.js";
-import { composeProfile } from "./core/compose.js";
 import type { ModeProfile } from "./core/config-types.js";
 import type { Capabilities } from "./core/ports/index.js";
 import type { ToolHost } from "./core/ports/tool-host.js";
@@ -53,6 +52,7 @@ import type {
 import { createReplyStripHandler } from "./hooks/reply-strip/index.js";
 import { enhanceSubagentDefinition } from "./hooks/subagent-prompt/index.js";
 import { REGISTRY } from "./registry.js";
+import { composeForTest } from "./testkits/compose.js";
 import { assistantMessage } from "./testkits/pi-messages.js";
 import { _getBufferForTesting, _resetForTesting } from "./utils/logger.js";
 
@@ -890,7 +890,7 @@ function piCaps(host: Partial<Capabilities> = {}): Partial<Capabilities> {
 
 /** Compose the real registry with the tool profile and the given caps. */
 function composeTools(host: Partial<Capabilities> = {}) {
-  return composeProfile(TOOL_PROFILE, REGISTRY, piCaps(host)).tools;
+  return composeForTest(TOOL_PROFILE, REGISTRY, piCaps(host)).tools;
 }
 
 describe("pi composition — the todo tool registration boundary", () => {

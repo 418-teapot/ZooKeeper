@@ -54,8 +54,8 @@ export interface CommonConfig {
  *
  * Every section is parsed fail-closed by the config parsers: a missing or
  * invalid section yields `undefined` (never a default), so the
- * corresponding capability stays unprovided and `composeProfile` skips the
- * units that need it.
+ * corresponding capability stays unbound and the planner skips the units
+ * that need it.
  *
  * @param zooConfig - The `zoo` section of the parsed config.toml.
  * @param rawConfig - The whole parsed config root (carries `agent` tables).

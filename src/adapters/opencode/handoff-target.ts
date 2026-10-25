@@ -60,41 +60,38 @@ export interface PlanClient {
 // ---------------------------------------------------------------------------
 
 /**
- * Build the OpenCode handoff target from a v1 client and the default
- * primary.
+ * Build the OpenCode handoff target from a v1 client.
  *
  * The factory itself never throws — the plugin builds the handoff
- * target even when no primary is configured or the client is partial
- * (e.g. a null profile).  Validation happens at `create` time, when
- * `/go` actually runs: the missing-client API and the undefined default
- * primary are fail-closed errors there.
+ * target even when the client is partial (e.g. a null profile).
+ * Validation happens at `create` time, when `/go` actually runs: the
+ * missing-client API is a fail-closed error there.
  *
  * The workspace directory is captured at construction: the
- * `HandoffTarget` contract's `create` receives only the parent session
- * id, but the OpenCode session-create API needs the directory in its
- * query.
+ * `HandoffTarget` contract's `create` receives the parentage, title and
+ * executor but not the directory, while the OpenCode session-create API
+ * needs it in its query.  The executor is NOT captured — it arrives with
+ * each handoff and rides through the returned session, so one target
+ * serves every `/go` call.
  *
  * @param client - The OpenCode v1 client slice (may be partial or absent).
- * @param defaultPrimary - The executor agent name for the new session,
- *   or `undefined` when no primary is configured.
  * @param directory - The workspace directory for the new session.
  * @returns The OpenCode handoff target.
  */
 export function createOpenCodeHandoffTarget(
   client: PlanClient | null | undefined,
-  defaultPrimary: string | undefined,
   directory: string,
 ): HandoffTarget {
   return {
     /**
      * Create the new session with the executor agent set at create time.
      *
-     * @param ctx - The handoff context: the parent session id and the
-     *   session title derived from the resolved plan.
-     * @returns The created session id.
+     * @param ctx - The handoff context: the parent session id, the
+     *   session title derived from the resolved plan, and the executor
+     *   agent identity.
+     * @returns The created session carrying that executor.
      * @throws Error when the session-create API is unavailable (fail
-     *   closed, the missing-client behaviour) or the default primary is
-     *   undefined.
+     *   closed, the missing-client behaviour).
      */
     async create(ctx) {
       if (!client?.session?.create) {
@@ -103,14 +100,8 @@ export function createOpenCodeHandoffTarget(
             "Ensure the OpenCode plugin is properly loaded.",
         );
       }
-      if (!defaultPrimary) {
-        throw new Error(
-          "No default primary agent is configured. " +
-            "Set a primary agent mode in config.toml to run /go.",
-        );
-      }
       const createResult = await client.session.create({
-        body: { title: ctx.title, agent: defaultPrimary },
+        body: { title: ctx.title, agent: ctx.agent },
         query: { directory },
       });
       if (createResult.error || !createResult.data?.id) {
@@ -123,7 +114,7 @@ export function createOpenCodeHandoffTarget(
         });
         throw new Error(`Failed to create execution session: ${errMsg}`);
       }
-      return { id: createResult.data.id };
+      return { id: createResult.data.id, agent: ctx.agent };
     },
 
     /**
@@ -135,10 +126,11 @@ export function createOpenCodeHandoffTarget(
     /**
      * Deliver the plan reference into the new session.
      *
-     * Sends the plan reference via `promptAsync`, then the silent
-     * confirmation via `session.prompt(noReply)` (the confirmation text
-     * appears in the TUI but is never processed by the LLM).  The
-     * confirmation is best-effort — a failure is logged and swallowed.
+     * Sends the plan reference via `promptAsync` as the session's
+     * executor, then the silent confirmation via `session.prompt(noReply)`
+     * (the confirmation text appears in the TUI but is never processed by
+     * the LLM).  The confirmation is best-effort — a failure is logged and
+     * swallowed.
      *
      * @param session - The created session.
      * @param planReference - The plan-reference prompt text.
@@ -154,7 +146,7 @@ export function createOpenCodeHandoffTarget(
       await client.session.promptAsync({
         path: { id: session.id },
         body: {
-          agent: defaultPrimary,
+          agent: session.agent,
           parts: [{ type: "text", text: planReference }],
         },
       });
@@ -167,7 +159,7 @@ export function createOpenCodeHandoffTarget(
               parts: [
                 {
                   type: "text",
-                  text: buildConfirmText(),
+                  text: buildConfirmText(session.agent),
                   ignored: true,
                 },
               ],

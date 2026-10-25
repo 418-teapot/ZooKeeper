@@ -12,7 +12,6 @@ import assert from "node:assert/strict";
 import { chmodSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, it } from "node:test";
-import type { ActiveSet } from "../core/unit.js";
 import { makeTmpDir } from "../testkits/tmp.js";
 import { BEAVER_PROMPT } from "./beaver.js";
 import { buildDolphinPrompt } from "./dolphin.js";
@@ -227,38 +226,29 @@ describe("agent prompt wiring", () => {
   // interpolation.
   const rules = envToolsRules();
 
-  /** Poly set: every leaf agent present, so dolphin's poly variant is used. */
-  const POLY_SET: ActiveSet = {
-    agents: new Set([
-      "dolphin",
-      "mola",
-      "beaver",
-      "lynx",
-      "spider",
-      "eagle",
-      "kiwi",
-    ]),
-    skills: new Set(),
-    hooks: new Set(),
-    tools: new Set(),
-    commands: new Set(),
-  };
+  /** Poly selection: every leaf agent present, so the poly variant is used. */
+  const POLY_AGENTS: readonly string[] = [
+    "dolphin",
+    "mola",
+    "beaver",
+    "lynx",
+    "spider",
+    "eagle",
+    "kiwi",
+  ];
 
-  /** Mono set: no leaf agents, so dolphin's mono variant is used. */
-  const MONO_SET: ActiveSet = {
-    ...POLY_SET,
-    agents: new Set(["dolphin", "mola"]),
-  };
+  /** Mono selection: no leaf agents, so the mono variant is used. */
+  const MONO_AGENTS: readonly string[] = ["dolphin", "mola"];
 
   const prompts: Array<[string, string]> = [
     ["beaver", BEAVER_PROMPT],
-    ["mola", buildMolaPrompt(POLY_SET)],
+    ["mola", buildMolaPrompt(POLY_AGENTS)],
     ["eagle", EAGLE_PROMPT],
     ["kiwi", KIWI_PROMPT],
     ["spider", SPIDER_PROMPT],
     ["lynx", LYNX_PROMPT],
-    ["dolphin (poly)", buildDolphinPrompt(POLY_SET)],
-    ["dolphin (mono)", buildDolphinPrompt(MONO_SET)],
+    ["dolphin (poly)", buildDolphinPrompt(POLY_AGENTS)],
+    ["dolphin (mono)", buildDolphinPrompt(MONO_AGENTS)],
   ];
 
   for (const [name, prompt] of prompts) {

@@ -1,15 +1,18 @@
 /**
- * Tests for the OpenCode tool-definition translation in
- * `src/compose-opencode.ts`.
+ * Tests for `src/compose-opencode.ts`.
  *
- * Covers the deep-copy view boundary (a contributor's in-place mutation
- * never reaches the native output before the write-back pass) and the
- * change detection that decides which fields the write-back touches.
+ * Covers the host-config projection the planner reads (which agents the
+ * host will materialise, and which of them it accepts as its default
+ * primary) and the tool-definition translation: the deep-copy view
+ * boundary (a contributor's in-place mutation never reaches the native
+ * output before the write-back pass) and the change detection that decides
+ * which fields the write-back touches.
  */
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
   applyToolDefinitionView,
+  hostMaterialisation,
   toToolDefinitionView,
 } from "./compose-opencode.js";
 import type { ToolArgDefinition, ToolDefinitionView } from "./core/unit.js";
@@ -112,5 +115,33 @@ describe("toToolDefinitionView / applyToolDefinitionView", () => {
     applyToolDefinitionView(view, native);
 
     assert.equal(JSON.stringify(native), before);
+  });
+});
+
+describe("hostMaterialisation", () => {
+  it("separates materialised agents from default-agent candidates", () => {
+    const facts = hostMaterialisation({
+      agent: {
+        dolphin: { mode: "primary" },
+        mola: { mode: "all" },
+        beaver: { mode: "subagent" },
+        hiddenOne: { mode: "primary", hidden: true },
+        gone: { mode: "primary", disable: true },
+      },
+    });
+
+    // A disabled entry is not materialised at all; a subagent or hidden
+    // one is materialised but unusable as the host's default agent.
+    assert.deepEqual(facts.agents, ["dolphin", "mola", "beaver", "hiddenOne"]);
+    assert.deepEqual(facts.defaultAgents, ["dolphin", "mola"]);
+  });
+
+  it("reports nothing for a config without an agent table", () => {
+    for (const config of [{}, null, undefined, { agent: [] }]) {
+      assert.deepEqual(hostMaterialisation(config), {
+        agents: [],
+        defaultAgents: [],
+      });
+    }
   });
 });

@@ -8,14 +8,15 @@
  *
  * `nudgeDirectWork` is agent-agnostic — it fires for any agent.  The
  * agent-gated wrapper `nudgeDirectWorkForAgent` (used by the plugin entry
- * point) applies the dolphin-only filter before delegating.
+ * point) applies the orchestrator-only filter before delegating; the
+ * orchestrator name comes from the selection's `uses.orchestrator` fact,
+ * never from a fixed name.
  *
  * @module
  */
 
 import { checkPlanProgress, checkTodoProgress } from "../../core/checks.js";
 import { applyNudge, type NudgeGuard } from "../../core/nudge.js";
-import { ORCHESTRATOR_AGENT_NAME } from "../../core/orchestrator.js";
 import {
   DIRECT_WORK_NUDGE,
   SEARCH_DELEGATE_NUDGE,
@@ -117,14 +118,16 @@ export async function nudgeDirectWork(
 }
 
 /**
- * Agent-gated wrapper around `nudgeDirectWork` (dolphin only).
+ * Agent-gated wrapper around `nudgeDirectWork` (the orchestrator only).
  *
  * The hook unit resolves the session's agent via `Capabilities.resolveAgent`
- * and passes it here.  When the agent is not the orchestrator
- * (`ORCHESTRATOR_AGENT_NAME`; including unknown), the nudge is skipped and
- * one debug entry (`nudge_skipped` / `not_dolphin`) is logged — mirroring
- * the historical entry-point guard.  Other agents keep receiving no protocol
- * reminder: sub-agents must not be told to delegate.
+ * and passes it here.  When the agent is not the orchestrator the
+ * selection resolved (`options.orchestrator`; including unknown), the nudge
+ * is skipped and one debug entry (`nudge_skipped` / `not_orchestrator`) is
+ * logged — mirroring the historical entry-point guard.  A selection that
+ * resolved no orchestrator fails closed: no session is the orchestrator.
+ * Other agents keep receiving no protocol reminder: sub-agents must not be
+ * told to delegate.
  *
  * @param input - Input containing the tool name, session ID, and optional call ID.
  * @param output - Output object mutated in place.
@@ -132,6 +135,7 @@ export async function nudgeDirectWork(
  * @param options.todoSource - Port reading the session's todo entries, or `null` when no todo list is readable.
  * @param options.planDir - Workspace base directory for plan discovery.
  * @param options.agent - The session's resolved agent name (`undefined` when unknown).
+ * @param options.orchestrator - The orchestrator the selection resolved (`undefined` when it declared none).
  */
 export async function nudgeDirectWorkForAgent(
   input: { tool: string; sessionID: string; callID?: string },
@@ -140,16 +144,20 @@ export async function nudgeDirectWorkForAgent(
     todoSource?: TodoSource | null;
     planDir?: string;
     agent?: string;
+    orchestrator?: string;
   },
 ): Promise<void> {
-  if (options.agent !== ORCHESTRATOR_AGENT_NAME) {
+  if (
+    options.orchestrator === undefined ||
+    options.agent !== options.orchestrator
+  ) {
     log.debug({
       hook: "direct-work-nudge",
       event: "nudge_skipped",
       sessionId: input.sessionID,
       callId: input.callID,
       tool: input.tool,
-      reason: "not_dolphin",
+      reason: "not_orchestrator",
     });
     return;
   }

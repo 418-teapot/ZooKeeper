@@ -14,8 +14,8 @@ import { mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, it } from "node:test";
 import type { Capabilities } from "./core/ports/index.js";
-import type { ActiveSet } from "./core/unit.js";
 import { discoverSkillUnits } from "./registry.js";
+import { facts } from "./testkits/compose.js";
 import { makeTmpDir } from "./testkits/tmp.js";
 
 /** Minimal typed create() arguments; skill units ignore both. */
@@ -25,13 +25,7 @@ const DEPS: Partial<Capabilities> = {
   directory: "/tmp/zoo",
   resolveAgent: () => undefined,
 };
-const ACTIVE_SET: ActiveSet = {
-  agents: new Set(),
-  skills: new Set(),
-  hooks: new Set(),
-  tools: new Set(),
-  commands: new Set(),
-};
+const ACTIVE_SET = facts();
 
 // ---------------------------------------------------------------------------
 // Temporary directory helpers

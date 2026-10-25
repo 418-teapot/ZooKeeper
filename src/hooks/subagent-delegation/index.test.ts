@@ -11,9 +11,9 @@
  */
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { composeProfile } from "../../core/compose.js";
 import type { ModeProfile } from "../../core/config-types.js";
 import type { Capabilities } from "../../core/ports/index.js";
+import { composeForTest } from "../../testkits/compose.js";
 import { judgeDelegationTarget, unit } from "./index.js";
 
 // ---------------------------------------------------------------------------
@@ -85,7 +85,7 @@ const HOOK_PROFILE: ModeProfile = {
 
 describe("subagent-delegation unit — capability gate", () => {
   it("skips the unit when the host cannot resolve a caller", () => {
-    const result = composeProfile(HOOK_PROFILE, [unit], BASE_CAPS);
+    const result = composeForTest(HOOK_PROFILE, [unit], BASE_CAPS);
     assert.equal(result.gate, null);
     assert.deepEqual(result.report.skipped, [
       { name: "subagent-delegation", missing: ["resolveCallerAgent"] },
@@ -93,7 +93,7 @@ describe("subagent-delegation unit — capability gate", () => {
   });
 
   it("composes the judge when the host provides the caller resolver", () => {
-    const result = composeProfile(HOOK_PROFILE, [unit], {
+    const result = composeForTest(HOOK_PROFILE, [unit], {
       ...BASE_CAPS,
       resolveCallerAgent: async () => "beaver",
     });

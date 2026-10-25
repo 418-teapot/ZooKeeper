@@ -3,16 +3,16 @@
  * (`src/adapters/opencode/handoff-target.ts`).
  *
  * The handoff target is exercised through the full handoff protocol
- * (`executeHandoff`) with a fake PlanClient: session creation carries
- * the fixture default primary agent, the plan reference is delivered
- * via `promptAsync` BEFORE the plan file is marked `executing`, and a
- * delivery failure leaves the plan file untouched.
+ * (`executeHandoff`) with a fake PlanClient: session creation and the
+ * plan-reference `promptAsync` both carry the executor passed to the
+ * handoff call, the silent confirmation names that same executor, the
+ * reference is delivered BEFORE the plan file is marked `executing`, and
+ * a delivery failure leaves the plan file untouched.
  */
 import assert from "node:assert/strict";
 import { readFileSync, rmSync } from "node:fs";
 import { afterEach, beforeEach, describe, it } from "node:test";
 import { executeHandoff } from "../../core/handoff.js";
-import { buildConfirmText } from "../../core/plan.js";
 import { cleanupPlan, createPlanFile } from "../../testkits/plans.js";
 import { makeTmpDir } from "../../testkits/tmp.js";
 import { _resetForTesting, initLogger } from "../../utils/logger.js";
@@ -46,8 +46,8 @@ afterEach(() => {
   }
 });
 
-/** Fixture default primary — a made-up name, never a real agent. */
-const DEFAULT_PRIMARY = "alpha";
+/** Fixture executor — a made-up name, never a real agent. */
+const EXECUTOR = "alpha";
 
 /** A fake OpenCode PlanClient with recorded calls. */
 function makeClient(overrides?: Partial<PlanClient>): {
@@ -96,48 +96,23 @@ function makeClient(overrides?: Partial<PlanClient>): {
 // ---------------------------------------------------------------------------
 
 describe("OpenCode handoff target — session creation", () => {
-  it("creates the session with the fixture default primary agent and the plan-slug title", async () => {
+  it("creates the session with the handoff executor and the plan-slug title", async () => {
     const sessionID = `test-create-${Date.now()}`;
     const { planPath, baseDir } = createPlanFile("planning-done");
     const { client, createCalls } = makeClient();
 
-    const handoffTarget = createOpenCodeHandoffTarget(
-      client,
-      DEFAULT_PRIMARY,
-      baseDir,
-    );
+    const handoffTarget = createOpenCodeHandoffTarget(client, baseDir);
     await executeHandoff({
       handoffTarget,
+      agent: EXECUTOR,
       sessionID,
       directory: baseDir,
     });
 
     assert.equal(createCalls.length, 1);
-    assert.equal(createCalls[0].body.agent, DEFAULT_PRIMARY);
+    assert.equal(createCalls[0].body.agent, EXECUTOR);
     assert.equal(createCalls[0].body.title, "Execute: test-plan");
     assert.equal(createCalls[0].query.directory, baseDir);
-
-    cleanupPlan(planPath);
-  });
-
-  it("throws fail-closed when the default primary is undefined", async () => {
-    const sessionID = `test-no-primary-${Date.now()}`;
-    const { planPath, baseDir } = createPlanFile("planning-done");
-    const { client } = makeClient();
-
-    const handoffTarget = createOpenCodeHandoffTarget(
-      client,
-      undefined,
-      baseDir,
-    );
-    await assert.rejects(
-      () => executeHandoff({ handoffTarget, sessionID, directory: baseDir }),
-      /No default primary agent is configured/,
-    );
-    // The plan stays planning-done — nothing was delivered or marked.
-    assert.ok(
-      readFileSync(planPath, "utf-8").includes("status: planning-done"),
-    );
 
     cleanupPlan(planPath);
   });
@@ -147,13 +122,15 @@ describe("OpenCode handoff target — session creation", () => {
     const { planPath, baseDir } = createPlanFile("planning-done");
     const client: PlanClient = {};
 
-    const handoffTarget = createOpenCodeHandoffTarget(
-      client,
-      DEFAULT_PRIMARY,
-      baseDir,
-    );
+    const handoffTarget = createOpenCodeHandoffTarget(client, baseDir);
     await assert.rejects(
-      () => executeHandoff({ handoffTarget, sessionID, directory: baseDir }),
+      () =>
+        executeHandoff({
+          handoffTarget,
+          agent: EXECUTOR,
+          sessionID,
+          directory: baseDir,
+        }),
       /Session creation API is not available/,
     );
     assert.ok(
@@ -187,12 +164,13 @@ describe("OpenCode handoff target — delivery ordering and atomicity", () => {
       },
     });
 
-    const handoffTarget = createOpenCodeHandoffTarget(
-      client,
-      DEFAULT_PRIMARY,
-      baseDir,
-    );
-    await executeHandoff({ handoffTarget, sessionID, directory: baseDir });
+    const handoffTarget = createOpenCodeHandoffTarget(client, baseDir);
+    await executeHandoff({
+      handoffTarget,
+      agent: EXECUTOR,
+      sessionID,
+      directory: baseDir,
+    });
 
     // The plan must still be planning-done while the reference is being
     // delivered — the executing mark happens only after.
@@ -202,21 +180,22 @@ describe("OpenCode handoff target — delivery ordering and atomicity", () => {
     cleanupPlan(planPath);
   });
 
-  it("promptAsync delivers the plan reference with the fixture primary", async () => {
+  it("promptAsync delivers the plan reference as the handoff executor", async () => {
     const sessionID = `test-deliver-${Date.now()}`;
     const { planPath, baseDir } = createPlanFile("planning-done");
     const { client, promptAsyncCalls } = makeClient();
 
-    const handoffTarget = createOpenCodeHandoffTarget(
-      client,
-      DEFAULT_PRIMARY,
-      baseDir,
-    );
-    await executeHandoff({ handoffTarget, sessionID, directory: baseDir });
+    const handoffTarget = createOpenCodeHandoffTarget(client, baseDir);
+    await executeHandoff({
+      handoffTarget,
+      agent: EXECUTOR,
+      sessionID,
+      directory: baseDir,
+    });
 
     assert.equal(promptAsyncCalls.length, 1);
     assert.equal(promptAsyncCalls[0].path.id, "new-session-456");
-    assert.equal(promptAsyncCalls[0].body.agent, DEFAULT_PRIMARY);
+    assert.equal(promptAsyncCalls[0].body.agent, EXECUTOR);
     assert.ok(promptAsyncCalls[0].body.parts[0].text.includes(planPath));
 
     cleanupPlan(planPath);
@@ -236,13 +215,13 @@ describe("OpenCode handoff target — delivery ordering and atomicity", () => {
     });
     const failingHandoffTarget = createOpenCodeHandoffTarget(
       failing.client,
-      DEFAULT_PRIMARY,
       baseDir,
     );
     await assert.rejects(
       () =>
         executeHandoff({
           handoffTarget: failingHandoffTarget,
+          agent: EXECUTOR,
           sessionID,
           directory: baseDir,
         }),
@@ -253,13 +232,10 @@ describe("OpenCode handoff target — delivery ordering and atomicity", () => {
 
     // Re-run succeeds and marks the plan.
     const ok = makeClient();
-    const okHandoffTarget = createOpenCodeHandoffTarget(
-      ok.client,
-      DEFAULT_PRIMARY,
-      baseDir,
-    );
+    const okHandoffTarget = createOpenCodeHandoffTarget(ok.client, baseDir);
     await executeHandoff({
       handoffTarget: okHandoffTarget,
+      agent: EXECUTOR,
       sessionID,
       directory: baseDir,
     });
@@ -268,23 +244,45 @@ describe("OpenCode handoff target — delivery ordering and atomicity", () => {
     cleanupPlan(planPath);
   });
 
-  it("posts the silent confirmation after the reference", async () => {
+  it("posts the silent confirmation naming the handoff executor", async () => {
     const sessionID = `test-confirm-${Date.now()}`;
     const { planPath, baseDir } = createPlanFile("planning-done");
     const { client, promptCalls } = makeClient();
 
-    const handoffTarget = createOpenCodeHandoffTarget(
-      client,
-      DEFAULT_PRIMARY,
-      baseDir,
-    );
-    await executeHandoff({ handoffTarget, sessionID, directory: baseDir });
+    const handoffTarget = createOpenCodeHandoffTarget(client, baseDir);
+    await executeHandoff({
+      handoffTarget,
+      agent: EXECUTOR,
+      sessionID,
+      directory: baseDir,
+    });
 
     assert.equal(promptCalls.length, 1);
     assert.equal(promptCalls[0].path.id, "new-session-456");
     assert.equal(promptCalls[0].body.noReply, true);
     assert.equal(promptCalls[0].body.parts[0].ignored, true);
-    assert.equal(promptCalls[0].body.parts[0].text, buildConfirmText());
+    assert.equal(
+      promptCalls[0].body.parts[0].text,
+      "Plan handed off to alpha.",
+    );
+
+    cleanupPlan(planPath);
+  });
+
+  it("the confirmation follows the executor of each handoff", async () => {
+    const sessionID = `test-confirm-dynamic-${Date.now()}`;
+    const { planPath, baseDir } = createPlanFile("planning-done");
+    const { client, promptCalls } = makeClient();
+
+    const handoffTarget = createOpenCodeHandoffTarget(client, baseDir);
+    await executeHandoff({
+      handoffTarget,
+      agent: "beta",
+      sessionID,
+      directory: baseDir,
+    });
+
+    assert.equal(promptCalls[0].body.parts[0].text, "Plan handed off to beta.");
 
     cleanupPlan(planPath);
   });
@@ -311,12 +309,13 @@ describe("OpenCode handoff target — TUI focus", () => {
       },
     });
 
-    const handoffTarget = createOpenCodeHandoffTarget(
-      client,
-      DEFAULT_PRIMARY,
-      baseDir,
-    );
-    await executeHandoff({ handoffTarget, sessionID, directory: baseDir });
+    const handoffTarget = createOpenCodeHandoffTarget(client, baseDir);
+    await executeHandoff({
+      handoffTarget,
+      agent: EXECUTOR,
+      sessionID,
+      directory: baseDir,
+    });
 
     assert.deepEqual(navigations, ["home"]);
     assert.equal(publishes.length, 1);

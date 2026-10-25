@@ -20,8 +20,9 @@ export { nudgeDirectWork, nudgeDirectWorkForAgent };
  * Direct-work-nudge hook unit descriptor.
  *
  * Contributes the after-exec nudge, gated on the session's resolved
- * agent (dolphin only) via `Capabilities.resolveAgent` (fail-closed: an
- * unresolved session is treated as "not dolphin").
+ * agent being the selection's orchestrator (`uses.orchestrator`) via
+ * `Capabilities.resolveAgent` (fail-closed: an unresolved session, and a
+ * selection that resolved no orchestrator, both skip the nudge).
  *
  * The unit consumes the assembly-bound `todoSource` port directly.  The
  * port is a `wants` capability: the nudge itself never depends on todo
@@ -32,7 +33,8 @@ export const unit = defineHook({
   name: "direct-work-nudge",
   needs: ["directory", "resolveAgent"],
   wants: ["todoSource"],
-  create(caps) {
+  uses: ["orchestrator"],
+  create(caps, uses) {
     return {
       afterExec: [
         {
@@ -42,6 +44,7 @@ export const unit = defineHook({
               todoSource: caps.todoSource,
               planDir: caps.directory,
               agent: caps.resolveAgent(input.sessionID),
+              orchestrator: uses.orchestrator,
             }),
         },
       ],

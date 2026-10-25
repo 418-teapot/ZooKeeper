@@ -12,7 +12,6 @@
 
 import { createV1ToolHost } from "../adapters/opencode/tool-host.js";
 import { assembleOpenCodeHooks } from "../compose-opencode.js";
-import { composeProfile } from "../core/compose.js";
 import type {
   ContextPruningConfig,
   ModeProfile,
@@ -21,6 +20,7 @@ import type { Capabilities } from "../core/ports/index.js";
 import type { ToolContribution } from "../core/unit.js";
 import { buildPlugin } from "../opencode.js";
 import { REGISTRY } from "../registry.js";
+import { assembleForTest } from "./compose.js";
 
 /** A zoo config carrying the poly profile's tool-flow gates. */
 export const POLY_ZOO: Record<string, unknown> = {
@@ -42,21 +42,72 @@ export const POLY_ZOO: Record<string, unknown> = {
   },
   mode: {
     poly: {
+      agents: ["dolphin"],
       tools: ["compress", "decompress"],
     },
   },
 };
 
+/**
+ * Raw config carrying the profile agent's mode.
+ *
+ * The host declares dolphin as its orchestrator, so the profile must
+ * provide it as a primary; without the role table the selection would be
+ * invalid and no tool would register.
+ */
+export const POLY_RAW: Record<string, unknown> = {
+  agent: { dolphin: { mode: "primary" } },
+};
+
+/**
+ * Build the host `config.agent` table `install.py` generates for POLY_ZOO.
+ *
+ * The config hook refuses a selection whose agents the host has not
+ * materialised, so a test that drives the hook hands over the same table
+ * the installer writes: POLY_RAW's agents, modes included.
+ */
+export function polyHostConfig(): Record<string, any> {
+  const modes = POLY_RAW.agent as Record<string, { mode: string }>;
+  const agent: Record<string, any> = {};
+  for (const [name, { mode }] of Object.entries(modes)) agent[name] = { mode };
+  return { agent };
+}
+
+/**
+ * Provide the pre-read host config on a stub OpenCode client.
+ *
+ * The plugin reads the host config through `client.config.get` before it
+ * plans the selection, so every stub client that drives `buildPlugin`
+ * has to answer that request with the host's agent table.
+ *
+ * @param client - The stub client (session / tool APIs).
+ * @param config - The host config to answer with.
+ * @returns The client, extended with `config.get`.
+ */
+export function withHostConfig(
+  client: unknown = {},
+  config: Record<string, any> = polyHostConfig(),
+): Record<string, any> {
+  return {
+    ...(client as Record<string, any>),
+    config: { get: async () => ({ data: config }) },
+  };
+}
+
 /** Build a plugin wired to the poly profile (tools: compress + decompress). */
 export function makePlugin(client: unknown = {}): Promise<Record<string, any>> {
-  return buildPlugin({ client }, POLY_ZOO) as Promise<Record<string, any>>;
+  return buildPlugin(
+    { client: withHostConfig(client) },
+    POLY_ZOO,
+    POLY_RAW,
+  ) as Promise<Record<string, any>>;
 }
 
 /**
  * Assemble the OpenCode `tool` surface for a tool-only profile.
  *
- * Drives the production path — `composeProfile` over the real registry,
- * then `assembleOpenCodeHooks` — with deps matching `buildPlugin`'s
+ * Drives the production path — the assembly pipeline over the real
+ * registry, then `assembleOpenCodeHooks` — with deps matching `buildPlugin`'s
  * construction (the tool units read only `contextConfig` and `toolHost`).
  * Returns `undefined` when the profile enables no tool, matching the
  * plugin's absent `tool` key.
@@ -87,6 +138,6 @@ export function composeToolHooks(
     tools,
     commands: [],
   };
-  const composed = composeProfile(profile, REGISTRY, deps);
-  return assembleOpenCodeHooks(composed, deps, profile).tool;
+  const { composed, selection } = assembleForTest(profile, REGISTRY, deps);
+  return assembleOpenCodeHooks(composed, deps, selection).tool;
 }

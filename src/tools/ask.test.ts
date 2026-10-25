@@ -29,11 +29,10 @@ import {
   presentAskForm,
 } from "../adapters/pi/ask-form.js";
 import type { AskResult, NormalizedQuestion } from "../core/ask.js";
-import { composeProfile } from "../core/compose.js";
 import type { ModeProfile } from "../core/config-types.js";
 import type { Capabilities } from "../core/ports/index.js";
-import type { ActiveSet } from "../core/unit.js";
 import { formHarness } from "../testkits/ask-form.js";
+import { composeForTest, facts } from "../testkits/compose.js";
 import { assembleAskResults, guardAnswers, parseAskArgs, unit } from "./ask.js";
 
 // ---------------------------------------------------------------------------
@@ -581,7 +580,7 @@ describe("ask tool — contribution", () => {
 
 describe("ask tool — unit descriptor", () => {
   it("skips the unit and reports askFormHost without the form host (OpenCode)", () => {
-    const result = composeProfile(ASK_TOOL_PROFILE, [unit], makeDeps({}));
+    const result = composeForTest(ASK_TOOL_PROFILE, [unit], makeDeps({}));
     assert.deepEqual(result.tools, {});
     assert.deepEqual(result.report.skipped, [
       { name: "ask", missing: ["askFormHost"] },
@@ -655,14 +654,8 @@ function makeDeps(
   } as unknown as Partial<Capabilities>;
 }
 
-function activeSet(): ActiveSet {
-  return {
-    agents: new Set(),
-    skills: new Set(),
-    hooks: new Set(),
-    tools: new Set(),
-    commands: new Set(),
-  };
+function activeSet() {
+  return facts();
 }
 
 /** A minimal mode profile enabling exactly the ask tool unit. */

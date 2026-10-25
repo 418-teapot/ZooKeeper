@@ -39,6 +39,9 @@ afterEach(() => {
   }
 });
 
+/** Fixture executor — a made-up name, never a real agent. */
+const EXECUTOR = "alpha";
+
 /** A fake handoff target recording the exact order of its method calls. */
 function fakeHandoffTarget(overrides?: {
   deliverError?: Error;
@@ -46,27 +49,43 @@ function fakeHandoffTarget(overrides?: {
 }): {
   handoffTarget: HandoffTarget;
   calls: string[];
-  createArgs: Array<{ parentage: string; title: string }>;
-  deliverArgs: Array<{ id: string; planReference: string }>;
+  createArgs: Array<{ parentage: string; title: string; agent: string }>;
+  installArgs: Array<{ id: string; agent: string }>;
+  deliverArgs: Array<{ id: string; agent: string; planReference: string }>;
   focusArgs: Array<{ id: string }>;
 } {
   const calls: string[] = [];
-  const createArgs: Array<{ parentage: string; title: string }> = [];
-  const deliverArgs: Array<{ id: string; planReference: string }> = [];
+  const createArgs: Array<{
+    parentage: string;
+    title: string;
+    agent: string;
+  }> = [];
+  const installArgs: Array<{ id: string; agent: string }> = [];
+  const deliverArgs: Array<{
+    id: string;
+    agent: string;
+    planReference: string;
+  }> = [];
   const focusArgs: Array<{ id: string }> = [];
   const failDeliver = false;
   const handoffTarget: HandoffTarget = {
     create: async (ctx) => {
       calls.push("create");
       createArgs.push(ctx);
-      return { id: "new-session-1" };
+      // Echo the context's executor, as a host target must.
+      return { id: "new-session-1", agent: ctx.agent };
     },
-    installAgent: async () => {
+    installAgent: async (session) => {
       calls.push("install");
+      installArgs.push({ id: session.id, agent: session.agent });
     },
     deliver: async (session, planReference) => {
       calls.push("deliver");
-      deliverArgs.push({ id: session.id, planReference });
+      deliverArgs.push({
+        id: session.id,
+        agent: session.agent,
+        planReference,
+      });
       overrides?.onDeliver?.(planReference);
       if (overrides?.deliverError || failDeliver) {
         throw overrides?.deliverError ?? new Error("deliver failed");
@@ -81,6 +100,7 @@ function fakeHandoffTarget(overrides?: {
     handoffTarget,
     calls,
     createArgs,
+    installArgs,
     deliverArgs,
     focusArgs,
   };
@@ -98,6 +118,7 @@ describe("executeHandoff — success path step order", () => {
 
     await executeHandoff({
       handoffTarget: fake.handoffTarget,
+      agent: EXECUTOR,
       sessionID,
       directory: baseDir,
     });
@@ -107,7 +128,7 @@ describe("executeHandoff — success path step order", () => {
     // handoff target call, but it must happen before focus — verified by
     // the plan file content being "executing" when the handoff completes).
     assert.deepEqual(fake.createArgs, [
-      { parentage: sessionID, title: "Execute: test-plan" },
+      { parentage: sessionID, title: "Execute: test-plan", agent: EXECUTOR },
     ]);
     assert.equal(fake.deliverArgs.length, 1);
     assert.equal(fake.deliverArgs[0].id, "new-session-1");
@@ -119,6 +140,27 @@ describe("executeHandoff — success path step order", () => {
 
     const content = readFileSync(planPath, "utf-8");
     assert.ok(content.includes("status: executing"));
+
+    cleanupPlan(planPath);
+  });
+
+  it("hands the same executor to create, install, and deliver", async () => {
+    const sessionID = `test-executor-${Date.now()}`;
+    const { planPath, baseDir } = createPlanFile("planning-done");
+    const fake = fakeHandoffTarget();
+
+    await executeHandoff({
+      handoffTarget: fake.handoffTarget,
+      agent: EXECUTOR,
+      sessionID,
+      directory: baseDir,
+    });
+
+    assert.equal(fake.createArgs[0].agent, EXECUTOR);
+    assert.deepEqual(fake.installArgs, [
+      { id: "new-session-1", agent: EXECUTOR },
+    ]);
+    assert.equal(fake.deliverArgs[0].agent, EXECUTOR);
 
     cleanupPlan(planPath);
   });
@@ -141,6 +183,7 @@ describe("executeHandoff — deliver-failure atomicity", () => {
       () =>
         executeHandoff({
           handoffTarget: fake.handoffTarget,
+          agent: EXECUTOR,
           sessionID,
           directory: baseDir,
         }),
@@ -166,6 +209,7 @@ describe("executeHandoff — deliver-failure atomicity", () => {
       () =>
         executeHandoff({
           handoffTarget: failFake.handoffTarget,
+          agent: EXECUTOR,
           sessionID,
           directory: baseDir,
         }),
@@ -179,6 +223,7 @@ describe("executeHandoff — deliver-failure atomicity", () => {
     const okFake = fakeHandoffTarget();
     await executeHandoff({
       handoffTarget: okFake.handoffTarget,
+      agent: EXECUTOR,
       sessionID,
       directory: baseDir,
     });
@@ -203,6 +248,7 @@ describe("executeHandoff — plan resolution", () => {
       () =>
         executeHandoff({
           handoffTarget: fake.handoffTarget,
+          agent: EXECUTOR,
           sessionID,
           directory: emptyDir,
         }),

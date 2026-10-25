@@ -20,7 +20,6 @@
  */
 import assert from "node:assert/strict";
 import { afterEach, beforeEach, describe, it } from "node:test";
-import { composeProfile } from "../core/compose.js";
 import type { ModeProfile } from "../core/config-types.js";
 import type { Projection } from "../core/context/lens.js";
 import { project } from "../core/context/lens.js";
@@ -41,7 +40,7 @@ import {
   resetRegistry,
   topLevelRuns,
 } from "../core/subagent/registry.js";
-import type { ActiveSet } from "../core/unit.js";
+import { composeForTest, facts } from "../testkits/compose.js";
 import {
   _getBufferForTesting,
   _resetForTesting as _resetLoggerForTesting,
@@ -118,26 +117,12 @@ function makeDeps(
   };
 }
 
-/** The contributed subagent tool for a set of deps and an active set. */
-function tool(
-  deps: Partial<Capabilities>,
-  activeSet: ActiveSet = emptyActiveSet(),
-) {
-  const contributions = unit.create(deps, activeSet);
+/** The contributed subagent tool for a set of deps and a fact projection. */
+function tool(deps: Partial<Capabilities>, uses = facts()) {
+  const contributions = unit.create(deps, uses);
   assert.equal(contributions.kind, "tool");
   assert.equal(contributions.tools.length, 1, "exactly one tool contributed");
   return contributions.tools[0];
-}
-
-/** A default (all-empty) active enablement set. */
-function emptyActiveSet(): ActiveSet {
-  return {
-    agents: new Set(),
-    skills: new Set(),
-    hooks: new Set(),
-    tools: new Set(),
-    commands: new Set(),
-  };
 }
 
 // ---------------------------------------------------------------------------
@@ -156,7 +141,7 @@ const SUBAGENT_TOOL_PROFILE: ModeProfile = {
 
 describe("subagent tool unit — fail-closed registration", () => {
   it("skips the unit and reports subagentDriver when no driver is in deps (OpenCode)", () => {
-    const result = composeProfile(SUBAGENT_TOOL_PROFILE, [unit], makeDeps());
+    const result = composeForTest(SUBAGENT_TOOL_PROFILE, [unit], makeDeps());
     assert.deepEqual(result.tools, {});
     assert.deepEqual(result.report.skipped, [
       { name: "subagent", missing: ["subagentDriver"] },

@@ -5,7 +5,8 @@
  * (`executeHandoff`) with a fake pi command context: the parent session
  * id is passed into `newSession`, the plan reference is delivered via
  * the `withSession` callback's `sendUserMessage`, `setPrimary` is called
- * with the fixture default primary, and a cancelled replacement throws.
+ * with the executor the handoff call carried, and a cancelled or
+ * throwing replacement restores the primary that preceded the handoff.
  */
 import assert from "node:assert/strict";
 import { readFileSync, rmSync } from "node:fs";
@@ -53,8 +54,8 @@ afterEach(() => {
   }
 });
 
-/** Fixture default primary — a made-up name, never a real agent. */
-const DEFAULT_PRIMARY = "alpha";
+/** Fixture executor — a made-up name, never a real agent. */
+const EXECUTOR = "alpha";
 
 /** A fake pi command context with a recording newSession. */
 function fakeCommandCtx(overrides?: {
@@ -121,9 +122,13 @@ describe("pi handoff target — create and install", () => {
 
     const handoffTarget = createPiHandoffTarget({
       getCommandCtx: () => cmdCtx,
-      defaultPrimary: DEFAULT_PRIMARY,
     });
-    await executeHandoff({ handoffTarget, sessionID, directory: baseDir });
+    await executeHandoff({
+      handoffTarget,
+      agent: EXECUTOR,
+      sessionID,
+      directory: baseDir,
+    });
 
     // The parent session id flows into newSession.
     assert.equal(newSessionOptions.length, 1);
@@ -140,10 +145,15 @@ describe("pi handoff target — create and install", () => {
 
     const handoffTarget = createPiHandoffTarget({
       getCommandCtx: () => ({}),
-      defaultPrimary: DEFAULT_PRIMARY,
     });
     await assert.rejects(
-      () => executeHandoff({ handoffTarget, sessionID, directory: baseDir }),
+      () =>
+        executeHandoff({
+          handoffTarget,
+          agent: EXECUTOR,
+          sessionID,
+          directory: baseDir,
+        }),
       /newSession/,
     );
     // Plan untouched — nothing delivered or marked.
@@ -160,18 +170,42 @@ describe("pi handoff target — create and install", () => {
 // ---------------------------------------------------------------------------
 
 describe("pi handoff target — setPrimary", () => {
-  it("calls setPrimary with the fixture default primary", async () => {
+  it("calls setPrimary with the executor the handoff carried", async () => {
     const sessionID = `test-primary-${Date.now()}`;
     const { planPath, baseDir } = createPlanFile("planning-done");
     const { ctx } = fakeCommandCtx();
 
     const handoffTarget = createPiHandoffTarget({
       getCommandCtx: () => ctx,
-      defaultPrimary: DEFAULT_PRIMARY,
     });
-    await executeHandoff({ handoffTarget, sessionID, directory: baseDir });
+    await executeHandoff({
+      handoffTarget,
+      agent: EXECUTOR,
+      sessionID,
+      directory: baseDir,
+    });
 
-    assert.equal(getPrimary(), DEFAULT_PRIMARY);
+    assert.equal(getPrimary(), EXECUTOR);
+
+    cleanupPlan(planPath);
+  });
+
+  it("switches to whichever executor the individual handoff carried", async () => {
+    const sessionID = `test-primary-dynamic-${Date.now()}`;
+    const { planPath, baseDir } = createPlanFile("planning-done");
+    const { ctx } = fakeCommandCtx();
+
+    const handoffTarget = createPiHandoffTarget({
+      getCommandCtx: () => ctx,
+    });
+    await executeHandoff({
+      handoffTarget,
+      agent: "beta",
+      sessionID,
+      directory: baseDir,
+    });
+
+    assert.equal(getPrimary(), "beta");
 
     cleanupPlan(planPath);
   });
@@ -189,9 +223,13 @@ describe("pi handoff target — deliver semantics", () => {
 
     const handoffTarget = createPiHandoffTarget({
       getCommandCtx: () => ctx,
-      defaultPrimary: DEFAULT_PRIMARY,
     });
-    await executeHandoff({ handoffTarget, sessionID, directory: baseDir });
+    await executeHandoff({
+      handoffTarget,
+      agent: EXECUTOR,
+      sessionID,
+      directory: baseDir,
+    });
 
     // The reference must be sent into the fresh session context.
     assert.equal(sentUserMessages.length, 1);
@@ -219,11 +257,11 @@ describe("pi handoff target — deliver semantics", () => {
     const { ctx, sentUserMessages } = fakeCommandCtx({ sendTurn: turn });
     const handoffTarget = createPiHandoffTarget({
       getCommandCtx: () => ctx,
-      defaultPrimary: DEFAULT_PRIMARY,
     });
 
     const handoff = executeHandoff({
       handoffTarget,
+      agent: EXECUTOR,
       sessionID,
       directory: baseDir,
     });
@@ -274,10 +312,14 @@ describe("pi handoff target — deliver semantics", () => {
     const { ctx, sentUserMessages } = fakeCommandCtx({ sendTurn: turn });
     const handoffTarget = createPiHandoffTarget({
       getCommandCtx: () => ctx,
-      defaultPrimary: DEFAULT_PRIMARY,
     });
 
-    await executeHandoff({ handoffTarget, sessionID, directory: baseDir });
+    await executeHandoff({
+      handoffTarget,
+      agent: EXECUTOR,
+      sessionID,
+      directory: baseDir,
+    });
     assert.equal(sentUserMessages.length, 1);
 
     // Reject the turn after the handoff already succeeded.  `deliver` must
@@ -311,10 +353,15 @@ describe("pi handoff target — deliver semantics", () => {
 
     const handoffTarget = createPiHandoffTarget({
       getCommandCtx: () => ctx,
-      defaultPrimary: DEFAULT_PRIMARY,
     });
     await assert.rejects(
-      () => executeHandoff({ handoffTarget, sessionID, directory: baseDir }),
+      () =>
+        executeHandoff({
+          handoffTarget,
+          agent: EXECUTOR,
+          sessionID,
+          directory: baseDir,
+        }),
       /cancelled/,
     );
     assert.ok(
@@ -328,7 +375,7 @@ describe("pi handoff target — deliver semantics", () => {
   // Primary rollback on failed replacement
   // -------------------------------------------------------------------------
   //
-  // `installAgent` (handoff step 3) switches the primary to the default
+  // `installAgent` (handoff step 3) switches the primary to the handoff's
   // executor BEFORE `deliver` (step 4) replaces the session.  When the
   // replacement is cancelled or throws, pi never created the session, yet
   // the primary is left pointing at the executor while the user is still
@@ -339,17 +386,22 @@ describe("pi handoff target — deliver semantics", () => {
   it("cancelled replacement restores the previous primary", async () => {
     const sessionID = `test-cancel-rollback-${Date.now()}`;
     const { planPath, baseDir } = createPlanFile("planning-done");
-    // The user is planning as a DIFFERENT primary (not the default
+    // The user is planning as a DIFFERENT primary (not the handoff
     // executor): the handoff is about to strand them on the executor.
     setPrimary("mola");
     const { ctx } = fakeCommandCtx({ cancelled: true });
 
     const handoffTarget = createPiHandoffTarget({
       getCommandCtx: () => ctx,
-      defaultPrimary: DEFAULT_PRIMARY,
     });
     await assert.rejects(
-      () => executeHandoff({ handoffTarget, sessionID, directory: baseDir }),
+      () =>
+        executeHandoff({
+          handoffTarget,
+          agent: EXECUTOR,
+          sessionID,
+          directory: baseDir,
+        }),
       /cancelled/,
     );
     // No session was created, so the surviving planning session's primary
@@ -368,10 +420,15 @@ describe("pi handoff target — deliver semantics", () => {
 
     const handoffTarget = createPiHandoffTarget({
       getCommandCtx: () => ctx,
-      defaultPrimary: DEFAULT_PRIMARY,
     });
     await assert.rejects(
-      () => executeHandoff({ handoffTarget, sessionID, directory: baseDir }),
+      () =>
+        executeHandoff({
+          handoffTarget,
+          agent: EXECUTOR,
+          sessionID,
+          directory: baseDir,
+        }),
       /session runtime exploded/,
     );
     // The session was never created — the primary must be rolled back.
@@ -388,12 +445,16 @@ describe("pi handoff target — deliver semantics", () => {
 
     const handoffTarget = createPiHandoffTarget({
       getCommandCtx: () => ctx,
-      defaultPrimary: DEFAULT_PRIMARY,
     });
-    await executeHandoff({ handoffTarget, sessionID, directory: baseDir });
+    await executeHandoff({
+      handoffTarget,
+      agent: EXECUTOR,
+      sessionID,
+      directory: baseDir,
+    });
     // The replacement succeeded — the handoff owns the new primary and
     // must NOT roll back to the planning session's identity.
-    assert.equal(getPrimary(), DEFAULT_PRIMARY);
+    assert.equal(getPrimary(), EXECUTOR);
 
     cleanupPlan(planPath);
   });

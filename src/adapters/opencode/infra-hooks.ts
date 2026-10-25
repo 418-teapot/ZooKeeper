@@ -9,6 +9,11 @@
  * prompt wording.  The mutable loop state (the engine, the aborted-session
  * set, the injected-wake echo map) lives in this factory's closure.
  *
+ * The loop settle path is role-gated: the session must resolve to the
+ * orchestrator the assembly selected, which arrives as an input — this
+ * module holds no agent name of its own, and an absent orchestrator keeps
+ * the path inert (fail-closed).
+ *
  * @module
  */
 
@@ -16,7 +21,6 @@ import { setModelLimit } from "../../core/context/model-limits.js";
 import { cleanupSession } from "../../core/context/runtime.js";
 import { createLoopEngine } from "../../core/loop/index.js";
 import type { SettledContribution } from "../../core/loop/settle.js";
-import { ORCHESTRATOR_AGENT_NAME } from "../../core/orchestrator.js";
 import {
   applyModelVariant,
   type PromptVariantPair,
@@ -43,6 +47,12 @@ export interface InfraHookDeps {
    * nothing (fail-closed).
    */
   promptVariants: readonly PromptVariantPair[];
+  /**
+   * The orchestrator the assembly selected, or `undefined` when the
+   * profile resolved none.  Only this agent's sessions may wake; without
+   * it the settle path stays inert (fail-closed).
+   */
+  orchestrator?: string;
 }
 
 /**
@@ -58,7 +68,7 @@ export interface InfraHookDeps {
  * @returns The `event` and `experimental.chat.system.transform` hooks.
  */
 export function buildInfraHooks(deps: InfraHookDeps) {
-  const { client, resolveAgent } = deps;
+  const { client, resolveAgent, orchestrator } = deps;
   const engine =
     deps.onSettled.length > 0 ? createLoopEngine(deps.onSettled) : undefined;
   // Sessions with an observed abort (`session.error`), consumed once at
@@ -151,7 +161,8 @@ export function buildInfraHooks(deps: InfraHookDeps) {
         const sessionID = (properties as { sessionID?: unknown } | undefined)
           ?.sessionID;
         if (typeof sessionID !== "string") return;
-        if (resolveAgent(sessionID) !== ORCHESTRATOR_AGENT_NAME) return;
+        if (orchestrator === undefined) return;
+        if (resolveAgent(sessionID) !== orchestrator) return;
         if (engine === undefined) return;
 
         const outcome = await classifyStopCause(
@@ -187,7 +198,7 @@ export function buildInfraHooks(deps: InfraHookDeps) {
           await client.session.promptAsync({
             path: { id: sessionID },
             body: {
-              agent: ORCHESTRATOR_AGENT_NAME,
+              agent: orchestrator,
               messageID,
               parts: [{ type: "text", text: decision.text }],
             },

@@ -271,11 +271,20 @@ const MIXED_BRANCH = [
   },
 ];
 
+/**
+ * The agent-role table config.toml declares: dolphin is the orchestrator.
+ *
+ * The host hands this role to the planner, so every fixture profile must
+ * enable dolphin as a primary or the selection is invalid and no settle
+ * strategy runs.
+ */
+const RAW_AGENTS = { agent: { dolphin: { mode: "primary" } } };
+
 /** A profile enabling only the todo-continuation hook. */
 const ZOO = {
   mode: {
     poly: {
-      agents: [],
+      agents: ["dolphin"],
       skills: [],
       hooks: ["todo-continuation"],
       tools: [],
@@ -298,7 +307,7 @@ const ZOO_NO_CONTINUATION = { mode: { poly: { ...ZOO.mode.poly } } };
 const ZOO_NO_SETTLE = {
   mode: {
     poly: {
-      agents: [],
+      agents: ["dolphin"],
       skills: [],
       hooks: [],
       tools: [],
@@ -314,7 +323,7 @@ const ZOO_NO_SETTLE = {
 describe("buildPiHandlers — loop settle", () => {
   it("returns the wake as a boundary entry with continue so pi runs it", async () => {
     const api = mockApi();
-    const handlers = await buildPiHandlers(ZOO, api as any);
+    const handlers = await buildPiHandlers(ZOO, api as any, RAW_AGENTS);
     assert.equal(handlers.hasSettledHandlers, true);
 
     // The wake must be committed at pi's pre-settle boundary: pi runs the
@@ -339,7 +348,7 @@ describe("buildPiHandlers — loop settle", () => {
 
   it("preserves boundary entries earlier handlers contributed", async () => {
     const api = mockApi();
-    const handlers = await buildPiHandlers(ZOO, api as any);
+    const handlers = await buildPiHandlers(ZOO, api as any, RAW_AGENTS);
     const ctx = settleCtx("sess-prior", ACTIVE_BRANCH);
     handlers.agentEnd(RUN_ENDED, ctx);
 
@@ -359,7 +368,7 @@ describe("buildPiHandlers — loop settle", () => {
 
   it("stays silent when the run ended awaiting user input", async () => {
     const api = mockApi();
-    const handlers = await buildPiHandlers(ZOO, api as any);
+    const handlers = await buildPiHandlers(ZOO, api as any, RAW_AGENTS);
     const c = settleCtx("sess-await", ACTIVE_BRANCH);
 
     handlers.uiPromptStart({ type: "ui_prompt_start" }, c);
@@ -370,7 +379,7 @@ describe("buildPiHandlers — loop settle", () => {
 
   it("stays silent when the run was aborted", async () => {
     const api = mockApi();
-    const handlers = await buildPiHandlers(ZOO, api as any);
+    const handlers = await buildPiHandlers(ZOO, api as any, RAW_AGENTS);
     const c = settleCtx("sess-aborted", ACTIVE_BRANCH);
 
     const result = await settle(
@@ -392,7 +401,7 @@ describe("buildPiHandlers — loop settle", () => {
     // the authority — re-deriving the outcome from the transcript used to
     // misclassify the abort as settled and wake into a dead run.
     const api = mockApi();
-    const handlers = await buildPiHandlers(ZOO, api as any);
+    const handlers = await buildPiHandlers(ZOO, api as any, RAW_AGENTS);
     const c = settleCtx("sess-error", ACTIVE_BRANCH);
 
     const result = await settle(handlers, RUN_ENDED, c, "error");
@@ -402,7 +411,7 @@ describe("buildPiHandlers — loop settle", () => {
 
   it("stays silent when the session cannot be identified", async () => {
     const api = mockApi();
-    const handlers = await buildPiHandlers(ZOO, api as any);
+    const handlers = await buildPiHandlers(ZOO, api as any, RAW_AGENTS);
     const c = {
       sessionManager: {
         getSessionId: () => "",
@@ -417,7 +426,7 @@ describe("buildPiHandlers — loop settle", () => {
 
   it("stays silent when the reminder budget is exhausted", async () => {
     const api = mockApi();
-    const handlers = await buildPiHandlers(ZOO_LIMIT_1, api as any);
+    const handlers = await buildPiHandlers(ZOO_LIMIT_1, api as any, RAW_AGENTS);
     const c = settleCtx("sess-budget", ACTIVE_BRANCH);
 
     const first = await settle(handlers, RUN_ENDED, c);
@@ -429,7 +438,7 @@ describe("buildPiHandlers — loop settle", () => {
 
   it("resets the budget on a real user turn, allowing another wake", async () => {
     const api = mockApi();
-    const handlers = await buildPiHandlers(ZOO_LIMIT_1, api as any);
+    const handlers = await buildPiHandlers(ZOO_LIMIT_1, api as any, RAW_AGENTS);
     const c = settleCtx("sess-reset", ACTIVE_BRANCH);
 
     await settle(handlers, RUN_ENDED, c);
@@ -444,7 +453,7 @@ describe("buildPiHandlers — loop settle", () => {
 
   it("never propagates a stale-context error out of the judge", async () => {
     const api = mockApi();
-    const handlers = await buildPiHandlers(ZOO, api as any);
+    const handlers = await buildPiHandlers(ZOO, api as any, RAW_AGENTS);
     // pi invalidates a captured ctx on session replacement / reload; reading
     // `sessionManager` then throws.  The judge must swallow it and log.
     const stale = {
@@ -464,7 +473,11 @@ describe("buildPiHandlers — loop settle", () => {
 
   it("is a no-op when the profile contributes no settle handler", async () => {
     const api = mockApi();
-    const handlers = await buildPiHandlers(ZOO_NO_SETTLE, api as any);
+    const handlers = await buildPiHandlers(
+      ZOO_NO_SETTLE,
+      api as any,
+      RAW_AGENTS,
+    );
     assert.equal(handlers.hasSettledHandlers, false);
 
     const result = await settle(
@@ -478,7 +491,11 @@ describe("buildPiHandlers — loop settle", () => {
 
   it("is a no-op when no valid continuation config is present", async () => {
     const api = mockApi();
-    const handlers = await buildPiHandlers(ZOO_NO_CONTINUATION, api as any);
+    const handlers = await buildPiHandlers(
+      ZOO_NO_CONTINUATION,
+      api as any,
+      RAW_AGENTS,
+    );
     assert.equal(handlers.hasSettledHandlers, false);
 
     const result = await settle(
@@ -493,9 +510,14 @@ describe("buildPiHandlers — loop settle", () => {
   it("drops a session's budget on session_start so it restarts fresh", async () => {
     const api = mockApi();
     const reminders = new Map<string, Map<string, number>>();
-    const handlers = await buildPiHandlers(ZOO_LIMIT_1, api as any, undefined, {
-      remindersUsed: reminders,
-    });
+    const handlers = await buildPiHandlers(
+      ZOO_LIMIT_1,
+      api as any,
+      RAW_AGENTS,
+      {
+        remindersUsed: reminders,
+      },
+    );
     const c = settleCtx("sess-del", ACTIVE_BRANCH);
 
     await settle(handlers, RUN_ENDED, c);
@@ -515,7 +537,7 @@ describe("buildPiHandlers — loop settle", () => {
     for (let i = 0; i < 100; i += 1) {
       reminders.set(`s${i}`, new Map([["todoContinuation", 1]]));
     }
-    const handlers = await buildPiHandlers(ZOO, api as any, undefined, {
+    const handlers = await buildPiHandlers(ZOO, api as any, RAW_AGENTS, {
       remindersUsed: reminders,
     });
 
@@ -538,7 +560,7 @@ describe("buildPiHandlers — loop settle", () => {
     const handlers = await buildPiHandlers(
       ZOO_NO_SETTLE,
       api as any,
-      undefined,
+      RAW_AGENTS,
       {
         remindersUsed: reminders,
       },
@@ -568,7 +590,7 @@ describe("buildPiHandlers — loop settle", () => {
     const handlers = await buildPiHandlers(
       ZOO_NO_CONTINUATION,
       api as any,
-      undefined,
+      RAW_AGENTS,
       {
         remindersUsed: reminders,
       },
@@ -595,7 +617,7 @@ describe("buildPiHandlers — loop settle", () => {
 
 /** A profile enabling only the auto-debug settle strategy. */
 const AUTODEBUG_ZOO_PROFILE = {
-  agents: [],
+  agents: ["dolphin"],
   skills: [],
   hooks: ["auto-debug"],
   tools: [],
@@ -652,7 +674,7 @@ describe("buildPiHandlers — auto-debug end to end", () => {
     const handlers = await buildPiHandlers(
       autoDebugZoo(maxWakes),
       api as any,
-      undefined,
+      RAW_AGENTS,
       { directory: fixture.workspace, zdebugExec },
     );
     return { api, handlers };
@@ -780,7 +802,7 @@ describe("buildPiHandlers — settled-turn facts", () => {
 
   it("wakes a turn that issued an edit call", async () => {
     const api = mockApi();
-    const handlers = await buildPiHandlers(ZOO, api as any);
+    const handlers = await buildPiHandlers(ZOO, api as any, RAW_AGENTS);
     const evt = runEnded([
       userMessage("do work"),
       assistant([toolCallPart("edit", { filePath: "a.ts" })]),
@@ -799,7 +821,7 @@ describe("buildPiHandlers — settled-turn facts", () => {
     // The old no-progress false-negative hole: a planning turn is still
     // activity, and wakefulness is the list's call, not the turn's.
     const api = mockApi();
-    const handlers = await buildPiHandlers(ZOO, api as any);
+    const handlers = await buildPiHandlers(ZOO, api as any, RAW_AGENTS);
     const evt = runEnded([
       userMessage("plan work"),
       assistant([toolCallPart("todo", { op: "init" })]),
@@ -820,7 +842,7 @@ describe("buildPiHandlers — settled-turn facts", () => {
     // as activity and the list decides wakefulness.
     for (const agent of ["beaver", "lynx"]) {
       const api = mockApi();
-      const handlers = await buildPiHandlers(ZOO, api as any);
+      const handlers = await buildPiHandlers(ZOO, api as any, RAW_AGENTS);
       const evt = runEnded([
         userMessage("delegate"),
         assistant([toolCallPart("subagent", { agent })]),
@@ -841,7 +863,7 @@ describe("buildPiHandlers — settled-turn facts", () => {
     // declared through a blocked task, so an approval solicitation in
     // otherwise-active turns is just a settled turn.
     const api = mockApi();
-    const handlers = await buildPiHandlers(ZOO, api as any);
+    const handlers = await buildPiHandlers(ZOO, api as any, RAW_AGENTS);
     const evt = runEnded([
       userMessage("implement"),
       assistant([
@@ -862,7 +884,7 @@ describe("buildPiHandlers — settled-turn facts", () => {
 
   it("leaves an ordinary final text turn unaffected", async () => {
     const api = mockApi();
-    const handlers = await buildPiHandlers(ZOO, api as any);
+    const handlers = await buildPiHandlers(ZOO, api as any, RAW_AGENTS);
     const evt = runEnded([
       userMessage("implement"),
       assistant([toolCallPart("bash"), textPart("All changes applied.")]),
@@ -882,7 +904,7 @@ describe("buildPiHandlers — settled-turn facts", () => {
     // No tool activity does not imply silence: without a prior wake
     // there is no lock, and the list alone decides.
     const api = mockApi();
-    const handlers = await buildPiHandlers(ZOO, api as any);
+    const handlers = await buildPiHandlers(ZOO, api as any, RAW_AGENTS);
 
     const result = await settle(
       handlers,
@@ -896,7 +918,7 @@ describe("buildPiHandlers — settled-turn facts", () => {
 
   it("wakes when the turn has no assistant message", async () => {
     const api = mockApi();
-    const handlers = await buildPiHandlers(ZOO, api as any);
+    const handlers = await buildPiHandlers(ZOO, api as any, RAW_AGENTS);
     const evt = runEnded([userMessage("only a prompt")]);
 
     const result = await settle(
@@ -912,7 +934,7 @@ describe("buildPiHandlers — settled-turn facts", () => {
     // After a wake locks the session, only the settled turn counts as
     // activity: the earlier turn's edit must not release the lock.
     const api = mockApi();
-    const handlers = await buildPiHandlers(ZOO_LIMIT_2, api as any);
+    const handlers = await buildPiHandlers(ZOO_LIMIT_2, api as any, RAW_AGENTS);
     const c = settleCtx("sess-scope", ACTIVE_BRANCH);
 
     const first = await settle(handlers, RUN_ENDED, c);
@@ -935,7 +957,7 @@ describe("buildPiHandlers — settled-turn facts", () => {
 
   it("stays silent on a text-only reply to a wake without spending budget", async () => {
     const api = mockApi();
-    const handlers = await buildPiHandlers(ZOO_LIMIT_2, api as any);
+    const handlers = await buildPiHandlers(ZOO_LIMIT_2, api as any, RAW_AGENTS);
     const c = settleCtx("sess-lock", ACTIVE_BRANCH);
 
     const first = await settle(handlers, RUN_ENDED, c);
@@ -953,7 +975,7 @@ describe("buildPiHandlers — settled-turn facts", () => {
 
   it("releases the lock when the reply makes a read-only tool call", async () => {
     const api = mockApi();
-    const handlers = await buildPiHandlers(ZOO, api as any);
+    const handlers = await buildPiHandlers(ZOO, api as any, RAW_AGENTS);
     const c = settleCtx("sess-unlock", ACTIVE_BRANCH);
 
     const first = await settle(handlers, RUN_ENDED, c);
@@ -981,7 +1003,7 @@ describe("buildPiHandlers — settled-turn facts", () => {
 
   it("a real user turn clears the lock along with the budget", async () => {
     const api = mockApi();
-    const handlers = await buildPiHandlers(ZOO_LIMIT_1, api as any);
+    const handlers = await buildPiHandlers(ZOO_LIMIT_1, api as any, RAW_AGENTS);
     const c = settleCtx("sess-lock-reset", ACTIVE_BRANCH);
 
     const first = await settle(handlers, RUN_ENDED, c);
@@ -1002,7 +1024,7 @@ describe("buildPiHandlers — settled-turn facts", () => {
     // A blocked task is the agent's own declaration that it waits on
     // the user — the list silences the loop, no prose needed.
     const api = mockApi();
-    const handlers = await buildPiHandlers(ZOO, api as any);
+    const handlers = await buildPiHandlers(ZOO, api as any, RAW_AGENTS);
 
     const result = await settle(
       handlers,
@@ -1016,7 +1038,7 @@ describe("buildPiHandlers — settled-turn facts", () => {
 
   it("renders the waiting-on reason when a mixed list wakes", async () => {
     const api = mockApi();
-    const handlers = await buildPiHandlers(ZOO, api as any);
+    const handlers = await buildPiHandlers(ZOO, api as any, RAW_AGENTS);
 
     const result = await settle(
       handlers,
@@ -1040,7 +1062,7 @@ describe("buildPiHandlers — settled-turn facts", () => {
 
   it("classifies a headless ask (no-ui) as awaiting-input", async () => {
     const api = mockApi();
-    const handlers = await buildPiHandlers(ZOO, api as any);
+    const handlers = await buildPiHandlers(ZOO, api as any, RAW_AGENTS);
     // In a non-TUI host the ask tool cannot draw a dialog, so every
     // question comes back `unavailable`/`no-ui`: the agent asked the user
     // something and no human could answer.  The wake must be suppressed.
@@ -1067,7 +1089,7 @@ describe("buildPiHandlers — settled-turn facts", () => {
 
   it("leaves a turn whose ask was answered unaffected", async () => {
     const api = mockApi();
-    const handlers = await buildPiHandlers(ZOO, api as any);
+    const handlers = await buildPiHandlers(ZOO, api as any, RAW_AGENTS);
     const evt = runEnded([
       userMessage("ask me"),
       assistant([toolCallPart("bash"), toolCallPart("ask")]),
@@ -1092,7 +1114,7 @@ describe("buildPiHandlers — settled-turn facts", () => {
   it("does not treat an ask timeout or abort as awaiting-input", async () => {
     for (const reason of ["timeout", "aborted"] as const) {
       const api = mockApi();
-      const handlers = await buildPiHandlers(ZOO, api as any);
+      const handlers = await buildPiHandlers(ZOO, api as any, RAW_AGENTS);
       const evt = runEnded([
         userMessage("ask me"),
         assistant([toolCallPart("bash"), toolCallPart("ask")]),
@@ -1114,7 +1136,7 @@ describe("buildPiHandlers — settled-turn facts", () => {
 
   it("ignores malformed ask details without crashing", async () => {
     const api = mockApi();
-    const handlers = await buildPiHandlers(ZOO, api as any);
+    const handlers = await buildPiHandlers(ZOO, api as any, RAW_AGENTS);
     const evt = runEnded([
       userMessage("ask me"),
       assistant([toolCallPart("bash"), toolCallPart("ask")]),

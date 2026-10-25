@@ -109,9 +109,12 @@ export function resolveIdentity(): Identity | undefined {
  * Derive the ordered set of primary agent names for a profile.
  *
  * Walks the profile's ordered agents array and keeps the names that the
- * modes map marks as primaries.  The first kept name in array order is the
- * default primary.  Agents missing from the modes map are never primaries,
- * and an empty result is a valid return (the caller fails closed).
+ * modes map marks as primaries.  The order is the profile's declaration
+ * order, so a consumer that cares about it (the switch commands) sees the
+ * configured order.  Agents missing from the modes map are never
+ * primaries, and an empty result is a valid return (the caller fails
+ * closed).  Which primary is the orchestrator is decided by the selection
+ * planner, never by position here.
  *
  * @param agents - The profile's ordered agent-name array.
  * @param modes - Per-agent role map (`"primary"` or `"subagent"`).

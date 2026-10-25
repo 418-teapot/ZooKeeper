@@ -10,13 +10,14 @@
  * stays policy-free.
  *
  * Host gating is fail-closed and expressed entirely through capability
- * declarations: the unit lists the converter loader and the head
- * truncator in `needs`, so composition skips it unless the pi entry
- * point supplies BOTH (`caps.loadHtmlConverter` + `caps.truncateHead`).
- * OpenCode never supplies them, so `fetch` is never registered there;
- * on pi a missing or unusable native addon (the loader returns `null`)
- * also yields no tool, leaving the host unchanged instead of registering
- * a tool that cannot run.
+ * declarations: the unit lists the loaded converter and the head
+ * truncator in `needs`, so the planner skips it unless the host binds
+ * BOTH (`htmlConverter` + `truncateHead`).  OpenCode binds neither, so
+ * `fetch` is never selected there; the pi host probes its native addon
+ * before selection and binds no `htmlConverter` when the addon is
+ * unavailable, so the unit is skipped instead of registering a tool that
+ * cannot run.  Availability is decided statically — a failing fetch at
+ * runtime is not an availability signal.
  *
  * @module
  */
@@ -134,18 +135,16 @@ export function createFetchTool(
 /**
  * Fetch tool unit descriptor.
  *
- * Fail-closed host gating: `needs` lists BOTH `loadHtmlConverter` and
- * `truncateHead`, so composition skips the unit when either is absent
- * (OpenCode); when the loader reports the native addon unavailable, the
- * unit contributes no tools.  `name` doubles as the registry key and the
- * tool key.
+ * Fail-closed host gating: `needs` lists BOTH `htmlConverter` and
+ * `truncateHead`, so the planner skips the unit when the host binds
+ * either of them absent (OpenCode never binds them; the pi host binds no
+ * `htmlConverter` when its native addon is unavailable).  `name` doubles
+ * as the registry key and the tool key.
  */
 export const unit = defineTool({
   name: "fetch",
-  needs: ["loadHtmlConverter", "truncateHead"],
+  needs: ["htmlConverter", "truncateHead"],
   create(caps) {
-    const converter = caps.loadHtmlConverter();
-    if (converter === null) return null;
-    return createFetchTool(converter, caps.truncateHead);
+    return createFetchTool(caps.htmlConverter, caps.truncateHead);
   },
 });

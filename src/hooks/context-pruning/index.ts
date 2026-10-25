@@ -29,10 +29,10 @@ export { contextPruningTransformHandler, handleContextPruning };
  * kind (anchor protection covers the first-user message via
  * `anchorTokens`; the release notification routes through
  * `caps.toolHost` and is skipped when the host wires no tool host or
- * the session agent cannot be resolved).  `hasCompressTool` is derived
- * from the active set's tool enablement so the nudge / manual-compress
- * phases only advertise windows the registered `compress` tool would
- * accept.
+ * the session agent cannot be resolved).  `hasCompressTool` is read from
+ * the `uses` projection of the selected tools, so the nudge /
+ * manual-compress phases only advertise windows a selected `compress`
+ * tool would accept — whether or not that tool is registered yet.
  *
  * Fail-closed: a host without an adapter never activates the unit,
  * matching how a null mode profile disables every unit.
@@ -41,7 +41,8 @@ export const unit = defineHook({
   name: "context-pruning",
   needs: ["adapter", "contextConfig"],
   wants: ["toolHost"],
-  create(caps, activeSet) {
+  uses: ["tools"],
+  create(caps, uses) {
     const adapter = caps.adapter;
     return {
       transform: [
@@ -52,7 +53,7 @@ export const unit = defineHook({
               output,
               caps.contextConfig,
               caps.toolHost,
-              activeSet.tools.has("compress"),
+              uses.tools.includes("compress"),
               adapter,
             );
           },

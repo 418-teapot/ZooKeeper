@@ -1,4 +1,4 @@
-import { type ActiveSet, defineAgent } from "../core/unit.js";
+import { defineAgent } from "../core/unit.js";
 import { envToolsRules } from "./env-tools.js";
 import {
   DELEGATION_DISCIPLINE_TEXT,
@@ -56,8 +56,7 @@ ${envToolsRules()}
 /**
  * Build the mola prompt for the active mode profile.
  *
- * The prompt adapts to whether leaf subagents exist in the active
- * profile's agents list:
+ * The prompt adapts to whether leaf subagents are selected:
  * - Poly (lynx or spider present): the full delegation sections — the
  *   `<Agents>` block teaches task() delegation to lynx/spider.
  * - Mono (neither present): self-sufficient wording — the `<Agents>`
@@ -67,12 +66,11 @@ ${envToolsRules()}
  * variants — handoff to dolphin, the mola-plan skill, and the `/go`
  * command all exist in mono mode.
  *
- * @param activeSet - The enablement sets of the active mode profile.
+ * @param agents - The selected agent names.
  * @returns The mode-conditional mola prompt.
  */
-export function buildMolaPrompt(activeSet: ActiveSet): string {
-  const hasSubagents =
-    activeSet.agents.has("lynx") || activeSet.agents.has("spider");
+export function buildMolaPrompt(agents: readonly string[]): string {
+  const hasSubagents = agents.includes("lynx") || agents.includes("spider");
   const sections = [ROLE_SECTION];
   if (hasSubagents) {
     sections.push(POLY_AGENTS_SECTION);
@@ -85,16 +83,14 @@ export function buildMolaPrompt(activeSet: ActiveSet): string {
  * Mola agent unit descriptor.
  *
  * Contributes the planning-agent prompt for prompt injection.  The
- * received `activeSet` is forwarded to `buildMolaPrompt` so the prompt
- * adapts to the active mode profile (poly vs mono).
+ * `uses` projection reads the selected agents, so the prompt adapts to
+ * the selected set (poly vs mono).
  */
 export const unit = defineAgent({
   name: "mola",
   needs: [],
-  create(_caps, activeSet) {
-    return {
-      kind: "agent",
-      agents: [{ name: "mola", prompt: buildMolaPrompt(activeSet) }],
-    };
+  uses: ["agents"],
+  create(_caps, uses) {
+    return { prompt: buildMolaPrompt(uses.agents) };
   },
 });

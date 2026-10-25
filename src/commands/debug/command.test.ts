@@ -19,6 +19,7 @@ import type {
 import type { MessageInjector } from "../../core/ports/handoff.js";
 import type { ToastPayload, ToolHost } from "../../core/ports/tool-host.js";
 import type { CommandUnitDescriptor } from "../../core/unit.js";
+import { facts } from "../../testkits/compose.js";
 import { _resetForTesting } from "../../utils/logger.js";
 import {
   buildStartupText,
@@ -133,7 +134,7 @@ function makeInjector(options: { error?: Error } = {}): {
   };
 }
 
-/** Build a `create`-compatible Capabilities/ActiveSet pair for the debug unit. */
+/** Build a `create`-compatible Capabilities/uses pair for the debug unit. */
 function makeDeps(
   overrides: Partial<Parameters<CommandUnitDescriptor["create"]>[0]> = {},
 ): Parameters<CommandUnitDescriptor["create"]>[0] {
@@ -146,14 +147,9 @@ function makeDeps(
   };
 }
 
-function makeActiveSet(): Parameters<CommandUnitDescriptor["create"]>[1] {
-  return {
-    agents: new Set(),
-    skills: new Set(),
-    hooks: new Set(),
-    tools: new Set(),
-    commands: new Set(),
-  };
+/** A selection projection with nothing selected (the unit reads no facts). */
+function makeUses(): Parameters<CommandUnitDescriptor["create"]>[1] {
+  return facts();
 }
 
 /**
@@ -175,7 +171,7 @@ async function runCommand(
       autoDebugFs: fs,
       messageInjector: injector,
     }),
-    makeActiveSet(),
+    makeUses(),
   );
   assert.equal(contributions.kind, "command");
   assert.equal(contributions.commands.length, 1);
@@ -198,7 +194,7 @@ describe("/debug unit descriptor", () => {
   it("declares a single debug command unit", () => {
     assert.equal(unit.name, "debug");
     assert.equal(unit.kind, "command");
-    const contributions = unit.create(makeDeps(), makeActiveSet());
+    const contributions = unit.create(makeDeps(), makeUses());
     assert.equal(contributions.kind, "command");
     assert.equal(contributions.commands.length, 1);
     assert.equal(contributions.commands[0].name, "debug");

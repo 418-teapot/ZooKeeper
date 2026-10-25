@@ -17,6 +17,7 @@ import {
   VERIFY_REMINDER,
 } from "../../core/prompts.js";
 import type { TodoSource } from "../../core/todo/source.js";
+import { facts } from "../../testkits/compose.js";
 import { sourceOf, storeSource } from "../../testkits/hooks.js";
 import { cleanupPlanDir, writePlanFile } from "../../testkits/plans.js";
 import { makeTmpDir } from "../../testkits/tmp.js";
@@ -603,13 +604,7 @@ function makeDeps(partial: Record<string, unknown>): Partial<Capabilities> {
 }
 
 /** An empty activation set — this unit's create() does not consult it. */
-const EMPTY_SETS = {
-  agents: new Set<string>(),
-  skills: new Set<string>(),
-  hooks: new Set<string>(),
-  tools: new Set<string>(),
-  commands: new Set<string>(),
-};
+const EMPTY_SETS = facts();
 
 /** Invoke the unit's composed nudgePostSubagent after-exec handler. */
 async function runComposed(

@@ -13,10 +13,10 @@
  */
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { composeProfile } from "../../core/compose.js";
 import type { ModeProfile } from "../../core/config-types.js";
 import type { Capabilities } from "../../core/ports/index.js";
 import type { TodoPhase } from "../../core/todo/types.js";
+import { composeForTest, facts } from "../../testkits/compose.js";
 import { storeSource } from "../../testkits/hooks.js";
 import { CONTINUATION_PROMPT } from "./decide.js";
 import { unit } from "./index.js";
@@ -72,13 +72,7 @@ function makeDeps(partial: Record<string, unknown>): Partial<Capabilities> {
  * @returns The handler's decision.
  */
 async function settle(deps: Partial<Capabilities>, hadActivity = true) {
-  const composed = unit.create(deps, {
-    agents: new Set(),
-    skills: new Set(),
-    hooks: new Set(["todo-continuation"]),
-    tools: new Set(),
-    commands: new Set(),
-  });
+  const composed = unit.create(deps, facts());
   assert.equal(composed.onSettled.length, 1);
   return composed.onSettled[0].handle({ sessionID: "s1", hadActivity });
 }
@@ -90,13 +84,7 @@ describe("todo-continuation unit — descriptor", () => {
   });
 
   it("contributes only the onSettled slot", () => {
-    const composed = unit.create(makeDeps({}), {
-      agents: new Set(),
-      skills: new Set(),
-      hooks: new Set(["todo-continuation"]),
-      tools: new Set(),
-      commands: new Set(),
-    });
+    const composed = unit.create(makeDeps({}), facts());
     assert.deepEqual(composed.afterExec, []);
     assert.deepEqual(composed.transform, []);
     assert.deepEqual(composed.textComplete, []);
@@ -110,13 +98,7 @@ describe("todo-continuation unit — descriptor", () => {
   it("declares the parsed max_wakes as its wake allowance", () => {
     const composed = unit.create(
       makeDeps({ continuationConfig: { maxWakes: 5 } }),
-      {
-        agents: new Set(),
-        skills: new Set(),
-        hooks: new Set(["todo-continuation"]),
-        tools: new Set(),
-        commands: new Set(),
-      },
+      facts(),
     );
     assert.equal(composed.onSettled[0].maxWakes, 5);
   });
@@ -130,7 +112,7 @@ describe("todo-continuation unit — descriptor", () => {
       tools: [],
       commands: [],
     };
-    const result = composeProfile(
+    const result = composeForTest(
       profile,
       [unit],
       makeDeps({ continuationConfig: undefined }),

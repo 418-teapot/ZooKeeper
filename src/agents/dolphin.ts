@@ -1,5 +1,5 @@
 import type { PromptVariantPair } from "../core/prompt-variant.js";
-import { type ActiveSet, defineAgent } from "../core/unit.js";
+import { defineAgent } from "../core/unit.js";
 import { envToolsRules } from "./env-tools.js";
 import {
   BEAVER_AGENT_LINE,
@@ -67,11 +67,13 @@ const AGENT_LINES = [
 ] as const;
 
 /**
- * Build the agent inventory from the active profile rather than listing
+ * Build the agent inventory from the selected agents rather than listing
  * agents that cannot actually be delegated to.
+ *
+ * @param agents - The selected agent names.
  */
-function buildAgentsSection(activeSet: ActiveSet): string | null {
-  const lines = AGENT_LINES.filter(([name]) => activeSet.agents.has(name)).map(
+function buildAgentsSection(agents: readonly string[]): string | null {
+  const lines = AGENT_LINES.filter(([name]) => agents.includes(name)).map(
     ([, line]) => line,
   );
   if (lines.length === 0) return null;
@@ -273,11 +275,11 @@ ${COMMUNICATION_SECTION}
  * agent is active. Mono mode remains self-sufficient. Both variants share
  * communication guidance and the continuation contract.
  *
- * @param activeSet - The enablement sets of the active mode profile.
+ * @param agents - The selected agent names.
  * @returns The mode-conditional dolphin prompt.
  */
-export function buildDolphinPrompt(activeSet: ActiveSet): string {
-  const agentsSection = buildAgentsSection(activeSet);
+export function buildDolphinPrompt(agents: readonly string[]): string {
+  const agentsSection = buildAgentsSection(agents);
   if (!agentsSection) return MONO_PROMPT;
 
   return `${[
@@ -292,22 +294,17 @@ export function buildDolphinPrompt(activeSet: ActiveSet): string {
 /**
  * Dolphin agent unit descriptor.
  *
- * The received `activeSet` is forwarded to the prompt builder so the prompt
- * reflects the active profile's collaboration capabilities.
+ * The `uses` projection reads the selected agents, so the prompt lists
+ * exactly the agents that were actually selected.
  */
 export const unit = defineAgent({
   name: "dolphin",
   needs: [],
-  create(_caps, activeSet) {
+  uses: ["agents"],
+  create(_caps, uses) {
     return {
-      kind: "agent",
-      agents: [
-        {
-          name: "dolphin",
-          prompt: buildDolphinPrompt(activeSet),
-          promptVariants: DOLPHIN_PROMPT_VARIANTS,
-        },
-      ],
+      prompt: buildDolphinPrompt(uses.agents),
+      promptVariants: DOLPHIN_PROMPT_VARIANTS,
     };
   },
 });

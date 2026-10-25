@@ -4,15 +4,15 @@
  * `Capabilities` is the union of every capability port a unit may declare
  * in its `needs` / `wants` lists.  It is an assembly-root type: unit
  * factories never receive the whole thing, only the slice they declared,
- * and `composeProfile` decides which units receive one at all.
+ * and the selection planner decides which units receive one at all.
  *
  * Convention: ports carry BEHAVIOR (functions and method objects), never
  * lazily-produced data.  A capability whose production is timing-
  * constrained (e.g. a host action method forbidden during extension
  * load) is modelled as a thunk the unit calls when it needs the value,
- * so plain property copies in the matcher can never trigger side
- * effects.  Parsed config values are the one exception — reading the
- * config file is always load-time work.
+ * so plain property copies in the planner and the build stage can never
+ * trigger side effects.  Parsed config values are the one exception —
+ * reading the config file is always load-time work.
  *
  * @module
  */
@@ -60,8 +60,8 @@ export type { ValidationPort } from "./validation.js";
  * Fields are required on the catalog itself, with one deliberate
  * exception: `SubagentPort.subagentBaseline` is optional because its
  * production is timing-constrained (see the port file).  The assembly
- * root passes a `Partial<Capabilities>` and `composeProfile` only hands
- * a unit the keys it declared in `needs` / `wants`.  A field listed in
+ * host declares them through `capabilityBindings` and the build stage only
+ * hands a unit the keys it declared in `needs` / `wants`.  A field listed in
  * `needs` is present and non-optional inside the factory; a `wants`
  * field may be absent.
  */

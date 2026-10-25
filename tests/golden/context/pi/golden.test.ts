@@ -12,7 +12,7 @@
  *
  * The smoke tests below prove the lane end-to-end at the seam level:
  * the production pi `context` entry (`buildPiContextHandler` via
- * `composeProfile`) runs over native pi messages, the captured view
+ * the assembly pipeline) runs over native pi messages, the captured view
  * carries the per-round injected refs, and the pi adapter's purity is
  * preserved — the transform returns a fresh replacement array and never
  * mutates the input message objects.

@@ -24,18 +24,21 @@ import { truncateHead } from "@earendil-works/pi-coding-agent";
 import {
   applyToolDefinitionContributions,
   buildPiCommandRegistrationPlan,
+  type HtmlConverterLoader,
   loadPiHtmlConverter,
 } from "../../compose-pi.js";
+import { capabilityBindings } from "../../core/bindings.js";
 import {
   configCapabilities,
   parseCommonConfig,
 } from "../../core/capabilities.js";
 import type { ComposedResult } from "../../core/compose.js";
-import { composeProfile } from "../../core/compose.js";
+import { assemble } from "../../core/compose.js";
 import { parseAgentColors, parseAskConfig } from "../../core/config-parse.js";
 import type { AgentModeMap, ModeProfile } from "../../core/config-types.js";
 import type { HostAdapter } from "../../core/context/lens.js";
 import { createLoopEngine } from "../../core/loop/index.js";
+import { ORCHESTRATOR_AGENT_NAME } from "../../core/orchestrator.js";
 import type { AgentPermissionMap } from "../../core/permissions/deny-tools.js";
 import { parseSkillPermissions } from "../../core/permissions/skill-permissions.js";
 import type { Capabilities } from "../../core/ports/index.js";
@@ -45,7 +48,6 @@ import { sessionAgentRegistry } from "../../core/session-agent.js";
 import { scanSkillDirectories } from "../../core/skills.js";
 import type { SubagentDriver } from "../../core/subagent/driver.js";
 import {
-  derivePrimaries,
   getPrimary,
   resolveIdentity,
   setPrimary,
@@ -106,9 +108,8 @@ const __dirname = dirname(realpathSync(fileURLToPath(import.meta.url)));
  *      first progress report, which is when (a) starts matching);
  *  (c) otherwise the session is the pi root session (pi has a single
  *      root session and every child-session event runs inside the
- *      `runWithIdentity` scope) — it resolves to the default primary,
- *      the first primary in profile array order, derived from the
- *      agent modes map.
+ *      `runWithIdentity` scope) — it resolves to the orchestrator the
+ *      selection resolved.
  *
  * Binding policy: every answer — (a), (b), and (c) alike — is bound
  * into the shared session-agent registry so later lookups hit the
@@ -123,22 +124,19 @@ const __dirname = dirname(realpathSync(fileURLToPath(import.meta.url)));
  * entry plus one per child session, the same order as the run table
  * (itself never pruned), and without the binding every main-session
  * tool event would re-run the (a) reverse scan, guaranteed to miss.
- * A root session with no configured primary (null or primary-less
- * profile) and no identity resolves to `undefined` — fail-closed,
- * still without a binding: without a primary the direct-work nudge's
- * gate never matches and the dedup-release notification stays
- * silent.
+ * A root session with no configured orchestrator (null, invalid or
+ * role-agnostic profile) and no identity resolves to `undefined` —
+ * fail-closed, still without a binding: without an orchestrator the
+ * direct-work nudge's gate never matches and the dedup-release
+ * notification stays silent.
  *
- * @param profile - The active mode profile, or `null` when absent.
- * @param agentModes - Per-agent role map (`[agent.*].mode`), parsed
- *   fail-closed by `parseAgentModes`.
+ * @param orchestrator - The orchestrator the selection resolved, or
+ *   `undefined` when the selection resolved none.
  * @returns The resolver handed to `Capabilities.resolveAgent`.
  */
 export function buildPiResolveAgent(
-  profile: ModeProfile | null,
-  agentModes: AgentModeMap,
+  orchestrator: string | undefined,
 ): (sessionID: string) => string | undefined {
-  const defaultPrimary = derivePrimaries(profile?.agents ?? [], agentModes)[0];
   return (sessionID: string): string | undefined => {
     const known = sessionAgentRegistry.resolve(sessionID);
     if (known !== undefined) return known;
@@ -170,33 +168,37 @@ export function buildPiResolveAgent(
     // has no eviction event, but the accumulation is bounded (one
     // root entry per process, the same order as the never-pruned run
     // table) and skipping the bind would make every main-session tool
-    // event repeat the guaranteed-missing (a) scan.  No primary at
-    // all (null or primary-less profile) → fail-closed, unbound.
-    if (defaultPrimary === undefined) return undefined;
-    sessionAgentRegistry.bind(sessionID, defaultPrimary);
-    return defaultPrimary;
+    // event repeat the guaranteed-missing (a) scan.  No orchestrator
+    // at all (null, invalid or role-agnostic profile) → fail-closed,
+    // unbound.
+    if (orchestrator === undefined) return undefined;
+    sessionAgentRegistry.bind(sessionID, orchestrator);
+    return orchestrator;
   };
 }
 
 /**
  * Compose the profile-driven contributions for pi.
  *
- * The full registry is fed to the selection engine — pi composes every
+ * The full registry is fed to the assembly pipeline — pi composes every
  * category and consumes the agent, skill, after-exec, transform, and
  * command slots (the `unknown_unit` warning fires when a profile name
  * has no matching registry unit).  `Capabilities` are adapted to the pi host:
  * `client` is empty, `directory` is the process working directory,
  * `resolveAgent` identifies each session through the shared
  * session-agent registry (subagent child sessions → their delegated
- * agent, the root session → the default primary; see
- * `buildPiResolveAgent`), and the host adapter / tool host are taken
+ * agent, the root session → the orchestrator the selection resolved;
+ * see `buildPiResolveAgent`), and the host adapter / tool host are taken
  * from `hostDeps` when provided (the entry point supplies the live
  * context holder so event handlers can update it).
  *
- * When the primary set is non-empty the identity state is initialised
- * with the default primary via `setPrimary`, so a `before_agent_start`
- * event outside any sub-session scope resolves that primary; an empty
- * primary set leaves the identity machinery off (fail-closed).
+ * This host also declares the product's orchestrator role
+ * (`ORCHESTRATOR_AGENT_NAME`) to the planner: a profile that cannot
+ * provide it as a primary is invalid and loads nothing.  When the
+ * selection resolves an orchestrator the identity state is initialised
+ * with it via `setPrimary`, so a `before_agent_start` event outside any
+ * sub-session scope resolves that agent; an unresolved role leaves the
+ * identity machinery off (fail-closed).
  *
  * Exported for unit testing — `zookeeperPi` wires this with the config
  * loaded from disk.
@@ -270,15 +272,18 @@ export function buildPiContributions(
     zdebugExec?: Partial<Capabilities>["zdebugExec"];
     /**
      * Native HTML→Markdown converter loader for the fetch tool (only
-     * supplied by the real pi entry point).  Undefined without it — the
-     * fetch tool unit contributes no tools (fail-closed, matching
-     * OpenCode).
+     * supplied by the real pi entry point).  The assembly probes it once,
+     * before selection, and only for an active profile (a `null` profile
+     * selects nothing, so it is never probed); the loaded converter is
+     * bound by value, and undefined (or a `null` probe result) declares no
+     * `htmlConverter`, so the fetch tool unit is skipped (fail-closed,
+     * matching OpenCode).
      */
-    loadHtmlConverter?: Partial<Capabilities>["loadHtmlConverter"];
+    loadHtmlConverter?: HtmlConverterLoader;
     /**
      * Host head truncator for the fetch tool (only supplied by the real pi
-     * entry point).  Undefined without it — the fetch tool unit contributes
-     * no tools (fail-closed, matching OpenCode).
+     * entry point).  Undefined without it — the fetch tool unit is skipped
+     * (fail-closed, matching OpenCode).
      */
     truncateHead?: Partial<Capabilities>["truncateHead"];
     /**
@@ -309,118 +314,136 @@ export function buildPiContributions(
   // here (pi host) — the ask tool is not registered on OpenCode.
   const askConfig = parseAskConfig(zooConfig);
 
-  // The default primary (first in profile array order among the
-  // agent-modes-marked primaries), used to seed the identity machinery
-  // and to build the `/go` handoff target's executor agent.  An empty
-  // primary set leaves the handoff target's default primary undefined
-  // (fail-closed at handoff time).
-  const primaries = derivePrimaries(modeProfile?.agents ?? [], agentModes);
-
-  // The shared session → agent resolver.  Event handlers read it
-  // synchronously; the delegation gate uses the asynchronous form below.
-  // The gate resolves the CALLER through the identity core (the same
-  // source the subagent tool uses): pi's identity is bound per async
-  // chain, not per session id, so the session argument is unused — the
-  // port is host-neutral and OpenCode needs it.
-  const resolveAgent = buildPiResolveAgent(modeProfile, agentModes);
+  // The caller resolver.  The delegation gate resolves the CALLER through
+  // the identity core (the same source the subagent tool uses): pi's
+  // identity is bound per async chain, not per session id, so neither the
+  // port's session argument nor the selection is needed here.
   const resolveCallerAgent = async (): Promise<string | undefined> =>
     resolveIdentity()?.name;
 
-  const deps: Partial<Capabilities> = {
-    ...configCapabilities(common),
-    askTimeoutSeconds: askConfig?.timeoutSeconds,
-    switchHost: hostDeps?.switchHost,
-    // The pi subagent driver (in-process SDK session execution).  Only the
-    // real pi entry point supplies one; unit tests and other hosts omit it
-    // so the subagent tool never registers (fail-closed).
-    subagentDriver: hostDeps?.subagentDriver,
-    // The pi subagent transcript-card renderer.  Only the real pi entry
-    // point supplies one; without it the tool stays text-only.
-    subagentRenderer: hostDeps?.subagentRenderer,
-    // The per-instance todo state store (pi host only).  Without it the
-    // todo tool unit contributes no tools (fail-closed).
-    todoStore: hostDeps?.todoStore,
-    // The todo read port the progress hooks consume.  pi has no SDK client
-    // to read todos from, so the port is bound to the same per-instance
-    // store the todo tool uses.  Undefined without a store: the nudge hooks
-    // keep firing without the todo reminder, and the continuation hook
-    // degrades to an empty list (fail-closed in both cases).
-    todoSource:
-      hostDeps?.todoStore === undefined
-        ? undefined
-        : todoSourceFromStore(hostDeps.todoStore),
-    // The pi todo transcript-card renderer.  Only the real pi entry
-    // point supplies one; without it the tool stays text-only.
-    todoRenderer: hostDeps?.todoRenderer,
-    // The full untrimmed tool baseline for subagent capability computation,
-    // passed through as a thunk: the unit invokes it inside `execute`,
-    // which is always post-load, so the supplier (pi's `getActiveTools`,
-    // forbidden during extension loading) never runs at assembly time.
-    subagentBaseline: hostDeps?.subagentBaseline,
-    // The per-agent model map for subagent sessions, materialised by the
-    // installer into `~/.pi/agent/agents.json` as `{provider, model}`
-    // pairs (mapped values are concatenated `"provider/model"` strings).
-    // Read once at extension-load time (fail-closed to empty when
-    // missing/invalid); strict mode: this map is the sole model source —
-    // the subagent tool errors (never inherits or falls back) when the
-    // target agent's entry is absent.
-    subagentModels: loadAgentsJson(),
-    // Registry-write notification: the tool layer calls this after every
-    // subagent run start/update/finish so the fleet widget re-renders with
-    // the latest registry state.
-    onSubagentRunChange: hostDeps?.onSubagentRunChange,
-    // The native HTML→Markdown converter loader (pi host only).  Without it
-    // the fetch tool unit contributes no tools (fail-closed); the pi entry
-    // point supplies the fail-closed wrapper that warns when the addon is
-    // unavailable.
-    loadHtmlConverter: hostDeps?.loadHtmlConverter,
-    // The host head truncator for the fetch pipeline.  Without it the fetch
-    // tool unit contributes no tools (fail-closed, paired with the loader).
-    truncateHead: hostDeps?.truncateHead,
-    // The ask tool's form host.  Without it the ask tool unit contributes
-    // no tools (fail-closed, so `ask` never registers on OpenCode).
-    askFormHost: hostDeps?.askFormHost,
-    // pi has no SDK client: the context-pruning transform runs and
-    // returns the pruned replacement to pi.  The release notification
-    // does not need a client: it posts through the unified pi tool
-    // host's `notify` port as a `zoo-notice` appendEntry entry.  The
-    // marking producers (dedup / purge-errors) have no
-    // user-visible notification on pi.
-    zdebugExec: hostDeps?.zdebugExec,
-    directory: hostDeps?.directory ?? process.cwd(),
-    resolveAgent,
-    resolveCallerAgent,
-    toolHost: hostDeps?.toolHost,
-    // The `/go` handoff target.  `getCommandCtx` reads the mutable pi
-    // command-context holder, refreshed by the command handler before
-    // the handoff target runs.
-    handoffTarget: createPiHandoffTarget({
-      getCommandCtx: hostDeps?.getCommandCtx ?? (() => undefined),
-      defaultPrimary: primaries[0],
-    }),
-    // The `/debug` startup injector: sends a model-visible user message
-    // into the current session.  Only the real pi entry point supplies it.
-    messageInjector: hostDeps?.messageInjector,
-    // Native pi host adapter: the entry point shares a mutable context
-    // holder so the session id provider always reads the latest pi event
-    // context.  When no adapter is supplied (unit tests that only inspect
-    // the composed shape) a default no-op provider is used.
-    adapter: hostDeps?.adapter ?? createPiAdapter(() => undefined),
-  };
-  const composed = composeProfile(modeProfile, REGISTRY, deps);
+  // Probe the native HTML→Markdown converter BEFORE the selection pass,
+  // and only for an active profile: a `null` profile selects nothing, so
+  // probing there would only emit a spurious `converter_unavailable`
+  // warning.  The probe runs once, at assembly time: a `null` result
+  // (missing addon, wrong platform, ABI mismatch) declares no
+  // `htmlConverter` key, so the fetch tool unit's `needs` are unmet and the
+  // planner skips it.  Availability is decided here and never by a runtime
+  // fetch failure.
+  const htmlConverter =
+    modeProfile === null ? null : (hostDeps?.loadHtmlConverter?.() ?? null);
 
-  // Seed the identity machinery with the default primary when the
-  // profile has any primary agents (first in profile array order).  An
-  // empty primary set leaves the identity state untouched (fail-closed
-  // — no `setPrimary` call), so `before_agent_start` stays silent.
+  const bindings = capabilityBindings({
+    values: {
+      ...configCapabilities(common),
+      askTimeoutSeconds: askConfig?.timeoutSeconds,
+      switchHost: hostDeps?.switchHost,
+      // The pi subagent driver (in-process SDK session execution).  Only the
+      // real pi entry point supplies one; unit tests and other hosts omit it
+      // so the subagent tool never registers (fail-closed).
+      subagentDriver: hostDeps?.subagentDriver,
+      // The pi subagent transcript-card renderer.  Only the real pi entry
+      // point supplies one; without it the tool stays text-only.
+      subagentRenderer: hostDeps?.subagentRenderer,
+      // The per-instance todo state store (pi host only).  Without it the
+      // todo tool unit is skipped (fail-closed).
+      todoStore: hostDeps?.todoStore,
+      // The todo read port the progress hooks consume.  pi has no SDK client
+      // to read todos from, so the port is bound to the same per-instance
+      // store the todo tool uses.  Absent without a store: the nudge hooks
+      // keep firing without the todo reminder, and the continuation hook
+      // degrades to an empty list (fail-closed in both cases).
+      todoSource:
+        hostDeps?.todoStore === undefined
+          ? undefined
+          : todoSourceFromStore(hostDeps.todoStore),
+      // The pi todo transcript-card renderer.  Only the real pi entry
+      // point supplies one; without it the tool stays text-only.
+      todoRenderer: hostDeps?.todoRenderer,
+      // The full untrimmed tool baseline for subagent capability
+      // computation, passed through as a thunk: the unit invokes it inside
+      // `execute`, which is always post-load, so the supplier (pi's
+      // `getActiveTools`, forbidden during extension loading) never runs at
+      // assembly time.
+      subagentBaseline: hostDeps?.subagentBaseline,
+      // The per-agent model map for subagent sessions, materialised by the
+      // installer into `~/.pi/agent/agents.json` as `{provider, model}`
+      // pairs (mapped values are concatenated `"provider/model"` strings).
+      // Read once at extension-load time (fail-closed to empty when
+      // missing/invalid); strict mode: this map is the sole model source —
+      // the subagent tool errors (never inherits or falls back) when the
+      // target agent's entry is absent.
+      subagentModels: loadAgentsJson(),
+      // Registry-write notification: the tool layer calls this after every
+      // subagent run start/update/finish so the fleet widget re-renders with
+      // the latest registry state.
+      onSubagentRunChange: hostDeps?.onSubagentRunChange,
+      // The probed converter, bound by value.  `null` here means the addon
+      // is unavailable or no profile is active; either way no key is
+      // declared.
+      htmlConverter: htmlConverter ?? undefined,
+      // The host head truncator for the fetch pipeline.  Absent without it
+      // (fail-closed, paired with the converter).
+      truncateHead: hostDeps?.truncateHead,
+      // The ask tool's form host.  Without it the ask tool unit is skipped
+      // (fail-closed, so `ask` never registers on OpenCode).
+      askFormHost: hostDeps?.askFormHost,
+      // pi has no SDK client: the context-pruning transform runs and
+      // returns the pruned replacement to pi.  The release notification
+      // does not need a client: it posts through the unified pi tool
+      // host's `notify` port as a `zoo-notice` appendEntry entry.  The
+      // marking producers (dedup / purge-errors) have no
+      // user-visible notification on pi.
+      zdebugExec: hostDeps?.zdebugExec,
+      directory: hostDeps?.directory ?? process.cwd(),
+      resolveCallerAgent,
+      toolHost: hostDeps?.toolHost,
+      // The `/debug` startup injector: sends a model-visible user message
+      // into the current session.  Only the real pi entry point supplies it.
+      messageInjector: hostDeps?.messageInjector,
+      // Native pi host adapter: the entry point shares a mutable context
+      // holder so the session id provider always reads the latest pi event
+      // context.  When no adapter is supplied (unit tests that only inspect
+      // the composed shape) a default no-op provider is used.
+      adapter: hostDeps?.adapter ?? createPiAdapter(() => undefined),
+      // The `/go` handoff target.  `getCommandCtx` reads the mutable pi
+      // command-context holder, refreshed by the command handler before
+      // the handoff target runs.  Built from host facts only — the
+      // executor agent travels with each handoff call, so the target is
+      // the same for every selection.
+      handoffTarget: createPiHandoffTarget({
+        getCommandCtx: hostDeps?.getCommandCtx ?? (() => undefined),
+      }),
+    },
+    selected: {
+      // The shared session → agent resolver.  Event handlers read it
+      // synchronously; the root-session fallback is the orchestrator the
+      // selection resolved.
+      resolveAgent: (selection) => buildPiResolveAgent(selection.orchestrator),
+    },
+  });
+  const { selection, composed } = assemble({
+    profile: modeProfile,
+    units: REGISTRY,
+    bindings,
+    agentModes,
+    // The product's orchestrator role.  The planner decides whether the
+    // enabled profile can provide it; this host holds no fallback.
+    orchestrator: ORCHESTRATOR_AGENT_NAME,
+  });
+
+  // Seed the identity machinery with the orchestrator the selection
+  // resolved.  An unresolved role leaves the identity state untouched
+  // (fail-closed — no `setPrimary` call), so `before_agent_start` stays
+  // silent.
   // The seed only applies when NO primary is set yet: the extension
   // factory re-runs on every pi session replacement (`newSession`), so
   // an unconditional re-seed here would clobber a primary the switch
   // just set before calling `newSession` (Bug B).  Seeding only the
   // initial unset state keeps the switch's target primary intact for the
   // replacement session's bind-time handlers.
-  if (primaries.length > 0 && getPrimary() === undefined) {
-    setPrimary(primaries[0]);
+  const orchestrator = selection.orchestrator;
+  if (orchestrator !== undefined && getPrimary() === undefined) {
+    setPrimary(orchestrator);
   }
 
   return {
@@ -772,7 +795,8 @@ export async function buildPiHandlers(
       onSubagentRunChange: () => fleetWidget.refresh(),
       // Native HTML→Markdown converter for the fetch tool.  Wired here (the
       // real pi entry point); the wrapper warns once when the addon is
-      // unavailable and the fetch unit then no-ops (fail-closed).
+      // unavailable, the assembly then declares no `htmlConverter` key, and
+      // the planner skips the fetch unit (fail-closed).
       loadHtmlConverter: loadPiHtmlConverter,
       // Host head truncator for the fetch pipeline.  Wired here alongside
       // the converter loader; the fetch unit registers only when both are
@@ -784,7 +808,7 @@ export async function buildPiHandlers(
     },
     rawConfig,
   );
-  const { profile, composed, limits, agentPermissions, resolveCallerAgent } =
+  const { composed, limits, agentPermissions, resolveCallerAgent } =
     contributions;
 
   // Loop-engine wiring.  The composed strategies judge a stopped turn;
@@ -1031,7 +1055,7 @@ export async function buildPiHandlers(
   // Register profile commands with pi when an API instance is supplied.
   // The handler refreshes the shared context holder with pi's command
   // context so the unified tool host can resolve the session / history.
-  if (profile !== null && piApi?.registerCommand) {
+  if (piApi?.registerCommand) {
     const plan = buildPiCommandRegistrationPlan(composed.commands, (ctx) => {
       contextHolder.current = ctx as PiToolHostContext;
     });

@@ -14,7 +14,6 @@ import { mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, it } from "node:test";
-import { composeProfile } from "../../core/compose.js";
 import type { ModeProfile } from "../../core/config-types.js";
 import type { SwitchHost } from "../../core/ports/switch.js";
 import {
@@ -22,7 +21,11 @@ import {
   getPrimary,
   setPrimary,
 } from "../../core/subagent/identity.js";
-import type { CommandUnitDescriptor } from "../../core/unit.js";
+import {
+  type CommandUnitDescriptor,
+  definePromptAgent,
+} from "../../core/unit.js";
+import { composeForTest, facts } from "../../testkits/compose.js";
 import {
   _resetForTesting as _resetLoggerForTesting,
   initLogger,
@@ -142,7 +145,7 @@ function mockHost(initialTools: string[] = []): {
   };
 }
 
-/** Build a `create`-compatible Capabilities/ActiveSet pair for the switch unit. */
+/** Build a `create`-compatible Capabilities/uses pair for the switch unit. */
 function makeDeps(
   overrides: Partial<Parameters<CommandUnitDescriptor["create"]>[0]> = {},
 ): Parameters<CommandUnitDescriptor["create"]>[0] {
@@ -155,31 +158,23 @@ function makeDeps(
   };
 }
 
-function makeActiveSet(
-  agents: string[],
+/** A selection projection carrying the given primaries. */
+function makeUses(
+  primaries: string[],
 ): Parameters<CommandUnitDescriptor["create"]>[1] {
-  return {
-    agents: new Set(agents),
-    skills: new Set(),
-    hooks: new Set(),
-    tools: new Set(),
-    commands: new Set(),
-  };
+  return facts({ primaries });
 }
 
 // ---------------------------------------------------------------------------
 // Command-set follows config
 // ---------------------------------------------------------------------------
 
-describe("switch unit — command set follows config", () => {
-  it("contributes one /<agent> command per configured primary", () => {
+describe("switch unit — command set follows the selection", () => {
+  it("contributes one /<agent> command per selected primary", () => {
     const { host } = mockHost();
     const contributions = unit.create(
-      makeDeps({
-        switchHost: host,
-        agentModes: { dolphin: "primary", mola: "primary", beaver: "subagent" },
-      }),
-      makeActiveSet(["dolphin", "mola", "beaver"]),
+      makeDeps({ switchHost: host }),
+      makeUses(["dolphin", "mola"]),
     );
     assert.equal(contributions.kind, "command");
     assert.deepEqual(contributions.commands.map((c) => c.name).sort(), [
@@ -188,14 +183,11 @@ describe("switch unit — command set follows config", () => {
     ]);
   });
 
-  it("keeps primaries in profile order and skips subagents", () => {
+  it("keeps the primaries in the selection's order", () => {
     const { host } = mockHost();
     const contributions = unit.create(
-      makeDeps({
-        switchHost: host,
-        agentModes: { mola: "primary", dolphin: "primary", lynx: "subagent" },
-      }),
-      makeActiveSet(["mola", "dolphin", "lynx"]),
+      makeDeps({ switchHost: host }),
+      makeUses(["mola", "dolphin"]),
     );
     assert.deepEqual(
       contributions.commands.map((c) => c.name),
@@ -206,23 +198,38 @@ describe("switch unit — command set follows config", () => {
   it("contributes zero commands for an empty primary set (fail-closed)", () => {
     const { host } = mockHost();
     const contributions = unit.create(
-      makeDeps({
-        switchHost: host,
-        agentModes: { beaver: "subagent" },
-      }),
-      makeActiveSet(["beaver"]),
+      makeDeps({ switchHost: host }),
+      makeUses([]),
     );
     assert.equal(contributions.kind, "command");
     assert.deepEqual(contributions.commands, []);
   });
 
-  it("contributes zero commands when agentModes is absent", () => {
+  it("derives its commands from the selection, not the raw profile", () => {
+    // The profile lists three agents; the agent-modes map marks one of
+    // them primary, so the selection yields exactly that one — the unit
+    // reads the planned primaries and contributes a single command.
     const { host } = mockHost();
-    const contributions = unit.create(
+    const profile: ModeProfile = {
+      name: "test",
+      agents: ["dolphin", "mola", "beaver"],
+      skills: [],
+      hooks: [],
+      tools: [],
+      commands: ["switch"],
+    };
+    const result = composeForTest(
+      profile,
+      [
+        definePromptAgent("dolphin", ""),
+        definePromptAgent("mola", ""),
+        definePromptAgent("beaver", ""),
+        unit,
+      ],
       makeDeps({ switchHost: host }),
-      makeActiveSet(["dolphin", "mola"]),
+      { dolphin: "primary", mola: "primary", beaver: "subagent" },
     );
-    assert.deepEqual(contributions.commands, []);
+    assert.deepEqual(Object.keys(result.commands), ["dolphin", "mola"]);
   });
 
   it("is skipped by the composition when the pi switch host is absent (OpenCode)", () => {
@@ -235,7 +242,7 @@ describe("switch unit — command set follows config", () => {
       tools: [],
       commands: ["switch"],
     };
-    const result = composeProfile(
+    const result = composeForTest(
       profile,
       [unit],
       makeDeps({ agentModes: { dolphin: "primary" } }),
@@ -260,7 +267,7 @@ describe("switch unit — new-session switch flow", () => {
         agentModes: { dolphin: "primary", mola: "primary" },
         agentPermissions: { dolphin: ["webfetch", "websearch"] },
       }),
-      makeActiveSet(["dolphin", "mola"]),
+      makeUses(["dolphin", "mola"]),
     );
     const dolphin = contributions.commands.find((c) => c.name === "dolphin");
     assert.ok(dolphin, "dolphin switch command must exist");
@@ -288,7 +295,7 @@ describe("switch unit — new-session switch flow", () => {
         agentModes: { dolphin: "primary", mola: "primary" },
         agentPermissions: { dolphin: ["webfetch", "websearch"] },
       }),
-      makeActiveSet(["dolphin", "mola"]),
+      makeUses(["dolphin", "mola"]),
     );
     const dolphin = contributions.commands.find((c) => c.name === "dolphin");
     assert.ok(dolphin);
@@ -317,7 +324,7 @@ describe("switch unit — new-session switch flow", () => {
         // mola has no tool-level denies (sub-table only).
         agentPermissions: { mola: [] },
       }),
-      makeActiveSet(["dolphin", "mola"]),
+      makeUses(["dolphin", "mola"]),
     );
     const mola = contributions.commands.find((c) => c.name === "mola");
     assert.ok(mola);
@@ -406,7 +413,7 @@ describe("switch unit — new-session switch flow", () => {
         agentModes: { dolphin: "primary", mola: "primary" },
         agentPermissions: { dolphin: ["webfetch", "websearch"] },
       }),
-      makeActiveSet(["dolphin", "mola"]),
+      makeUses(["dolphin", "mola"]),
     );
     const dolphin = contributions.commands.find((c) => c.name === "dolphin");
     assert.ok(dolphin);

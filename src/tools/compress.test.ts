@@ -18,7 +18,6 @@
 import assert from "node:assert/strict";
 import { afterEach, describe, it } from "node:test";
 import { registerProfileToolsInConfig } from "../compose-opencode.js";
-import { composeProfile } from "../core/compose.js";
 import { parseContextConfig } from "../core/config-parse.js";
 import type { ModeProfile } from "../core/config-types.js";
 import { fold } from "../core/context/fold.js";
@@ -36,7 +35,13 @@ import {
 import type { Block, SessionState } from "../core/context/state.js";
 import { numberView } from "../core/context/view-refs.js";
 import type { ToolHost } from "../core/ports/tool-host.js";
-import { composeToolHooks, makePlugin, POLY_ZOO } from "../testkits/config.js";
+import { composeForTest } from "../testkits/compose.js";
+import {
+  composeToolHooks,
+  makePlugin,
+  POLY_ZOO,
+  polyHostConfig,
+} from "../testkits/config.js";
 import { _resetForTesting } from "../utils/logger.js";
 import { unit as compressUnit, createCompressTool } from "./compress.js";
 
@@ -1068,7 +1073,10 @@ describe("compress tool registration gate", () => {
 describe("config hook — primary_tools", () => {
   it("appends compress + decompress preserving pre-existing entries", async () => {
     const plugin = (await makePlugin()) as any;
-    const config = { experimental: { primary_tools: ["bash", "edit"] } };
+    const config: Record<string, any> = {
+      ...polyHostConfig(),
+      experimental: { primary_tools: ["bash", "edit"] },
+    };
 
     await plugin.config(config);
 
@@ -1082,7 +1090,7 @@ describe("config hook — primary_tools", () => {
 
   it("creates experimental.primary_tools when absent", async () => {
     const plugin = (await makePlugin()) as any;
-    const config: Record<string, any> = {};
+    const config: Record<string, any> = polyHostConfig();
 
     await plugin.config(config);
 
@@ -1108,7 +1116,7 @@ describe("compress tool unsupported host", () => {
       commands: [],
     };
 
-    const result = composeProfile(profile, [compressUnit], {
+    const result = composeForTest(profile, [compressUnit], {
       limits: {},
       contextConfig: PARSED_CONFIG,
       directory: "",

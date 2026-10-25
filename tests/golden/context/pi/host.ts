@@ -42,7 +42,7 @@ import {
 import type { PiAgentMessage } from "../../../../src/adapters/pi/types.js";
 import { buildPiContextHandler } from "../../../../src/compose-pi.js";
 import type { ToolHost } from "../../../../src/core/ports/tool-host.js";
-import { composeProfile } from "../../../../src/core/compose.js";
+import { composeForTest } from "../../../../src/testkits/compose.js";
 import type {
   ContextPruningConfig,
   ModeProfile,
@@ -68,8 +68,9 @@ import { captureView } from "./capture.js";
  * Runs the selection engine over the full registry with a minimal
  * profile that enables exactly the `context-pruning` hook (plus the
  * `compress` tool when the round advertises it, so the nudge /
- * manual-compress gates see `activeSet.tools.has("compress")` — the same
- * derivation production pi uses).  The per-round config is captured by
+ * manual-compress gates see the selected `compress` in their `uses`
+ * projection — the same derivation production pi uses).  The per-round
+ * config is captured by
  * the contribution closure, so config overrides land on the right round.
  * The round's pi tool host is placed into `deps.toolHost` so the
  * release notification posts through the same `zoo-notice` appendEntry
@@ -103,7 +104,7 @@ function composePruningTransform(
     adapter: createPiAdapter(() => sessionID),
     toolHost,
   };
-  const composed = composeProfile(profile, REGISTRY, deps);
+  const composed = composeForTest(profile, REGISTRY, deps);
   return composed.transform;
 }
 

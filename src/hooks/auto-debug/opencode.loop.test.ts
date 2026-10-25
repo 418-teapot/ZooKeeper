@@ -74,6 +74,14 @@ const WAKE_ECHO = {
   parts: [{ type: "text", text: CONTINUATION_PROMPT }],
 };
 
+/**
+ * The agent-role table config.toml declares: dolphin is the orchestrator.
+ *
+ * The OpenCode host hands this role to the planner, so the fixture must
+ * declare it or the selection is invalid and nothing registers.
+ */
+const RAW_AGENTS = { agent: { dolphin: { mode: "primary" } } };
+
 /** The profile that enables the todo-continuation settle judge. */
 const CONTINUATION_PROFILE = {
   agents: ["dolphin"],
@@ -131,6 +139,9 @@ function makeClient(
   const calls: PromptCall[] = [];
   let transcript = opts.messages ?? WORKED_TURN;
   const client = {
+    // The plugin pre-reads the host config; the wake path registers only
+    // the agent table's dolphin as the default primary agent.
+    config: { get: async () => ({ data: RAW_AGENTS }) },
     session: {
       todo: async () => ({ data: opts.todos ?? ACTIVE_TODOS }),
       messages: async () => ({ data: transcript }),
@@ -196,7 +207,7 @@ afterEach(() => {
 describe("session.idle — dolphin wake path", () => {
   it("wakes once with the core reminder text", async () => {
     const { client, calls } = makeClient();
-    const plugin = await buildPlugin({ client }, zooConfig());
+    const plugin = await buildPlugin({ client }, zooConfig(), RAW_AGENTS);
     await bindAgent(plugin, "dolphin");
 
     await idle(plugin);
@@ -212,7 +223,7 @@ describe("session.idle — dolphin wake path", () => {
 
   it("does not inject for a non-dolphin session", async () => {
     const { client, calls } = makeClient();
-    const plugin = await buildPlugin({ client }, zooConfig());
+    const plugin = await buildPlugin({ client }, zooConfig(), RAW_AGENTS);
     await bindAgent(plugin, "beaver");
 
     await idle(plugin);
@@ -222,7 +233,7 @@ describe("session.idle — dolphin wake path", () => {
 
   it("does not inject when no onSettled contribution is enabled", async () => {
     const { client, calls } = makeClient();
-    const plugin = await buildPlugin({ client }, zooConfig(3, []));
+    const plugin = await buildPlugin({ client }, zooConfig(3, []), RAW_AGENTS);
     await bindAgent(plugin, "dolphin");
 
     await idle(plugin);
@@ -244,6 +255,7 @@ describe("session.idle — dolphin wake path", () => {
           mode: { poly: CONTINUATION_PROFILE },
           ...(continuation === undefined ? {} : { continuation }),
         },
+        RAW_AGENTS,
       );
       await bindAgent(plugin, "dolphin");
 
@@ -268,7 +280,7 @@ describe("session.idle — dolphin wake path", () => {
         },
       ],
     });
-    const plugin = await buildPlugin({ client }, zooConfig());
+    const plugin = await buildPlugin({ client }, zooConfig(), RAW_AGENTS);
     await bindAgent(plugin, "dolphin");
 
     await idle(plugin);
@@ -297,7 +309,7 @@ describe("session.idle — awaiting-input classification", () => {
         },
       ],
     });
-    const plugin = await buildPlugin({ client }, zooConfig());
+    const plugin = await buildPlugin({ client }, zooConfig(), RAW_AGENTS);
     await bindAgent(plugin, "dolphin");
 
     await idle(plugin);
@@ -322,7 +334,7 @@ describe("session.idle — awaiting-input classification", () => {
         },
       ],
     });
-    const plugin = await buildPlugin({ client }, zooConfig());
+    const plugin = await buildPlugin({ client }, zooConfig(), RAW_AGENTS);
     await bindAgent(plugin, "dolphin");
 
     await idle(plugin);
@@ -360,7 +372,7 @@ describe("session.idle — the list decides wakefulness", () => {
           { type: "text", text: "Step done." },
         ]),
       });
-      const plugin = await buildPlugin({ client }, zooConfig());
+      const plugin = await buildPlugin({ client }, zooConfig(), RAW_AGENTS);
       await bindAgent(plugin, "dolphin");
 
       await idle(plugin);
@@ -379,7 +391,7 @@ describe("session.idle — the list decides wakefulness", () => {
           { type: "text", text: "Just looked around." },
         ]),
       });
-      const plugin = await buildPlugin({ client }, zooConfig());
+      const plugin = await buildPlugin({ client }, zooConfig(), RAW_AGENTS);
       await bindAgent(plugin, "dolphin");
 
       await idle(plugin);
@@ -394,7 +406,7 @@ describe("session.idle — the list decides wakefulness", () => {
     const { client, calls } = makeClient({
       messages: turnWith([{ type: "text", text: "Everything is done." }]),
     });
-    const plugin = await buildPlugin({ client }, zooConfig());
+    const plugin = await buildPlugin({ client }, zooConfig(), RAW_AGENTS);
     await bindAgent(plugin, "dolphin");
 
     await idle(plugin);
@@ -416,7 +428,7 @@ describe("session.idle — the list decides wakefulness", () => {
           { type: "text", text: "Delegated." },
         ]),
       });
-      const plugin = await buildPlugin({ client }, zooConfig());
+      const plugin = await buildPlugin({ client }, zooConfig(), RAW_AGENTS);
       await bindAgent(plugin, "dolphin");
 
       await idle(plugin);
@@ -434,7 +446,7 @@ describe("session.idle — the list decides wakefulness", () => {
         { type: "text", text: "请确认是否继续。" },
       ]),
     });
-    const plugin = await buildPlugin({ client }, zooConfig());
+    const plugin = await buildPlugin({ client }, zooConfig(), RAW_AGENTS);
     await bindAgent(plugin, "dolphin");
 
     await idle(plugin);
@@ -445,6 +457,7 @@ describe("session.idle — the list decides wakefulness", () => {
   it("fails closed when the transcript cannot be read", async () => {
     const calls: PromptCall[] = [];
     const client = {
+      config: { get: async () => ({ data: RAW_AGENTS }) },
       session: {
         todo: async () => ({ data: ACTIVE_TODOS }),
         messages: async () => {
@@ -456,7 +469,7 @@ describe("session.idle — the list decides wakefulness", () => {
         },
       },
     };
-    const plugin = await buildPlugin({ client }, zooConfig());
+    const plugin = await buildPlugin({ client }, zooConfig(), RAW_AGENTS);
     await bindAgent(plugin, "dolphin");
 
     await idle(plugin);
@@ -487,7 +500,7 @@ describe("session.idle — blocked tasks", () => {
         },
       ],
     });
-    const plugin = await buildPlugin({ client }, zooConfig());
+    const plugin = await buildPlugin({ client }, zooConfig(), RAW_AGENTS);
     await bindAgent(plugin, "dolphin");
 
     await idle(plugin);
@@ -514,7 +527,7 @@ describe("session.idle — blocked tasks", () => {
         },
       ],
     });
-    const plugin = await buildPlugin({ client }, zooConfig());
+    const plugin = await buildPlugin({ client }, zooConfig(), RAW_AGENTS);
     await bindAgent(plugin, "dolphin");
 
     await idle(plugin);
@@ -563,7 +576,7 @@ describe("session.idle — awaiting-progress lock", () => {
 
   it("stays silent on a text-only reply to a wake without spending budget", async () => {
     const { client, calls, setTranscript } = makeClient();
-    const plugin = await buildPlugin({ client }, zooConfig(2));
+    const plugin = await buildPlugin({ client }, zooConfig(2), RAW_AGENTS);
     await bindAgent(plugin, "dolphin");
 
     await idle(plugin);
@@ -596,7 +609,7 @@ describe("session.idle — awaiting-progress lock", () => {
 
   it("releases the lock when the reply makes a read-only tool call", async () => {
     const { client, calls, setTranscript } = makeClient();
-    const plugin = await buildPlugin({ client }, zooConfig(2));
+    const plugin = await buildPlugin({ client }, zooConfig(2), RAW_AGENTS);
     await bindAgent(plugin, "dolphin");
 
     await idle(plugin);
@@ -621,7 +634,7 @@ describe("session.idle — awaiting-progress lock", () => {
 
   it("clears the lock along with the budget on a real user message", async () => {
     const { client, calls, setTranscript } = makeClient();
-    const plugin = await buildPlugin({ client }, zooConfig(1));
+    const plugin = await buildPlugin({ client }, zooConfig(1), RAW_AGENTS);
     await bindAgent(plugin, "dolphin");
 
     await idle(plugin);
@@ -664,7 +677,7 @@ describe("session.idle — awaiting-progress lock", () => {
 describe("session.idle — aborted classification", () => {
   it("stays silent after a session.error abort event", async () => {
     const { client, calls } = makeClient();
-    const plugin = await buildPlugin({ client }, zooConfig());
+    const plugin = await buildPlugin({ client }, zooConfig(), RAW_AGENTS);
     await bindAgent(plugin, "dolphin");
 
     await plugin.event({
@@ -690,7 +703,7 @@ describe("session.idle — aborted classification", () => {
         },
       ],
     });
-    const plugin = await buildPlugin({ client }, zooConfig());
+    const plugin = await buildPlugin({ client }, zooConfig(), RAW_AGENTS);
     await bindAgent(plugin, "dolphin");
 
     await idle(plugin);
@@ -701,6 +714,7 @@ describe("session.idle — aborted classification", () => {
   it("fails closed when the transcript cannot be read", async () => {
     const { calls } = makeClient();
     const client = {
+      config: { get: async () => ({ data: RAW_AGENTS }) },
       session: {
         todo: async () => ({ data: ACTIVE_TODOS }),
         messages: async () => {
@@ -712,7 +726,7 @@ describe("session.idle — aborted classification", () => {
         },
       },
     };
-    const plugin = await buildPlugin({ client }, zooConfig());
+    const plugin = await buildPlugin({ client }, zooConfig(), RAW_AGENTS);
     await bindAgent(plugin, "dolphin");
 
     await idle(plugin);
@@ -728,7 +742,7 @@ describe("session.idle — aborted classification", () => {
 describe("session.idle — reminder budget", () => {
   it("stops injecting once the budget is spent", async () => {
     const { client, calls } = makeClient();
-    const plugin = await buildPlugin({ client }, zooConfig(1));
+    const plugin = await buildPlugin({ client }, zooConfig(1), RAW_AGENTS);
     await bindAgent(plugin, "dolphin");
 
     await idle(plugin);
@@ -739,7 +753,7 @@ describe("session.idle — reminder budget", () => {
 
   it("resets the budget only on a real user message, never on the echo", async () => {
     const { client, calls } = makeClient();
-    const plugin = await buildPlugin({ client }, zooConfig(1));
+    const plugin = await buildPlugin({ client }, zooConfig(1), RAW_AGENTS);
     await bindAgent(plugin, "dolphin");
 
     // First wake consumes the single reminder and records the injected
@@ -782,7 +796,7 @@ describe("session.idle — reminder budget", () => {
 
   it("resets the budget on a real user message during the echo window", async () => {
     const { client, calls } = makeClient();
-    const plugin = await buildPlugin({ client }, zooConfig(1));
+    const plugin = await buildPlugin({ client }, zooConfig(1), RAW_AGENTS);
     await bindAgent(plugin, "dolphin");
 
     // First wake consumes the single reminder; the echoed
@@ -822,7 +836,7 @@ describe("session.idle — reminder budget", () => {
 
 /** A profile enabling only the auto-debug settle strategy. */
 const AUTODEBUG_PROFILE = {
-  agents: [],
+  agents: ["dolphin"],
   skills: [],
   hooks: ["auto-debug"],
   tools: [],
@@ -879,7 +893,7 @@ describe("session.idle — auto-debug end to end", () => {
     const plugin = await buildPlugin(
       { client, directory: fixture.workspace },
       autoDebugZooConfig(maxWakes),
-      undefined,
+      RAW_AGENTS,
       { zdebugExec },
     );
     return { plugin, calls };

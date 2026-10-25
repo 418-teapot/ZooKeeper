@@ -23,8 +23,9 @@
  *   5. skill units — one data-only unit per directory under
  *      skills/, discovered at module load (see below).
  *
- * `composeProfile` walks this array in order and instantiates exactly
- * the profile-enabled units, so the registry array is the single
+ * The assembly pipeline walks this array in order, selects the
+ * profile-enabled units whose needs the host can satisfy, and
+ * instantiates exactly those, so the registry array is the single
  * source of truth for load order.
  *
  * @module

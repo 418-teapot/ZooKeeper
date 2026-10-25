@@ -53,6 +53,7 @@ import {
   WIDGET_THEME,
   WIDGET_TUI,
 } from "../../testkits/pi-wiring.js";
+import { cleanupPlanDir, writePlanFile } from "../../testkits/plans.js";
 import { stubTui } from "../../testkits/theme.js";
 import { makeTmpDir } from "../../testkits/tmp.js";
 import { validateCompressArgs } from "../../tools/compress.js";
@@ -85,7 +86,11 @@ initTheme();
 
 describe("buildPiContributions — profile-driven selection", () => {
   it("poly full profile → 7 agents incl. dolphin prompt, 11 skills", () => {
-    const { composed, profile } = buildPiContributions(POLY_ZOO);
+    const { composed, profile } = buildPiContributions(
+      POLY_ZOO,
+      undefined,
+      MODES_RAW,
+    );
     assert.equal(profile?.name, "poly");
     assert.equal(composed.agents.length, 7);
     assert.equal(composed.skills.length, 11);
@@ -96,7 +101,7 @@ describe("buildPiContributions — profile-driven selection", () => {
   });
 
   it("poly full profile → full-registry composition incl. hooks/tools/commands", () => {
-    const { composed } = buildPiContributions(POLY_ZOO);
+    const { composed } = buildPiContributions(POLY_ZOO, undefined, MODES_RAW);
     // afterExec from the registry's hook units, in registry order.
     assert.deepEqual(
       composed.afterExec.map((h) => h.name),
@@ -132,7 +137,7 @@ describe("buildPiContributions — profile-driven selection", () => {
       ...POLY_ZOO,
       mode: { poly: { ...POLY_PROFILE, agents: ["dolphin"], skills: [] } },
     };
-    const { composed } = buildPiContributions(zoo);
+    const { composed } = buildPiContributions(zoo, undefined, MODES_RAW);
     assert.deepEqual(
       composed.agents.map((a) => a.name),
       ["dolphin"],
@@ -140,23 +145,27 @@ describe("buildPiContributions — profile-driven selection", () => {
     assert.deepEqual(composed.skills, []);
   });
 
-  it("agents=[mola] → no dolphin contribution", () => {
+  it("agents=[mola] → invalid profile (no orchestrator), nothing composes", () => {
+    // dolphin is the product's orchestrator; a profile that omits it
+    // cannot run, and the remaining primary is never promoted.
     const zoo = {
       ...POLY_ZOO,
       mode: { poly: { ...POLY_PROFILE, agents: ["mola"] } },
     };
-    const { composed } = buildPiContributions(zoo);
-    assert.deepEqual(
-      composed.agents.map((a) => a.name),
-      ["mola"],
-    );
+    const { composed } = buildPiContributions(zoo, undefined, MODES_RAW);
+    assert.deepEqual(composed.agents, []);
+    assert.deepEqual(composed.report.invalid, {
+      orchestrator: "dolphin",
+      cause: "not-enabled",
+      primaries: ["mola"],
+    });
   });
 
   it("empty agents/skills lists → empty contributions", () => {
     const zoo = {
       mode: { poly: { ...POLY_PROFILE, agents: [], skills: [] } },
     };
-    const { composed } = buildPiContributions(zoo);
+    const { composed } = buildPiContributions(zoo, undefined, MODES_RAW);
     assert.deepEqual(composed.agents, []);
     assert.deepEqual(composed.skills, []);
   });
@@ -174,7 +183,7 @@ describe("buildPiContributions — profile-driven selection", () => {
     // pi composes the full profile against the full registry: every
     // hooks/tools/commands/agents/skills name must match a unit or the
     // selection engine warns.
-    buildPiContributions(POLY_ZOO);
+    buildPiContributions(POLY_ZOO, undefined, MODES_RAW);
     const unknownUnits = _getBufferForTesting().filter(
       (entry) => entry.event === "unknown_unit",
     );
@@ -193,7 +202,7 @@ describe("buildPiContributions — profile-driven selection", () => {
         },
       },
     };
-    buildPiContributions(zoo);
+    buildPiContributions(zoo, undefined, MODES_RAW);
     const unknownUnits = _getBufferForTesting().filter(
       (entry) => entry.event === "unknown_unit",
     );
@@ -212,7 +221,11 @@ describe("buildPiContributions — profile-driven selection", () => {
     const zoo = {
       mode: { poly: POLY_PROFILE, slim: { agents: [], skills: [] } },
     };
-    const { composed, profile } = buildPiContributions(zoo);
+    const { composed, profile } = buildPiContributions(
+      zoo,
+      undefined,
+      MODES_RAW,
+    );
     assert.equal(profile, null);
     assert.deepEqual(composed.agents, []);
     assert.deepEqual(composed.skills, []);
@@ -227,10 +240,14 @@ describe("buildPiContributions — profile-driven selection", () => {
         poly: { ...POLY_PROFILE, tools: [...POLY_PROFILE.tools, "todo"] },
       },
     };
-    const { composed } = buildPiContributions(zoo, {
-      toolHost: fakePiToolHost(),
-      todoStore: createTodoStore(async () => []),
-    });
+    const { composed } = buildPiContributions(
+      zoo,
+      {
+        toolHost: fakePiToolHost(),
+        todoStore: createTodoStore(async () => []),
+      },
+      MODES_RAW,
+    );
     assert.ok(composed.tools.todo, "todo must register on the pi host");
     assert.equal(typeof composed.tools.todo.execute, "function");
     // No host scheduling hint: todo state changes are serialised inside the
@@ -248,7 +265,7 @@ describe("buildPiContributions — profile-driven selection", () => {
         poly: { ...POLY_PROFILE, tools: [...POLY_PROFILE.tools, "todo"] },
       },
     };
-    const { composed } = buildPiContributions(zoo);
+    const { composed } = buildPiContributions(zoo, undefined, MODES_RAW);
     assert.equal(composed.tools.todo, undefined);
     assert.deepEqual(Object.keys(composed.tools).sort(), []);
   });
@@ -259,21 +276,8 @@ describe("buildPiContributions — profile-driven selection", () => {
 // ---------------------------------------------------------------------------
 
 describe("buildPiResolveAgent — session identity resolution", () => {
-  /** The poly profile as a ModeProfile literal (default primary: dolphin). */
-  const PROFILE = {
-    name: "poly",
-    agents: POLY_PROFILE.agents,
-    skills: [],
-    hooks: [],
-    tools: [],
-    commands: [],
-  };
-  const MODES: Record<string, "primary" | "subagent"> = {
-    dolphin: "primary",
-    mola: "primary",
-    beaver: "subagent",
-    lynx: "subagent",
-  };
+  /** The default primary the selection derives for the poly profile. */
+  const DEFAULT_PRIMARY = "dolphin";
 
   it("(a) a subagent child session resolves to its delegated run agent", () => {
     startRun({
@@ -283,7 +287,7 @@ describe("buildPiResolveAgent — session identity resolution", () => {
       startedAt: 100,
     });
     updateRun("run-1", { childSession: "child-beaver" });
-    const resolve = buildPiResolveAgent(PROFILE, MODES);
+    const resolve = buildPiResolveAgent(DEFAULT_PRIMARY);
     assert.equal(resolve("child-beaver"), "beaver");
   });
 
@@ -295,7 +299,7 @@ describe("buildPiResolveAgent — session identity resolution", () => {
       startedAt: 100,
     });
     updateRun("run-1", { childSession: "child-beaver" });
-    const resolve = buildPiResolveAgent(PROFILE, MODES);
+    const resolve = buildPiResolveAgent(DEFAULT_PRIMARY);
     assert.equal(sessionAgentRegistry.resolve("child-beaver"), undefined);
     assert.equal(resolve("child-beaver"), "beaver");
     // The (a) answer is memoized: a later lookup hits the registry
@@ -309,12 +313,12 @@ describe("buildPiResolveAgent — session identity resolution", () => {
   it("(a) a still-unknown child session (no run recorded) falls through", () => {
     // Without a run and outside any identity scope the caller's session
     // is treated as the root session → the default primary.
-    const resolve = buildPiResolveAgent(PROFILE, MODES);
+    const resolve = buildPiResolveAgent(DEFAULT_PRIMARY);
     assert.equal(resolve("root-ses"), "dolphin");
   });
 
   it("(b) an unregistered session inside a subagent identity scope resolves to it", () => {
-    const resolve = buildPiResolveAgent(PROFILE, MODES);
+    const resolve = buildPiResolveAgent(DEFAULT_PRIMARY);
     let resolved: string | undefined;
     runWithIdentity({ kind: "subagent", name: "lynx" }, () => {
       resolved = resolve("orphan-child");
@@ -323,7 +327,7 @@ describe("buildPiResolveAgent — session identity resolution", () => {
   });
 
   it("(b) the subagent-identity answer is bound into the shared registry", () => {
-    const resolve = buildPiResolveAgent(PROFILE, MODES);
+    const resolve = buildPiResolveAgent(DEFAULT_PRIMARY);
     assert.equal(sessionAgentRegistry.resolve("orphan-child-2"), undefined);
     let resolved: string | undefined;
     runWithIdentity({ kind: "subagent", name: "lynx" }, () => {
@@ -337,7 +341,7 @@ describe("buildPiResolveAgent — session identity resolution", () => {
   });
 
   it("(c) the root-session answer is bound and repeats hit the registry", () => {
-    const resolve = buildPiResolveAgent(PROFILE, MODES);
+    const resolve = buildPiResolveAgent(DEFAULT_PRIMARY);
     assert.equal(sessionAgentRegistry.resolve("root-ses-2"), undefined);
     assert.equal(resolve("root-ses-2"), "dolphin");
     // The root session is bound: without the binding every later
@@ -352,12 +356,12 @@ describe("buildPiResolveAgent — session identity resolution", () => {
 
   it("a pre-existing registry binding wins over fresh resolution", () => {
     sessionAgentRegistry.bind("bound-ses", "mola");
-    const resolve = buildPiResolveAgent(PROFILE, MODES);
+    const resolve = buildPiResolveAgent(DEFAULT_PRIMARY);
     assert.equal(resolve("bound-ses"), "mola");
   });
 
-  it("null profile → undefined (fail-closed, no binding created)", () => {
-    const resolve = buildPiResolveAgent(null, {});
+  it("no selected primary → undefined (fail-closed, no binding created)", () => {
+    const resolve = buildPiResolveAgent(undefined);
     assert.equal(resolve("any-session"), undefined);
     assert.equal(sessionAgentRegistry.resolve("any-session"), undefined);
   });
@@ -367,17 +371,158 @@ describe("buildPiResolveAgent — session identity resolution", () => {
 // Tool registration
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Fetch converter availability (probed before selection)
+// ---------------------------------------------------------------------------
+
+describe("buildPiContributions — fetch converter availability", () => {
+  /** The poly profile with only the fetch tool enabled. */
+  const FETCH_ZOO = {
+    ...POLY_ZOO,
+    mode: { poly: { ...POLY_PROFILE, tools: ["fetch"] } },
+  };
+  /** A converter stub the pipeline would accept. */
+  const converter = (html: string) => html;
+  /** A head truncator stub that keeps everything. */
+  const truncate = (content: string) => ({
+    content,
+    truncated: false,
+    totalLines: 1,
+    totalBytes: content.length,
+    outputLines: 1,
+  });
+
+  it("selects fetch when the converter probe succeeds", () => {
+    const { composed } = buildPiContributions(
+      FETCH_ZOO,
+      {
+        loadHtmlConverter: () => converter,
+        truncateHead: truncate,
+      },
+      MODES_RAW,
+    );
+
+    assert.deepEqual(Object.keys(composed.tools), ["fetch"]);
+    assert.ok(composed.report.selected.includes("fetch"));
+  });
+
+  it("skips fetch when the converter probe reports no addon", () => {
+    const { composed } = buildPiContributions(
+      FETCH_ZOO,
+      {
+        loadHtmlConverter: () => null,
+        truncateHead: truncate,
+      },
+      MODES_RAW,
+    );
+
+    assert.deepEqual(composed.tools, {});
+    assert.deepEqual(
+      composed.report.skipped.filter((skip) => skip.name === "fetch"),
+      [{ name: "fetch", missing: ["htmlConverter"] }],
+    );
+  });
+
+  it("does not probe the converter when the profile is absent", () => {
+    // A null profile selects nothing and instantiates nothing, so probing
+    // the native addon there would only emit a spurious
+    // `converter_unavailable` warning for a unit that can never run.
+    let probes = 0;
+    const { composed, profile } = buildPiContributions(
+      {},
+      {
+        loadHtmlConverter: () => {
+          probes += 1;
+          return converter;
+        },
+        truncateHead: truncate,
+      },
+      MODES_RAW,
+    );
+
+    assert.equal(profile, null);
+    assert.equal(probes, 0);
+    assert.deepEqual(composed.tools, {});
+  });
+
+  it("skips fetch when the host binds no converter loader", () => {
+    const { composed } = buildPiContributions(
+      FETCH_ZOO,
+      {
+        truncateHead: truncate,
+      },
+      MODES_RAW,
+    );
+
+    assert.deepEqual(composed.tools, {});
+    assert.deepEqual(
+      composed.report.skipped.filter((skip) => skip.name === "fetch"),
+      [{ name: "fetch", missing: ["htmlConverter"] }],
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Orchestrator seeding
+// ---------------------------------------------------------------------------
+
+describe("buildPiContributions — orchestrator seeding", () => {
+  it("seeds the identity with the selection's orchestrator", () => {
+    buildPiContributions(POLY_ZOO, undefined, MODES_RAW);
+
+    assert.equal(getPrimary(), "dolphin");
+  });
+
+  it("never overwrites a switched primary on reassembly", () => {
+    // The extension factory re-runs on every session replacement; the
+    // switch sets its target before calling `newSession`, so the re-seed
+    // must leave that choice intact.
+    buildPiContributions(POLY_ZOO, undefined, MODES_RAW);
+    setPrimary("mola");
+
+    buildPiContributions(POLY_ZOO, undefined, MODES_RAW);
+
+    assert.equal(getPrimary(), "mola");
+  });
+
+  it("follows the declared orchestrator, not the profile's agent order", () => {
+    // mola is listed first and is a primary, yet the role belongs to
+    // dolphin: the seed must follow the declared role.
+    const zoo = {
+      ...POLY_ZOO,
+      mode: {
+        poly: { ...POLY_PROFILE, agents: ["mola", "dolphin"] },
+      },
+    };
+
+    buildPiContributions(zoo, undefined, MODES_RAW);
+
+    assert.equal(getPrimary(), "dolphin");
+  });
+
+  it("seeds nothing when the profile cannot provide the orchestrator", () => {
+    const zoo = {
+      ...POLY_ZOO,
+      mode: { poly: { ...POLY_PROFILE, agents: ["beaver", "lynx"] } },
+    };
+
+    buildPiContributions(zoo, undefined, MODES_RAW);
+
+    assert.equal(getPrimary(), undefined);
+  });
+});
+
 describe("buildPiHandlers — registerTool wiring", () => {
   it("registers compress and decompress with pi when the profile enables them", async () => {
     const api = mockApi();
-    await buildPiHandlers(POLY_ZOO, api as any);
+    await buildPiHandlers(POLY_ZOO, api as any, MODES_RAW);
     const toolNames = api.tools.map((tool: any) => tool.name);
     assert.deepEqual(toolNames.sort(), ["compress", "decompress"]);
   });
 
   it("sets label to the tool name and wraps parameters in an object schema", async () => {
     const api = mockApi();
-    await buildPiHandlers(POLY_ZOO, api as any);
+    await buildPiHandlers(POLY_ZOO, api as any, MODES_RAW);
     const compress = api.tools.find((tool: any) => tool.name === "compress");
     assert.ok(compress);
     assert.equal((compress as any).label, "compress");
@@ -388,7 +533,7 @@ describe("buildPiHandlers — registerTool wiring", () => {
 
   it("bridged compress schema accepts what validateCompressArgs accepts", async () => {
     const api = mockApi();
-    await buildPiHandlers(POLY_ZOO, api as any);
+    await buildPiHandlers(POLY_ZOO, api as any, MODES_RAW);
     const compress = api.tools.find((tool: any) => tool.name === "compress") as
       | {
           parameters: {
@@ -443,6 +588,7 @@ describe("buildPiHandlers — registerTool wiring", () => {
         },
       },
       api as any,
+      MODES_RAW,
     );
     const decompress = api.tools.find(
       (tool: any) => tool.name === "decompress",
@@ -471,6 +617,7 @@ describe("buildPiHandlers — registerTool wiring", () => {
     await buildPiHandlers(
       { mode: { poly: { ...POLY_PROFILE, tools: ["ask"] } } },
       api as any,
+      MODES_RAW,
     );
     const ask = api.tools.find((tool: any) => tool.name === "ask") as
       | { execute: (...args: unknown[]) => Promise<unknown> }
@@ -676,7 +823,7 @@ describe("buildPiHandlers — registerCommand wiring", () => {
 
   it("preserves description and a handler on each registration", async () => {
     const api = mockApi();
-    await buildPiHandlers(POLY_ZOO, api as any);
+    await buildPiHandlers(POLY_ZOO, api as any, MODES_RAW);
     const dcp = api.commands.find((c) => c.name === "dcp");
     assert.ok(dcp, "dcp must be registered");
     assert.equal(dcp.description, "显示上下文用量与缓存命中率");
@@ -698,13 +845,14 @@ describe("buildPiHandlers — registerCommand wiring", () => {
         },
       },
       api as any,
+      MODES_RAW,
     );
     assert.deepEqual(api.commands, []);
   });
 
   it("/dcp context appends a zoo-notice custom entry (persistent, no LLM context)", async () => {
     const api = mockApi();
-    await buildPiHandlers(POLY_ZOO, api as any);
+    await buildPiHandlers(POLY_ZOO, api as any, MODES_RAW);
     const dcp = api.commands.find((c) => c.name === "dcp");
     assert.ok(dcp && typeof dcp.handler === "function");
 
@@ -751,7 +899,7 @@ describe("buildPiHandlers — registerCommand wiring", () => {
 
   it("/dcp errors route through notifySessionError into appendEntry", async () => {
     const api = mockApi();
-    await buildPiHandlers(POLY_ZOO, api as any);
+    await buildPiHandlers(POLY_ZOO, api as any, MODES_RAW);
     const dcp = api.commands.find((c) => c.name === "dcp");
     assert.ok(dcp && typeof dcp.handler === "function");
 
@@ -773,13 +921,58 @@ describe("buildPiHandlers — registerCommand wiring", () => {
     );
   });
 
+  it("/go hands the plan off to the orchestrator the selection resolved", async () => {
+    const api = mockApi();
+    const dir = makeTmpDir("zoo-pi-go-handoff");
+    writePlanFile(
+      dir,
+      "demo-plan.md",
+      {
+        status: "planning-done",
+        slug: "demo-plan",
+      },
+      "body",
+    );
+    const sessions: any[] = [];
+    try {
+      await buildPiHandlers(POLY_ZOO, api as any, MODES_RAW, {
+        directory: dir,
+      });
+      const go = api.commands.find((c) => c.name === "go");
+      assert.ok(go && typeof go.handler === "function");
+
+      // The planning session runs as another primary: the handoff must
+      // switch to the selection's orchestrator, not keep this one.
+      setPrimary("mola");
+      await (go.handler as (args: string, ctx: unknown) => Promise<void>)("", {
+        sessionManager: { getSessionId: () => "sess-go" },
+        newSession: async (options: any) => {
+          sessions.push(options);
+          await options?.withSession?.({ sendUserMessage: async () => {} });
+          return { cancelled: false };
+        },
+      });
+
+      assert.equal(sessions.length, 1);
+      assert.equal(sessions[0].parentSession, "sess-go");
+      assert.equal(getPrimary(), "dolphin");
+      assert.ok(
+        fs
+          .readFileSync(join(dir, ".zoo/plans/demo-plan.md"), "utf-8")
+          .includes("status: executing"),
+      );
+    } finally {
+      cleanupPlanDir(dir);
+    }
+  });
+
   it("registers tools over the unified host; registration itself appends nothing", async () => {
     // The single pi tool host serves both tools and commands with the
     // same appendEntry-backed notify (`zoo-notice`) — one unified
     // in-session channel.  Registering a tool is side-effect free —
     // entries only appear once the tool actually executes and notifies.
     const api = mockApi();
-    await buildPiHandlers(POLY_ZOO, api as any);
+    await buildPiHandlers(POLY_ZOO, api as any, MODES_RAW);
 
     const compress = api.tools.find((t: any) => t.name === "compress");
     assert.ok(compress, "compress tool must be registered");
@@ -788,7 +981,7 @@ describe("buildPiHandlers — registerCommand wiring", () => {
 
   it("registers a zoo-notice entry renderer with pi", async () => {
     const api = mockApi();
-    await buildPiHandlers(POLY_ZOO, api as any);
+    await buildPiHandlers(POLY_ZOO, api as any, MODES_RAW);
     const renderer = api.renderers.find((r) => r.customType === "zoo-notice");
     assert.ok(renderer, "zoo-notice entry renderer must be registered");
     assert.equal(typeof renderer.renderer, "function");
@@ -806,6 +999,7 @@ describe("buildPiHandlers — registerCommand wiring", () => {
         },
       },
       api as any,
+      MODES_RAW,
     );
     assert.ok(
       api.renderers.some(
@@ -827,6 +1021,7 @@ describe("buildPiHandlers — registerCommand wiring", () => {
         },
       },
       api as any,
+      MODES_RAW,
     );
     const renderer = api.renderers.find((r) => r.customType === "zoo-notice");
     assert.ok(renderer, "zoo-notice entry renderer must be registered");
@@ -960,13 +1155,16 @@ describe("buildPiHandlers — primary-switch command wiring", () => {
     assert.deepEqual(api.activeTools, ["edit", "bash"]);
   });
 
-  it("no rawConfig (no primaries) → no switch commands registered", async () => {
+  it("no agent-role table → invalid profile → no switch commands", async () => {
+    // Without the role table no primary (and therefore no orchestrator)
+    // resolves, so the profile is invalid and contributes no command.
     const api = mockApi();
     await buildPiHandlers(POLY_ZOO, api as any);
     const switchNames = api.commands
       .map((c) => c.name)
       .filter((n) => ["dolphin", "mola"].includes(n));
     assert.deepEqual(switchNames, []);
+    assert.deepEqual(api.commands, []);
   });
 });
 
@@ -1086,11 +1284,14 @@ describe("buildPiHandlers — primary tool-deny trim (main session)", () => {
           return { cancelled: false };
         },
       }),
-      defaultPrimary: "beaver",
     });
-    await target.create({ parentage: "sess-go", title: "t" });
-    await target.installAgent();
-    await target.deliver({ id: "" }, "plan ref");
+    const session = await target.create({
+      parentage: "sess-go",
+      title: "t",
+      agent: "beaver",
+    });
+    await target.installAgent(session);
+    await target.deliver(session, "plan ref");
     assert.equal(getPrimary(), "beaver");
     await handlers.sessionStart(
       { type: "session_start", reason: "new" },
@@ -1385,14 +1586,18 @@ describe("buildPiHandlers — widget seeding", () => {
     );
   });
 
-  it("session_start stays silent when no primary is configured (no rawConfig)", async () => {
+  it("session_start stays silent when the profile cannot provide the orchestrator", async () => {
     const api = mockApi();
     // Defensively reset the module-level primary so an order-dependent
     // stale value from a prior test can never seed the widget.
     resetIdentityForTesting();
-    // Without rawConfig the agent-mode map is empty → no primaries → the
-    // identity machinery stays off and no seed may run.
-    const handlers = await buildPiHandlers(POLY_ZOO, api as any);
+    // The profile omits the orchestrator, so the selection is invalid:
+    // no orchestrator resolves and no seed may run.
+    const handlers = await buildPiHandlers(
+      { mode: { poly: { ...POLY_PROFILE, agents: ["beaver"] } } },
+      api as any,
+      MODES_RAW,
+    );
     let widgetCalls = 0;
     const ctx = {
       sessionManager: { getSessionId: () => "sess" },
@@ -1407,7 +1612,8 @@ describe("buildPiHandlers — widget seeding", () => {
       { type: "session_start", reason: "startup" },
       ctx,
     );
-    assert.equal(widgetCalls, 0, "no primary → no seed");
+    assert.equal(widgetCalls, 0, "no orchestrator → no seed");
+    assert.equal(getPrimary(), undefined);
   });
 
   it("stays silent without a pi switch host (no API)", async () => {
@@ -1426,14 +1632,18 @@ describe("buildPiHandlers — widget seeding", () => {
     assert.equal(widgetCalls, 0, "no host → no seed");
   });
 
-  it("stays silent when no primary is configured (no rawConfig)", async () => {
+  it("stays silent when the profile cannot provide the orchestrator", async () => {
     const api = mockApi();
     // Defensively reset the module-level primary so an order-dependent
     // stale value from a prior test can never seed the widget.
     resetIdentityForTesting();
-    // Without rawConfig the agent-mode map is empty → no primaries → the
-    // identity machinery stays off and no seed may run.
-    const handlers = await buildPiHandlers(POLY_ZOO, api as any);
+    // An invalid selection resolves no orchestrator, so the bind-time
+    // seed stays off.
+    const handlers = await buildPiHandlers(
+      { mode: { poly: { ...POLY_PROFILE, agents: ["beaver"] } } },
+      api as any,
+      MODES_RAW,
+    );
     let widgetCalls = 0;
     const ctx = {
       sessionManager: { getSessionId: () => "sess" },
@@ -1445,7 +1655,8 @@ describe("buildPiHandlers — widget seeding", () => {
       },
     };
     await handlers.beforeAgentStart({ systemPrompt: "base" }, ctx);
-    assert.equal(widgetCalls, 0, "no primary → no seed");
+    assert.equal(widgetCalls, 0, "no orchestrator → no seed");
+    assert.equal(getPrimary(), undefined);
   });
 
   it("session_start rebuilds the run registry from the message history", async () => {
@@ -2679,7 +2890,7 @@ describe("buildPiHandlers — plugin_init load-time event", () => {
     const logDir = makeTmpDir("zoo-pi-log");
     try {
       initLogger("pi", { logDir });
-      await buildPiHandlers(POLY_ZOO);
+      await buildPiHandlers(POLY_ZOO, undefined, MODES_RAW);
       const inits = _getBufferForTesting().filter(
         (entry) => entry.event === "plugin_init",
       );

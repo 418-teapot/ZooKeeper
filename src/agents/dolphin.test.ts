@@ -3,13 +3,13 @@
  *
  * Covers the poly/mono mode gate, the prompt sections that must remain
  * available in each mode, shared Chinese communication guidance, continuation
- * handling, and the unit descriptor's active-set forwarding.
+ * handling, and the unit descriptor's `uses` projection.
  */
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { ORCHESTRATOR_AGENT_NAME } from "../core/orchestrator.js";
 import type { Capabilities } from "../core/ports/index.js";
-import type { ActiveSet } from "../core/unit.js";
+import { facts } from "../testkits/compose.js";
 import {
   buildDolphinPrompt,
   DOLPHIN_PROMPT_VARIANTS,
@@ -24,31 +24,19 @@ const DEPS: Partial<Capabilities> = {
   resolveAgent: () => undefined,
 };
 
-/** Poly active set: beaver + lynx + spider present. */
-const POLY_SET: ActiveSet = {
-  agents: new Set([
-    "dolphin",
-    "mola",
-    "beaver",
-    "lynx",
-    "spider",
-    "eagle",
-    "kiwi",
-  ]),
-  skills: new Set(),
-  hooks: new Set(),
-  tools: new Set(),
-  commands: new Set(),
-};
+/** Poly selection: beaver + lynx + spider present. */
+const POLY_AGENTS: readonly string[] = [
+  "dolphin",
+  "mola",
+  "beaver",
+  "lynx",
+  "spider",
+  "eagle",
+  "kiwi",
+];
 
-/** Mono active set: no beaver / lynx / spider. */
-const MONO_SET: ActiveSet = {
-  agents: new Set(["dolphin", "mola"]),
-  skills: new Set(),
-  hooks: new Set(),
-  tools: new Set(),
-  commands: new Set(),
-};
+/** Mono selection: no beaver / lynx / spider. */
+const MONO_AGENTS: readonly string[] = ["dolphin", "mola"];
 
 /** The continuation note shared by both prompt variants. */
 const CONTINUATION_NOTE =
@@ -73,7 +61,7 @@ function assertSectionOrder(text: string, names: string[]): void {
 
 describe("buildDolphinPrompt", () => {
   it("poly prompt contains the global routing contract", () => {
-    const poly = buildDolphinPrompt(POLY_SET);
+    const poly = buildDolphinPrompt(POLY_AGENTS);
     assert.ok(poly.includes("<Agents>"));
     assert.ok(poly.includes("**beaver** — 代码实现"));
     assert.ok(poly.includes("**lynx** — 只读代码库探索"));
@@ -99,23 +87,15 @@ describe("buildDolphinPrompt", () => {
 
   it("each leaf agent enables the poly variant", () => {
     for (const agent of ["beaver", "lynx", "spider", "eagle", "kiwi"]) {
-      const set: ActiveSet = {
-        ...MONO_SET,
-        agents: new Set(["dolphin", "mola", agent]),
-      };
       assert.ok(
-        buildDolphinPrompt(set).includes("<Agents>"),
+        buildDolphinPrompt(["dolphin", "mola", agent]).includes("<Agents>"),
         `${agent} must enable the poly variant`,
       );
     }
   });
 
-  it("poly agent inventory follows the active profile", () => {
-    const set: ActiveSet = {
-      ...MONO_SET,
-      agents: new Set(["dolphin", "mola", "beaver"]),
-    };
-    const prompt = buildDolphinPrompt(set);
+  it("poly agent inventory follows the selected agents", () => {
+    const prompt = buildDolphinPrompt(["dolphin", "mola", "beaver"]);
     assert.ok(prompt.includes("**beaver** — 代码实现"));
     assert.ok(!prompt.includes("**lynx** — 只读代码库探索"));
     assert.ok(!prompt.includes("**eagle** — 只读代码审查"));
@@ -123,7 +103,7 @@ describe("buildDolphinPrompt", () => {
   });
 
   it("mono variant removes delegation content and tools", () => {
-    const mono = buildDolphinPrompt(MONO_SET);
+    const mono = buildDolphinPrompt(MONO_AGENTS);
     assert.ok(!mono.includes("<Agents>"));
     assert.ok(!mono.includes("task("));
     assert.ok(!/eagle/i.test(mono));
@@ -134,7 +114,7 @@ describe("buildDolphinPrompt", () => {
   });
 
   it("mono variant keeps the core sections without a phased checklist", () => {
-    const mono = buildDolphinPrompt(MONO_SET);
+    const mono = buildDolphinPrompt(MONO_AGENTS);
     for (const name of ["Role", "Contract", "Workflow"]) {
       assert.ok(mono.includes(`<${name}>`), `<${name}> section must exist`);
     }
@@ -147,7 +127,7 @@ describe("buildDolphinPrompt", () => {
   });
 
   it("aligns poly section order and keeps its rules in place", () => {
-    const poly = buildDolphinPrompt(POLY_SET);
+    const poly = buildDolphinPrompt(POLY_AGENTS);
 
     assertSectionOrder(poly, [
       "Role",
@@ -164,8 +144,8 @@ describe("buildDolphinPrompt", () => {
   });
 
   it("both variants use the shared Chinese communication guidance", () => {
-    const poly = buildDolphinPrompt(POLY_SET);
-    const mono = buildDolphinPrompt(MONO_SET);
+    const poly = buildDolphinPrompt(POLY_AGENTS);
+    const mono = buildDolphinPrompt(MONO_AGENTS);
     assert.equal(
       section(poly, "Communication"),
       section(mono, "Communication"),
@@ -181,46 +161,48 @@ describe("buildDolphinPrompt", () => {
     assert.ok(section(mono, "Contract").includes("没有证据就**不能**算完成"));
   });
 
-  it("an empty agent set keeps the mono variant", () => {
-    const set: ActiveSet = { ...MONO_SET, agents: new Set() };
-    assert.ok(!buildDolphinPrompt(set).includes("<Agents>"));
+  it("an empty agent selection keeps the mono variant", () => {
+    assert.ok(!buildDolphinPrompt([]).includes("<Agents>"));
   });
 
   it("places the continuation note in both contracts and routes decisions through ask", () => {
-    const polyContract = section(buildDolphinPrompt(POLY_SET), "Contract");
+    const polyContract = section(buildDolphinPrompt(POLY_AGENTS), "Contract");
     assert.ok(polyContract.includes(CONTINUATION_NOTE));
     assert.ok(
       polyContract.indexOf("没有证据就") <
         polyContract.indexOf(CONTINUATION_NOTE),
     );
 
-    const monoContract = section(buildDolphinPrompt(MONO_SET), "Contract");
+    const monoContract = section(buildDolphinPrompt(MONO_AGENTS), "Contract");
     assert.ok(monoContract.includes(CONTINUATION_NOTE));
     assert.ok(
       monoContract.indexOf("没有证据就") <
         monoContract.indexOf(CONTINUATION_NOTE),
     );
 
-    for (const set of [POLY_SET, MONO_SET]) {
-      const prompt = buildDolphinPrompt(set);
+    for (const agents of [POLY_AGENTS, MONO_AGENTS]) {
+      const prompt = buildDolphinPrompt(agents);
       assert.ok(prompt.includes("使用结构化的 ask/question 工具提问"));
       assert.ok(!prompt.includes("{{"));
     }
   });
 
-  it("unit descriptor passes activeSet through to the builder", () => {
+  it("unit descriptor passes the agents projection to the builder", () => {
     assert.equal(
-      unit.create(DEPS, POLY_SET).agents[0].prompt,
-      buildDolphinPrompt(POLY_SET),
+      unit.create(DEPS, facts({ agents: POLY_AGENTS })).agents[0].prompt,
+      buildDolphinPrompt(POLY_AGENTS),
     );
     assert.equal(
-      unit.create(DEPS, MONO_SET).agents[0].prompt,
-      buildDolphinPrompt(MONO_SET),
+      unit.create(DEPS, facts({ agents: MONO_AGENTS })).agents[0].prompt,
+      buildDolphinPrompt(MONO_AGENTS),
     );
   });
 
   it("unit descriptor ships the prompt variants with the contribution", () => {
-    const [contribution] = unit.create(DEPS, POLY_SET).agents;
+    const [contribution] = unit.create(
+      DEPS,
+      facts({ agents: POLY_AGENTS }),
+    ).agents;
     assert.deepEqual(contribution.promptVariants, DOLPHIN_PROMPT_VARIANTS);
   });
 });
@@ -235,7 +217,7 @@ describe("dolphin prompt variant defaults", () => {
   const GPT_CONTRACT = "- 职责匹配只决定可以委派给谁，不决定一定委派或不委派；";
 
   it("ships the base wording in the default poly prompt", () => {
-    const poly = buildDolphinPrompt(POLY_SET);
+    const poly = buildDolphinPrompt(POLY_AGENTS);
     assert.ok(poly.includes(BASE_WORKFLOW));
     assert.ok(poly.includes(BASE_CONTRACT));
     assert.ok(!poly.includes(GPT_WORKFLOW));
@@ -259,7 +241,9 @@ describe("dolphin agent descriptor name", () => {
   });
 
   it("contributes exactly the orchestrator-named agent", () => {
-    const names = unit.create(DEPS, POLY_SET).agents.map((agent) => agent.name);
+    const names = unit
+      .create(DEPS, facts({ agents: POLY_AGENTS }))
+      .agents.map((agent) => agent.name);
     assert.deepEqual(names, [ORCHESTRATOR_AGENT_NAME]);
   });
 });

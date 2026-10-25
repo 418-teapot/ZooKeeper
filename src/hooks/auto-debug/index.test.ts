@@ -11,7 +11,6 @@
 import assert from "node:assert/strict";
 import { join } from "node:path";
 import { describe, it } from "node:test";
-import { composeProfile } from "../../core/compose.js";
 import type { ModeProfile } from "../../core/config-types.js";
 import type {
   AutoDebugDirEntry,
@@ -20,6 +19,7 @@ import type {
   ZdebugExecResult,
 } from "../../core/ports/autodebug.js";
 import type { Capabilities } from "../../core/ports/index.js";
+import { composeForTest, facts } from "../../testkits/compose.js";
 import { unit } from "./index.js";
 
 const WORKSPACE = "/ws";
@@ -104,13 +104,7 @@ function makeDeps(partial: Record<string, unknown>): Partial<Capabilities> {
 
 /** Compose the unit and run its `onSettled` handler. */
 async function settle(deps: Partial<Capabilities>) {
-  const composed = unit.create(deps, {
-    agents: new Set(),
-    skills: new Set(),
-    hooks: new Set(["auto-debug"]),
-    tools: new Set(),
-    commands: new Set(),
-  });
+  const composed = unit.create(deps, facts());
   assert.equal(composed.onSettled.length, 1);
   return composed.onSettled[0].handle({ sessionID: "s1", hadActivity: true });
 }
@@ -122,13 +116,7 @@ describe("auto-debug unit — descriptor", () => {
   });
 
   it("contributes only the onSettled slot", () => {
-    const composed = unit.create(makeDeps({}), {
-      agents: new Set(),
-      skills: new Set(),
-      hooks: new Set(["auto-debug"]),
-      tools: new Set(),
-      commands: new Set(),
-    });
+    const composed = unit.create(makeDeps({}), facts());
     assert.deepEqual(composed.afterExec, []);
     assert.deepEqual(composed.transform, []);
     assert.deepEqual(composed.textComplete, []);
@@ -144,13 +132,7 @@ describe("auto-debug unit — descriptor", () => {
       makeDeps({
         autoDebugConfig: { maxWakes: 7 },
       }),
-      {
-        agents: new Set(),
-        skills: new Set(),
-        hooks: new Set(["auto-debug"]),
-        tools: new Set(),
-        commands: new Set(),
-      },
+      facts(),
     );
     assert.equal(composed.onSettled[0].maxWakes, 7);
   });
@@ -164,7 +146,7 @@ describe("auto-debug unit — descriptor", () => {
       tools: [],
       commands: [],
     };
-    const result = composeProfile(
+    const result = composeForTest(
       profile,
       [unit],
       makeDeps({ autoDebugConfig: undefined }),

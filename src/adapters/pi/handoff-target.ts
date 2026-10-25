@@ -58,22 +58,24 @@ export interface PiCommandCtx {
 // ---------------------------------------------------------------------------
 
 /**
- * Build the pi handoff target from a command-context provider and the
- * default primary.
+ * Build the pi handoff target from a command-context provider.
  *
  * `getCommandCtx` is a supplier (not a value) so the handoff target
  * always reads the latest pi command context from the entry point's
  * mutable holder — the command handler refreshes that holder with pi's
  * fresh command context immediately before the handoff target runs.
  *
- * @param opts - The context supplier and the default primary agent name.
+ * The executor agent is NOT captured here: it arrives with each handoff
+ * and rides through the returned session, so one target serves every
+ * `/go` call.
+ *
+ * @param opts - The context supplier.
  * @returns The pi handoff target.
  */
 export function createPiHandoffTarget(opts: {
   getCommandCtx: () => PiCommandCtx | null | undefined;
-  defaultPrimary: string | undefined;
 }): HandoffTarget {
-  const { getCommandCtx, defaultPrimary } = opts;
+  const { getCommandCtx } = opts;
   /** The parent session id stashed at create time for the deliver step. */
   let parentage: string | undefined;
   /** The primary that preceded the handoff, restored on a failed replacement. */
@@ -87,10 +89,13 @@ export function createPiHandoffTarget(opts: {
      * here — the context is only validated and the parent session id is
      * stashed for the deliver step.  The title is ignored (pi has no
      * session-list title concept).  Returns an empty id: pi's TUI binds
-     * the replaced session itself, so deliver/focus never use it.
+     * the replaced session itself, so deliver/focus never use it.  The
+     * executor is echoed into the returned session.
      *
-     * @param ctx - The handoff context (parentage = the current session id).
-     * @returns `{ id: "" }` (unused on pi).
+     * @param ctx - The handoff context (parentage = the current session
+     *   id, agent = the handoff's executor).
+     * @returns The session with an empty id (unused on pi) and that
+     *   executor.
      * @throws Error when the command context is unavailable or lacks the
      *   `newSession` API (fail-closed).
      */
@@ -103,24 +108,24 @@ export function createPiHandoffTarget(opts: {
         );
       }
       parentage = ctx.parentage;
-      return Promise.resolve({ id: "" });
+      return Promise.resolve({ id: "", agent: ctx.agent });
     },
 
     /**
      * Prepare the new session's agent identity.
      *
-     * Switches pi's self-maintained primary to the default primary so the
-     * replaced session's `before_agent_start` resolves the executor's
+     * Switches pi's self-maintained primary to the session's executor so
+     * the replaced session's `before_agent_start` resolves the executor's
      * prompt.  The previous primary is stashed so `deliver` can restore
      * it when the replacement is cancelled or throws before the session
-     * was created.  A no-op when no default primary is configured
-     * (fail-closed — the session keeps whatever identity pi already had).
+     * was created.
+     *
+     * @param session - The created session whose `agent` becomes the
+     *   primary.
      */
-    installAgent() {
-      if (defaultPrimary !== undefined) {
-        previousPrimary = getPrimary();
-        setPrimary(defaultPrimary);
-      }
+    installAgent(session) {
+      previousPrimary = getPrimary();
+      setPrimary(session.agent);
     },
 
     /**

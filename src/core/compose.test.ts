@@ -1,27 +1,34 @@
 /**
- * Tests for `composeProfile` in `src/core/compose.ts`.
+ * Tests for the assembly pipeline in `src/core/compose.ts`.
  *
- * Covers: full-profile selection, null profile (empty result, no unit
- * instantiation), subset selection preserving the unit array's order,
- * per-kind selection (agent / skill / hook / tool / command), empty
- * category lists, unknown profile names warned via the shared logger,
- * and the active-set handed to unit factories.
+ * Stage boundaries under test: the planner decides what runs (order,
+ * `needs` skipping, unknown names), the binder supplies the capability
+ * record, and the build stage runs every selected factory exactly once.
+ * The expectations are profile/registry literals, never a re-run of the
+ * planner's own logic.
  */
 import assert from "node:assert/strict";
 import { afterEach, describe, it } from "node:test";
 import { _getBufferForTesting, _resetForTesting } from "../utils/logger.js";
-import { composeProfile } from "./compose.js";
+import { capabilityBindings } from "./bindings.js";
+import {
+  assemble,
+  buildComposition,
+  type ComposedResult,
+  type CompositionReport,
+} from "./compose.js";
 import type { ModeProfile } from "./config-types.js";
 import type { Capabilities } from "./ports/index.js";
-import type {
-  ActiveSet,
-  CapabilityKey,
-  HookUnitContributions,
-  UnitContributions,
-  UnitDescriptor,
-  UnitKind,
+import type { SelectionFacts } from "./selection.js";
+import { type AgentMaterialisation, planSelection } from "./selection.js";
+import {
+  defineAgent,
+  defineHook,
+  type HookUnitContributions,
+  type UnitContributions,
+  type UnitDescriptor,
+  type UnitKind,
 } from "./unit.js";
-import { defineHook } from "./unit.js";
 
 afterEach(() => {
   _resetForTesting();
@@ -34,108 +41,118 @@ const BASE_CAPS: Partial<Capabilities> = {
   resolveAgent: () => undefined,
 };
 
-/** The unit registry, in declaration order. */
-function makeUnits(): { units: UnitDescriptor[]; calls: string[] } {
+/** Assemble a profile against the unit array and a capability bag. */
+function run(
+  profile: ModeProfile | null,
+  units: readonly UnitDescriptor[],
+  values: Partial<Capabilities> = BASE_CAPS,
+  agentModes: Record<string, "primary" | "subagent"> = {},
+  orchestrator?: string,
+  materialisation?: AgentMaterialisation,
+): { composed: ComposedResult; report: CompositionReport; calls: string[] } {
   const calls: string[] = [];
-  const units: UnitDescriptor[] = [
-    mockUnit("dolphin", "agent", () => {
-      calls.push("dolphin");
-      return {
-        kind: "agent",
-        agents: [{ name: "dolphin", prompt: "DOLPHIN" }],
-      };
-    }),
-    mockUnit("beaver", "agent", () => {
-      calls.push("beaver");
-      return { kind: "agent", agents: [{ name: "beaver", prompt: "BEAVER" }] };
-    }),
-    mockUnit("mola", "agent", () => {
-      calls.push("mola");
-      return { kind: "agent", agents: [{ name: "mola", prompt: "MOLA" }] };
-    }),
-    mockUnit("beaver-tdd", "skill", () => {
-      calls.push("beaver-tdd");
-      return { kind: "skill", skills: [{ name: "beaver-tdd" }] };
-    }),
-    mockUnit("wiki-query", "skill", () => {
-      calls.push("wiki-query");
-      return { kind: "skill", skills: [{ name: "wiki-query" }] };
-    }),
-    mockHookUnit("subagent-prompt", () => {
-      calls.push("subagent-prompt");
-      return {
-        afterExec: [{ name: "nudgeSubagentOutput", handle: async () => {} }],
-        toolDefinition: [
-          { name: "enhanceSubagentDefinition", handle: async () => {} },
-        ],
-        delegation: [{ name: "judgeSubagentPrompt", judge: () => null }],
-      };
-    }),
-    mockHookUnit("context-pruning", () => {
-      calls.push("context-pruning");
-      return {
-        transform: [{ name: "contextPruning", handle: async () => {} }],
-      };
-    }),
-    mockUnit("compress", "tool", () => {
-      calls.push("compress");
-      return {
-        kind: "tool",
-        tools: [
-          {
-            name: "compress",
-            description: "compress tool",
-            execute: async () => "ok",
-          },
-        ],
-      };
-    }),
-    mockUnit("decompress", "tool", () => {
-      calls.push("decompress");
-      return {
-        kind: "tool",
-        tools: [
-          {
-            name: "decompress",
-            description: "decompress tool",
-            execute: async () => "ok",
-          },
-        ],
-      };
-    }),
-    mockUnit("go", "command", () => {
-      calls.push("go");
-      return {
-        kind: "command",
-        commands: [
-          { name: "go", description: "handoff", handle: async () => {} },
-        ],
-      };
-    }),
-    mockUnit("dcp", "command", () => {
-      calls.push("dcp");
-      return {
-        kind: "command",
-        commands: [
-          { name: "dcp", description: "context", handle: async () => {} },
-        ],
-      };
-    }),
-  ];
-  return { units, calls };
+  const recording = units.map((unit) => {
+    const original = unit.create.bind(unit);
+    return {
+      ...unit,
+      create: (caps: Partial<Capabilities>, selected: SelectionFacts) => {
+        calls.push(unit.name);
+        return original(caps, selected);
+      },
+    } as UnitDescriptor;
+  });
+  const { composed } = assemble({
+    profile,
+    units: recording,
+    bindings: capabilityBindings({ values }),
+    agentModes,
+    orchestrator,
+    materialisation,
+  });
+  return { composed, report: composed.report, calls };
 }
 
+/** The unit registry, in declaration order. */
+function makeUnits(): UnitDescriptor[] {
+  return [
+    mockUnit("dolphin", "agent", () => ({
+      kind: "agent",
+      agents: [{ name: "dolphin", prompt: "DOLPHIN" }],
+    })),
+    mockUnit("beaver", "agent", () => ({
+      kind: "agent",
+      agents: [{ name: "beaver", prompt: "BEAVER" }],
+    })),
+    mockUnit("mola", "agent", () => ({
+      kind: "agent",
+      agents: [{ name: "mola", prompt: "MOLA" }],
+    })),
+    mockUnit("beaver-tdd", "skill", () => ({
+      kind: "skill",
+      skills: [{ name: "beaver-tdd" }],
+    })),
+    mockUnit("wiki-query", "skill", () => ({
+      kind: "skill",
+      skills: [{ name: "wiki-query" }],
+    })),
+    mockHookUnit("subagent-prompt", () => ({
+      afterExec: [{ name: "nudgeSubagentOutput", handle: async () => {} }],
+      toolDefinition: [
+        { name: "enhanceSubagentDefinition", handle: async () => {} },
+      ],
+      delegation: [{ name: "judgeSubagentPrompt", judge: () => null }],
+    })),
+    mockHookUnit("context-pruning", () => ({
+      transform: [{ name: "contextPruning", handle: async () => {} }],
+    })),
+    mockUnit("compress", "tool", () => ({
+      kind: "tool",
+      tools: [
+        {
+          name: "compress",
+          description: "compress tool",
+          execute: async () => "ok",
+        },
+      ],
+    })),
+    mockUnit("decompress", "tool", () => ({
+      kind: "tool",
+      tools: [
+        {
+          name: "decompress",
+          description: "decompress tool",
+          execute: async () => "ok",
+        },
+      ],
+    })),
+    mockUnit("go", "command", () => ({
+      kind: "command",
+      commands: [
+        { name: "go", description: "handoff", handle: async () => {} },
+      ],
+    })),
+    mockUnit("dcp", "command", () => ({
+      kind: "command",
+      commands: [
+        { name: "dcp", description: "context", handle: async () => {} },
+      ],
+    })),
+  ];
+}
+
+/** A raw descriptor with no declared needs, wants, or uses. */
 function mockUnit(
   name: string,
   kind: UnitKind,
   create: (
-    deps: Partial<Capabilities>,
-    activeSet: ActiveSet,
+    caps: Partial<Capabilities>,
+    facts: SelectionFacts,
   ) => UnitContributions,
-  needs: readonly CapabilityKey[] = [],
-  wants: readonly CapabilityKey[] = [],
+  needs: readonly (keyof Capabilities)[] = [],
+  wants: readonly (keyof Capabilities)[] = [],
+  uses: readonly (keyof SelectionFacts)[] = [],
 ): UnitDescriptor {
-  return { name, kind, needs, wants, create } as UnitDescriptor;
+  return { name, kind, needs, wants, uses, create } as UnitDescriptor;
 }
 
 /**
@@ -147,11 +164,13 @@ function mockUnit(
 function mockHookUnit(
   name: string,
   create: (
-    deps: Partial<Capabilities>,
-    activeSet: ActiveSet,
+    caps: Partial<Capabilities>,
+    uses: Record<string, unknown>,
   ) => Partial<Omit<HookUnitContributions, "kind">>,
+  needs: readonly (keyof Capabilities)[] = [],
+  uses: readonly (keyof SelectionFacts)[] = [],
 ): UnitDescriptor {
-  return defineHook({ name, needs: [], create });
+  return defineHook({ name, needs, uses, create });
 }
 
 /** Profile listing every unit in the registry. */
@@ -208,10 +227,9 @@ const ONE_OF_EACH_PROFILE: ModeProfile = {
 // Full profile
 // ---------------------------------------------------------------------------
 
-describe("composeProfile — full profile", () => {
-  it("instantiates every listed unit in registry order", () => {
-    const { units, calls } = makeUnits();
-    composeProfile(ALL_UNITS_PROFILE, units, BASE_CAPS);
+describe("assemble — full profile", () => {
+  it("instantiates every listed unit once, in registry order", () => {
+    const { calls, report } = run(ALL_UNITS_PROFILE, makeUnits());
     assert.deepEqual(calls, [
       "dolphin",
       "beaver",
@@ -225,48 +243,46 @@ describe("composeProfile — full profile", () => {
       "go",
       "dcp",
     ]);
+    assert.deepEqual(report.selected, calls);
   });
 
   it("collects contributions into the host-agnostic result", () => {
-    const { units } = makeUnits();
-    const result = composeProfile(ALL_UNITS_PROFILE, units, BASE_CAPS);
+    const { composed } = run(ALL_UNITS_PROFILE, makeUnits());
 
-    assert.deepEqual(result.agents, [
+    assert.deepEqual(composed.agents, [
       { name: "dolphin", prompt: "DOLPHIN" },
       { name: "beaver", prompt: "BEAVER" },
       { name: "mola", prompt: "MOLA" },
     ]);
-    assert.deepEqual(result.skills, [
+    assert.deepEqual(composed.skills, [
       { name: "beaver-tdd" },
       { name: "wiki-query" },
     ]);
     assert.deepEqual(
-      result.afterExec.map((h) => h.name),
+      composed.afterExec.map((h) => h.name),
       ["nudgeSubagentOutput"],
     );
     assert.deepEqual(
-      result.transform.map((h) => h.name),
+      composed.transform.map((h) => h.name),
       ["contextPruning"],
     );
-    assert.deepEqual(result.textComplete, []);
+    assert.deepEqual(composed.textComplete, []);
     assert.deepEqual(
-      result.toolDefinition.map((h) => h.name),
+      composed.toolDefinition.map((h) => h.name),
       ["enhanceSubagentDefinition"],
     );
     assert.ok(
-      result.gate !== null,
+      composed.gate !== null,
       "delegation judges must compose into a gate",
     );
     assert.equal(
-      result.gate?.({ caller: "beaver", target: "kiwi", prompt: "x" }),
+      composed.gate?.({ caller: "beaver", target: "kiwi", prompt: "x" }),
       null,
       "allow-all mock judges let the delegation pass",
     );
-    // The mock subagent-prompt judge declares no caller need, so the
-    // composition must not ask the host for the caller.
-    assert.equal(result.gateNeedsCaller, false);
-    assert.deepEqual(Object.keys(result.tools), ["compress", "decompress"]);
-    assert.deepEqual(Object.keys(result.commands), ["go", "dcp"]);
+    assert.equal(composed.gateNeedsCaller, false);
+    assert.deepEqual(Object.keys(composed.tools), ["compress", "decompress"]);
+    assert.deepEqual(Object.keys(composed.commands), ["go", "dcp"]);
   });
 });
 
@@ -274,11 +290,10 @@ describe("composeProfile — full profile", () => {
 // gateNeedsCaller aggregation
 // ---------------------------------------------------------------------------
 
-describe("composeProfile — gateNeedsCaller aggregation", () => {
+describe("assemble — gateNeedsCaller aggregation", () => {
   it("is false when no enabled judge needs the caller", () => {
-    const { units } = makeUnits();
-    const result = composeProfile(ALL_UNITS_PROFILE, units, BASE_CAPS);
-    assert.equal(result.gateNeedsCaller, false);
+    const { composed } = run(ALL_UNITS_PROFILE, makeUnits());
+    assert.equal(composed.gateNeedsCaller, false);
   });
 
   it("is true when any enabled judge needs the caller", () => {
@@ -299,14 +314,13 @@ describe("composeProfile — gateNeedsCaller aggregation", () => {
       tools: [],
       commands: [],
     };
-    const result = composeProfile(profile, [unit], BASE_CAPS);
-    assert.equal(result.gateNeedsCaller, true);
+    const { composed } = run(profile, [unit]);
+    assert.equal(composed.gateNeedsCaller, true);
   });
 
   it("is false for a null profile", () => {
-    const { units } = makeUnits();
-    const result = composeProfile(null, units, BASE_CAPS);
-    assert.equal(result.gateNeedsCaller, false);
+    const { composed } = run(null, makeUnits());
+    assert.equal(composed.gateNeedsCaller, false);
   });
 });
 
@@ -314,12 +328,11 @@ describe("composeProfile — gateNeedsCaller aggregation", () => {
 // Null profile
 // ---------------------------------------------------------------------------
 
-describe("composeProfile — null profile", () => {
+describe("assemble — null profile", () => {
   it("returns an empty result without instantiating any unit", () => {
-    const { units, calls } = makeUnits();
-    const result = composeProfile(null, units, BASE_CAPS);
+    const { calls, composed } = run(null, makeUnits());
     assert.deepEqual(calls, []);
-    assert.deepEqual(result, {
+    assert.deepEqual(composed, {
       agents: [],
       skills: [],
       afterExec: [],
@@ -331,7 +344,13 @@ describe("composeProfile — null profile", () => {
       commands: {},
       gate: null,
       gateNeedsCaller: false,
-      report: { activated: [], skipped: [] },
+      report: {
+        selected: [],
+        skipped: [],
+        unknown: [],
+        invalid: null,
+        unmaterialised: [],
+      },
     });
   });
 });
@@ -340,22 +359,21 @@ describe("composeProfile — null profile", () => {
 // Subset profile — order preservation
 // ---------------------------------------------------------------------------
 
-describe("composeProfile — subset profile", () => {
+describe("assemble — subset profile", () => {
   it("instantiates only enabled units, preserving registry order", () => {
-    const { units, calls } = makeUnits();
-    const result = composeProfile(SUBSET_PROFILE, units, BASE_CAPS);
+    const { calls, composed } = run(SUBSET_PROFILE, makeUnits());
 
     assert.deepEqual(calls, ["mola", "context-pruning", "decompress"]);
-    assert.deepEqual(result.agents, [{ name: "mola", prompt: "MOLA" }]);
-    assert.deepEqual(result.skills, []);
+    assert.deepEqual(composed.agents, [{ name: "mola", prompt: "MOLA" }]);
+    assert.deepEqual(composed.skills, []);
     assert.deepEqual(
-      result.transform.map((h) => h.name),
+      composed.transform.map((h) => h.name),
       ["contextPruning"],
     );
-    assert.deepEqual(result.afterExec, []);
-    assert.deepEqual(result.toolDefinition, []);
-    assert.deepEqual(Object.keys(result.tools), ["decompress"]);
-    assert.deepEqual(Object.keys(result.commands), []);
+    assert.deepEqual(composed.afterExec, []);
+    assert.deepEqual(composed.toolDefinition, []);
+    assert.deepEqual(Object.keys(composed.tools), ["decompress"]);
+    assert.deepEqual(Object.keys(composed.commands), []);
   });
 });
 
@@ -363,19 +381,199 @@ describe("composeProfile — subset profile", () => {
 // Per-kind selection
 // ---------------------------------------------------------------------------
 
-describe("composeProfile — per-kind selection", () => {
+describe("assemble — per-kind selection", () => {
   it("selects agent / skill / tool / command units independently", () => {
-    const { units, calls } = makeUnits();
-    const result = composeProfile(ONE_OF_EACH_PROFILE, units, BASE_CAPS);
+    const { calls, composed } = run(ONE_OF_EACH_PROFILE, makeUnits());
 
     assert.deepEqual(calls, ["beaver", "wiki-query", "compress", "dcp"]);
-    assert.deepEqual(result.agents, [{ name: "beaver", prompt: "BEAVER" }]);
-    assert.deepEqual(result.skills, [{ name: "wiki-query" }]);
-    assert.deepEqual(result.afterExec, []);
-    assert.deepEqual(result.transform, []);
-    assert.deepEqual(result.toolDefinition, []);
-    assert.deepEqual(Object.keys(result.tools), ["compress"]);
-    assert.deepEqual(Object.keys(result.commands), ["dcp"]);
+    assert.deepEqual(composed.agents, [{ name: "beaver", prompt: "BEAVER" }]);
+    assert.deepEqual(composed.skills, [{ name: "wiki-query" }]);
+    assert.deepEqual(composed.afterExec, []);
+    assert.deepEqual(composed.transform, []);
+    assert.deepEqual(composed.toolDefinition, []);
+    assert.deepEqual(Object.keys(composed.tools), ["compress"]);
+    assert.deepEqual(Object.keys(composed.commands), ["dcp"]);
+  });
+
+  it("selects nothing for an empty profile (no defaults)", () => {
+    const { calls, composed } = run(EMPTY_PROFILE, makeUnits());
+    assert.deepEqual(calls, []);
+    assert.deepEqual(composed.report, {
+      selected: [],
+      skipped: [],
+      unknown: [],
+      invalid: null,
+      unmaterialised: [],
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Orchestrator role policy
+// ---------------------------------------------------------------------------
+
+/** The role map the full profile's agents declare. */
+const FULL_MODES: Record<string, "primary" | "subagent"> = {
+  dolphin: "primary",
+  beaver: "subagent",
+  mola: "primary",
+};
+
+describe("assemble — orchestrator role policy", () => {
+  it("instantiates the profile when the declared orchestrator is a primary", () => {
+    // mola is the second agent of the profile, so the role is never
+    // inferred from array position.
+    const { calls, report } = run(
+      ALL_UNITS_PROFILE,
+      makeUnits(),
+      BASE_CAPS,
+      FULL_MODES,
+      "mola",
+    );
+
+    assert.equal(calls.length, 11);
+    assert.deepEqual(report.invalid, null);
+  });
+
+  it("runs no factory when the declared orchestrator is unavailable", () => {
+    // The profile enables three agents, two of them primary, but the
+    // declared orchestrator is none of them: nothing may run.
+    const { calls, composed } = run(
+      ALL_UNITS_PROFILE,
+      makeUnits(),
+      BASE_CAPS,
+      FULL_MODES,
+      "ghost",
+    );
+
+    assert.deepEqual(calls, [], "no unit factory may run on invalid input");
+    assert.deepEqual(composed.agents, []);
+    assert.deepEqual(Object.keys(composed.tools), []);
+    assert.deepEqual(composed.report.invalid, {
+      orchestrator: "ghost",
+      cause: "unknown-unit",
+      primaries: ["dolphin", "mola"],
+    });
+  });
+
+  it("never promotes another primary into the declared role", () => {
+    // dolphin is a selected primary while the declared orchestrator is
+    // not primary: the selection is invalid, not silently re-roled.
+    const { calls, composed } = run(
+      ALL_UNITS_PROFILE,
+      makeUnits(),
+      BASE_CAPS,
+      FULL_MODES,
+      "beaver",
+    );
+
+    assert.deepEqual(calls, []);
+    assert.deepEqual(composed.report.invalid, {
+      orchestrator: "beaver",
+      cause: "not-primary",
+      primaries: ["dolphin", "mola"],
+    });
+  });
+
+  it("never binds capabilities for an invalid selection", () => {
+    const { selection } = assemble({
+      profile: ALL_UNITS_PROFILE,
+      units: makeUnits(),
+      bindings: capabilityBindings({
+        values: BASE_CAPS,
+        selected: {
+          handoffTarget: () => {
+            throw new Error("an invalid selection must not bind");
+          },
+        },
+      }),
+      agentModes: FULL_MODES,
+      orchestrator: "ghost",
+    });
+
+    assert.equal(selection.status, "invalid");
+  });
+
+  it("runs no factory when the host will not materialise a selected agent", () => {
+    // The profile resolves dolphin as its orchestrator and the host
+    // materialises it, but beaver and mola are missing from the host's
+    // agent table: no unit factory may run.
+    const { calls, composed } = run(
+      ALL_UNITS_PROFILE,
+      makeUnits(),
+      BASE_CAPS,
+      FULL_MODES,
+      "dolphin",
+      { agents: ["dolphin"], defaultAgents: ["dolphin"] },
+    );
+
+    assert.deepEqual(calls, [], "no unit factory may run on invalid input");
+    assert.deepEqual(composed.agents, []);
+    assert.deepEqual(composed.report.unmaterialised, ["beaver", "mola"]);
+  });
+
+  it("runs no factory when the host refuses the orchestrator as default", () => {
+    const { calls, composed } = run(
+      ALL_UNITS_PROFILE,
+      makeUnits(),
+      BASE_CAPS,
+      FULL_MODES,
+      "dolphin",
+      {
+        agents: ["dolphin", "beaver", "mola"],
+        defaultAgents: ["mola"],
+      },
+    );
+
+    assert.deepEqual(calls, []);
+    assert.deepEqual(composed.report.invalid, {
+      orchestrator: "dolphin",
+      cause: "not-default-agent",
+      primaries: ["dolphin", "mola"],
+    });
+  });
+
+  it("logs an invalid selection caused by host materialisation", () => {
+    run(ALL_UNITS_PROFILE, makeUnits(), BASE_CAPS, FULL_MODES, "dolphin", {
+      agents: ["dolphin"],
+      defaultAgents: ["dolphin"],
+    });
+
+    const entry = _getBufferForTesting().find(
+      (e) => e.event === "selection_invalid",
+    );
+    assert.ok(entry, "expected a selection_invalid log entry");
+    const ee = entry as Record<string, unknown>;
+    assert.equal(ee.level, "error");
+    assert.deepEqual(ee.unmaterialised, ["beaver", "mola"]);
+  });
+
+  it("stays disabled for a null profile even with a declared role", () => {
+    const { calls, composed } = run(
+      null,
+      makeUnits(),
+      BASE_CAPS,
+      FULL_MODES,
+      "mola",
+    );
+
+    assert.deepEqual(calls, []);
+    assert.deepEqual(composed.report.invalid, null);
+  });
+
+  it("logs the invalid role so the profile error is actionable", () => {
+    run(ALL_UNITS_PROFILE, makeUnits(), BASE_CAPS, FULL_MODES, "ghost");
+
+    const entry = _getBufferForTesting().find(
+      (e) => e.event === "selection_invalid",
+    );
+    assert.ok(entry, "expected a selection_invalid log entry");
+    const ee = entry as Record<string, unknown>;
+    assert.equal(ee.hook, "compose");
+    assert.equal(ee.level, "error");
+    assert.equal(ee.orchestrator, "ghost");
+    assert.equal(ee.cause, "unknown-unit");
+    assert.deepEqual(ee.primaries, ["dolphin", "mola"]);
   });
 });
 
@@ -400,58 +598,50 @@ const TOOL_HOST: NonNullable<Partial<Capabilities>["toolHost"]> = {
   async notify(): Promise<void> {},
 };
 
-describe("composeProfile — capability matching", () => {
-  it("activates a unit whose needs are all present and reports it", () => {
-    const calls: string[] = [];
+describe("assemble — capability matching", () => {
+  it("runs a unit whose needs are all bound and reports it", () => {
     const unit = mockUnit(
       "compress",
       "tool",
-      () => {
-        calls.push("compress");
-        return {
-          kind: "tool",
-          tools: [
-            { name: "compress", description: "c", execute: async () => "ok" },
-          ],
-        };
-      },
+      () => ({
+        kind: "tool",
+        tools: [
+          { name: "compress", description: "c", execute: async () => "ok" },
+        ],
+      }),
       ["toolHost", "contextConfig"],
     );
 
-    const result = composeProfile(toolProfile(["compress"]), [unit], {
+    const { calls, report, composed } = run(toolProfile(["compress"]), [unit], {
       ...BASE_CAPS,
       toolHost: TOOL_HOST,
     });
 
     assert.deepEqual(calls, ["compress"]);
-    assert.deepEqual(result.report.activated, ["compress"]);
-    assert.deepEqual(result.report.skipped, []);
-    assert.deepEqual(Object.keys(result.tools), ["compress"]);
+    assert.deepEqual(report.selected, ["compress"]);
+    assert.deepEqual(report.skipped, []);
+    assert.deepEqual(Object.keys(composed.tools), ["compress"]);
   });
 
-  it("skips a unit with an absent need, never calling its factory, and reports the key", () => {
-    const calls: string[] = [];
+  it("skips a unit with an unbindable need without running its factory", () => {
     const unit = mockUnit(
       "compress",
       "tool",
-      () => {
-        calls.push("compress");
-        return { kind: "tool", tools: [] };
-      },
+      () => ({ kind: "tool", tools: [] }),
       ["toolHost", "contextConfig"],
     );
 
     // `BASE_CAPS` carries `contextConfig` but no `toolHost`.
-    const result = composeProfile(toolProfile(["compress"]), [unit], {
+    const { calls, report, composed } = run(toolProfile(["compress"]), [unit], {
       ...BASE_CAPS,
     });
 
     assert.deepEqual(calls, [], "a skipped unit's factory must never run");
-    assert.deepEqual(result.report.activated, []);
-    assert.deepEqual(result.report.skipped, [
+    assert.deepEqual(report.selected, []);
+    assert.deepEqual(report.skipped, [
       { name: "compress", missing: ["toolHost"] },
     ]);
-    assert.deepEqual(result.tools, {});
+    assert.deepEqual(composed.tools, {});
   });
 
   it("records every missing need in declaration order", () => {
@@ -462,14 +652,14 @@ describe("composeProfile — capability matching", () => {
       ["toolHost", "contextConfig"],
     );
 
-    const result = composeProfile(toolProfile(["compress"]), [unit], {});
+    const { report } = run(toolProfile(["compress"]), [unit], {});
 
-    assert.deepEqual(result.report.skipped, [
+    assert.deepEqual(report.skipped, [
       { name: "compress", missing: ["toolHost", "contextConfig"] },
     ]);
   });
 
-  it("activates a unit whose optional wants are absent", () => {
+  it("runs a unit whose optional wants are unbound", () => {
     const unit = mockUnit(
       "todo",
       "tool",
@@ -481,29 +671,29 @@ describe("composeProfile — capability matching", () => {
       ["todoRenderer"],
     );
 
-    const result = composeProfile(toolProfile(["todo"]), [unit], {
+    const { report, composed } = run(toolProfile(["todo"]), [unit], {
       ...BASE_CAPS,
       toolHost: TOOL_HOST,
     });
 
-    assert.deepEqual(result.report.activated, ["todo"]);
-    assert.deepEqual(result.report.skipped, []);
-    assert.deepEqual(Object.keys(result.tools), ["todo"]);
+    assert.deepEqual(report.selected, ["todo"]);
+    assert.deepEqual(report.skipped, []);
+    assert.deepEqual(Object.keys(composed.tools), ["todo"]);
   });
 
   it("hands the factory only its declared needs and wants", () => {
-    let seen: Partial<Capabilities> | undefined;
+    let seen: Record<string, unknown> | undefined;
     const unit = mockUnit(
       "compress",
       "tool",
       (caps) => {
-        seen = caps;
+        seen = caps as Record<string, unknown>;
         return { kind: "tool", tools: [] };
       },
       ["toolHost", "contextConfig"],
     );
 
-    composeProfile(toolProfile(["compress"]), [unit], {
+    run(toolProfile(["compress"]), [unit], {
       ...BASE_CAPS,
       toolHost: TOOL_HOST,
     });
@@ -515,7 +705,7 @@ describe("composeProfile — capability matching", () => {
   });
 
   it("passes thunk capabilities through without ever invoking them", () => {
-    // Ports carry behavior, not values: composition must hand the thunk
+    // Ports carry behavior, not values: the build stage must hand the thunk
     // over by reference and never call it — the unit decides the timing
     // (pi's tool baseline is forbidden during extension load).
     let calls = 0;
@@ -535,14 +725,14 @@ describe("composeProfile — capability matching", () => {
       ["subagentBaseline"],
     );
 
-    const result = composeProfile(toolProfile(["subagent"]), [unit], {
+    const { report } = run(toolProfile(["subagent"]), [unit], {
       ...BASE_CAPS,
       toolHost: TOOL_HOST,
       subagentBaseline: baseline,
     });
 
-    assert.deepEqual(result.report.activated, ["subagent"]);
-    assert.equal(calls, 0, "composition must not invoke capability thunks");
+    assert.deepEqual(report.selected, ["subagent"]);
+    assert.equal(calls, 0, "the build stage must not invoke capability thunks");
     assert.equal(seen?.subagentBaseline, baseline, "passed by reference");
     assert.deepEqual(seen?.subagentBaseline?.(), ["x"]);
     assert.equal(calls, 1);
@@ -550,29 +740,197 @@ describe("composeProfile — capability matching", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Empty category lists
+// Factory count
 // ---------------------------------------------------------------------------
 
-describe("composeProfile — empty category lists", () => {
-  it("instantiates nothing and returns empty contributions", () => {
-    const { units, calls } = makeUnits();
-    const result = composeProfile(EMPTY_PROFILE, units, BASE_CAPS);
+describe("assemble — factory count", () => {
+  it("runs every selected factory exactly once", () => {
+    const { calls } = run(ALL_UNITS_PROFILE, makeUnits());
+    assert.equal(calls.length, 11);
+    assert.equal(new Set(calls).size, 11);
+  });
 
-    assert.deepEqual(calls, []);
-    assert.deepEqual(result, {
+  it("builds only from the plan's selected units", () => {
+    const selection = planSelection({
+      profile: SUBSET_PROFILE,
+      units: makeUnits(),
+      available: new Set(),
+      agentModes: {},
+    });
+    let built = 0;
+    const units = selection.chosen.map((unit: UnitDescriptor) => ({
+      ...unit,
+      create: (caps: Partial<Capabilities>, selected: SelectionFacts) => {
+        built++;
+        return unit.create(caps, selected);
+      },
+    }));
+    const composed = buildComposition(selection, {
+      ...BASE_CAPS,
+    } as Capabilities);
+
+    assert.equal(built, 0, "the planner never instantiates");
+    assert.deepEqual(
+      Object.keys(composed.tools),
+      ["decompress"],
+      "the build used the planned selection",
+    );
+    assert.equal(units.length, 3);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Uses projection
+// ---------------------------------------------------------------------------
+
+describe("assemble — uses projection", () => {
+  it("projects only the declared facts, in profile order", () => {
+    let seen: Record<string, unknown> | undefined;
+    const unit = defineHook({
+      name: "uses-probe",
+      needs: [],
+      uses: ["tools", "agents"],
+      create: (_caps, uses) => {
+        seen = uses as Record<string, unknown>;
+        return {};
+      },
+    });
+
+    run({ ...ALL_UNITS_PROFILE, hooks: ["uses-probe"] }, [
+      ...makeUnits(),
+      unit,
+    ]);
+
+    assert.deepEqual(seen, {
+      tools: ["compress", "decompress"],
+      agents: ["dolphin", "beaver", "mola"],
+    });
+  });
+
+  it("gives a unit that declares no uses an empty projection", () => {
+    let seen: Record<string, unknown> | undefined;
+    const unit = defineHook({
+      name: "uses-probe",
+      needs: [],
+      create: (_caps, uses) => {
+        seen = uses as Record<string, unknown>;
+        return {};
+      },
+    });
+
+    run({ ...ALL_UNITS_PROFILE, hooks: ["uses-probe"] }, [
+      ...makeUnits(),
+      unit,
+    ]);
+
+    assert.deepEqual(seen, {});
+  });
+
+  it("reads the full static selection even from a unit built first", () => {
+    // The hook unit sits before the tool unit in the registry, so its
+    // factory runs before `compress` is built.  The projection is a
+    // selection fact, not a registration side effect: it already knows the
+    // tool was selected.
+    let seen: readonly string[] | undefined;
+    const seenTools = (uses: Record<string, unknown>): void => {
+      seen = uses.tools as readonly string[];
+    };
+    const pruning = defineHook({
+      name: "pruning",
+      needs: [],
+      uses: ["tools"],
+      create: (_caps, uses) => {
+        seenTools(uses as Record<string, unknown>);
+        return {};
+      },
+    });
+    const compress = mockUnit("compress", "tool", () => ({
+      kind: "tool",
+      tools: [
+        { name: "compress", description: "c", execute: async () => "ok" },
+      ],
+    }));
+    const profile: ModeProfile = {
+      name: "p",
       agents: [],
       skills: [],
-      afterExec: [],
-      transform: [],
-      textComplete: [],
-      toolDefinition: [],
-      onSettled: [],
-      tools: {},
-      commands: {},
-      gate: null,
-      gateNeedsCaller: false,
-      report: { activated: [], skipped: [] },
+      hooks: ["pruning"],
+      tools: ["compress"],
+      commands: [],
+    };
+
+    const { calls } = run(profile, [pruning, compress]);
+
+    assert.deepEqual(calls, ["pruning", "compress"]);
+    assert.deepEqual(seen, ["compress"]);
+  });
+
+  it("does not activate anything implicitly through a read fact", () => {
+    // The tool is declared by the profile but not selected (its need is
+    // unbindable); a reader of the `tools` fact must not see it.
+    const compress = mockUnit(
+      "compress",
+      "tool",
+      () => ({ kind: "tool", tools: [] }),
+      ["toolHost"],
+    );
+    let seen: readonly string[] | undefined;
+    const pruning = defineHook({
+      name: "pruning",
+      needs: [],
+      uses: ["tools"],
+      create: (_caps, uses) => {
+        seen = (uses as { tools: readonly string[] }).tools;
+        return {};
+      },
     });
+    const profile: ModeProfile = {
+      name: "p",
+      agents: [],
+      skills: [],
+      hooks: ["pruning"],
+      tools: ["compress"],
+      commands: [],
+    };
+
+    const { report } = run(profile, [pruning, compress]);
+
+    assert.deepEqual(seen, []);
+    assert.deepEqual(report.skipped, [
+      { name: "compress", missing: ["toolHost"] },
+    ]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Agent contributions
+// ---------------------------------------------------------------------------
+
+describe("assemble — agent contributions", () => {
+  it("contributes exactly the selected agents, one contribution each", () => {
+    const agent = (name: string) =>
+      defineAgent({
+        name,
+        needs: [],
+        create: () => ({ prompt: name.toUpperCase() }),
+      });
+
+    const { composed } = run(
+      {
+        ...ALL_UNITS_PROFILE,
+        agents: ["mola", "beaver"],
+        skills: [],
+        hooks: [],
+        tools: [],
+        commands: [],
+      },
+      [agent("dolphin"), agent("beaver"), agent("mola")],
+    );
+
+    assert.deepEqual(composed.agents, [
+      { name: "beaver", prompt: "BEAVER" },
+      { name: "mola", prompt: "MOLA" },
+    ]);
   });
 });
 
@@ -580,10 +938,9 @@ describe("composeProfile — empty category lists", () => {
 // Unknown profile names
 // ---------------------------------------------------------------------------
 
-describe("composeProfile — unknown profile names", () => {
+describe("assemble — unknown profile names", () => {
   it("warns once per profile name absent from the unit array", () => {
-    const { units, calls } = makeUnits();
-    const result = composeProfile(UNKNOWN_PROFILE, units, BASE_CAPS);
+    const { calls, composed } = run(UNKNOWN_PROFILE, makeUnits());
 
     const warns = _getBufferForTesting().filter(
       (e) => e.event === "unknown_unit",
@@ -608,14 +965,24 @@ describe("composeProfile — unknown profile names", () => {
       "compress",
       "go",
     ]);
-    assert.equal(result.agents.length, 1);
-    assert.equal(Object.keys(result.tools).length, 1);
-    assert.equal(Object.keys(result.commands).length, 1);
+    assert.equal(composed.agents.length, 1);
+    assert.equal(Object.keys(composed.tools).length, 1);
+    assert.equal(Object.keys(composed.commands).length, 1);
+  });
+
+  it("records the unknown names in the report", () => {
+    const { report } = run(UNKNOWN_PROFILE, makeUnits());
+    assert.deepEqual(report.unknown, [
+      { category: "agents", name: "ghost-agent" },
+      { category: "skills", name: "ghost-skill" },
+      { category: "hooks", name: "ghost-hook" },
+      { category: "tools", name: "ghost-tool" },
+      { category: "commands", name: "ghost-command" },
+    ]);
   });
 
   it("warns nothing when every profile name is known", () => {
-    const { units } = makeUnits();
-    composeProfile(ALL_UNITS_PROFILE, units, BASE_CAPS);
+    run(ALL_UNITS_PROFILE, makeUnits());
     const warns = _getBufferForTesting().filter(
       (e) => e.event === "unknown_unit",
     );
@@ -624,23 +991,22 @@ describe("composeProfile — unknown profile names", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Active set passed to factories
+// Frozen selection
 // ---------------------------------------------------------------------------
 
-describe("composeProfile — active set", () => {
-  it("passes profile-derived enablement sets to unit factories", () => {
-    let seen: ActiveSet | undefined;
-    const unit = mockHookUnit("subagent-prompt", (_deps, activeSet) => {
-      seen = activeSet;
-      return {};
+describe("assemble — selection", () => {
+  it("returns the frozen selection the build ran from", () => {
+    const units = makeUnits();
+    const { selection, composed } = assemble({
+      profile: ALL_UNITS_PROFILE,
+      units,
+      bindings: capabilityBindings({ values: BASE_CAPS }),
+      agentModes: { dolphin: "primary" },
     });
-    composeProfile(ALL_UNITS_PROFILE, [unit], BASE_CAPS);
 
-    assert.ok(seen, "factory must receive the active set");
-    assert.deepEqual([...seen.agents], ["dolphin", "beaver", "mola"]);
-    assert.deepEqual([...seen.skills], ["beaver-tdd", "wiki-query"]);
-    assert.deepEqual([...seen.hooks], ["subagent-prompt", "context-pruning"]);
-    assert.deepEqual([...seen.tools], ["compress", "decompress"]);
-    assert.deepEqual([...seen.commands], ["go", "dcp"]);
+    assert.equal(Object.isFrozen(selection), true);
+    assert.deepEqual(selection.primaries, ["dolphin"]);
+    assert.deepEqual(selection.report.selected, composed.report.selected);
+    assert.equal(selection.chosen.length, 11);
   });
 });

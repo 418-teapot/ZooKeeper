@@ -320,11 +320,19 @@ def main() -> None:
                 error(f"{label} 格式无效: {e}")
                 sys.exit(1)
 
+    # ── Persist the selected mode ────────────────────────────────────
+    # The mode state file is the only record of the generated profile, so
+    # a failed write aborts before any success output: claiming success
+    # would leave the next flag-less run on a different profile than the
+    # configs just written.  The write therefore precedes the completion
+    # header, while the confirmation line stays with the success output.
+    if profile is not None and not write_mode_state(profile["name"]):
+        error("模式状态保存失败，安装中止")
+        sys.exit(1)
+
     # ── Installation complete ────────────────────────────────────────
     header("安装完成")
-    # Persist the final selected mode so the next flag-less run reuses
-    # it; a write failure warns but must not abort the installation.
-    if profile is not None and write_mode_state(profile["name"]):
+    if profile is not None:
         info(f"✓ 模式状态已保存: {mode_state_path()} → {profile['name']}")
     if has_opencode:
         info(f"✅ 配置已写入: {opencode_json}")

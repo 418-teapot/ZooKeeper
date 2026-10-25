@@ -28,7 +28,6 @@
 import assert from "node:assert/strict";
 import { afterEach, describe, it } from "node:test";
 import { createV1Adapter } from "../../adapters/opencode/adapter.js";
-import { composeProfile } from "../../core/compose.js";
 import type { ModeProfile } from "../../core/config-types.js";
 import type { HostAdapter, HostMessage } from "../../core/context/lens.js";
 import { project } from "../../core/context/lens.js";
@@ -58,7 +57,12 @@ import { computeSpanHash } from "../../core/context/spanhash.js";
 import { allocateBlockId, markKey } from "../../core/context/state.js";
 import type { Capabilities } from "../../core/ports/index.js";
 import type { ToolHost } from "../../core/ports/tool-host.js";
-import type { ActiveSet } from "../../core/unit.js";
+import { REGISTRY } from "../../registry.js";
+import {
+  assembleForTest,
+  composeForTest,
+  facts,
+} from "../../testkits/compose.js";
 import { _getBufferForTesting, _resetForTesting } from "../../utils/logger.js";
 import { unit } from "./index.js";
 
@@ -1964,13 +1968,7 @@ describe("pure adapter pipeline support", () => {
 // ---------------------------------------------------------------------------
 
 describe("unit.create enablement", () => {
-  const activeSet: ActiveSet = {
-    agents: new Set(),
-    skills: new Set(),
-    hooks: new Set(),
-    tools: new Set(["compress"]),
-    commands: new Set(),
-  };
+  const activeSet = facts({ tools: ["compress"] });
 
   it("contributes the transform handler when an adapter is wired", () => {
     const deps: Partial<Capabilities> = {
@@ -1991,6 +1989,43 @@ describe("unit.create enablement", () => {
     assert.ok(!_getBufferForTesting().some((e) => e.event === "unit_disabled"));
   });
 
+  it("reads the selected compress tool although it is built after the hook", () => {
+    // The registry declares the pruning hook before the compress tool, so
+    // the hook's factory runs first.  The fact it reads is the selection,
+    // not a registration side effect, so it already knows the tool was
+    // selected.
+    const profile: ModeProfile = {
+      name: "test",
+      agents: [],
+      skills: [],
+      hooks: ["context-pruning"],
+      tools: ["compress"],
+      commands: [],
+    };
+    const assembly = assembleForTest(profile, REGISTRY, {
+      limits: {},
+      contextConfig: {},
+      directory: "/tmp/zoo",
+      resolveAgent: () => undefined,
+      adapter,
+      toolHost: {
+        resolveSessionId: () => undefined,
+        fetchHistory: async () => project([], []),
+        notify: async () => {},
+        toast: () => {},
+      },
+    });
+
+    const selected = [...assembly.selection.report.selected];
+    assert.ok(
+      selected.indexOf("context-pruning") < selected.indexOf("compress"),
+      "the hook must be built before the tool",
+    );
+    assert.deepEqual(assembly.selection.tools, ["compress"]);
+    assert.equal(assembly.composed.transform.length, 1);
+    assert.deepEqual(Object.keys(assembly.composed.tools), ["compress"]);
+  });
+
   it("is skipped by the composition when adapter is undefined (fail-closed)", () => {
     const deps: Partial<Capabilities> = {
       limits: {},
@@ -2007,7 +2042,7 @@ describe("unit.create enablement", () => {
       commands: [],
     };
 
-    const result = composeProfile(profile, [unit], deps);
+    const result = composeForTest(profile, [unit], deps);
 
     assert.deepEqual(result.transform, []);
     assert.deepEqual(result.report.skipped, [

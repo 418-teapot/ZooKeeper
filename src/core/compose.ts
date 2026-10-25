@@ -1,13 +1,26 @@
 /**
- * Host-agnostic profile → contribution selection.
+ * Host-agnostic assembly: plan → bind → build.
  *
- * This module is the single matching point of the capability model: given
- * the active mode profile (or `null`) and the unit array, it builds the
- * enablement sets, decides for every enabled unit whether the supplied
- * capability bag satisfies the unit's `needs` list, and instantiates
- * exactly the matching units in registry order.  A unit whose `needs` are
- * not met is skipped and recorded in the {@link CompositionReport} — the
- * unit factory never runs and never has to check for an absent port.
+ * This module is the single assembly point of the capability model.  It
+ * runs the three stages in a fixed order:
+ *
+ *  1. **Plan** — {@link planSelection} reads the declared enablement (mode
+ *     profile plus unit array), the capability availability keys, the
+ *     agent-modes map, the host's declared orchestrator role and the
+ *     host's agent materialisation facts, and returns the immutable
+ *     `Selection`.  No factory runs and nothing is probed.
+ *  2. **Bind** — the host's `CapabilityBindings` turn that selection into
+ *     the complete capability record; a key is unavailable exactly when
+ *     the host cannot bind it.
+ *  3. **Build** — {@link buildComposition} instantiates each selected unit
+ *     exactly once, in registry order, handing it its declared capability
+ *     slice and its `uses` fact projection, and collects the
+ *     contributions.
+ *
+ * A selection that is `disabled` (no profile) or `invalid` (the declared
+ * orchestrator role is unavailable, or the host will not materialise a
+ * selected agent) stops after planning: nothing is bound, nothing is
+ * instantiated, and only the report travels on.
  *
  * It also owns the isolated contribution runners: they are assembly-time
  * infrastructure shared by both host adapters.
@@ -20,13 +33,15 @@
  */
 
 import { log } from "../utils/logger.js";
-import type { ModeProfile } from "./config-types.js";
+import type { CapabilityBindings } from "./bindings.js";
+import type { AgentModeMap, ModeProfile } from "./config-types.js";
 import type { DelegationGate, DelegationJudgeContribution } from "./gate.js";
 import { composeGate } from "./gate.js";
 import type { SettledContribution } from "./loop/settle.js";
 import type { Capabilities } from "./ports/index.js";
+import type { Selection, SelectionReport } from "./selection.js";
+import { type AgentMaterialisation, planSelection } from "./selection.js";
 import type {
-  ActiveSet,
   AfterExecContribution,
   AgentContribution,
   CommandContribution,
@@ -43,44 +58,30 @@ import type {
 // Composition result
 // ---------------------------------------------------------------------------
 
-/**
- * What the matcher did during one `composeProfile` pass.
- *
- * `activated` lists the units that ran, in registry order; `skipped`
- * records every unit whose `needs` were not satisfied and which capability
- * keys were missing.  The report is logged and returned so a host (or a
- * test) can tell "the profile does not enable it" from "the host does not
- * provide it".
- */
-export interface CompositionReport {
-  /** Names of the units that ran, in registry order. */
-  activated: string[];
-  /** Units skipped for missing capabilities, with the missing keys. */
-  skipped: { name: string; missing: string[] }[];
-}
+/** What the planner selected, skipped, and could not resolve. */
+export type CompositionReport = SelectionReport;
 
 /**
- * Host-agnostic intermediate structure produced by the selection
- * engine.
+ * Host-agnostic contributions produced by the build stage.
  *
  * Handler arrays keep the registry's order; `tools` and `commands` are
  * keyed by contribution name.  The host adapter turns this into framework
  * registrations (event keys appear only when their arrays are non-empty).
  */
 export interface ComposedResult {
-  /** Enabled agent prompt contributions. */
+  /** Selected agent prompt contributions. */
   agents: AgentContribution[];
-  /** Enabled skill contributions. */
+  /** Selected skill contributions. */
   skills: SkillContribution[];
-  /** Enabled `tool.execute.after` handlers. */
+  /** Selected `tool.execute.after` handlers. */
   afterExec: AfterExecContribution[];
-  /** Enabled messages-transform handlers. */
+  /** Selected messages-transform handlers. */
   transform: TransformContribution[];
-  /** Enabled text-finalization handlers. */
+  /** Selected text-finalization handlers. */
   textComplete: TextCompleteContribution[];
-  /** Enabled `tool.definition` enhancers. */
+  /** Selected `tool.definition` enhancers. */
   toolDefinition: ToolDefinitionContribution[];
-  /** Enabled loop settle handlers. */
+  /** Selected loop settle handlers. */
   onSettled: SettledContribution[];
   /** The composed delegation gate, or `null` for an empty judge chain. */
   gate: DelegationGate | null;
@@ -92,28 +93,13 @@ export interface ComposedResult {
    * runs before judging — it is skipped entirely when no judge needs it.
    */
   gateNeedsCaller: boolean;
-  /** Enabled tools, keyed by tool name. */
+  /** Selected tools, keyed by tool name. */
   tools: Record<string, ToolContribution>;
-  /** Enabled commands, keyed by command name. */
+  /** Selected commands, keyed by command name. */
   commands: Record<string, CommandContribution>;
-  /** What the matcher activated and skipped. */
+  /** What the planner selected, skipped, and could not resolve. */
   report: CompositionReport;
 }
-
-// Map a unit kind to the profile category that gates its enablement.
-const PROFILE_CATEGORY: Record<
-  UnitDescriptor["kind"],
-  "agents" | "skills" | "hooks" | "tools" | "commands"
-> = {
-  agent: "agents",
-  skill: "skills",
-  hook: "hooks",
-  tool: "tools",
-  command: "commands",
-};
-
-/** The five profile categories, in declaration order. */
-const CATEGORIES = ["agents", "skills", "hooks", "tools", "commands"] as const;
 
 /** Build an empty composition result. */
 function emptyResult(): ComposedResult {
@@ -129,8 +115,24 @@ function emptyResult(): ComposedResult {
     commands: {},
     gate: null,
     gateNeedsCaller: false,
-    report: { activated: [], skipped: [] },
+    report: {
+      selected: [],
+      skipped: [],
+      unknown: [],
+      invalid: null,
+      unmaterialised: [],
+    },
   };
+}
+
+/**
+ * Build an empty composition result that carries the planner's report.
+ *
+ * @param report - The report of the pass that produced no contributions.
+ * @returns The empty result.
+ */
+function emptyComposition(report: SelectionReport): ComposedResult {
+  return { ...emptyResult(), report };
 }
 
 /**
@@ -177,116 +179,70 @@ function collect(
 }
 
 /**
- * List the capability keys a unit declared but the host did not provide.
- *
- * @param unit - The unit whose `needs` are checked.
- * @param provided - The capability bag supplied by the host.
- * @returns The missing keys, in declaration order (empty when satisfied).
- */
-function missingNeeds(
-  unit: UnitDescriptor,
-  provided: Partial<Capabilities>,
-): string[] {
-  return unit.needs.filter((key) => provided[key] === undefined);
-}
-
-/**
  * Build the capability slice handed to one unit's factory.
  *
  * Only the declared `needs` and `wants` keys are copied (a `wants` key may
  * be absent); every other catalog key stays invisible to the factory.
  *
  * @param unit - The unit being instantiated.
- * @param provided - The capability bag supplied by the host.
+ * @param capabilities - The bound capability record.
  * @returns The unit's capability slice.
  */
 function unitCapabilities(
   unit: UnitDescriptor,
-  provided: Partial<Capabilities>,
+  capabilities: Capabilities,
 ): Partial<Capabilities> {
   const caps: Partial<Capabilities> = {};
   // The catalog mixes port types, so a plain keyed read yields their union;
   // copying through an untyped record keeps the value the host supplied.
+  const source = capabilities as unknown as Record<string, unknown>;
   const target = caps as Record<string, unknown>;
   for (const key of [...unit.needs, ...unit.wants]) {
     // Ports carry behavior (functions / method objects), never lazy
     // accessors, so a plain value copy can never trigger side effects.
-    target[key] = provided[key];
+    target[key] = source[key];
   }
   return caps;
 }
 
-/**
- * Options controlling a single `composeProfile` pass.
- */
-export interface ComposeOptions {
-  /**
-   * Warn once per profile name absent from the unit array (`unknown_unit`
-   * event).  Default `true`.  A caller re-composing a pass for a single
-   * slot (e.g. the pi command host) disables it so the first pass's
-   * warnings are not repeated — the profile is unchanged, so the active
-   * set handed to factories stays correct.
-   */
-  warnUnknownUnits?: boolean;
-}
+// ---------------------------------------------------------------------------
+// Build
+// ---------------------------------------------------------------------------
 
 /**
- * Select and instantiate the profile-enabled units whose needs are met.
+ * Instantiate the selected units and collect their contributions.
  *
- * A `null` profile (absent or invalid) returns an empty result and
- * instantiates nothing — no defaults, no fallback to a full load.
- * Otherwise the enablement sets are derived from the profile lists and
- * each enabled unit is matched against `provided`: a unit with any `needs`
- * key absent is skipped and recorded, a matching unit's factory runs with
- * its declared capability slice in the unit array's order.  Profile names
- * with no matching unit in the array are warned once via the shared logger
- * (`unknown_unit` event), unless `warnUnknownUnits` is `false`.
+ * Every selected unit's factory runs exactly once, in registry order.  The
+ * planner already verified each unit's `needs` against the same key set
+ * the binder produced, so the build stage does no further matching: a
+ * missing port is a planning/binding inconsistency, not a runtime
+ * possibility.
  *
- * @param profile - The active mode profile, or `null` when absent.
- * @param units - The unit array (caller-supplied).
- * @param provided - The capability bag supplied by the host.
- * @param opts - Optional per-pass options.
- * @returns The composed host-agnostic contributions and match report.
+ * A selection that is not `ready` (no profile, a declared orchestrator
+ * the profile cannot provide, or a host that will not materialise a
+ * selected agent) instantiates nothing and only carries its report
+ * through.
+ *
+ * @param selection - The finished, frozen selection.
+ * @param capabilities - The capability record bound for that selection.
+ * @returns The composed host-agnostic contributions.
  */
-export function composeProfile(
-  profile: ModeProfile | null,
-  units: UnitDescriptor[],
-  provided: Partial<Capabilities>,
-  opts?: ComposeOptions,
+export function buildComposition(
+  selection: Selection,
+  capabilities: Capabilities,
 ): ComposedResult {
-  if (profile === null) return emptyResult();
-
-  const activeSet: ActiveSet = {
-    agents: new Set(profile.agents),
-    skills: new Set(profile.skills),
-    hooks: new Set(profile.hooks),
-    tools: new Set(profile.tools),
-    commands: new Set(profile.commands),
-  };
+  if (selection.status !== "ready") {
+    return emptyComposition(selection.report);
+  }
 
   const result = emptyResult();
-  const known = new Set(units.map((unit) => unit.name));
   const judges: DelegationJudgeContribution[] = [];
 
-  for (const unit of units) {
-    const category = PROFILE_CATEGORY[unit.kind];
-    if (!profile[category].includes(unit.name)) continue;
-    const missing = missingNeeds(unit, provided);
-    if (missing.length > 0) {
-      result.report.skipped.push({ name: unit.name, missing });
-      log.info({
-        hook: "compose",
-        event: "unit_skipped",
-        name: unit.name,
-        missing,
-      });
-      continue;
-    }
+  for (const unit of selection.chosen) {
     const contributions = unit.create(
-      unitCapabilities(unit, provided),
-      activeSet,
+      unitCapabilities(unit, capabilities),
+      selection,
     );
-    result.report.activated.push(unit.name);
     collect(result, contributions, judges);
   }
 
@@ -297,23 +253,119 @@ export function composeProfile(
   // Whether any judge needs the caller field — the OpenCode host uses
   // this to decide if the asynchronous caller resolution must run.
   result.gateNeedsCaller = judges.some((judge) => judge.needsCaller === true);
-
-  if (opts?.warnUnknownUnits !== false) {
-    for (const category of CATEGORIES) {
-      for (const name of profile[category]) {
-        if (!known.has(name)) {
-          log.warn({
-            hook: "compose",
-            event: "unknown_unit",
-            category,
-            name,
-          });
-        }
-      }
-    }
-  }
-
+  result.report = selection.report;
   return result;
+}
+
+// ---------------------------------------------------------------------------
+// Assembly
+// ---------------------------------------------------------------------------
+
+/** The inputs of one assembly pass. */
+export interface AssembleInput {
+  /** The declared mode profile, or `null` when absent/invalid. */
+  profile: ModeProfile | null;
+  /** The declared unit array (registry order is execution order). */
+  units: readonly UnitDescriptor[];
+  /** The host's capability declaration. */
+  bindings: CapabilityBindings;
+  /** Per-agent role map, used to derive the primaries. */
+  agentModes: AgentModeMap;
+  /**
+   * The orchestrator role the host declares for this pass, or `undefined`
+   * when the host declares none.  A declared orchestrator the enabled
+   * primaries cannot provide makes the selection invalid.
+   */
+  orchestrator?: string;
+  /**
+   * What the host will materialise (agent names and the ones it accepts
+   * as its default agent), or `undefined` when the host imposes no
+   * materialisation constraint.  A selected agent the host will not
+   * create makes the selection invalid before the bind stage runs.
+   */
+  materialisation?: AgentMaterialisation;
+}
+
+/** The outcome of one assembly pass. */
+export interface Assembly {
+  /** The frozen selection the build ran from. */
+  readonly selection: Selection;
+  /** The contributions the selected units produced. */
+  readonly composed: ComposedResult;
+}
+
+/**
+ * Log what the planner selected and skipped, and warn for every profile
+ * name the unit array does not declare.
+ *
+ * @param selection - The finished selection.
+ */
+function logSelection(selection: Selection): void {
+  const invalid = selection.report.invalid;
+  if (selection.status === "invalid") {
+    log.error({
+      hook: "compose",
+      event: "selection_invalid",
+      orchestrator: invalid?.orchestrator,
+      cause: invalid?.cause,
+      primaries: invalid?.primaries,
+      unmaterialised: selection.report.unmaterialised,
+    });
+  }
+  for (const skip of selection.report.skipped) {
+    log.info({
+      hook: "compose",
+      event: "unit_skipped",
+      name: skip.name,
+      missing: skip.missing,
+    });
+  }
+  for (const entry of selection.report.unknown) {
+    log.warn({
+      hook: "compose",
+      event: "unknown_unit",
+      category: entry.category,
+      name: entry.name,
+    });
+  }
+}
+
+/**
+ * Run one assembly pass: plan, bind, then build.
+ *
+ * A `null` profile (absent or invalid) selects and instantiates nothing —
+ * no defaults, no fallback to a full load.  Otherwise the planner matches
+ * every profile-enabled unit against the host's availability keys, the
+ * binder turns the selection into the complete capability record (a
+ * declared key that cannot be bound throws before any factory runs), and
+ * the build stage instantiates exactly the selected units in registry
+ * order.
+ *
+ * A declared orchestrator role that the profile cannot provide, or a
+ * selected agent the host will not materialise, is an invalid selection:
+ * the pass logs it, binds nothing and instantiates nothing, so a
+ * misconfigured profile stays empty instead of running with a role nobody
+ * declared or an agent the host never creates.
+ *
+ * @param input - The profile, unit array, bindings, agent modes, role,
+ *   and materialisation facts.
+ * @returns The selection the pass ran from and the composed result.
+ */
+export function assemble(input: AssembleInput): Assembly {
+  const selection = planSelection({
+    profile: input.profile,
+    units: input.units,
+    available: input.bindings.keys,
+    agentModes: input.agentModes,
+    orchestrator: input.orchestrator,
+    materialisation: input.materialisation,
+  });
+  logSelection(selection);
+  const composed =
+    selection.status === "ready"
+      ? buildComposition(selection, input.bindings.bind(selection))
+      : emptyComposition(selection.report);
+  return { selection, composed };
 }
 
 // ---------------------------------------------------------------------------

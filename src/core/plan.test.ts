@@ -329,9 +329,13 @@ describe("buildPlanReference", () => {
 // ---------------------------------------------------------------------------
 
 describe("buildConfirmText", () => {
-  it("returns the expected confirmation text", () => {
-    const text = buildConfirmText();
-    assert.strictEqual(text, "Plan handed off to dolphin.");
+  it("names the executor the handoff ran with", () => {
+    const text = buildConfirmText("alpha");
+    assert.strictEqual(text, "Plan handed off to alpha.");
+  });
+
+  it("does not assume the orchestrator name", () => {
+    assert.strictEqual(buildConfirmText("beta"), "Plan handed off to beta.");
   });
 });
 

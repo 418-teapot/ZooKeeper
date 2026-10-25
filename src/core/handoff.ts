@@ -40,20 +40,26 @@ export interface HandoffTarget {
   /**
    * Create the new session that will execute the plan.
    *
-   * @param ctx - The handoff context: the parent session id and the
-   *   new-session title derived from the resolved plan.
-   * @returns The created session id (may be empty on hosts whose TUI
-   *   binds the replacement session without an id).
+   * @param ctx - The handoff context: the parent session id, the
+   *   new-session title derived from the resolved plan, and the executor
+   *   agent identity for the new session.
+   * @returns The created session (may carry an empty id on hosts whose
+   *   TUI binds the replacement session without an id).  Its `agent` is
+   *   the context's executor, so every later step reads one value.
    */
-  create(ctx: { parentage: string; title: string }): Promise<{ id: string }>;
+  create(ctx: HandoffContext): Promise<HandoffSession>;
   /**
    * Prepare the new session's agent identity.
    *
-   * Runs after creation, before delivery.  On OpenCode the agent is set
-   * at create time so this is a no-op; on pi it switches the primary
-   * agent so the replaced session starts as the executor.
+   * Runs after creation, before delivery, and receives the session the
+   * create step returned — never a separately captured agent.  On
+   * OpenCode the agent is set at create time so this is a no-op; on pi
+   * it switches the primary agent so the replaced session starts as the
+   * executor.
+   *
+   * @param session - The created session.
    */
-  installAgent(): void | Promise<void>;
+  installAgent(session: HandoffSession): void | Promise<void>;
   /**
    * Deliver the plan reference into the new session.
    *
@@ -64,7 +70,7 @@ export interface HandoffTarget {
    * @param session - The created session.
    * @param planReference - The plan-reference prompt text.
    */
-  deliver(session: { id: string }, planReference: string): Promise<void>;
+  deliver(session: HandoffSession, planReference: string): Promise<void>;
   /**
    * Move the user's TUI focus to the new session.
    *
@@ -73,7 +79,30 @@ export interface HandoffTarget {
    *
    * @param session - The created session.
    */
-  focus(session: { id: string }): void | Promise<void>;
+  focus(session: HandoffSession): void | Promise<void>;
+}
+
+/** The inputs the create step receives. */
+export interface HandoffContext {
+  /** The session the handoff was invoked from (the new session's parent). */
+  parentage: string;
+  /** The new session's title, derived from the resolved plan. */
+  title: string;
+  /** The executor agent identity the new session must run as. */
+  agent: string;
+}
+
+/**
+ * The session a handoff target hands back to the protocol.
+ *
+ * `agent` is the executor the create context carried, so install and
+ * deliver operate on the same identity the session was created with.
+ */
+export interface HandoffSession {
+  /** The created session id (may be empty on hosts that bind it in TUI). */
+  id: string;
+  /** The executor agent identity of the created session. */
+  agent: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -85,25 +114,32 @@ export interface HandoffTarget {
  *
  * Exact order: resolve (`findPlanByStatus(directory, "planning-done")`,
  * throwing with the user-facing message when none exists) →
- * `handoffTarget.create({ parentage: sessionID, title })` →
- * `handoffTarget.installAgent()` →
+ * `handoffTarget.create({ parentage: sessionID, title, agent })` →
+ * `handoffTarget.installAgent(session)` →
  * `handoffTarget.deliver(session, planReference)` → mark `executing`
  * (only after delivery succeeded — a deliver failure leaves the plan
  * file untouched so `/go` is re-runnable) →
  * `handoffTarget.focus(session)`.
  *
- * @param opts - The handoff inputs: the handoff target, the current
- *   session id (becomes the new session's parent), and the workspace
- *   directory where plan files live.
+ * The executor agent is an input of this call, not a value a target
+ * captures at construction: the target receives it in the create
+ * context, echoes it into the session it returns, and install/deliver
+ * read it from there.
+ *
+ * @param opts - The handoff inputs: the handoff target, the executor
+ *   agent identity for the new session, the current session id (becomes
+ *   the new session's parent), and the workspace directory where plan
+ *   files live.
  * @throws Error when no `planning-done` plan exists, the handoff target
  *   fails at any step, or the plan file cannot be written.
  */
 export async function executeHandoff(opts: {
   handoffTarget: HandoffTarget;
+  agent: string;
   sessionID: string;
   directory: string;
 }): Promise<void> {
-  const { handoffTarget, sessionID, directory } = opts;
+  const { handoffTarget, agent, sessionID, directory } = opts;
 
   // --- 1. Resolve the planning-done plan ---
   const plan = findPlanByStatus(directory, "planning-done");
@@ -128,6 +164,7 @@ export async function executeHandoff(opts: {
   const session = await handoffTarget.create({
     parentage: sessionID,
     title: `Execute: ${plan.slug}`,
+    agent,
   });
   log.info({
     hook: "go-command",
@@ -137,7 +174,10 @@ export async function executeHandoff(opts: {
   });
 
   // --- 3. Prepare the session's agent identity ---
-  await handoffTarget.installAgent();
+  //
+  // The session carries the executor the create context was given, so
+  // the identity installed here is the one the session was created with.
+  await handoffTarget.installAgent(session);
 
   // --- 4. Deliver the plan reference into the new session ---
   //

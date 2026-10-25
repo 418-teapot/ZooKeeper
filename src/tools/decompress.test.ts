@@ -16,7 +16,6 @@
 import assert from "node:assert/strict";
 import { afterEach, describe, it } from "node:test";
 import { registerProfileToolsInConfig } from "../compose-opencode.js";
-import { composeProfile } from "../core/compose.js";
 import { parseContextConfig } from "../core/config-parse.js";
 import type {
   ContextPruningConfig,
@@ -39,7 +38,13 @@ import {
   RECALL_MAX_CHARS,
 } from "../core/context/state.js";
 import type { ToolHost } from "../core/ports/tool-host.js";
-import { composeToolHooks, makePlugin, POLY_ZOO } from "../testkits/config.js";
+import { composeForTest } from "../testkits/compose.js";
+import {
+  composeToolHooks,
+  makePlugin,
+  POLY_ZOO,
+  polyHostConfig,
+} from "../testkits/config.js";
 import { projectMessages } from "../testkits/context.js";
 import { _resetForTesting } from "../utils/logger.js";
 import { createDecompressTool, unit as decompressUnit } from "./decompress.js";
@@ -670,7 +675,10 @@ describe("config hook — primary_tools", () => {
 
   it("plugin config hook appends both compress and decompress preserving entries", async () => {
     const plugin = (await makePlugin()) as any;
-    const config = { experimental: { primary_tools: ["bash", "edit"] } };
+    const config: Record<string, any> = {
+      ...polyHostConfig(),
+      experimental: { primary_tools: ["bash", "edit"] },
+    };
 
     await plugin.config(config);
 
@@ -698,7 +706,7 @@ describe("decompress tool unsupported host", () => {
       commands: [],
     };
 
-    const result = composeProfile(profile, [decompressUnit], {
+    const result = composeForTest(profile, [decompressUnit], {
       limits: {},
       contextConfig: ENABLED_CONFIG,
       directory: "",

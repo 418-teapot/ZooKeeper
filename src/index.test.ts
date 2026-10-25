@@ -13,12 +13,14 @@ import {
   registerSkills,
   runAfterHandlers,
 } from "./compose-opencode.js";
-import { composeProfile } from "./core/compose.js";
 import { initPluginLogger, parseLimits } from "./core/config-parse.js";
 import type { Capabilities } from "./core/ports/index.js";
 import { sessionAgentRegistry } from "./core/session-agent.js";
 import type { TextCompleteOutput, TransformOutput } from "./core/unit.js";
 import { buildPlugin } from "./opencode.js";
+import { assembleForTest } from "./testkits/compose.js";
+import { cleanupPlanDir, writePlanFile } from "./testkits/plans.js";
+import { makeTmpDir } from "./testkits/tmp.js";
 import { _getBufferForTesting, _resetForTesting } from "./utils/logger.js";
 
 // ---------------------------------------------------------------------------
@@ -589,7 +591,7 @@ function crashedEntries(): Array<Record<string, unknown>> {
 
 describe("transform / text.complete isolation", () => {
   it("isolates a crashing messages.transform contribution and runs later ones", async () => {
-    const composed = composeProfile(null, [], DEPS);
+    const { composed, selection } = assembleForTest(null, [], DEPS);
     let captured: TransformOutput | undefined;
     composed.transform = [
       {
@@ -606,7 +608,7 @@ describe("transform / text.complete isolation", () => {
       },
     ];
 
-    const plugin = assembleOpenCodeHooks(composed, DEPS, null);
+    const plugin = assembleOpenCodeHooks(composed, DEPS, selection);
     const output: TransformOutput = {
       messages: [{ info: { sessionID: "sess-1" }, parts: [] }],
     };
@@ -622,7 +624,7 @@ describe("transform / text.complete isolation", () => {
   });
 
   it("falls back to an empty session id when the message list is empty", async () => {
-    const composed = composeProfile(null, [], DEPS);
+    const { composed, selection } = assembleForTest(null, [], DEPS);
     composed.transform = [
       {
         name: "boom",
@@ -632,7 +634,7 @@ describe("transform / text.complete isolation", () => {
       },
     ];
 
-    const plugin = assembleOpenCodeHooks(composed, DEPS, null);
+    const plugin = assembleOpenCodeHooks(composed, DEPS, selection);
     await plugin["experimental.chat.messages.transform"]({}, { messages: [] });
 
     const crashed = crashedEntries();
@@ -641,7 +643,7 @@ describe("transform / text.complete isolation", () => {
   });
 
   it("isolates a crashing text.complete contribution and runs later ones", async () => {
-    const composed = composeProfile(null, [], DEPS);
+    const { composed, selection } = assembleForTest(null, [], DEPS);
     composed.textComplete = [
       {
         name: "boom",
@@ -657,7 +659,7 @@ describe("transform / text.complete isolation", () => {
       },
     ];
 
-    const plugin = assembleOpenCodeHooks(composed, DEPS, null);
+    const plugin = assembleOpenCodeHooks(composed, DEPS, selection);
     const output: TextCompleteOutput = { text: "hi" };
     await plugin["experimental.text.complete"](
       { sessionID: "s1", messageID: "m1", partID: "p1" },
@@ -757,6 +759,44 @@ describe("registerSkills", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Config hook guard — an invalid selection never registers anything
+// ---------------------------------------------------------------------------
+
+describe("assembleOpenCodeHooks — invalid selection guard", () => {
+  it("keeps the config hook closed for an invalid selection", async () => {
+    // The entry point refuses an invalid selection before returning any
+    // hook, so this guard only matters when the hook is driven directly.
+    const { composed, selection } = assembleForTest(
+      {
+        name: "p",
+        agents: ["dolphin"],
+        skills: [],
+        hooks: [],
+        tools: [],
+        commands: [],
+      },
+      [],
+      DEPS,
+      {},
+      "dolphin",
+    );
+    assert.equal(selection.status, "invalid");
+
+    const config: Record<string, any> = {
+      agent: { dolphin: { mode: "primary" } },
+    };
+    await assert.rejects(
+      assembleOpenCodeHooks(composed, DEPS, selection).config(config),
+      (err: unknown) => {
+        const message = (err as Error).message;
+        return message.includes("dolphin") && message.includes("unknown-unit");
+      },
+    );
+    assert.equal(config.default_agent, undefined);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Plugin wiring smoke test — hook handlers exist on the plugin object.
 // Existence only; the behavior of each handler is covered by the hook tests
 // (which drive the hook-directory adapters directly).  Profile-driven
@@ -768,7 +808,7 @@ describe("plugin wiring", () => {
   const POLY_ZOO = {
     mode: {
       poly: {
-        agents: [],
+        agents: ["dolphin"],
         skills: [],
         hooks: [
           "subagent-prompt",
@@ -785,11 +825,23 @@ describe("plugin wiring", () => {
     },
   };
 
+  /**
+   * A client stub answering the pre-read `config.get` with the host's
+   * agent table, exactly as the real SDK client does.
+   *
+   * @param agent - The host `config.agent` table.
+   * @returns The client stub.
+   */
+  function hostClient(agent: Record<string, any>): Record<string, any> {
+    return { config: { get: async () => ({ data: { agent } }) } };
+  }
+
   it("exposes all profile-driven hook handlers when the poly profile is active", async () => {
-    const plugin = (await buildPlugin({ client: {} }, POLY_ZOO)) as Record<
-      string,
-      unknown
-    >;
+    const plugin = (await buildPlugin(
+      { client: hostClient({ dolphin: { mode: "primary" } }) },
+      POLY_ZOO,
+      { agent: { dolphin: { mode: "primary" } } },
+    )) as Record<string, unknown>;
     const handlerNames = [
       "config",
       "event",
@@ -813,6 +865,8 @@ describe("plugin wiring", () => {
   it("exposes only the infrastructure hooks when the profile is null", async () => {
     // An empty zoo config has no [zoo.mode.*] section — every
     // profile-driven registration is skipped.
+    // A disabled selection needs no host config: the client exposes no
+    // `config.get` at all and the entry point must not ask for one.
     const plugin = (await buildPlugin({ client: {} }, {})) as Record<
       string,
       unknown
@@ -836,5 +890,213 @@ describe("plugin wiring", () => {
     assert.equal(plugin["experimental.text.complete"], undefined);
     assert.equal(plugin["command.execute.before"], undefined);
     assert.equal(plugin.tool, undefined);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// /go handoff executor derived from the selection
+// ---------------------------------------------------------------------------
+
+describe("plugin wiring — /go handoff executor", () => {
+  /** A workspace with one approved (planning-done) plan. */
+  function planWorkspace(): string {
+    const dir = makeTmpDir("zoo-go-handoff");
+    writePlanFile(
+      dir,
+      "demo-plan.md",
+      { status: "planning-done", slug: "demo-plan" },
+      "body",
+    );
+    return dir;
+  }
+
+  /** A client that records the agent every created session carries. */
+  function recordingClient(created: string[]): Record<string, unknown> {
+    return {
+      session: {
+        create: async (input: { body: { agent: string } }) => {
+          created.push(input.body.agent);
+          return { data: { id: "ses-exec" } };
+        },
+        promptAsync: async () => ({}),
+        prompt: async () => ({}),
+      },
+    };
+  }
+
+  /**
+   * A client recording the executor each handoff step was given: the
+   * created session, the `promptAsync` reference, and the silent
+   * confirmation text.
+   */
+  function executorClient(recorded: {
+    created: string[];
+    delivered: string[];
+    confirmed: string[];
+  }): Record<string, unknown> {
+    return {
+      session: {
+        create: async (input: { body: { agent: string } }) => {
+          recorded.created.push(input.body.agent);
+          return { data: { id: "ses-exec" } };
+        },
+        promptAsync: async (input: { body: { agent: string } }) => {
+          recorded.delivered.push(input.body.agent);
+          return {};
+        },
+        prompt: async (input: { body: { parts: Array<{ text: string }> } }) => {
+          recorded.confirmed.push(input.body.parts[0].text);
+          return {};
+        },
+      },
+    };
+  }
+
+  /**
+   * Answer the pre-read `config.get` with the host's agent table.
+   *
+   * @param client - The stub client.
+   * @param agent - The host `config.agent` table.
+   * @returns The client, extended with `config.get`.
+   */
+  function withAgentTable(
+    client: Record<string, unknown>,
+    agent: Record<string, any>,
+  ): Record<string, any> {
+    return { ...client, config: { get: async () => ({ data: { agent } }) } };
+  }
+
+  /** Run the `/go` command through the assembled hook. */
+  async function runGo(
+    plugin: Record<string, any>,
+    sessionID: string,
+  ): Promise<void> {
+    await assert.rejects(() =>
+      plugin["command.execute.before"]({
+        command: "go",
+        sessionID,
+        arguments: "",
+      }),
+    );
+  }
+
+  it("creates the executor session under the selection's orchestrator", async () => {
+    const dir = planWorkspace();
+    const created: string[] = [];
+    try {
+      // The profile lists mola before dolphin; the executor must follow
+      // the declared orchestrator role, never the profile's agent order.
+      const plugin = (await buildPlugin(
+        {
+          client: withAgentTable(recordingClient(created), {
+            dolphin: { mode: "primary" },
+            mola: { mode: "primary" },
+          }),
+          directory: dir,
+        },
+        {
+          mode: {
+            poly: {
+              agents: ["mola", "dolphin"],
+              skills: [],
+              hooks: [],
+              tools: [],
+              commands: ["go"],
+            },
+          },
+        },
+        {
+          agent: {
+            dolphin: { mode: "primary" },
+            mola: { mode: "primary" },
+          },
+        },
+      )) as Record<string, any>;
+
+      await runGo(plugin, "ses-parent");
+
+      assert.deepEqual(created, ["dolphin"]);
+    } finally {
+      cleanupPlanDir(dir);
+    }
+  });
+
+  it("carries the selection's orchestrator through create, delivery, and confirmation", async () => {
+    const dir = planWorkspace();
+    const recorded: {
+      created: string[];
+      delivered: string[];
+      confirmed: string[];
+    } = { created: [], delivered: [], confirmed: [] };
+    try {
+      const plugin = (await buildPlugin(
+        {
+          client: withAgentTable(executorClient(recorded), {
+            dolphin: { mode: "primary" },
+          }),
+          directory: dir,
+        },
+        {
+          mode: {
+            poly: {
+              agents: ["dolphin"],
+              skills: [],
+              hooks: [],
+              tools: [],
+              commands: ["go"],
+            },
+          },
+        },
+        { agent: { dolphin: { mode: "primary" } } },
+      )) as Record<string, any>;
+
+      await runGo(plugin, "ses-parent");
+
+      // One executor for the whole handoff: the created session, the
+      // model-visible reference, and the silent confirmation.
+      assert.deepEqual(recorded.created, ["dolphin"]);
+      assert.deepEqual(recorded.delivered, ["dolphin"]);
+      assert.deepEqual(recorded.confirmed, ["Plan handed off to dolphin."]);
+    } finally {
+      cleanupPlanDir(dir);
+    }
+  });
+
+  it("refuses the plugin when the profile cannot provide the orchestrator", async () => {
+    const dir = planWorkspace();
+    const created: string[] = [];
+    try {
+      // beaver is a subagent and the orchestrator is absent: the selection
+      // is invalid, so no hook — /go included — is ever returned.
+      await assert.rejects(
+        buildPlugin(
+          {
+            client: withAgentTable(recordingClient(created), {
+              beaver: { mode: "subagent" },
+            }),
+            directory: dir,
+          },
+          {
+            mode: {
+              poly: {
+                agents: ["beaver"],
+                skills: [],
+                hooks: [],
+                tools: [],
+                commands: ["go"],
+              },
+            },
+          },
+          { agent: { beaver: { mode: "subagent" } } },
+        ),
+        (err: unknown) => {
+          const message = (err as Error).message;
+          return message.includes("dolphin") && message.includes("not-enabled");
+        },
+      );
+      assert.deepEqual(created, []);
+    } finally {
+      cleanupPlanDir(dir);
+    }
   });
 });

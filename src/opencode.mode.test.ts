@@ -100,17 +100,68 @@ const POLY_ZOO: Record<string, unknown> = {
   mode: { poly: POLY_PROFILE },
 };
 
+/**
+ * Raw config carrying each profile agent's role (mirrors the top-level
+ * `[agent.<name>].mode` tables of config.toml).
+ *
+ * The host declares dolphin as its orchestrator, so the fixture must
+ * provide it as a primary — an empty role table would leave the profile
+ * invalid and register nothing.
+ */
+const POLY_RAW: Record<string, unknown> = {
+  agent: {
+    dolphin: { mode: "primary" },
+    mola: { mode: "primary" },
+    beaver: { mode: "subagent" },
+    lynx: { mode: "subagent" },
+    spider: { mode: "subagent" },
+    eagle: { mode: "subagent" },
+    kiwi: { mode: "subagent" },
+  },
+};
+
+/**
+ * A client stub carrying the host config the plugin pre-reads.
+ *
+ * The real OpenCode SDK client exposes both `config.get` and
+ * `session.get`; the stub answers `config.get` with the same agent table
+ * `install.py` writes and lets a test override either method.
+ *
+ * @param extra - Per-test method overrides (e.g. a `session` stub).
+ * @returns The client stub.
+ */
+function hostClient(extra: Record<string, unknown> = {}): Record<string, any> {
+  return {
+    config: { get: async () => ({ data: hostConfig() }) },
+    session: { get: async () => ({}) },
+    ...extra,
+  };
+}
+
 /** Build a plugin with the given zoo config and input. */
 function makePlugin(
   zooConfig: Record<string, unknown> = POLY_ZOO,
-  input: Record<string, unknown> = {
-    // The real OpenCode SDK client exposes `session.get`; the stub keeps
-    // the context-pruning unit's capability gate open in composition
-    // tests that exercise the messages.transform pipeline.
-    client: { session: { get: async () => ({}) } },
-  },
+  input: Record<string, unknown> = { client: hostClient() },
 ): Promise<Record<string, any>> {
-  return buildPlugin(input, zooConfig) as Promise<Record<string, any>>;
+  return buildPlugin(input, zooConfig, POLY_RAW) as Promise<
+    Record<string, any>
+  >;
+}
+
+/**
+ * Build the host `config.agent` table `install.py` generates for the poly
+ * profile: every named agent materialised with the mode config.toml
+ * declares.  The config hook validates the selection against this table.
+ */
+function hostConfig(
+  names: readonly string[] = POLY_PROFILE.agents,
+): Record<string, any> {
+  const modes = POLY_RAW.agent as Record<string, { mode: string }>;
+  const agent: Record<string, any> = {};
+  for (const name of names) {
+    agent[name] = { mode: modes[name].mode };
+  }
+  return { agent };
 }
 
 /** A valid task() prompt whose CONTEXT contains a code block (soft warning). */
@@ -202,7 +253,7 @@ describe("poly full profile — registration parity", () => {
       "the OpenCode tool surface stays free of todo",
     );
 
-    const config: Record<string, any> = {};
+    const config = hostConfig();
     await plugin.config(config);
     assert.deepEqual(
       config.experimental.primary_tools,
@@ -260,7 +311,9 @@ describe("poly full profile — registration parity", () => {
     // The real OpenCode SDK client exposes `session.get` and has no
     // `getSession`: the caller must come from the gate's async capability
     // (registry miss → `session.get` fallback), not a fabricated method.
-    const client = { session: { get: async () => ({ agent: "beaver" }) } };
+    const client = hostClient({
+      session: { get: async () => ({ agent: "beaver" }) },
+    });
     const plugin = await makePlugin(POLY_ZOO, { client });
     await assert.rejects(
       plugin["tool.execute.before"](
@@ -283,7 +336,7 @@ describe("poly full profile — registration parity", () => {
   it("tool.execute.before refuses when the caller cannot be resolved", async () => {
     // A session the host cannot attribute to any agent must not slip past
     // the allowlist — the delegation judge fails closed.
-    const client = { session: { get: async () => ({}) } };
+    const client = hostClient({ session: { get: async () => ({}) } });
     const plugin = await makePlugin(POLY_ZOO, { client });
     await assert.rejects(
       plugin["tool.execute.before"](
@@ -388,17 +441,7 @@ describe("poly full profile — registration parity", () => {
 
   it("config hook injects all profile agents, skills, tools, and commands", async () => {
     const plugin = await makePlugin();
-    const config: Record<string, any> = {
-      agent: {
-        dolphin: {},
-        mola: {},
-        beaver: {},
-        lynx: {},
-        spider: {},
-        eagle: {},
-        kiwi: {},
-      },
-    };
+    const config = hostConfig();
     await plugin.config(config);
 
     for (const name of POLY_PROFILE.agents) {
@@ -428,7 +471,7 @@ describe("poly full profile — registration parity", () => {
     // (switchHost), so even with primaries in the profile no `/<agent>`
     // switch command may appear in the config hook (or be handled).
     const plugin = await makePlugin();
-    const config: Record<string, any> = {};
+    const config = hostConfig();
     await plugin.config(config);
     assert.deepEqual(
       Object.keys(config.command ?? {}).sort(),
@@ -447,9 +490,7 @@ describe("poly full profile — registration parity", () => {
 
   it("config hook injects the mode-conditional mola prompt (poly)", async () => {
     const plugin = await makePlugin();
-    const config: Record<string, any> = {
-      agent: { dolphin: {}, mola: {}, lynx: {}, spider: {} },
-    };
+    const config = hostConfig();
     await plugin.config(config);
     // Poly mode: lynx/spider present → delegation sections in the prompt.
     assert.ok(
@@ -465,7 +506,7 @@ describe("poly full profile — registration parity", () => {
       ...POLY_ZOO,
       mode: { mono: { ...POLY_PROFILE, agents: ["dolphin", "mola"] } },
     });
-    const config: Record<string, any> = { agent: { dolphin: {}, mola: {} } };
+    const config = hostConfig(["dolphin", "mola"]);
     await plugin.config(config);
     // Mono mode: no lynx/spider → no <Agents> section, no task tool.
     assert.ok(
@@ -483,7 +524,7 @@ describe("poly full profile — registration parity", () => {
       ...POLY_ZOO,
       mode: { mono: { ...POLY_PROFILE, agents: ["dolphin", "mola"] } },
     });
-    const config: Record<string, any> = { agent: { dolphin: {}, mola: {} } };
+    const config = hostConfig(["dolphin", "mola"]);
     await plugin.config(config);
     // Mono mode: no lynx/spider → self-sufficient worker prompt: no
     // <Agents> section, no task() delegation.
@@ -504,7 +545,12 @@ describe("poly full profile — registration parity", () => {
     // full profile and registers every profile-driven unit — not stay
     // infrastructure-only.
     await withModeFile(JSON.stringify({ mode: "poly" }), async () => {
-      const plugin = (await zookeeper({ client: {} })) as Record<string, any>;
+      // The entry point pre-reads the host config, so the real config.toml
+      // is paired with the agent table install.py generates for it.
+      const plugin = (await zookeeper({ client: hostClient() })) as Record<
+        string,
+        any
+      >;
       const handlerNames = [
         "tool.definition",
         "tool.execute.before",
@@ -701,7 +747,7 @@ describe("command atomic registration", () => {
 
   it('commands=["go"] registers go only — command + handler branch', async () => {
     const plugin = await pluginWithCommands(["go"]);
-    const config: Record<string, any> = {};
+    const config = hostConfig();
     await plugin.config(config);
     assert.ok(config.command.go, "go command must be registered");
     assert.equal(config.command.dcp, undefined);
@@ -724,7 +770,7 @@ describe("command atomic registration", () => {
 
   it('commands=["dcp"] registers dcp only — command + handler branch', async () => {
     const plugin = await pluginWithCommands(["dcp"]);
-    const config: Record<string, any> = {};
+    const config = hostConfig();
     await plugin.config(config);
     assert.ok(config.command.dcp, "dcp command must be registered");
     assert.equal(config.command.go, undefined);
@@ -747,7 +793,7 @@ describe("command atomic registration", () => {
     const plugin = await pluginWithCommands([]);
     assert.equal(plugin["command.execute.before"], undefined);
 
-    const config: Record<string, any> = {};
+    const config = hostConfig();
     await plugin.config(config);
     assert.equal(config.command, undefined);
   });
@@ -770,7 +816,7 @@ describe("tools gated by the profile tools list", () => {
     assert.ok(plugin.tool.compress, "compress must be registered");
     assert.equal(plugin.tool.decompress, undefined);
 
-    const config: Record<string, any> = {};
+    const config = hostConfig();
     await plugin.config(config);
     assert.deepEqual(config.experimental.primary_tools, ["compress"]);
   });
@@ -780,7 +826,7 @@ describe("tools gated by the profile tools list", () => {
     assert.equal(plugin.tool.compress, undefined);
     assert.ok(plugin.tool.decompress, "decompress must be registered");
 
-    const config: Record<string, any> = {};
+    const config = hostConfig();
     await plugin.config(config);
     assert.deepEqual(config.experimental.primary_tools, ["decompress"]);
   });
@@ -789,7 +835,8 @@ describe("tools gated by the profile tools list", () => {
     const plugin = await pluginWithTools([]);
     assert.equal(plugin.tool, undefined);
 
-    const config = { experimental: { primary_tools: ["bash"] } };
+    const config = hostConfig();
+    config.experimental = { primary_tools: ["bash"] };
     await plugin.config(config);
     assert.deepEqual(config.experimental.primary_tools, ["bash"]);
   });
@@ -810,19 +857,372 @@ describe("agents gated by the profile agents list", () => {
     const plugin = await makePlugin({
       mode: { poly: { ...POLY_PROFILE, agents: ["dolphin"] } },
     });
-    const config: Record<string, any> = { agent: { dolphin: {}, kiwi: {} } };
+    const config = hostConfig(["dolphin", "kiwi"]);
     await plugin.config(config);
     assert.ok(typeof config.agent.dolphin.prompt === "string");
     assert.equal(config.agent.kiwi.prompt, undefined);
   });
 
-  it("empty agents list → no prompt injection", async () => {
-    const plugin = await makePlugin({
-      mode: { poly: { ...POLY_PROFILE, agents: [] } },
+  it("empty agents list → no orchestrator, the plugin is refused", async () => {
+    // A profile that enables no agent cannot provide the declared
+    // orchestrator: the selection is invalid, so the entry point refuses
+    // the whole plugin instead of returning hooks that register nothing.
+    await assert.rejects(
+      makePlugin({ mode: { poly: { ...POLY_PROFILE, agents: [] } } }),
+      /dolphin/,
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Host config pre-read — the selection is planned from host facts
+// ---------------------------------------------------------------------------
+
+describe("buildPlugin — host config pre-read", () => {
+  /** The profile of the pre-read cases: dolphin plus the probe agent. */
+  const PROBE_PROFILE = {
+    agents: ["dolphin", "probe"],
+    skills: [],
+    hooks: [],
+    tools: [],
+    commands: [],
+  };
+
+  /** The zoo config enabling that profile. */
+  const PROBE_ZOO: Record<string, unknown> = { mode: { poly: PROBE_PROFILE } };
+
+  /** The config's role table: dolphin primary, the probe a subagent. */
+  const PROBE_RAW: Record<string, unknown> = {
+    agent: { dolphin: { mode: "primary" }, probe: { mode: "subagent" } },
+  };
+
+  /** The host table that materialises both agents, dolphin by default. */
+  const READY_HOST: Record<string, any> = {
+    agent: {
+      dolphin: { mode: "primary" },
+      probe: { mode: "subagent" },
+    },
+  };
+
+  /**
+   * Run `body` with a probe agent unit in the registry, reporting how many
+   * times its factory ran.
+   *
+   * The probe is a selected agent of the profile, so a factory run means
+   * the assembly reached the build stage.
+   *
+   * @param body - Receives a getter for the factory run count.
+   */
+  async function withProbeFactory(
+    body: (runs: () => number) => Promise<void>,
+  ): Promise<void> {
+    let runs = 0;
+    const probe: AgentUnitDescriptor = {
+      name: "probe",
+      kind: "agent",
+      needs: [],
+      wants: [],
+      uses: [],
+      create() {
+        runs += 1;
+        return { kind: "agent", agents: [] };
+      },
+    };
+    REGISTRY.push(probe);
+    try {
+      await body(() => runs);
+    } finally {
+      REGISTRY.pop();
+    }
+  }
+
+  /** Build the probe plugin with a client answering `config.get`. */
+  function probePlugin(client: Record<string, unknown>) {
+    return buildPlugin({ client }, PROBE_ZOO, PROBE_RAW);
+  }
+
+  it("rejects before any factory when the client has no config API", async () => {
+    await withProbeFactory(async (runs) => {
+      await assert.rejects(probePlugin({}), /config\.get/);
+      assert.equal(runs(), 0, "no unit factory may run");
     });
-    const config: Record<string, any> = { agent: { dolphin: {} } };
+  });
+
+  it("rejects before any factory when the config request fails", async () => {
+    await withProbeFactory(async (runs) => {
+      const client = {
+        config: {
+          get: async () => {
+            throw new Error("instance not ready");
+          },
+        },
+      };
+      await assert.rejects(probePlugin(client), /instance not ready/);
+      assert.equal(runs(), 0, "no unit factory may run");
+    });
+  });
+
+  it("rejects before any factory when the config carries no data", async () => {
+    await withProbeFactory(async (runs) => {
+      const client = {
+        config: { get: async () => ({ error: { status: 500 } }) },
+      };
+      await assert.rejects(probePlugin(client), /config\.get/);
+      assert.equal(runs(), 0, "no unit factory may run");
+    });
+  });
+
+  it("rejects before any factory when a selected agent is not materialised", async () => {
+    await withProbeFactory(async (runs) => {
+      const client = {
+        config: {
+          get: async () => ({
+            data: { agent: { dolphin: { mode: "primary" } } },
+          }),
+        },
+      };
+      await assert.rejects(probePlugin(client), (err: unknown) => {
+        const message = (err as Error).message;
+        return message.includes("probe") && message.includes("物化");
+      });
+      assert.equal(runs(), 0, "no unit factory may run");
+    });
+  });
+
+  it("rejects before any factory when the host disables a selected agent", async () => {
+    await withProbeFactory(async (runs) => {
+      const client = {
+        config: {
+          get: async () => ({
+            data: {
+              agent: {
+                dolphin: { mode: "primary" },
+                probe: { mode: "subagent", disable: true },
+              },
+            },
+          }),
+        },
+      };
+      await assert.rejects(probePlugin(client), /probe/);
+      assert.equal(runs(), 0, "no unit factory may run");
+    });
+  });
+
+  it("rejects before any factory when the orchestrator is a host subagent", async () => {
+    await withProbeFactory(async (runs) => {
+      const client = {
+        config: {
+          get: async () => ({
+            data: {
+              agent: {
+                dolphin: { mode: "subagent" },
+                probe: { mode: "subagent" },
+              },
+            },
+          }),
+        },
+      };
+      await assert.rejects(probePlugin(client), (err: unknown) => {
+        const message = (err as Error).message;
+        return (
+          message.includes("dolphin") && message.includes("not-default-agent")
+        );
+      });
+      assert.equal(runs(), 0, "no unit factory may run");
+    });
+  });
+
+  it("rejects before any factory when the orchestrator is hidden", async () => {
+    await withProbeFactory(async (runs) => {
+      const client = {
+        config: {
+          get: async () => ({
+            data: {
+              agent: {
+                dolphin: { mode: "primary", hidden: true },
+                probe: { mode: "subagent" },
+              },
+            },
+          }),
+        },
+      };
+      await assert.rejects(probePlugin(client), /not-default-agent/);
+      assert.equal(runs(), 0, "no unit factory may run");
+    });
+  });
+
+  it("runs the factories and adopts the orchestrator when the host is ready", async () => {
+    await withProbeFactory(async (runs) => {
+      const client = {
+        config: { get: async () => ({ data: READY_HOST }) },
+      };
+      const plugin = (await probePlugin(client)) as Record<string, any>;
+      assert.equal(runs(), 1, "the build stage runs once");
+
+      const config: Record<string, any> = {
+        agent: {
+          dolphin: { mode: "primary" },
+          probe: { mode: "subagent" },
+        },
+        default_agent: "host-declared",
+      };
+      await plugin.config(config);
+      assert.equal(config.default_agent, "dolphin");
+    });
+  });
+
+  it("probes nothing and registers nothing for a null profile", async () => {
+    let probed = 0;
+    const client = {
+      config: {
+        get: async () => {
+          probed += 1;
+          return { data: READY_HOST };
+        },
+      },
+    };
+    const plugin = (await buildPlugin({ client }, {})) as Record<string, any>;
+    assert.equal(probed, 0, "a disabled selection probes no host config");
+    assert.equal(plugin["tool.definition"], undefined);
+    assert.equal(plugin.tool, undefined);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Config hook — final atomic check against the config handed over
+// ---------------------------------------------------------------------------
+
+/**
+ * The config hook is not the normal refusal path: the entry point already
+ * planned the selection from the pre-read host config and throws before
+ * returning any hook.  These cases drive the hook against a config that
+ * changed afterwards — another plugin removing, disabling or re-moding a
+ * selected agent — so the check stays atomic and keeps the host config
+ * untouched when it refuses.
+ */
+describe("config hook — final atomic check against the host config", () => {
+  it("sets default_agent to the selection orchestrator, not the first primary", async () => {
+    // Profile order puts mola first, so deriving the default from the
+    // primary order would pick mola; the orchestrator role decides it.
+    // The host's stale default is overwritten.
+    const plugin = await makePlugin({
+      ...POLY_ZOO,
+      mode: {
+        poly: {
+          ...POLY_PROFILE,
+          agents: [
+            "mola",
+            "dolphin",
+            ...POLY_PROFILE.agents.filter(
+              (name) => name !== "mola" && name !== "dolphin",
+            ),
+          ],
+        },
+      },
+    });
+    const config: Record<string, any> = {
+      ...hostConfig(),
+      default_agent: "mola",
+    };
+
     await plugin.config(config);
+
+    assert.equal(config.default_agent, "dolphin");
+  });
+
+  it("accepts a host orchestrator on OpenCode's own default mode", async () => {
+    // A configured agent OpenCode leaves on mode "all" is a valid default
+    // agent; only "subagent" and `hidden: true` are refused there.
+    const plugin = await makePlugin();
+    const config = hostConfig();
+    config.agent.dolphin.mode = "all";
+
+    await plugin.config(config);
+
+    assert.equal(config.default_agent, "dolphin");
+  });
+
+  it("rejects a selection whose agents the host has not materialised", async () => {
+    const plugin = await makePlugin();
+    const config: Record<string, any> = {
+      agent: { dolphin: { mode: "primary" } },
+    };
+
+    await assert.rejects(plugin.config(config), (err: unknown) => {
+      const message = (err as Error).message;
+      return message.includes("mola") && message.includes("kiwi");
+    });
+    // The hook validates before mutating: nothing was registered.
+    assert.equal(config.default_agent, undefined);
+    assert.equal(config.skills, undefined);
     assert.equal(config.agent.dolphin.prompt, undefined);
+  });
+
+  it("rejects a selected agent the host config disables", async () => {
+    // OpenCode deletes a disabled agent before building its agent map, so
+    // the entry is not a materialised agent either.
+    const plugin = await makePlugin({
+      ...POLY_ZOO,
+      mode: { poly: { ...POLY_PROFILE, agents: ["dolphin", "mola"] } },
+    });
+    const config = hostConfig(["dolphin", "mola"]);
+    config.agent.mola.disable = true;
+
+    await assert.rejects(plugin.config(config), /mola/);
+    assert.equal(config.default_agent, undefined);
+  });
+
+  it("rejects an orchestrator the host marks as a subagent", async () => {
+    const plugin = await makePlugin();
+    const config = hostConfig();
+    config.agent.dolphin.mode = "subagent";
+
+    await assert.rejects(plugin.config(config), /dolphin/);
+    assert.equal(config.default_agent, undefined);
+    assert.equal(config.skills, undefined);
+  });
+
+  it("rejects a hidden orchestrator", async () => {
+    const plugin = await makePlugin();
+    const config = hostConfig();
+    config.agent.dolphin.hidden = true;
+
+    await assert.rejects(plugin.config(config), /dolphin/);
+    assert.equal(config.default_agent, undefined);
+  });
+
+  it("refuses an invalid selection with the orchestrator and cause", async () => {
+    // dolphin is absent from the profile's agent list, so the declared
+    // orchestrator cannot be one of the selected primaries.  The entry
+    // point refuses the plugin: no hook is returned, so the host config
+    // is never touched.
+    await assert.rejects(
+      makePlugin({
+        ...POLY_ZOO,
+        mode: { poly: { ...POLY_PROFILE, agents: ["mola"] } },
+      }),
+      (err: unknown) => {
+        const message = (err as Error).message;
+        return message.includes("dolphin") && message.includes("not-enabled");
+      },
+    );
+  });
+
+  it("preserves host agents outside the selection", async () => {
+    const plugin = await makePlugin();
+    const config = hostConfig();
+    config.agent["user-own"] = { mode: "primary", prompt: "keep me" };
+
+    await plugin.config(config);
+
+    assert.deepEqual(config.agent["user-own"], {
+      mode: "primary",
+      prompt: "keep me",
+    });
+    assert.equal(
+      Object.keys(config.agent).length,
+      POLY_PROFILE.agents.length + 1,
+    );
   });
 });
 
@@ -831,7 +1231,7 @@ describe("skills gated by the profile skills list", () => {
     const plugin = await makePlugin({
       mode: { poly: { ...POLY_PROFILE, skills: ["git-commit"] } },
     });
-    const config: Record<string, any> = {};
+    const config = hostConfig();
     await plugin.config(config);
     assert.equal(config.skills.paths.length, 1);
     assert.ok(config.skills.paths[0].endsWith("git-commit"));
@@ -841,7 +1241,7 @@ describe("skills gated by the profile skills list", () => {
     const plugin = await makePlugin({
       mode: { poly: { ...POLY_PROFILE, skills: [] } },
     });
-    const config: Record<string, any> = {};
+    const config = hostConfig();
     await plugin.config(config);
     assert.deepEqual(config.skills.paths, []);
   });
@@ -862,12 +1262,17 @@ describe("null profile — skip profile-driven registration", () => {
 
   it("config hook performs no profile-driven registration when profile is null", async () => {
     const plugin = await makePlugin({});
-    const config: Record<string, any> = { agent: { dolphin: {} } };
+    const config: Record<string, any> = {
+      agent: { dolphin: {} },
+      default_agent: "host-declared",
+    };
     await plugin.config(config);
     assert.equal(config.agent.dolphin.prompt, undefined);
     assert.equal(config.skills, undefined);
     assert.equal(config.experimental, undefined);
     assert.equal(config.command, undefined);
+    // A disabled selection does not take over the host's default agent.
+    assert.equal(config.default_agent, "host-declared");
   });
 
   it("infrastructure hooks keep working with a null profile", async () => {
@@ -979,6 +1384,7 @@ describe("experimental.chat.system.transform — variant conflict filtering", ()
     kind: "agent",
     needs: [],
     wants: [],
+    uses: [],
     create() {
       return {
         kind: "agent",
@@ -1005,7 +1411,20 @@ describe("experimental.chat.system.transform — variant conflict filtering", ()
           },
         },
       };
-      const plugin = await makePlugin(withConflict);
+      const plugin = await makePlugin(withConflict, {
+        client: hostClient({
+          config: {
+            get: async () => ({
+              data: {
+                agent: {
+                  ...hostConfig().agent,
+                  "conflict-agent": { mode: "subagent" },
+                },
+              },
+            }),
+          },
+        }),
+      });
       const output = { system: [`<Contract>\n${DOLPHIN_BASE}\n</Contract>`] };
       await plugin["experimental.chat.system.transform"](
         {

@@ -178,10 +178,11 @@ export interface ModeProfile {
  * An agent's declared role in the orchestration topology.
  *
  * Mirrors the `mode` field of the top-level `[agent.<name>]` tables in
- * config.toml.  `"primary"` agents are switchable orchestrators (e.g.
- * dolphin, mola); `"subagent"` agents are delegated helpers.  The parse
- * layer never invents a mode for an agent whose `mode` field is missing
- * or invalid — such an agent is skipped entirely (fail-closed).
+ * config.toml.  `"primary"` agents are switchable (e.g. dolphin, mola),
+ * and which of them is the orchestrator is decided by the host's role
+ * policy, not by this field; `"subagent"` agents are delegated helpers.
+ * The parse layer never invents a mode for an agent whose `mode` field is
+ * missing or invalid — such an agent is skipped entirely (fail-closed).
  */
 export type AgentMode = "primary" | "subagent";
 

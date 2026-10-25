@@ -4,11 +4,11 @@
  * A unit is the smallest loadable feature: an agent prompt, a skill
  * directory, a hook bundle, a tool, or a slash command.  A unit declares
  * the capabilities it consumes (`needs` = required, `wants` = optional
- * enhancement) and a factory; the `define*` helpers derive the factory's
- * capability slice from those two lists, so a factory body reads only the
- * ports it named and never has to check for an absent dependency — the
- * central matcher in `core/compose.ts` decides whether the unit runs at
- * all.
+ * enhancement) and the selection facts it reads (`uses`), plus a factory;
+ * the `define*` helpers derive the factory's capability slice and fact
+ * projection from those lists, so a factory body reads only the ports and
+ * facts it named and never has to check for an absent dependency — the
+ * planner in `core/selection.ts` decides whether the unit runs at all.
  *
  * The same helpers own the contribution shape: a hook factory names only
  * the slots it fills, a tool factory returns the definition whose name
@@ -25,30 +25,29 @@ import type { DelegationJudgeContribution } from "./gate.js";
 import type { SettledContribution } from "./loop/settle.js";
 import type { Capabilities } from "./ports/index.js";
 import type { PromptVariantPair } from "./prompt-variant.js";
+import type { SelectionFacts } from "./selection.js";
 
 // ---------------------------------------------------------------------------
-// Enablement
+// Selection projection
 // ---------------------------------------------------------------------------
 
 /**
- * Enablement sets built from the active mode profile.
+ * The selection facts a unit may read.
  *
- * Handed to unit factories so a unit can adapt its contributions to
- * sibling enablement (e.g. a hook unit checking whether the `compress`
- * tool is registered).
+ * A factory never receives the whole selection; it names the facts it
+ * reads in `uses` and receives exactly that projection.  Reading a fact
+ * is passive — it never activates anything.
  */
-export interface ActiveSet {
-  /** Enabled agent names. */
-  agents: ReadonlySet<string>;
-  /** Enabled skill names. */
-  skills: ReadonlySet<string>;
-  /** Enabled hook unit names. */
-  hooks: ReadonlySet<string>;
-  /** Enabled tool names. */
-  tools: ReadonlySet<string>;
-  /** Enabled slash-command names. */
-  commands: ReadonlySet<string>;
-}
+export type SelectionFactKey = keyof SelectionFacts;
+
+/**
+ * The selection-facts projection a factory body receives for one `uses`
+ * list.
+ */
+export type UnitUses<U extends readonly SelectionFactKey[]> = Pick<
+  SelectionFacts,
+  U[number]
+>;
 
 // ---------------------------------------------------------------------------
 // Handler input / output shapes
@@ -421,9 +420,10 @@ export interface AgentUnitDescriptor {
   kind: "agent";
   needs: readonly CapabilityKey[];
   wants: readonly CapabilityKey[];
+  uses: readonly SelectionFactKey[];
   create(
     caps: Partial<Capabilities>,
-    activeSet: ActiveSet,
+    facts: SelectionFacts,
   ): AgentUnitContributions;
 }
 
@@ -433,9 +433,10 @@ export interface SkillUnitDescriptor {
   kind: "skill";
   needs: readonly CapabilityKey[];
   wants: readonly CapabilityKey[];
+  uses: readonly SelectionFactKey[];
   create(
     caps: Partial<Capabilities>,
-    activeSet: ActiveSet,
+    facts: SelectionFacts,
   ): SkillUnitContributions;
 }
 
@@ -445,9 +446,10 @@ export interface HookUnitDescriptor {
   kind: "hook";
   needs: readonly CapabilityKey[];
   wants: readonly CapabilityKey[];
+  uses: readonly SelectionFactKey[];
   create(
     caps: Partial<Capabilities>,
-    activeSet: ActiveSet,
+    facts: SelectionFacts,
   ): HookUnitContributions;
 }
 
@@ -457,9 +459,10 @@ export interface ToolUnitDescriptor {
   kind: "tool";
   needs: readonly CapabilityKey[];
   wants: readonly CapabilityKey[];
+  uses: readonly SelectionFactKey[];
   create(
     caps: Partial<Capabilities>,
-    activeSet: ActiveSet,
+    facts: SelectionFacts,
   ): ToolUnitContributions;
 }
 
@@ -469,16 +472,17 @@ export interface CommandUnitDescriptor {
   kind: "command";
   needs: readonly CapabilityKey[];
   wants: readonly CapabilityKey[];
+  uses: readonly SelectionFactKey[];
   create(
     caps: Partial<Capabilities>,
-    activeSet: ActiveSet,
+    facts: SelectionFacts,
   ): CommandUnitContributions;
 }
 
 /**
  * One self-describing loadable unit.
  *
- * The discriminated union lets `composeProfile` narrow both the unit kind
+ * The discriminated union lets the build step narrow both the unit kind
  * and its contribution collection from `create`.
  */
 export type UnitDescriptor =
@@ -504,65 +508,134 @@ export type UnitCaps<
   W extends readonly CapabilityKey[],
 > = Pick<Capabilities, N[number]> & Partial<Pick<Capabilities, W[number]>>;
 
-/** The shape shared by every `define*` input. */
 /**
  * Assemble a descriptor from a definition.
  *
  * The factory is wrapped so the shared descriptor `create` signature
- * receives the full capability bag while the definition body only sees the
- * declared slice.  The matcher has already verified every `needs` key is
- * present, which is what makes the slice's required keys safe to treat as
- * present.
+ * receives the full capability bag and the finished selection while the
+ * definition body only sees the declared capability slice and the `uses`
+ * projection.  The planner has already verified every `needs` key is
+ * available, which is what makes the slice's required keys safe to treat
+ * as present.
  *
  * @param kind - The unit kind.
  * @param d - The definition.
  * @returns The descriptor.
  */
-function defineUnit<K extends UnitKind, R>(
+function defineUnit<
+  K extends UnitKind,
+  const N extends readonly CapabilityKey[],
+  const W extends readonly CapabilityKey[],
+  const U extends readonly SelectionFactKey[],
+  R,
+>(
   kind: K,
   d: {
     name: string;
-    needs: readonly CapabilityKey[];
-    wants?: readonly CapabilityKey[];
-    create(caps: never, activeSet: ActiveSet): R;
+    needs: N;
+    wants?: W;
+    uses?: U;
+    create(caps: UnitCaps<N, W>, uses: UnitUses<U>): R;
   },
 ): {
   name: string;
   kind: K;
   needs: readonly CapabilityKey[];
   wants: readonly CapabilityKey[];
-  create(caps: Partial<Capabilities>, activeSet: ActiveSet): R;
+  uses: readonly SelectionFactKey[];
+  create(caps: Partial<Capabilities>, facts: SelectionFacts): R;
 } {
+  const uses: readonly SelectionFactKey[] = d.uses ?? [];
   return {
     name: d.name,
     kind,
     needs: d.needs,
     wants: d.wants ?? [],
-    create(caps, activeSet) {
-      return (d.create as (c: Partial<Capabilities>, a: ActiveSet) => R)(
-        caps,
-        activeSet,
+    uses,
+    create(caps, facts) {
+      return d.create(
+        caps as UnitCaps<N, W>,
+        projectFacts(facts, uses) as UnitUses<U>,
       );
     },
   };
 }
 
 /**
+ * Project the named selection facts out of the finished selection.
+ *
+ * Only the keys the unit named in `uses` are copied, so a factory cannot
+ * read a fact it did not declare.
+ *
+ * @param facts - The finished selection.
+ * @param uses - The fact keys the unit declared.
+ * @returns The unit's fact projection.
+ */
+function projectFacts(
+  facts: SelectionFacts,
+  uses: readonly SelectionFactKey[],
+): Record<string, unknown> {
+  const projected: Record<string, unknown> = {};
+  for (const key of uses) {
+    projected[key] = facts[key];
+  }
+  return projected;
+}
+
+/**
+ * The prompt payload an agent unit's factory returns.
+ *
+ * An agent unit contributes exactly one agent — the one named by the
+ * descriptor — so the factory returns the prompt data only and the
+ * descriptor supplies the name.
+ */
+export interface AgentDefinition {
+  /** The prompt text injected into the agent definition. */
+  prompt: string;
+  /** Runtime model-family wordings, swapped by `applyModelVariant`. */
+  promptVariants?: readonly PromptVariantPair[];
+}
+
+/**
  * Define an agent unit.
  *
- * @param d - Name, capability lists, and factory.
+ * A selected agent unit always contributes exactly one agent contribution
+ * under its own name, so the factory cannot contribute a differently
+ * named or multi-entry agent set.
+ *
+ * @param d - Name, capability lists, fact uses, and prompt factory.
  * @returns The agent unit descriptor.
  */
 export function defineAgent<
   const N extends readonly CapabilityKey[],
   const W extends readonly CapabilityKey[] = [],
+  const U extends readonly SelectionFactKey[] = [],
 >(d: {
   name: string;
   needs: N;
   wants?: W;
-  create(caps: UnitCaps<N, W>, activeSet: ActiveSet): AgentUnitContributions;
+  uses?: U;
+  create(caps: UnitCaps<N, W>, uses: UnitUses<U>): AgentDefinition;
 }): AgentUnitDescriptor {
-  return defineUnit("agent", d);
+  return defineUnit("agent", {
+    name: d.name,
+    needs: d.needs,
+    wants: d.wants,
+    uses: d.uses,
+    create(caps, uses) {
+      const { prompt, promptVariants } = d.create(caps, uses);
+      return {
+        kind: "agent" as const,
+        agents: [
+          {
+            name: d.name,
+            prompt,
+            ...(promptVariants !== undefined ? { promptVariants } : {}),
+          },
+        ],
+      };
+    },
+  });
 }
 
 /**
@@ -585,7 +658,7 @@ export function definePromptAgent(
     name,
     needs: [],
     create() {
-      return { kind: "agent", agents: [{ name, prompt }] };
+      return { prompt };
     },
   });
 }
@@ -593,17 +666,19 @@ export function definePromptAgent(
 /**
  * Define a skill unit.
  *
- * @param d - Name, capability lists, and factory.
+ * @param d - Name, capability lists, fact uses, and factory.
  * @returns The skill unit descriptor.
  */
 export function defineSkill<
   const N extends readonly CapabilityKey[],
   const W extends readonly CapabilityKey[] = [],
+  const U extends readonly SelectionFactKey[] = [],
 >(d: {
   name: string;
   needs: N;
   wants?: W;
-  create(caps: UnitCaps<N, W>, activeSet: ActiveSet): SkillUnitContributions;
+  uses?: U;
+  create(caps: UnitCaps<N, W>, uses: UnitUses<U>): SkillUnitContributions;
 }): SkillUnitDescriptor {
   return defineUnit("skill", d);
 }
@@ -615,27 +690,30 @@ export function defineSkill<
  * descriptor completes the set with empty arrays (see
  * {@link completeHookContributions}).
  *
- * @param d - Name, capability lists, and factory.
+ * @param d - Name, capability lists, fact uses, and factory.
  * @returns The hook unit descriptor.
  */
 export function defineHook<
   const N extends readonly CapabilityKey[],
   const W extends readonly CapabilityKey[] = [],
+  const U extends readonly SelectionFactKey[] = [],
 >(d: {
   name: string;
   needs: N;
   wants?: W;
+  uses?: U;
   create(
     caps: UnitCaps<N, W>,
-    activeSet: ActiveSet,
+    uses: UnitUses<U>,
   ): Partial<Omit<HookUnitContributions, "kind">>;
 }): HookUnitDescriptor {
   return defineUnit("hook", {
     name: d.name,
     needs: d.needs,
     wants: d.wants,
-    create(caps, activeSet) {
-      return completeHookContributions(d.create(caps, activeSet));
+    uses: d.uses,
+    create(caps, uses) {
+      return completeHookContributions(d.create(caps, uses));
     },
   });
 }
@@ -643,32 +721,34 @@ export function defineHook<
 /**
  * Define a tool unit.
  *
- * The factory returns the tool definition itself (or `null` to
- * contribute no tool, the fail-closed host gate); the descriptor wraps it
- * into the contribution set and supplies the tool name from the unit
- * name.
+ * A selected tool unit always contributes exactly one tool named after
+ * the unit, so the factory returns the definition itself: the host's
+ * availability keys decide whether the unit runs at all, which leaves no
+ * "environment unavailable" return path here.
  *
- * @param d - Name, capability lists, and factory.
+ * @param d - Name, capability lists, fact uses, and factory.
  * @returns The tool unit descriptor.
  */
 export function defineTool<
   const N extends readonly CapabilityKey[],
   const W extends readonly CapabilityKey[] = [],
+  const U extends readonly SelectionFactKey[] = [],
 >(d: {
   name: string;
   needs: N;
   wants?: W;
-  create(caps: UnitCaps<N, W>, activeSet: ActiveSet): ToolDefinition | null;
+  uses?: U;
+  create(caps: UnitCaps<N, W>, uses: UnitUses<U>): ToolDefinition;
 }): ToolUnitDescriptor {
   return defineUnit("tool", {
     name: d.name,
     needs: d.needs,
     wants: d.wants,
-    create(caps, activeSet) {
-      const tool = d.create(caps, activeSet);
+    uses: d.uses,
+    create(caps, uses) {
       return {
-        kind: "tool",
-        tools: tool === null ? [] : [{ name: d.name, ...tool }],
+        kind: "tool" as const,
+        tools: [{ name: d.name, ...d.create(caps, uses) }],
       };
     },
   });
@@ -677,17 +757,19 @@ export function defineTool<
 /**
  * Define a command unit.
  *
- * @param d - Name, capability lists, and factory.
+ * @param d - Name, capability lists, fact uses, and factory.
  * @returns The command unit descriptor.
  */
 export function defineCommand<
   const N extends readonly CapabilityKey[],
   const W extends readonly CapabilityKey[] = [],
+  const U extends readonly SelectionFactKey[] = [],
 >(d: {
   name: string;
   needs: N;
   wants?: W;
-  create(caps: UnitCaps<N, W>, activeSet: ActiveSet): CommandUnitContributions;
+  uses?: U;
+  create(caps: UnitCaps<N, W>, uses: UnitUses<U>): CommandUnitContributions;
 }): CommandUnitDescriptor {
   return defineUnit("command", d);
 }

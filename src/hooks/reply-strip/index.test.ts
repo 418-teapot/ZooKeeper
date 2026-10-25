@@ -4,16 +4,16 @@
  * Covers the contributed text-finalization handler (exact leading
  * `[mN] ` echo removal, stacked prefixes, clean-text passthrough, and
  * the `reply_ref_stripped` warn log) and the profile gating of the
- * unit through `composeProfile` against the real registry (enabled
+ * unit through the assembly pipeline against the real registry (enabled
  * profile → one handler, disabled / null profile → none).
  */
 import assert from "node:assert/strict";
 import { afterEach, describe, it } from "node:test";
-import { composeProfile } from "../../core/compose.js";
 import type { ModeProfile } from "../../core/config-types.js";
 import type { Capabilities } from "../../core/ports/index.js";
 import type { TextCompleteOutput } from "../../core/unit.js";
 import { REGISTRY } from "../../registry.js";
+import { composeForTest, facts } from "../../testkits/compose.js";
 import { _getBufferForTesting, _resetForTesting } from "../../utils/logger.js";
 import { unit } from "./index.js";
 
@@ -28,13 +28,7 @@ const DEPS: Partial<Capabilities> = {
   resolveAgent: () => undefined,
 };
 
-const ACTIVE_SET = {
-  agents: new Set<string>(),
-  skills: new Set<string>(),
-  hooks: new Set(["reply-strip"]),
-  tools: new Set<string>(),
-  commands: new Set<string>(),
-};
+const ACTIVE_SET = facts();
 
 /** A minimal mode profile listing exactly the given hook units. */
 function hookProfile(hooks: string[]): ModeProfile {
@@ -109,13 +103,13 @@ describe("reply-strip unit — handler contribution", () => {
 
 describe("reply-strip unit — profile gating", () => {
   it("enabled profile contributes exactly one textComplete handler", () => {
-    const result = composeProfile(hookProfile(["reply-strip"]), REGISTRY, DEPS);
+    const result = composeForTest(hookProfile(["reply-strip"]), REGISTRY, DEPS);
     assert.equal(result.textComplete.length, 1);
     assert.equal(result.textComplete[0].name, "replyStrip");
   });
 
   it("profile without reply-strip contributes no textComplete handler", () => {
-    const result = composeProfile(
+    const result = composeForTest(
       hookProfile(["context-pruning"]),
       REGISTRY,
       DEPS,
@@ -124,7 +118,7 @@ describe("reply-strip unit — profile gating", () => {
   });
 
   it("null profile contributes no textComplete handler", () => {
-    const result = composeProfile(null, REGISTRY, DEPS);
+    const result = composeForTest(null, REGISTRY, DEPS);
     assert.equal(result.textComplete.length, 0);
   });
 });

@@ -2,12 +2,16 @@
  * OpenCode event-key adapter.
  *
  * The only module that understands OpenCode's event keys.  Given the
- * host-agnostic `ComposedResult` produced by `composeProfile`, plus the
- * per-plugin-instance deps and the parsed mode profile, it assembles the
+ * host-agnostic `ComposedResult` produced by the assembly pipeline, the
+ * per-plugin-instance capability values and the {@link Selection} the
+ * pipeline resolved, it assembles the
  * plugin-hook fragment consumed by the host entry point:
  *
- *  - `config` — agent prompt injection, skill registration, tool
- *    primary_tools append, and slash-command registration.
+ *  - `config` — final host materialisation check, default-agent adoption,
+ *    agent prompt injection, skill registration, tool primary_tools
+ *    append, and slash-command registration.  The selection itself was
+ *    already planned from the pre-read host config, so this hook only
+ *    guards against later plugin mutations.
  *  - `tool.execute.before` — the composed delegation gate for subagent
  *    calls; a refusal propagates as an error (cancels tool execution).
  *  - `tool.execute.after` — per-handler error isolation (`runAfterHandlers`).
@@ -40,8 +44,8 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ComposedResult } from "./core/compose.js";
 import { runIsolated } from "./core/compose.js";
-import type { ModeProfile } from "./core/config-types.js";
 import type { Capabilities } from "./core/ports/index.js";
+import type { AgentMaterialisation, Selection } from "./core/selection.js";
 import { scanSkillDirectories } from "./core/skills.js";
 import {
   collectToolDefinitionChanges,
@@ -187,6 +191,176 @@ export function registerProfileToolsInConfig(
   ) {
     config.experimental.primary_tools.push("decompress");
   }
+}
+
+/**
+ * Read the host agent definition a selection name refers to.
+ *
+ * A host entry the config disables is deleted before OpenCode builds its
+ * agent map, so a disabled entry is not a materialised agent: it resolves
+ * to `null` exactly like a missing one.
+ *
+ * @param agents - The `config.agent` map from the config hook.
+ * @param name - The selected agent name.
+ * @returns The host agent definition, or `null` when the host will not
+ *   create the agent.
+ */
+function materialisedAgent(
+  agents: Record<string, any>,
+  name: string,
+): Record<string, any> | null {
+  const agent = agents[name];
+  if (typeof agent !== "object" || agent === null) return null;
+  if (agent.disable === true) return null;
+  return agent;
+}
+
+/**
+ * Map the host's `config.agent` table onto the planner's materialisation
+ * facts.
+ *
+ * OpenCode deletes a disabled entry before building its agent map, so a
+ * disabled entry is not materialised.  A materialised entry can still be
+ * unusable as the host's default agent: OpenCode resolves `default_agent`
+ * on every request, and a subagent or hidden target fails there.
+ *
+ * The projection keeps this module the only place that knows the host's
+ * config shape; the planner receives plain names.
+ *
+ * `defaultAgents` speaks the HOST's vocabulary, not the config's mode
+ * enum: every materialised entry whose host mode is not `"subagent"` and
+ * that is not hidden counts, so `mode: "all"` is a host default agent
+ * exactly like `"primary"`.  The config layer only ever produces
+ * `primary` / `subagent` (`AgentMode` in `core/config-types.ts`), and the
+ * planner's role policy recognises that parsed mode alone — `"all"`
+ * therefore never becomes an orchestrator.  A profile that enables no
+ * parsed `primary` stays fail-closed (invalid selection) even when the
+ * host would accept an `"all"` agent as its default.  The two mode enums
+ * are unrelated.
+ *
+ * @param config - The host config returned by `config.get`.
+ * @returns The names the host will create, and the ones it accepts as its
+ *   default agent.
+ */
+export function hostMaterialisation(config: any): AgentMaterialisation {
+  const agents: string[] = [];
+  const defaultAgents: string[] = [];
+  const table = config?.agent;
+  if (table === null || typeof table !== "object" || Array.isArray(table)) {
+    return { agents, defaultAgents };
+  }
+  for (const name of Object.keys(table)) {
+    const agent = materialisedAgent(table, name);
+    if (agent === null) continue;
+    agents.push(name);
+    if (agent.mode === "subagent" || agent.hidden === true) continue;
+    defaultAgents.push(name);
+  }
+  return { agents, defaultAgents };
+}
+
+/**
+ * Read the host config and project it onto the materialisation facts.
+ *
+ * The read happens before assembly: the selection must be planned from
+ * host facts, not from the assumption that the host will create the
+ * selected agents.  A client without the API, a failed request and a
+ * response carrying no config data all fail here, before any unit
+ * factory runs.
+ *
+ * @param client - The host SDK client.
+ * @returns What the host will materialise.
+ */
+export async function readHostMaterialisation(
+  client: any,
+): Promise<AgentMaterialisation> {
+  const api = client?.config;
+  if (typeof api?.get !== "function") {
+    throw new Error("宿主 SDK 客户端缺少 config.get，无法预读宿主配置");
+  }
+  const result = await api.get();
+  const data = result?.data;
+  if (data === null || typeof data !== "object") {
+    const error = JSON.stringify(result?.error) ?? "无";
+    throw new Error(`宿主 config.get 未返回配置数据（error: ${error}）`);
+  }
+  return hostMaterialisation(data);
+}
+
+/**
+ * Describe why a selection cannot run.
+ *
+ * Shared by the entry point (which refuses the plugin before any hook is
+ * returned) and the config hook (which refuses a host config that drifted
+ * from the pre-read facts).
+ *
+ * @param selection - The invalid selection.
+ * @returns The user-facing reason, including every reported cause.
+ */
+export function invalidSelectionMessage(selection: Selection): string {
+  const problems: string[] = [];
+  const invalid = selection.report.invalid;
+  if (invalid !== null) {
+    problems.push(
+      `orchestrator "${invalid.orchestrator}" 不可用` +
+        `（cause: ${invalid.cause}；primaries: ${
+          invalid.primaries.join(", ") || "无"
+        }）`,
+    );
+  }
+  const missing = selection.report.unmaterialised;
+  if (missing.length > 0) {
+    problems.push(
+      `选中的 agent 未由宿主物化（缺失或被禁用）：${missing.join(", ")}`,
+    );
+  }
+  return `选中结果无效：${problems.join("；")}`;
+}
+
+/**
+ * List why the host config cannot run a ready selection.
+ *
+ * Every selected agent must be materialised by `config.agent`, because the
+ * composed prompts target exactly those entries.  The orchestrator
+ * additionally becomes `config.default_agent`, which OpenCode resolves on
+ * every request: a subagent or hidden target makes each request fail
+ * there, so the mismatch is refused while the config can still be left
+ * untouched.
+ *
+ * @param agents - The `config.agent` map from the config hook.
+ * @param selection - The ready selection being realised.
+ * @returns The problems found, empty when the host can run the selection.
+ */
+function unmaterialisedSelection(
+  agents: Record<string, any>,
+  selection: Selection,
+): string[] {
+  const problems: string[] = [];
+  const missing = selection.agents.filter(
+    (name) => materialisedAgent(agents, name) === null,
+  );
+  if (missing.length > 0) {
+    problems.push(
+      `选中的 agent 未由宿主配置物化（缺失或被禁用）：${missing.join(", ")}`,
+    );
+  }
+  const orchestrator = selection.orchestrator;
+  if (orchestrator === undefined) return problems;
+  // The planner resolves the role from the primaries, so an unmaterialised
+  // orchestrator is already listed above; the role checks only add what a
+  // materialised entry can still get wrong.
+  const agent = materialisedAgent(agents, orchestrator);
+  if (agent?.mode === "subagent") {
+    problems.push(
+      `orchestrator "${orchestrator}" 在宿主配置中是 subagent，不能作为默认 agent`,
+    );
+  }
+  if (agent?.hidden === true) {
+    problems.push(
+      `orchestrator "${orchestrator}" 在宿主配置中是 hidden，不能作为默认 agent`,
+    );
+  }
+  return problems;
 }
 
 // ---------------------------------------------------------------------------
@@ -352,22 +526,29 @@ function transformSessionID(output: TransformOutput): string {
 }
 
 /**
- * Assemble the profile-driven OpenCode hooks fragment.
+ * Assemble the selection-driven OpenCode hooks fragment.
  *
- * Event keys appear only when they have contributions; a null profile
- * (absent or invalid) keeps the `config` hook but skips every
- * profile-driven registration inside it.  Handler arrays keep the
- * registry's order.
+ * Event keys appear only when they have contributions.  The `config` hook
+ * always exists and behaves according to the selection status: `disabled`
+ * skips every profile-driven registration and leaves the host default
+ * agent alone, `invalid` throws before touching the config, and `ready`
+ * re-checks that the config about to be used still materialises the
+ * selected agents before adopting the selection's orchestrator as
+ * `default_agent` and registering the composed contributions.  Handler
+ * arrays keep the registry's order.
+ *
+ * The invalid branch is a guard, not the normal refusal path: the host
+ * entry point refuses an invalid selection before it returns any hook.
  *
  * @param composed - The host-agnostic composition result.
  * @param deps - Per-plugin-instance dependencies.
- * @param profile - The active mode profile, or `null` when absent.
+ * @param selection - The selection the composition was built from.
  * @returns The hooks object fragment merged into the plugin.
  */
 export function assembleOpenCodeHooks(
   composed: ComposedResult,
   deps: Partial<Capabilities>,
-  profile: ModeProfile | null,
+  selection: Selection,
 ): Record<string, any> {
   return {
     ...(Object.keys(composed.tools).length > 0 ? { tool: composed.tools } : {}),
@@ -379,8 +560,35 @@ export function assembleOpenCodeHooks(
         composed.skills.map((s) => s.name),
         deps.limits,
       );
-      // No active profile → no profile-driven registration at all.
-      if (profile === null) return;
+      // No active profile → no profile-driven registration at all, and no
+      // default-agent takeover: the host keeps what it declared.
+      if (selection.status === "disabled") return;
+
+      // An invalid selection resolved no orchestrator, so registering
+      // anything would run under an undeclared role.  The entry point
+      // already refuses such a selection before returning any hook; this
+      // keeps the hook closed when it is driven directly.
+      if (selection.status === "invalid") {
+        throw new Error(invalidSelectionMessage(selection));
+      }
+
+      // Final atomic check against the config the host hands over now:
+      // an earlier plugin may have changed the agent table the pre-read
+      // facts came from.  Validate before mutating, because the host
+      // applies the plugin's mutations even when the hook throws.
+      const problems = unmaterialisedSelection(agents, selection);
+      if (problems.length > 0) {
+        throw new Error(
+          `宿主配置无法运行选中的 profile：${problems.join("；")}`,
+        );
+      }
+
+      // The orchestrator is the host's default agent.  Deriving it from
+      // the primary order or falling back to a built-in agent would run
+      // the profile under an agent it did not select.
+      if (selection.orchestrator !== undefined) {
+        config.default_agent = selection.orchestrator;
+      }
 
       injectAgentPrompts(agents, composed.agents);
       registerSkills(

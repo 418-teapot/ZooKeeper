@@ -9,9 +9,10 @@
  */
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
+import { facts } from "../testkits/compose.js";
 import type { Capabilities } from "./ports/index.js";
 import {
-  type ActiveSet,
+  defineAgent,
   defineHook,
   definePromptAgent,
   defineTool,
@@ -20,14 +21,11 @@ import {
 /** The capability bag the factories see; the units below declare none. */
 const CAPS: Partial<Capabilities> = {};
 
-/** An empty enablement set. */
-const ACTIVE_SET: ActiveSet = {
-  agents: new Set(),
-  skills: new Set(),
-  hooks: new Set(),
-  tools: new Set(),
-  commands: new Set(),
-};
+/** An empty selection-facts projection. */
+const ACTIVE_SET = facts();
+
+/** A selection with one selected tool — the facts the cases below read. */
+const USES = facts({ tools: ["compress"] });
 
 describe("defineHook", () => {
   it("defaults every unnamed slot to an empty array", () => {
@@ -71,23 +69,51 @@ describe("defineHook", () => {
     assert.deepEqual(unit.create(CAPS, ACTIVE_SET).onSettled, []);
   });
 
-  it("forwards the capability slice and the active set to the factory", () => {
+  it("forwards the capability slice and the uses projection to the factory", () => {
     let seenCaps: unknown;
-    let seenActiveSet: unknown;
+    let seenUses: unknown;
     const unit = defineHook({
       name: "h",
       needs: ["directory"],
-      create: (caps, activeSet) => {
+      uses: ["tools"],
+      create: (caps, uses) => {
         seenCaps = caps;
-        seenActiveSet = activeSet;
+        seenUses = uses;
         return {};
       },
     });
 
-    unit.create({ ...CAPS, directory: "/tmp/zoo" }, ACTIVE_SET);
+    unit.create({ ...CAPS, directory: "/tmp/zoo" }, USES);
 
     assert.deepEqual(seenCaps, { directory: "/tmp/zoo" });
-    assert.equal(seenActiveSet, ACTIVE_SET);
+    assert.deepEqual(seenUses, { tools: ["compress"] });
+  });
+
+  it("projects only the facts the unit declared in uses", () => {
+    let seenUses: unknown;
+    const unit = defineHook({
+      name: "h",
+      needs: [],
+      create: (_caps, uses) => {
+        seenUses = uses;
+        return {};
+      },
+    });
+
+    unit.create(CAPS, USES);
+
+    assert.deepEqual(seenUses, {});
+  });
+
+  it("keeps the descriptor's declared uses list", () => {
+    const unit = defineHook({
+      name: "h",
+      needs: [],
+      uses: ["agents", "tools"],
+      create: () => ({}),
+    });
+
+    assert.deepEqual(unit.uses, ["agents", "tools"]);
   });
 
   it("keeps the descriptor's declared capability lists", () => {
@@ -120,32 +146,65 @@ describe("defineTool", () => {
     });
   });
 
-  it("contributes no tools when the factory returns null", () => {
-    const unit = defineTool({ name: "t", needs: [], create: () => null });
-
-    assert.deepEqual(unit.create(CAPS, ACTIVE_SET), {
-      kind: "tool",
-      tools: [],
+  it("contributes exactly one tool named after the unit", () => {
+    const unit = defineTool({
+      name: "t",
+      needs: [],
+      create: () => ({ description: "d", execute: async () => "ok" }),
     });
+
+    const contributions = unit.create(CAPS, ACTIVE_SET);
+
+    assert.equal(contributions.tools.length, 1);
+    assert.equal(contributions.tools[0]?.name, "t");
   });
 
-  it("forwards the capability slice and the active set to the factory", () => {
+  it("forwards the capability slice and the uses projection to the factory", () => {
     let seenCaps: unknown;
-    let seenActiveSet: unknown;
+    let seenUses: unknown;
     const unit = defineTool({
       name: "t",
       needs: ["toolHost"],
-      create: (caps, activeSet) => {
+      uses: ["tools"],
+      create: (caps, uses) => {
         seenCaps = caps;
-        seenActiveSet = activeSet;
-        return null;
+        seenUses = uses;
+        return { description: "d", execute: async () => "ok" };
       },
     });
 
-    unit.create({ ...CAPS, toolHost: {} as never }, ACTIVE_SET);
+    unit.create({ ...CAPS, toolHost: {} as never }, USES);
 
     assert.deepEqual(seenCaps, { toolHost: {} });
-    assert.equal(seenActiveSet, ACTIVE_SET);
+    assert.deepEqual(seenUses, { tools: ["compress"] });
+  });
+});
+
+describe("defineAgent", () => {
+  it("contributes exactly one agent named after the unit", () => {
+    const unit = defineAgent({
+      name: "dolphin",
+      needs: [],
+      create: () => ({ prompt: "PROMPT" }),
+    });
+
+    assert.deepEqual(unit.create(CAPS, ACTIVE_SET), {
+      kind: "agent",
+      agents: [{ name: "dolphin", prompt: "PROMPT" }],
+    });
+  });
+
+  it("carries the prompt variants through to the contribution", () => {
+    const variants = [{ base: "b", gpt: "g" }];
+    const unit = defineAgent({
+      name: "dolphin",
+      needs: [],
+      create: () => ({ prompt: "PROMPT", promptVariants: variants }),
+    });
+
+    assert.deepEqual(unit.create(CAPS, ACTIVE_SET).agents[0]?.promptVariants, [
+      { base: "b", gpt: "g" },
+    ]);
   });
 });
 

@@ -235,8 +235,9 @@ export function buildPlanReference(planPath: string): string {
  * This text appears in the TUI but is not processed by the LLM
  * (used with `noReply: true` and `ignored: true`).
  *
+ * @param agent - The executor agent the handoff ran with.
  * @returns Confirmation text.
  */
-export function buildConfirmText(): string {
-  return "Plan handed off to dolphin.";
+export function buildConfirmText(agent: string): string {
+  return `Plan handed off to ${agent}.`;
 }

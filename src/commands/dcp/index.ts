@@ -22,7 +22,8 @@ export const unit = defineCommand({
   name: "dcp",
   needs: ["contextConfig"],
   wants: ["toolHost"],
-  create(caps, activeSet) {
+  uses: ["tools"],
+  create(caps, uses) {
     return {
       kind: "command",
       commands: [
@@ -36,7 +37,7 @@ export const unit = defineCommand({
                 input.sessionID,
                 input.arguments,
                 caps.contextConfig,
-                activeSet.tools.has("compress"),
+                uses.tools.includes("compress"),
               );
             } catch (err) {
               await notifySessionError(

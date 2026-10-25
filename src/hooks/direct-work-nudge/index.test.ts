@@ -14,6 +14,7 @@ import { afterEach, beforeEach, describe, it } from "node:test";
 import type { Capabilities } from "../../core/ports/index.js";
 import type { TodoSource } from "../../core/todo/source.js";
 import type { TodoPhase } from "../../core/todo/types.js";
+import { facts } from "../../testkits/compose.js";
 import { restoreEnv, saveEnv } from "../../testkits/env.js";
 import { type HostTodo, sourceOf, storeSource } from "../../testkits/hooks.js";
 import { cleanupPlanDir, writePlanFile } from "../../testkits/plans.js";
@@ -313,7 +314,7 @@ describe("nudgeDirectWorkForAgent (dolphin-gated wrapper)", () => {
     await nudgeDirectWorkForAgent(
       { tool: "edit", sessionID: "s1", callID: "c1" },
       output,
-      { agent: "beaver" },
+      { agent: "beaver", orchestrator: "dolphin" },
     );
     assert.equal(output.output, "beaver edited a file");
     assert.ok(!output.output?.includes("你刚刚直接修改了文件"));
@@ -332,16 +333,16 @@ describe("nudgeDirectWorkForAgent (dolphin-gated wrapper)", () => {
     assert.ok(!output.output?.includes("你刚刚直接修改了文件"));
   });
 
-  it('logs nudge_skipped with reason "not_dolphin" for non-dolphin agents', async () => {
+  it('logs nudge_skipped with reason "not_orchestrator" for non-dolphin agents', async () => {
     await nudgeDirectWorkForAgent(
       { tool: "edit", sessionID: "s-gate", callID: "c1" },
       { output: "beaver edit" },
-      { agent: "beaver" },
+      { agent: "beaver", orchestrator: "dolphin" },
     );
     const entry = _getBufferForTesting().find(
-      (e) => e.event === "nudge_skipped" && e.reason === "not_dolphin",
+      (e) => e.event === "nudge_skipped" && e.reason === "not_orchestrator",
     );
-    assert.ok(entry, "expected nudge_skipped/not_dolphin log entry");
+    assert.ok(entry, "expected nudge_skipped/not_orchestrator log entry");
     const ee = entry as Record<string, unknown>;
     assert.equal(ee.hook, "direct-work-nudge");
     assert.equal(ee.level, "debug");
@@ -354,12 +355,22 @@ describe("nudgeDirectWorkForAgent (dolphin-gated wrapper)", () => {
     await nudgeDirectWorkForAgent(
       { tool: "edit", sessionID: "s-gate", callID: "c1" },
       { output: "unknown edit" },
-      {},
+      { orchestrator: "dolphin" },
     );
     const entry = _getBufferForTesting().find(
-      (e) => e.event === "nudge_skipped" && e.reason === "not_dolphin",
+      (e) => e.event === "nudge_skipped" && e.reason === "not_orchestrator",
     );
-    assert.ok(entry, "expected nudge_skipped/not_dolphin log entry");
+    assert.ok(entry, "expected nudge_skipped/not_orchestrator log entry");
+  });
+
+  it("skips when the selection resolved no orchestrator (fail-closed)", async () => {
+    const output: { output?: string } = { output: "dolphin edited a file" };
+    await nudgeDirectWorkForAgent(
+      { tool: "edit", sessionID: "s-gate", callID: "c1" },
+      output,
+      { agent: "dolphin" },
+    );
+    assert.equal(output.output, "dolphin edited a file");
   });
 
   // -----------------------------------------------------------------------
@@ -370,6 +381,7 @@ describe("nudgeDirectWorkForAgent (dolphin-gated wrapper)", () => {
     const output: { output?: string } = { output: "dolphin edited file" };
     await nudgeDirectWorkForAgent({ tool: "edit", sessionID: "s1" }, output, {
       agent: "dolphin",
+      orchestrator: "dolphin",
     });
     assertHasReminder(output);
   });
@@ -378,6 +390,7 @@ describe("nudgeDirectWorkForAgent (dolphin-gated wrapper)", () => {
     const output: { output?: string } = { output: "dolphin searched" };
     await nudgeDirectWorkForAgent({ tool: "grep", sessionID: "s1" }, output, {
       agent: "dolphin",
+      orchestrator: "dolphin",
     });
     assertHasSearchReminder(output);
   });
@@ -395,6 +408,7 @@ describe("nudgeDirectWorkForAgent (dolphin-gated wrapper)", () => {
       const output: { output?: string } = { output: "dolphin edited" };
       await nudgeDirectWorkForAgent({ tool: "edit", sessionID }, output, {
         agent: "dolphin",
+        orchestrator: "dolphin",
         planDir: baseDir,
       });
       assertHasReminder(output);
@@ -472,7 +486,7 @@ describe("integration: tool.execute.after → nudgeDirectWorkForAgent", () => {
     await nudgeDirectWorkForAgent(
       { tool: "edit", sessionID: sid, callID: "c1" },
       output,
-      { agent: "dolphin" },
+      { agent: "dolphin", orchestrator: "dolphin" },
     );
     assert.ok(output.output?.includes("你刚刚直接修改了文件"));
     assert.ok(output.output?.includes("开放问题"));
@@ -486,7 +500,7 @@ describe("integration: tool.execute.after → nudgeDirectWorkForAgent", () => {
     await nudgeDirectWorkForAgent(
       { tool: "edit", sessionID: sid, callID: "c1" },
       output,
-      { agent: "beaver" },
+      { agent: "beaver", orchestrator: "dolphin" },
     );
     assert.equal(output.output, "edited something as subagent");
   });
@@ -512,7 +526,7 @@ describe("integration: tool.execute.after → nudgeDirectWorkForAgent", () => {
     await nudgeDirectWorkForAgent(
       { tool: "bash", sessionID: sid, callID: "c1" },
       output,
-      { agent: "dolphin" },
+      { agent: "dolphin", orchestrator: "dolphin" },
     );
     assert.equal(output.output, "ls output here");
   });
@@ -523,7 +537,7 @@ describe("integration: tool.execute.after → nudgeDirectWorkForAgent", () => {
     await nudgeDirectWorkForAgent(
       { tool: "grep", sessionID: sid, callID: "c1" },
       output,
-      { agent: "dolphin" },
+      { agent: "dolphin", orchestrator: "dolphin" },
     );
     assertHasSearchReminder(output);
   });
@@ -536,7 +550,7 @@ describe("integration: tool.execute.after → nudgeDirectWorkForAgent", () => {
     await nudgeDirectWorkForAgent(
       { tool: "grep", sessionID: sid, callID: "c1" },
       output,
-      { agent: "lynx" },
+      { agent: "lynx", orchestrator: "dolphin" },
     );
     assert.equal(output.output, "searched as subagent");
   });
@@ -557,7 +571,7 @@ describe("integration: agent-gating states via nudgeDirectWorkForAgent", () => {
     await nudgeDirectWorkForAgent(
       { tool: "edit", sessionID: sid, callID: "c1" },
       output,
-      { agent: "dolphin" },
+      { agent: "dolphin", orchestrator: "dolphin" },
     );
     assertHasReminder(output);
 
@@ -578,7 +592,7 @@ describe("integration: agent-gating states via nudgeDirectWorkForAgent", () => {
     await nudgeDirectWorkForAgent(
       { tool: "edit", sessionID: sid, callID: "c1" },
       output,
-      { agent: "beaver" },
+      { agent: "beaver", orchestrator: "dolphin" },
     );
     assert.equal(output.output, "beaver edit");
 
@@ -587,7 +601,7 @@ describe("integration: agent-gating states via nudgeDirectWorkForAgent", () => {
     await nudgeDirectWorkForAgent(
       { tool: "edit", sessionID: sid, callID: "c2" },
       output,
-      { agent: "dolphin" },
+      { agent: "dolphin", orchestrator: "dolphin" },
     );
     assertHasReminder(output);
   });
@@ -617,6 +631,7 @@ describe("unit.create wiring — gating through deps.resolveAgent", () => {
   /** Build the contributed after-exec handler with a fixed resolver. */
   function handlerWith(
     resolveAgent: (sessionID: string) => string | undefined,
+    orchestrator = "dolphin",
   ) {
     const contributions = unit.create(
       {
@@ -625,13 +640,7 @@ describe("unit.create wiring — gating through deps.resolveAgent", () => {
         directory: "",
         resolveAgent,
       },
-      {
-        agents: new Set(),
-        skills: new Set(),
-        hooks: new Set(["direct-work-nudge"]),
-        tools: new Set(),
-        commands: new Set(),
-      },
+      facts({ orchestrator }),
     );
     assert.equal(contributions.afterExec.length, 1);
     return contributions.afterExec[0];
@@ -669,6 +678,50 @@ describe("unit.create wiring — gating through deps.resolveAgent", () => {
       output,
     );
     assertHasReminder(output);
+  });
+
+  it("gates on the orchestrator the selection declares, not on a name", async () => {
+    // The unit reads `uses.orchestrator`; a profile whose orchestrator is
+    // not dolphin gates on that name instead.
+    const handler = handlerWith(() => "planner", "planner");
+    const output: { output?: string } = { output: "planner edited a file" };
+    await handler.handle(
+      { tool: "edit", sessionID: "s-root", callID: "c1" },
+      output,
+    );
+    assertHasReminder(output);
+  });
+
+  it("skips dolphin when the selection's orchestrator is another agent", async () => {
+    const handler = handlerWith(() => "dolphin", "planner");
+    const output: { output?: string } = { output: "dolphin edited a file" };
+    await handler.handle(
+      { tool: "edit", sessionID: "s-root", callID: "c1" },
+      output,
+    );
+    assert.equal(output.output, "dolphin edited a file");
+  });
+
+  it("skips every agent when the selection resolves no orchestrator", async () => {
+    const contributions = unit.create(
+      {
+        limits: {},
+        contextConfig: {},
+        directory: "",
+        resolveAgent: () => "dolphin",
+      },
+      facts({ orchestrator: undefined }),
+    );
+    const output: { output?: string } = { output: "dolphin edited a file" };
+    await contributions.afterExec[0].handle(
+      { tool: "edit", sessionID: "s-root", callID: "c1" },
+      output,
+    );
+    assert.equal(output.output, "dolphin edited a file");
+  });
+
+  it("declares the orchestrator fact in its uses list", () => {
+    assert.deepEqual(unit.uses, ["orchestrator"]);
   });
 });
 
@@ -863,6 +916,7 @@ describe("options.todoSource drives the todo progress check", () => {
     const output: { output?: string } = { output: "dolphin edited" };
     await nudgeDirectWorkForAgent({ tool: "edit", sessionID: "s1" }, output, {
       agent: "dolphin",
+      orchestrator: "dolphin",
       todoSource: async () => [
         { content: "Wire source", status: "in_progress" },
       ],
@@ -882,14 +936,8 @@ function makeDeps(partial: Record<string, unknown>): Partial<Capabilities> {
   return partial as unknown as Partial<Capabilities>;
 }
 
-/** Activation sets enabling only this unit — create() does not consult them. */
-const EMPTY_SETS = {
-  agents: new Set<string>(),
-  skills: new Set<string>(),
-  hooks: new Set<string>(["direct-work-nudge"]),
-  tools: new Set<string>(),
-  commands: new Set<string>(),
-};
+/** The fact projection these unit-level tests hand to `unit.create`. */
+const SELECTION = facts({ orchestrator: "dolphin" });
 
 /**
  * Compose the unit and run its after-exec handler for an edit in `sid`.
@@ -899,7 +947,7 @@ const EMPTY_SETS = {
  * @returns The mutated output object.
  */
 async function runComposedEdit(deps: Partial<Capabilities>, sid: string) {
-  const composed = unit.create(deps, EMPTY_SETS);
+  const composed = unit.create(deps, SELECTION);
   assert.equal(composed.afterExec.length, 1);
   const output: { output?: string } = { output: "edited a file" };
   await composed.afterExec[0].handle(
