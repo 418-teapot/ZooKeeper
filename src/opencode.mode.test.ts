@@ -863,14 +863,23 @@ describe("agents gated by the profile agents list", () => {
     assert.equal(config.agent.kiwi.prompt, undefined);
   });
 
-  it("empty agents list → no orchestrator, the plugin is refused", async () => {
+  it("empty agents list → no orchestrator, only the configuration closes", async () => {
     // A profile that enables no agent cannot provide the declared
-    // orchestrator: the selection is invalid, so the entry point refuses
-    // the whole plugin instead of returning hooks that register nothing.
-    await assert.rejects(
-      makePlugin({ mode: { poly: { ...POLY_PROFILE, agents: [] } } }),
-      /dolphin/,
-    );
+    // orchestrator: the selection is invalid, so this configuration
+    // registers nothing while the plugin (and its infrastructure) stays.
+    const plugin = await makePlugin({
+      mode: { poly: { ...POLY_PROFILE, agents: [] } },
+    });
+    assert.equal(plugin.tool, undefined);
+    assert.equal(plugin["tool.definition"], undefined);
+    assert.equal(plugin["command.execute.before"], undefined);
+    assert.equal(typeof plugin.event, "function");
+
+    const config: Record<string, any> = { agent: { ...hostConfig().agent } };
+    await plugin.config(config);
+    assert.equal(config.default_agent, undefined);
+    assert.equal(config.skills, undefined);
+    assert.equal(config.command, undefined);
   });
 });
 
@@ -941,14 +950,56 @@ describe("buildPlugin — host config pre-read", () => {
     return buildPlugin({ client }, PROBE_ZOO, PROBE_RAW);
   }
 
-  it("rejects before any factory when the client has no config API", async () => {
+  /** The buffered `selection_invalid` entry of the current pass. */
+  function invalidEntry(): Record<string, unknown> | undefined {
+    return _getBufferForTesting().find((e) => e.event === "selection_invalid");
+  }
+
+  /**
+   * Assert the plugin kept its infrastructure and registered no profile
+   * surface, and that the config hook leaves the host config alone.
+   *
+   * @param plugin - The plugin the entry point returned.
+   */
+  async function assertUnregistered(
+    plugin: Record<string, any>,
+  ): Promise<void> {
+    assert.equal(typeof plugin.config, "function");
+    assert.equal(typeof plugin.event, "function");
+    assert.equal(plugin.tool, undefined);
+    assert.equal(plugin["tool.definition"], undefined);
+    assert.equal(plugin["tool.execute.before"], undefined);
+    assert.equal(plugin["command.execute.before"], undefined);
+
+    const config: Record<string, any> = {
+      agent: {
+        dolphin: { mode: "primary" },
+        probe: { mode: "subagent" },
+      },
+      default_agent: "host-declared",
+    };
+    await plugin.config(config);
+    assert.equal(config.default_agent, "host-declared");
+    assert.equal(config.skills, undefined);
+    assert.equal(config.command, undefined);
+  }
+
+  it("closes the configuration when the client has no config API", async () => {
     await withProbeFactory(async (runs) => {
-      await assert.rejects(probePlugin({}), /config\.get/);
+      const plugin = (await probePlugin({})) as Record<string, any>;
       assert.equal(runs(), 0, "no unit factory may run");
+      assert.equal(plugin.tool, undefined);
+      assert.equal(plugin["tool.definition"], undefined);
+      assert.equal(invalidEntry()?.hostFact !== undefined, true);
+      assert.deepEqual(
+        (invalidEntry()?.hostFact as Record<string, unknown>).cause,
+        "no-api",
+      );
+      await assertUnregistered(plugin);
     });
   });
 
-  it("rejects before any factory when the config request fails", async () => {
+  it("closes the configuration when the config request fails", async () => {
     await withProbeFactory(async (runs) => {
       const client = {
         config: {
@@ -957,22 +1008,30 @@ describe("buildPlugin — host config pre-read", () => {
           },
         },
       };
-      await assert.rejects(probePlugin(client), /instance not ready/);
+      const plugin = (await probePlugin(client)) as Record<string, any>;
       assert.equal(runs(), 0, "no unit factory may run");
+      const fact = invalidEntry()?.hostFact as Record<string, unknown>;
+      assert.equal(fact.cause, "request-failed");
+      assert.equal(String(fact.detail).includes("instance not ready"), true);
+      await assertUnregistered(plugin);
     });
   });
 
-  it("rejects before any factory when the config carries no data", async () => {
+  it("closes the configuration when the config carries no data", async () => {
     await withProbeFactory(async (runs) => {
       const client = {
         config: { get: async () => ({ error: { status: 500 } }) },
       };
-      await assert.rejects(probePlugin(client), /config\.get/);
+      const plugin = (await probePlugin(client)) as Record<string, any>;
       assert.equal(runs(), 0, "no unit factory may run");
+      const fact = invalidEntry()?.hostFact as Record<string, unknown>;
+      assert.equal(fact.cause, "no-data");
+      assert.equal(String(fact.detail).includes("500"), true);
+      await assertUnregistered(plugin);
     });
   });
 
-  it("rejects before any factory when a selected agent is not materialised", async () => {
+  it("closes the configuration when a selected agent is not materialised", async () => {
     await withProbeFactory(async (runs) => {
       const client = {
         config: {
@@ -981,15 +1040,14 @@ describe("buildPlugin — host config pre-read", () => {
           }),
         },
       };
-      await assert.rejects(probePlugin(client), (err: unknown) => {
-        const message = (err as Error).message;
-        return message.includes("probe") && message.includes("物化");
-      });
+      const plugin = (await probePlugin(client)) as Record<string, any>;
       assert.equal(runs(), 0, "no unit factory may run");
+      assert.deepEqual(invalidEntry()?.unmaterialised, ["probe"]);
+      await assertUnregistered(plugin);
     });
   });
 
-  it("rejects before any factory when the host disables a selected agent", async () => {
+  it("closes the configuration when the host disables a selected agent", async () => {
     await withProbeFactory(async (runs) => {
       const client = {
         config: {
@@ -1003,12 +1061,14 @@ describe("buildPlugin — host config pre-read", () => {
           }),
         },
       };
-      await assert.rejects(probePlugin(client), /probe/);
+      const plugin = (await probePlugin(client)) as Record<string, any>;
       assert.equal(runs(), 0, "no unit factory may run");
+      assert.deepEqual(invalidEntry()?.unmaterialised, ["probe"]);
+      await assertUnregistered(plugin);
     });
   });
 
-  it("rejects before any factory when the orchestrator is a host subagent", async () => {
+  it("closes the configuration when the orchestrator is a host subagent", async () => {
     await withProbeFactory(async (runs) => {
       const client = {
         config: {
@@ -1022,17 +1082,15 @@ describe("buildPlugin — host config pre-read", () => {
           }),
         },
       };
-      await assert.rejects(probePlugin(client), (err: unknown) => {
-        const message = (err as Error).message;
-        return (
-          message.includes("dolphin") && message.includes("not-default-agent")
-        );
-      });
+      const plugin = (await probePlugin(client)) as Record<string, any>;
       assert.equal(runs(), 0, "no unit factory may run");
+      assert.equal(invalidEntry()?.cause, "not-default-agent");
+      assert.equal(invalidEntry()?.orchestrator, "dolphin");
+      await assertUnregistered(plugin);
     });
   });
 
-  it("rejects before any factory when the orchestrator is hidden", async () => {
+  it("closes the configuration when the orchestrator is hidden", async () => {
     await withProbeFactory(async (runs) => {
       const client = {
         config: {
@@ -1046,8 +1104,10 @@ describe("buildPlugin — host config pre-read", () => {
           }),
         },
       };
-      await assert.rejects(probePlugin(client), /not-default-agent/);
+      const plugin = (await probePlugin(client)) as Record<string, any>;
       assert.equal(runs(), 0, "no unit factory may run");
+      assert.equal(invalidEntry()?.cause, "not-default-agent");
+      await assertUnregistered(plugin);
     });
   });
 
@@ -1093,12 +1153,14 @@ describe("buildPlugin — host config pre-read", () => {
 // ---------------------------------------------------------------------------
 
 /**
- * The config hook is not the normal refusal path: the entry point already
- * planned the selection from the pre-read host config and throws before
- * returning any hook.  These cases drive the hook against a config that
- * changed afterwards — another plugin removing, disabling or re-moding a
- * selected agent — so the check stays atomic and keeps the host config
- * untouched when it refuses.
+ * The config hook is not the only refusal path: a disabled or invalid
+ * selection still returns hooks — the infrastructure ones keep working and
+ * only the profile-driven registrations are absent — so this hook closes
+ * the configuration instead of refusing.  These cases therefore drive the
+ * hook against a config that drifted after a ready selection — another
+ * plugin removing, disabling or re-moding a selected agent — where the
+ * final check must stay atomic and leave the host config untouched when it
+ * refuses.
  */
 describe("config hook — final atomic check against the host config", () => {
   it("sets default_agent to the selection orchestrator, not the first primary", async () => {
@@ -1191,21 +1253,25 @@ describe("config hook — final atomic check against the host config", () => {
     assert.equal(config.default_agent, undefined);
   });
 
-  it("refuses an invalid selection with the orchestrator and cause", async () => {
+  it("leaves the host config alone for an invalid selection", async () => {
     // dolphin is absent from the profile's agent list, so the declared
-    // orchestrator cannot be one of the selected primaries.  The entry
-    // point refuses the plugin: no hook is returned, so the host config
-    // is never touched.
-    await assert.rejects(
-      makePlugin({
-        ...POLY_ZOO,
-        mode: { poly: { ...POLY_PROFILE, agents: ["mola"] } },
-      }),
-      (err: unknown) => {
-        const message = (err as Error).message;
-        return message.includes("dolphin") && message.includes("not-enabled");
-      },
-    );
+    // orchestrator cannot be one of the selected primaries: this
+    // configuration registers nothing and the hook mutates nothing.
+    const plugin = await makePlugin({
+      ...POLY_ZOO,
+      mode: { poly: { ...POLY_PROFILE, agents: ["mola"] } },
+    });
+    const config: Record<string, any> = {
+      ...hostConfig(),
+      default_agent: "host-declared",
+    };
+
+    await plugin.config(config);
+
+    assert.equal(config.default_agent, "host-declared");
+    assert.equal(config.skills, undefined);
+    assert.equal(config.command, undefined);
+    assert.equal(config.agent.dolphin.prompt, undefined);
   });
 
   it("preserves host agents outside the selection", async () => {

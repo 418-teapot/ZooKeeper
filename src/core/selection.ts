@@ -25,7 +25,10 @@
  * Host materialisation facts (which agent names the host will create, and
  * which of them it accepts as its default agent) are inputs too, never a
  * later assignment: a selected agent the host will not materialise makes
- * the selection `invalid` before anything is bound or built.
+ * the selection `invalid` before anything is bound or built.  Those facts
+ * are three-state — a host without the notion, an answered host, and a
+ * host that could not answer — and an unanswered fact is `invalid` too,
+ * never a silent "no constraint".
  *
  * @module
  */
@@ -107,6 +110,15 @@ export interface SelectionReport {
    * never creates.
    */
   readonly unmaterialised: readonly string[];
+  /**
+   * The host fact the selection asked for but the host could not provide,
+   * or `null` when every fact it needed was answered.
+   *
+   * A non-`null` value makes the selection `invalid`: an unanswered fact
+   * is not the same as "the host imposes no constraint", so the selection
+   * must not continue as if the host had said there is none.
+   */
+  readonly hostFact: HostFactUnavailable | null;
 }
 
 /**
@@ -124,6 +136,49 @@ export interface AgentMaterialisation {
   /** Agent names the host will accept as its default agent. */
   readonly defaultAgents: readonly string[];
 }
+
+/**
+ * Why the host could not answer a fact the selection asked for.
+ *
+ * - `no-api` — the host exposes no such read;
+ * - `request-failed` — the read itself failed;
+ * - `no-data` — the read returned no data.
+ */
+export type HostFactCause = "no-api" | "request-failed" | "no-data";
+
+/**
+ * A host fact the selection needed but could not obtain.
+ *
+ * The reason stays structured so the log can name it without parsing a
+ * message, and so an unanswered fact is never confused with an answered
+ * one that happens to be empty.
+ */
+export interface HostFactUnavailable {
+  /** Which host fact the selection asked for. */
+  readonly fact: "materialisation";
+  /** Why the host could not provide it. */
+  readonly cause: HostFactCause;
+  /** The host's own error detail, for the log. */
+  readonly detail: string;
+}
+
+/**
+ * What the host answered when asked what it will materialise.
+ *
+ * The three states are deliberately distinct: a host without the notion
+ * imposes no constraint (`not-applicable`), an answered host supplies the
+ * `available` facts, and a host that could not answer is `unavailable` —
+ * which is not the same as "no constraint", because the selection cannot
+ * know what it may run.  An omitted input means `not-applicable`.
+ */
+export type HostMaterialisation =
+  | { readonly kind: "not-applicable" }
+  | { readonly kind: "available"; readonly facts: AgentMaterialisation }
+  | {
+      readonly kind: "unavailable";
+      readonly cause: HostFactCause;
+      readonly detail: string;
+    };
 
 /**
  * Why a declared orchestrator is not the selection's orchestrator.
@@ -168,9 +223,10 @@ export interface InvalidOrchestrator {
  *   orchestrator role resolved, and the host materialises every selected
  *   agent;
  * - `invalid` — the profile is enabled but the host cannot realise it:
- *   the declared orchestrator is unsatisfiable (see `report.invalid`) or
- *   a selected agent is not materialised (see `report.unmaterialised`),
- *   so nothing runs.
+ *   the declared orchestrator is unsatisfiable (see `report.invalid`), a
+ *   selected agent is not materialised (see `report.unmaterialised`), or
+ *   the host could not answer what it materialises (see
+ *   `report.hostFact`), so nothing runs.
  */
 export type SelectionStatus = "disabled" | "ready" | "invalid";
 
@@ -247,14 +303,17 @@ export interface SelectionInput {
    */
   orchestrator?: string;
   /**
-   * What the host will materialise, or `undefined` when the host imposes
-   * no materialisation constraint (a host without such a notion).
+   * What the host answered when asked what it will materialise.  Omitted
+   * (or `not-applicable`) means the host imposes no materialisation
+   * constraint.
    *
    * The facts are checked at planning time: a selected agent the host
    * will not create, or an orchestrator the host will not accept as its
    * default agent, makes the selection invalid and instantiates nothing.
+   * Facts the host could not answer make the selection invalid as well —
+   * unknown is never treated as unconstrained.
    */
-  materialisation?: AgentMaterialisation;
+  materialisation?: HostMaterialisation;
 }
 
 /** An empty (disabled) selection. */
@@ -272,6 +331,7 @@ function emptySelection(): Selection {
       unknown: [],
       invalid: null,
       unmaterialised: [],
+      hostFact: null,
     },
   });
 }
@@ -305,6 +365,10 @@ function freezeSelection(selection: Selection): Selection {
             primaries: Object.freeze([...selection.report.invalid.primaries]),
           }),
     unmaterialised: Object.freeze([...selection.report.unmaterialised]),
+    hostFact:
+      selection.report.hostFact === null
+        ? null
+        : Object.freeze({ ...selection.report.hostFact }),
   });
   return Object.freeze({
     agents: Object.freeze([...selection.agents]),
@@ -413,6 +477,39 @@ function orchestratorInvalid(
 }
 
 /**
+ * The materialisation facts the host answered, if any.
+ *
+ * @param materialisation - What the host answered.
+ * @returns The facts, or `undefined` when the host answered none (no
+ *   constraint, or no answer at all).
+ */
+function answeredFacts(
+  materialisation: HostMaterialisation | undefined,
+): AgentMaterialisation | undefined {
+  return materialisation?.kind === "available"
+    ? materialisation.facts
+    : undefined;
+}
+
+/**
+ * The host fact the selection asked for but could not obtain.
+ *
+ * @param materialisation - What the host answered.
+ * @returns The unanswered fact, or `null` when it was answered (or not
+ *   needed).
+ */
+function unansweredFact(
+  materialisation: HostMaterialisation | undefined,
+): HostFactUnavailable | null {
+  if (materialisation?.kind !== "unavailable") return null;
+  return {
+    fact: "materialisation",
+    cause: materialisation.cause,
+    detail: materialisation.detail,
+  };
+}
+
+/**
  * Select the profile-enabled units whose needs the host can satisfy.
  *
  * A `null` profile selects nothing — no defaults, no fallback to a full
@@ -431,7 +528,10 @@ function orchestratorInvalid(
  * A host may also declare what it will materialise.  A selected agent the
  * host will not create, or an orchestrator the host will not accept as
  * its default agent, makes the selection `invalid` too: the facts are
- * part of the decision, not a later assignment.
+ * part of the decision, not a later assignment.  A host that could not
+ * answer the question at all makes the selection `invalid` as well, with
+ * the unanswered fact recorded in the report — unknown is never read as
+ * "no constraint".
  *
  * @param input - The profile, unit array, availability keys, modes, and
  *   optional orchestrator role and materialisation facts.
@@ -486,31 +586,40 @@ export function planSelection(input: SelectionInput): Selection {
   const chosenFacts = { chosen, agents, primaries, tools };
 
   // The host facts join the decision here: an agent the host will not
-  // create cannot run, whatever the profile enables.
+  // create cannot run, whatever the profile enables.  Facts the host
+  // could not answer leave nothing to compare against, so they suppress
+  // the comparison instead of passing it.
+  const facts = answeredFacts(materialisation);
+  const hostFact = unansweredFact(materialisation);
   const unmaterialised =
-    materialisation === undefined
+    facts === undefined
       ? []
-      : agents.filter((name) => !materialisation.agents.includes(name));
+      : agents.filter((name) => !facts.agents.includes(name));
 
+  // The role is judged from the selection alone where it can be: only the
+  // default-agent half needs host facts, so an orchestrator the profile
+  // cannot provide keeps its own cause even when the facts are missing.
   const invalid =
     orchestrator === undefined
       ? null
       : orchestratorInvalid(
           orchestrator,
           primaries,
-          materialisation,
+          facts,
           units,
           profile,
           skipped,
         );
 
   const status: SelectionStatus =
-    unmaterialised.length > 0 || invalid !== null ? "invalid" : "ready";
+    hostFact !== null || unmaterialised.length > 0 || invalid !== null
+      ? "invalid"
+      : "ready";
 
   return freezeSelection({
     ...chosenFacts,
     orchestrator: status === "ready" ? orchestrator : undefined,
     status,
-    report: { selected, skipped, unknown, invalid, unmaterialised },
+    report: { selected, skipped, unknown, invalid, unmaterialised, hostFact },
   });
 }

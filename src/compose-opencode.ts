@@ -11,7 +11,8 @@
  *    agent prompt injection, skill registration, tool primary_tools
  *    append, and slash-command registration.  The selection itself was
  *    already planned from the pre-read host config, so this hook only
- *    guards against later plugin mutations.
+ *    guards against later plugin mutations; a selection that is not
+ *    `ready` makes it a no-op.
  *  - `tool.execute.before` — the composed delegation gate for subagent
  *    calls; a refusal propagates as an error (cancels tool execution).
  *  - `tool.execute.after` — per-handler error isolation (`runAfterHandlers`).
@@ -45,7 +46,11 @@ import { fileURLToPath } from "node:url";
 import type { ComposedResult } from "./core/compose.js";
 import { runIsolated } from "./core/compose.js";
 import type { Capabilities } from "./core/ports/index.js";
-import type { AgentMaterialisation, Selection } from "./core/selection.js";
+import type {
+  AgentMaterialisation,
+  HostMaterialisation,
+  Selection,
+} from "./core/selection.js";
 import { scanSkillDirectories } from "./core/skills.js";
 import {
   collectToolDefinitionChanges,
@@ -264,57 +269,47 @@ export function hostMaterialisation(config: any): AgentMaterialisation {
  *
  * The read happens before assembly: the selection must be planned from
  * host facts, not from the assumption that the host will create the
- * selected agents.  A client without the API, a failed request and a
- * response carrying no config data all fail here, before any unit
- * factory runs.
+ * selected agents.  The three expected environment failures — a client
+ * without the API, a failed request, a response carrying no config data —
+ * are answered as unavailable facts, so the shared decision closes this
+ * configuration instead of failing the whole extension.  Any other fault
+ * of the client is a program error and still escapes.
  *
  * @param client - The host SDK client.
- * @returns What the host will materialise.
+ * @returns The projected facts, or why the host could not answer.
  */
 export async function readHostMaterialisation(
   client: any,
-): Promise<AgentMaterialisation> {
+): Promise<HostMaterialisation> {
   const api = client?.config;
   if (typeof api?.get !== "function") {
-    throw new Error("宿主 SDK 客户端缺少 config.get，无法预读宿主配置");
+    return {
+      kind: "unavailable",
+      cause: "no-api",
+      detail: "宿主 SDK 客户端缺少 config.get，无法预读宿主配置",
+    };
   }
-  const result = await api.get();
+  let result: any;
+  try {
+    result = await api.get();
+  } catch (err) {
+    return {
+      kind: "unavailable",
+      cause: "request-failed",
+      detail: String(err),
+    };
+  }
   const data = result?.data;
-  if (data === null || typeof data !== "object") {
+  // An array is not a config table, so it carries no usable data either.
+  if (data === null || typeof data !== "object" || Array.isArray(data)) {
     const error = JSON.stringify(result?.error) ?? "无";
-    throw new Error(`宿主 config.get 未返回配置数据（error: ${error}）`);
+    return {
+      kind: "unavailable",
+      cause: "no-data",
+      detail: `宿主 config.get 未返回配置数据（error: ${error}）`,
+    };
   }
-  return hostMaterialisation(data);
-}
-
-/**
- * Describe why a selection cannot run.
- *
- * Shared by the entry point (which refuses the plugin before any hook is
- * returned) and the config hook (which refuses a host config that drifted
- * from the pre-read facts).
- *
- * @param selection - The invalid selection.
- * @returns The user-facing reason, including every reported cause.
- */
-export function invalidSelectionMessage(selection: Selection): string {
-  const problems: string[] = [];
-  const invalid = selection.report.invalid;
-  if (invalid !== null) {
-    problems.push(
-      `orchestrator "${invalid.orchestrator}" 不可用` +
-        `（cause: ${invalid.cause}；primaries: ${
-          invalid.primaries.join(", ") || "无"
-        }）`,
-    );
-  }
-  const missing = selection.report.unmaterialised;
-  if (missing.length > 0) {
-    problems.push(
-      `选中的 agent 未由宿主物化（缺失或被禁用）：${missing.join(", ")}`,
-    );
-  }
-  return `选中结果无效：${problems.join("；")}`;
+  return { kind: "available", facts: hostMaterialisation(data) };
 }
 
 /**
@@ -530,15 +525,15 @@ function transformSessionID(output: TransformOutput): string {
  *
  * Event keys appear only when they have contributions.  The `config` hook
  * always exists and behaves according to the selection status: `disabled`
- * skips every profile-driven registration and leaves the host default
- * agent alone, `invalid` throws before touching the config, and `ready`
- * re-checks that the config about to be used still materialises the
- * selected agents before adopting the selection's orchestrator as
- * `default_agent` and registering the composed contributions.  Handler
- * arrays keep the registry's order.
+ * and `invalid` skip every profile-driven registration and leave the host
+ * default agent alone, while `ready` re-checks that the config about to
+ * be used still materialises the selected agents before adopting the
+ * selection's orchestrator as `default_agent` and registering the
+ * composed contributions.  Handler arrays keep the registry's order.
  *
- * The invalid branch is a guard, not the normal refusal path: the host
- * entry point refuses an invalid selection before it returns any hook.
+ * A non-ready selection is not an error here: the host entry point keeps
+ * the infrastructure hooks and hands the selection over, so this hook
+ * only has to leave the host configuration alone.
  *
  * @param composed - The host-agnostic composition result.
  * @param deps - Per-plugin-instance dependencies.
@@ -560,17 +555,12 @@ export function assembleOpenCodeHooks(
         composed.skills.map((s) => s.name),
         deps.limits,
       );
-      // No active profile → no profile-driven registration at all, and no
-      // default-agent takeover: the host keeps what it declared.
-      if (selection.status === "disabled") return;
-
-      // An invalid selection resolved no orchestrator, so registering
-      // anything would run under an undeclared role.  The entry point
-      // already refuses such a selection before returning any hook; this
-      // keeps the hook closed when it is driven directly.
-      if (selection.status === "invalid") {
-        throw new Error(invalidSelectionMessage(selection));
-      }
+      // No runnable profile → no profile-driven registration at all, and
+      // no default-agent takeover: the host keeps what it declared.  A
+      // disabled or invalid selection was already logged during assembly
+      // (see `selection_invalid`), and the configuration it could not
+      // realise simply stays untouched.
+      if (selection.status !== "ready") return;
 
       // Final atomic check against the config the host hands over now:
       // an earlier plugin may have changed the agent table the pre-read

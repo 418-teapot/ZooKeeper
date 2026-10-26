@@ -20,7 +20,7 @@ import {
 import type { ModeProfile } from "./config-types.js";
 import type { Capabilities } from "./ports/index.js";
 import type { SelectionFacts } from "./selection.js";
-import { type AgentMaterialisation, planSelection } from "./selection.js";
+import { type HostMaterialisation, planSelection } from "./selection.js";
 import {
   defineAgent,
   defineHook,
@@ -48,7 +48,7 @@ function run(
   values: Partial<Capabilities> = BASE_CAPS,
   agentModes: Record<string, "primary" | "subagent"> = {},
   orchestrator?: string,
-  materialisation?: AgentMaterialisation,
+  materialisation?: HostMaterialisation,
 ): { composed: ComposedResult; report: CompositionReport; calls: string[] } {
   const calls: string[] = [];
   const recording = units.map((unit) => {
@@ -350,6 +350,7 @@ describe("assemble — null profile", () => {
         unknown: [],
         invalid: null,
         unmaterialised: [],
+        hostFact: null,
       },
     });
   });
@@ -404,6 +405,7 @@ describe("assemble — per-kind selection", () => {
       unknown: [],
       invalid: null,
       unmaterialised: [],
+      hostFact: null,
     });
   });
 });
@@ -504,7 +506,10 @@ describe("assemble — orchestrator role policy", () => {
       BASE_CAPS,
       FULL_MODES,
       "dolphin",
-      { agents: ["dolphin"], defaultAgents: ["dolphin"] },
+      {
+        kind: "available",
+        facts: { agents: ["dolphin"], defaultAgents: ["dolphin"] },
+      },
     );
 
     assert.deepEqual(calls, [], "no unit factory may run on invalid input");
@@ -520,8 +525,11 @@ describe("assemble — orchestrator role policy", () => {
       FULL_MODES,
       "dolphin",
       {
-        agents: ["dolphin", "beaver", "mola"],
-        defaultAgents: ["mola"],
+        kind: "available",
+        facts: {
+          agents: ["dolphin", "beaver", "mola"],
+          defaultAgents: ["mola"],
+        },
       },
     );
 
@@ -535,8 +543,8 @@ describe("assemble — orchestrator role policy", () => {
 
   it("logs an invalid selection caused by host materialisation", () => {
     run(ALL_UNITS_PROFILE, makeUnits(), BASE_CAPS, FULL_MODES, "dolphin", {
-      agents: ["dolphin"],
-      defaultAgents: ["dolphin"],
+      kind: "available",
+      facts: { agents: ["dolphin"], defaultAgents: ["dolphin"] },
     });
 
     const entry = _getBufferForTesting().find(
@@ -546,6 +554,80 @@ describe("assemble — orchestrator role policy", () => {
     const ee = entry as Record<string, unknown>;
     assert.equal(ee.level, "error");
     assert.deepEqual(ee.unmaterialised, ["beaver", "mola"]);
+  });
+
+  it("instantiates nothing when the host could not answer what it materialises", () => {
+    const { calls, composed, report } = run(
+      ALL_UNITS_PROFILE,
+      makeUnits(),
+      BASE_CAPS,
+      FULL_MODES,
+      "dolphin",
+      {
+        kind: "unavailable",
+        cause: "no-api",
+        detail: "宿主 SDK 客户端缺少 config.get",
+      },
+    );
+
+    assert.deepEqual(
+      calls,
+      [],
+      "no unit factory may run on unknown host facts",
+    );
+    assert.deepEqual(composed.agents, []);
+    assert.deepEqual(Object.keys(composed.tools), []);
+    assert.deepEqual(composed.commands, {});
+    assert.deepEqual(report.hostFact, {
+      fact: "materialisation",
+      cause: "no-api",
+      detail: "宿主 SDK 客户端缺少 config.get",
+    });
+  });
+
+  it("never binds capabilities when the host facts are unavailable", () => {
+    const { selection, composed } = assemble({
+      profile: ALL_UNITS_PROFILE,
+      units: makeUnits(),
+      bindings: capabilityBindings({
+        values: BASE_CAPS,
+        selected: {
+          handoffTarget: () => {
+            throw new Error("an undecidable selection must not bind");
+          },
+        },
+      }),
+      agentModes: FULL_MODES,
+      orchestrator: "dolphin",
+      materialisation: {
+        kind: "unavailable",
+        cause: "request-failed",
+        detail: "instance not ready",
+      },
+    });
+
+    assert.equal(selection.status, "invalid");
+    assert.deepEqual(composed.agents, []);
+  });
+
+  it("logs the unanswered host fact on the invalid selection entry", () => {
+    run(ALL_UNITS_PROFILE, makeUnits(), BASE_CAPS, FULL_MODES, "dolphin", {
+      kind: "unavailable",
+      cause: "no-data",
+      detail: "宿主 config.get 未返回配置数据",
+    });
+
+    const entry = _getBufferForTesting().find(
+      (e) => e.event === "selection_invalid",
+    );
+    assert.ok(entry, "expected a selection_invalid log entry");
+    const ee = entry as Record<string, unknown>;
+    assert.equal(ee.level, "error");
+    assert.deepEqual(ee.hostFact, {
+      fact: "materialisation",
+      cause: "no-data",
+      detail: "宿主 config.get 未返回配置数据",
+    });
   });
 
   it("stays disabled for a null profile even with a declared role", () => {

@@ -277,6 +277,7 @@ describe("planSelection — null profile", () => {
       unknown: [],
       invalid: null,
       unmaterialised: [],
+      hostFact: null,
     });
     assert.deepEqual(selection.agents, []);
     assert.deepEqual(selection.primaries, []);
@@ -533,8 +534,11 @@ describe("planSelection — host materialisation", () => {
       agentModes: TWO_PRIMARIES,
       orchestrator: "dolphin",
       materialisation: {
-        agents: ["dolphin", "mola", "user-own"],
-        defaultAgents: ["dolphin", "mola"],
+        kind: "available",
+        facts: {
+          agents: ["dolphin", "mola", "user-own"],
+          defaultAgents: ["dolphin", "mola"],
+        },
       },
     });
 
@@ -551,7 +555,10 @@ describe("planSelection — host materialisation", () => {
       available: new Set<CapabilityKey>(),
       agentModes: TWO_PRIMARIES,
       orchestrator: "dolphin",
-      materialisation: { agents: ["dolphin"], defaultAgents: ["dolphin"] },
+      materialisation: {
+        kind: "available",
+        facts: { agents: ["dolphin"], defaultAgents: ["dolphin"] },
+      },
     });
 
     assert.equal(selection.status, "invalid");
@@ -569,8 +576,8 @@ describe("planSelection — host materialisation", () => {
       agentModes: TWO_PRIMARIES,
       orchestrator: "dolphin",
       materialisation: {
-        agents: ["dolphin", "mola"],
-        defaultAgents: ["mola"],
+        kind: "available",
+        facts: { agents: ["dolphin", "mola"], defaultAgents: ["mola"] },
       },
     });
 
@@ -591,8 +598,8 @@ describe("planSelection — host materialisation", () => {
       available: new Set<CapabilityKey>(),
       agentModes: TWO_PRIMARIES,
       materialisation: {
-        agents: ["dolphin", "mola"],
-        defaultAgents: [],
+        kind: "available",
+        facts: { agents: ["dolphin", "mola"], defaultAgents: [] },
       },
     });
 
@@ -607,7 +614,10 @@ describe("planSelection — host materialisation", () => {
       available: new Set<CapabilityKey>(),
       agentModes: TWO_PRIMARIES,
       orchestrator: "dolphin",
-      materialisation: { agents: [], defaultAgents: [] },
+      materialisation: {
+        kind: "available",
+        facts: { agents: [], defaultAgents: [] },
+      },
     });
 
     assert.equal(selection.status, "disabled");
@@ -621,11 +631,106 @@ describe("planSelection — host materialisation", () => {
       units: MATERIALISED_UNITS,
       available: new Set<CapabilityKey>(),
       agentModes: TWO_PRIMARIES,
-      materialisation: { agents: [], defaultAgents: [] },
+      materialisation: {
+        kind: "available",
+        facts: { agents: [], defaultAgents: [] },
+      },
     });
 
     assert.equal(Object.isFrozen(selection.report.unmaterialised), true);
     assert.deepEqual(selection.report.unmaterialised, ["dolphin", "mola"]);
+  });
+
+  it("is invalid when the host could not answer what it materialises", () => {
+    // Unanswered facts are not "no constraint": the selection cannot be
+    // judged, so it runs nothing and keeps the reason for the log.
+    const selection = planSelection({
+      profile: TWO_AGENTS,
+      units: MATERIALISED_UNITS,
+      available: new Set<CapabilityKey>(),
+      agentModes: TWO_PRIMARIES,
+      orchestrator: "dolphin",
+      materialisation: {
+        kind: "unavailable",
+        cause: "no-api",
+        detail: "宿主 SDK 客户端缺少 config.get",
+      },
+    });
+
+    assert.equal(selection.status, "invalid");
+    assert.equal(selection.orchestrator, undefined);
+    assert.deepEqual(selection.report.hostFact, {
+      fact: "materialisation",
+      cause: "no-api",
+      detail: "宿主 SDK 客户端缺少 config.get",
+    });
+    // The unanswered fact is not reported as an orchestration failure.
+    assert.deepEqual(selection.report.invalid, null);
+    assert.deepEqual(selection.report.unmaterialised, []);
+    assert.deepEqual(selection.report.selected, ["dolphin", "mola"]);
+  });
+
+  it("keeps the orchestrator cause when the host facts are unavailable", () => {
+    // The role itself is unsatisfiable here, so that cause survives next
+    // to the unanswered host fact: the log names both.
+    const molaOnly: ModeProfile = { ...TWO_AGENTS, agents: ["mola"] };
+    const selection = planSelection({
+      profile: molaOnly,
+      units: MATERIALISED_UNITS,
+      available: new Set<CapabilityKey>(),
+      agentModes: TWO_PRIMARIES,
+      orchestrator: "dolphin",
+      materialisation: {
+        kind: "unavailable",
+        cause: "request-failed",
+        detail: "instance not ready",
+      },
+    });
+
+    assert.equal(selection.status, "invalid");
+    assert.deepEqual(selection.report.invalid, {
+      orchestrator: "dolphin",
+      cause: "not-enabled",
+      primaries: ["mola"],
+    });
+    assert.equal(selection.report.hostFact?.cause, "request-failed");
+  });
+
+  it("imposes no constraint when the host has no materialisation facts", () => {
+    // A host without the notion answers `not-applicable`: the agents it
+    // never enumerates are not "unmaterialised".
+    const selection = planSelection({
+      profile: TWO_AGENTS,
+      units: MATERIALISED_UNITS,
+      available: new Set<CapabilityKey>(),
+      agentModes: TWO_PRIMARIES,
+      orchestrator: "dolphin",
+      materialisation: { kind: "not-applicable" },
+    });
+
+    assert.equal(selection.status, "ready");
+    assert.equal(selection.orchestrator, "dolphin");
+    assert.deepEqual(selection.report.hostFact, null);
+    assert.deepEqual(selection.report.unmaterialised, []);
+  });
+
+  it("freezes the host fact together with the report", () => {
+    const selection = planSelection({
+      profile: TWO_AGENTS,
+      units: MATERIALISED_UNITS,
+      available: new Set<CapabilityKey>(),
+      agentModes: TWO_PRIMARIES,
+      materialisation: {
+        kind: "unavailable",
+        cause: "no-data",
+        detail: "宿主 config.get 未返回配置数据",
+      },
+    });
+
+    assert.equal(Object.isFrozen(selection.report.hostFact), true);
+    assert.throws(() => {
+      (selection.report.hostFact as { detail: string }).detail = "late";
+    });
   });
 });
 

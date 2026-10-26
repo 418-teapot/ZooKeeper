@@ -18,9 +18,10 @@
  *     contributions.
  *
  * A selection that is `disabled` (no profile) or `invalid` (the declared
- * orchestrator role is unavailable, or the host will not materialise a
- * selected agent) stops after planning: nothing is bound, nothing is
- * instantiated, and only the report travels on.
+ * orchestrator role is unavailable, the host will not materialise a
+ * selected agent, or the host could not answer what it materialises)
+ * stops after planning: nothing is bound, nothing is instantiated, and
+ * only the report travels on.
  *
  * It also owns the isolated contribution runners: they are assembly-time
  * infrastructure shared by both host adapters.
@@ -40,7 +41,7 @@ import { composeGate } from "./gate.js";
 import type { SettledContribution } from "./loop/settle.js";
 import type { Capabilities } from "./ports/index.js";
 import type { Selection, SelectionReport } from "./selection.js";
-import { type AgentMaterialisation, planSelection } from "./selection.js";
+import { type HostMaterialisation, planSelection } from "./selection.js";
 import type {
   AfterExecContribution,
   AgentContribution,
@@ -121,6 +122,7 @@ function emptyResult(): ComposedResult {
       unknown: [],
       invalid: null,
       unmaterialised: [],
+      hostFact: null,
     },
   };
 }
@@ -278,12 +280,13 @@ export interface AssembleInput {
    */
   orchestrator?: string;
   /**
-   * What the host will materialise (agent names and the ones it accepts
-   * as its default agent), or `undefined` when the host imposes no
-   * materialisation constraint.  A selected agent the host will not
-   * create makes the selection invalid before the bind stage runs.
+   * What the host answered when asked what it will materialise (agent
+   * names and the ones it accepts as its default agent), or omitted when
+   * the host imposes no materialisation constraint.  A selected agent the
+   * host will not create, or facts the host could not answer, make the
+   * selection invalid before the bind stage runs.
    */
-  materialisation?: AgentMaterialisation;
+  materialisation?: HostMaterialisation;
 }
 
 /** The outcome of one assembly pass. */
@@ -310,6 +313,7 @@ function logSelection(selection: Selection): void {
       cause: invalid?.cause,
       primaries: invalid?.primaries,
       unmaterialised: selection.report.unmaterialised,
+      hostFact: selection.report.hostFact,
     });
   }
   for (const skip of selection.report.skipped) {
@@ -341,11 +345,12 @@ function logSelection(selection: Selection): void {
  * the build stage instantiates exactly the selected units in registry
  * order.
  *
- * A declared orchestrator role that the profile cannot provide, or a
- * selected agent the host will not materialise, is an invalid selection:
- * the pass logs it, binds nothing and instantiates nothing, so a
- * misconfigured profile stays empty instead of running with a role nobody
- * declared or an agent the host never creates.
+ * A declared orchestrator role that the profile cannot provide, a
+ * selected agent the host will not materialise, or host facts the host
+ * could not answer all make the selection invalid: the pass logs it,
+ * binds nothing and instantiates nothing, so a misconfigured profile
+ * stays empty instead of running with a role nobody declared, an agent
+ * the host never creates, or an assumption about what the host will run.
  *
  * @param input - The profile, unit array, bindings, agent modes, role,
  *   and materialisation facts.

@@ -759,13 +759,14 @@ describe("registerSkills", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Config hook guard — an invalid selection never registers anything
+// Config hook — a non-ready selection registers nothing
 // ---------------------------------------------------------------------------
 
-describe("assembleOpenCodeHooks — invalid selection guard", () => {
-  it("keeps the config hook closed for an invalid selection", async () => {
-    // The entry point refuses an invalid selection before returning any
-    // hook, so this guard only matters when the hook is driven directly.
+describe("assembleOpenCodeHooks — non-ready selection", () => {
+  it("leaves the config untouched for an invalid selection", async () => {
+    // The entry point hands an invalid selection to the adapter instead of
+    // refusing the plugin: the configuration is closed, the infrastructure
+    // is not.
     const { composed, selection } = assembleForTest(
       {
         name: "p",
@@ -784,15 +785,13 @@ describe("assembleOpenCodeHooks — invalid selection guard", () => {
 
     const config: Record<string, any> = {
       agent: { dolphin: { mode: "primary" } },
+      default_agent: "host-declared",
     };
-    await assert.rejects(
-      assembleOpenCodeHooks(composed, DEPS, selection).config(config),
-      (err: unknown) => {
-        const message = (err as Error).message;
-        return message.includes("dolphin") && message.includes("unknown-unit");
-      },
-    );
-    assert.equal(config.default_agent, undefined);
+    await assembleOpenCodeHooks(composed, DEPS, selection).config(config);
+
+    assert.equal(config.default_agent, "host-declared");
+    assert.equal(config.skills, undefined);
+    assert.equal(config.command, undefined);
   });
 });
 
@@ -1062,38 +1061,43 @@ describe("plugin wiring — /go handoff executor", () => {
     }
   });
 
-  it("refuses the plugin when the profile cannot provide the orchestrator", async () => {
+  it("keeps the plugin when the profile cannot provide the orchestrator", async () => {
     const dir = planWorkspace();
     const created: string[] = [];
     try {
       // beaver is a subagent and the orchestrator is absent: the selection
-      // is invalid, so no hook — /go included — is ever returned.
-      await assert.rejects(
-        buildPlugin(
-          {
-            client: withAgentTable(recordingClient(created), {
-              beaver: { mode: "subagent" },
-            }),
-            directory: dir,
-          },
-          {
-            mode: {
-              poly: {
-                agents: ["beaver"],
-                skills: [],
-                hooks: [],
-                tools: [],
-                commands: ["go"],
-              },
+      // is invalid, so this configuration registers nothing — the
+      // infrastructure hooks keep working and no unit factory runs.
+      const plugin = (await buildPlugin(
+        {
+          client: withAgentTable(recordingClient(created), {
+            beaver: { mode: "subagent" },
+          }),
+          directory: dir,
+        },
+        {
+          mode: {
+            poly: {
+              agents: ["beaver"],
+              skills: [],
+              hooks: [],
+              tools: [],
+              commands: ["go"],
             },
           },
-          { agent: { beaver: { mode: "subagent" } } },
-        ),
-        (err: unknown) => {
-          const message = (err as Error).message;
-          return message.includes("dolphin") && message.includes("not-enabled");
         },
+        { agent: { beaver: { mode: "subagent" } } },
+      )) as Record<string, any>;
+
+      assert.equal(plugin["command.execute.before"], undefined);
+      assert.equal(typeof plugin.event, "function");
+      assert.equal(
+        typeof plugin["experimental.chat.system.transform"],
+        "function",
       );
+      const config: Record<string, any> = { agent: {} };
+      await plugin.config(config);
+      assert.equal(config.default_agent, undefined);
       assert.deepEqual(created, []);
     } finally {
       cleanupPlanDir(dir);

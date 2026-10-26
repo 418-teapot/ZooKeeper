@@ -11,11 +11,12 @@
  * host's capabilities and builds the contributions, and the OpenCode
  * adapter (`src/compose-opencode.ts`) turns the host-agnostic result into
  * hook registrations.  The selection decides what the adapter registers:
- * `disabled` (no profile) skips every profile-driven registration, while
- * `invalid` makes the entry point throw before any hook is returned — no
- * defaults, no fallback to a full load — and the infrastructure hooks
- * (`src/adapters/opencode/infra-hooks.ts`) keep working for the disabled
- * and ready selections.
+ * `disabled` (no profile) and `invalid` (a profile this host cannot
+ * realise) skip every profile-driven registration — no defaults, no
+ * fallback to a full load — while the infrastructure hooks
+ * (`src/adapters/opencode/infra-hooks.ts`) keep working for every
+ * selection.  An invalid selection closes this configuration only; it is
+ * logged with its structured reason and never fails the extension.
  *
  * This host also declares the product's orchestrator role
  * (`ORCHESTRATOR_AGENT_NAME`) to the planner, so a profile that cannot
@@ -23,8 +24,10 @@
  * running under an undeclared role.  The host config is read through the
  * SDK client before assembly, so the planner also knows which agents the
  * host will materialise and which of them it accepts as its default
- * agent.  For a ready selection the adapter adopts that agent as the
- * host's `default_agent`.
+ * agent; an unreadable config is an unavailable host fact, which closes
+ * this configuration instead of being read as "no constraint".  For a
+ * ready selection the adapter adopts that agent as the host's
+ * `default_agent`.
  *
  * @module
  */
@@ -41,7 +44,6 @@ import {
 } from "./adapters/opencode/tool-host.js";
 import {
   assembleOpenCodeHooks,
-  invalidSelectionMessage,
   readHostMaterialisation,
 } from "./compose-opencode.js";
 import { capabilityBindings } from "./core/bindings.js";
@@ -60,12 +62,12 @@ import { log } from "./utils/logger.js";
  *
  * Profile-driven registrations (agents, skills, hook units, tools, slash
  * commands) are composed from the active `[zoo.mode.*]` profile, and the
- * adapter realises them from the resolved selection: a disabled selection
- * registers nothing, an invalid one is refused before any hook is
- * returned, and a ready one adopts the selection's orchestrator as
- * `default_agent`.  The infrastructure hooks (event,
- * experimental.chat.system.transform) keep working for the disabled and
- * ready selections.
+ * adapter realises them from the resolved selection: a disabled or
+ * invalid selection registers nothing (the invalid one only closes this
+ * configuration, logged as `selection_invalid`), and a ready one adopts
+ * the selection's orchestrator as `default_agent`.  The infrastructure
+ * hooks (event, experimental.chat.system.transform) keep working for
+ * every selection.
  *
  * Exported for unit testing — `zookeeper` wires this with the imported
  * config.toml.
@@ -77,10 +79,10 @@ import { log } from "./utils/logger.js";
  *   tests: the auto-debug end-to-end suite injects a `zdebug` runner that
  *   points at a built binary so no `PATH` lookup is needed.
  * @returns Plugin hooks object.
- * @throws When the active profile cannot be realised on this host — the
- *   host config is unreadable, a selected agent is not materialised, or
- *   the declared orchestrator is unusable.  Throwing keeps the host from
- *   loading the plugin at all, so no partial hook set survives.
+ * @throws When a program error prevents assembly (a capability that
+ *   cannot be bound, an inconsistent declaration).  A profile this host
+ *   cannot realise is not an error here: it is logged and registers
+ *   nothing, so the infrastructure keeps running.
  */
 export async function buildPlugin(
   input: any,
@@ -101,7 +103,9 @@ export async function buildPlugin(
   // The host's materialisation facts are read before anything is bound or
   // built: the selection is planned from what the host will actually
   // create, so a profile the host cannot realise never runs a unit
-  // factory.  A disabled selection asks the host nothing.
+  // factory.  A disabled selection asks the host nothing, and an
+  // unreadable config is an unavailable fact — the selection closes this
+  // configuration instead of treating "unknown" as "unconstrained".
   const materialisation =
     modeProfile === null ? undefined : await readHostMaterialisation(client);
 
@@ -148,14 +152,6 @@ export async function buildPlugin(
     // What the host will materialise, as read above.
     materialisation,
   });
-
-  // A selection the host cannot realise is refused before any hook is
-  // returned: OpenCode discards a plugin whose factory throws, so the
-  // profile never runs with a missing agent or an unusable orchestrator.
-  // The config hook keeps its own atomic check for later plugin edits.
-  if (selection.status === "invalid") {
-    throw new Error(invalidSelectionMessage(selection));
-  }
 
   const selectionHooks = assembleOpenCodeHooks(composed, values, selection);
 

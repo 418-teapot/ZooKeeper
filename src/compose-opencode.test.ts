@@ -13,6 +13,7 @@ import { describe, it } from "node:test";
 import {
   applyToolDefinitionView,
   hostMaterialisation,
+  readHostMaterialisation,
   toToolDefinitionView,
 } from "./compose-opencode.js";
 import type { ToolArgDefinition, ToolDefinitionView } from "./core/unit.js";
@@ -143,5 +144,89 @@ describe("hostMaterialisation", () => {
         defaultAgents: [],
       });
     }
+  });
+});
+
+describe("readHostMaterialisation", () => {
+  it("answers the projected facts when the host config is readable", async () => {
+    const client = {
+      config: {
+        get: async () => ({
+          data: {
+            agent: {
+              dolphin: { mode: "primary" },
+              beaver: { mode: "subagent" },
+            },
+          },
+        }),
+      },
+    };
+
+    assert.deepEqual(await readHostMaterialisation(client), {
+      kind: "available",
+      facts: { agents: ["dolphin", "beaver"], defaultAgents: ["dolphin"] },
+    });
+  });
+
+  it("reports the missing API instead of throwing", async () => {
+    assert.deepEqual(await readHostMaterialisation({}), {
+      kind: "unavailable",
+      cause: "no-api",
+      detail: "宿主 SDK 客户端缺少 config.get，无法预读宿主配置",
+    });
+  });
+
+  it("reports a failed request instead of throwing", async () => {
+    const client = {
+      config: {
+        get: async () => {
+          throw new Error("instance not ready");
+        },
+      },
+    };
+
+    const answer = await readHostMaterialisation(client);
+    assert.equal(answer.kind, "unavailable");
+    assert.equal(
+      answer.kind === "unavailable" && answer.cause,
+      "request-failed",
+    );
+    assert.ok(
+      answer.kind === "unavailable" &&
+        answer.detail.includes("instance not ready"),
+    );
+  });
+
+  it("reports a response without data instead of throwing", async () => {
+    const client = {
+      config: { get: async () => ({ error: { status: 500 } }) },
+    };
+
+    const answer = await readHostMaterialisation(client);
+    assert.equal(answer.kind, "unavailable");
+    assert.equal(answer.kind === "unavailable" && answer.cause, "no-data");
+    assert.ok(answer.kind === "unavailable" && answer.detail.includes("500"));
+  });
+
+  it("reports an array response as missing data", async () => {
+    // An array is serialisable but cannot carry the config table, so it is
+    // not a usable host config.
+    const client = { config: { get: async () => ({ data: [] }) } };
+
+    const answer = await readHostMaterialisation(client);
+    assert.equal(answer.kind, "unavailable");
+    assert.equal(answer.kind === "unavailable" && answer.cause, "no-data");
+  });
+
+  it("lets an unexpected program error escape", async () => {
+    // Only the expected environment failures become facts: a fault of the
+    // client itself is not a statement about the host's agents.
+    const client = Object.defineProperty({}, "config", {
+      get() {
+        throw new Error("SDK bug");
+      },
+    });
+
+    await assert.rejects(readHostMaterialisation(client), /SDK bug/);
   });
 });
