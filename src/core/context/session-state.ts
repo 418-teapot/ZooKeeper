@@ -9,9 +9,11 @@
  * and write back explicitly with `save`.  Entries idle longer than
  * `ttlMs` are evicted on the next access — written back to the store
  * first — and `_resetForTesting` drops the whole cache for test
- * isolation.  `evict` drops a single entry silently (no write-back)
- * for the session-deleted path where the on-disk file has already
- * been removed and writing it back would resurrect the deletion.
+ * isolation.  `evict` drops a single entry silently (no write-back):
+ * callers choose it when the entry must not outlive their own cleanup —
+ * the deletion path (the file is already removed, so writing it back
+ * would resurrect the deletion) and the runtime-release path (which
+ * saves first, then evicts, so the file keeps the mutations).
  *
  * @module
  */
@@ -41,8 +43,9 @@ export interface SessionStateManagerOptions {
  * drops; `saveAll` covers bulk write-back.  `evict` and TTL eviction
  * share the verb "evict" but differ in semantics: TTL eviction saves
  * the entry back to the store first (the entry is merely idle), while
- * `evict` is a silent drop (the session is gone — its on-disk file
- * was already removed, so writing back would resurrect the deletion).
+ * `evict` never writes back — the caller has already decided what the
+ * store should hold (deleted: nothing; runtime released: the save it
+ * performed before evicting).
  */
 export interface SessionStateManager {
   /** The store all cached state is loaded from and saved to. */
@@ -66,12 +69,13 @@ export interface SessionStateManager {
   /**
    * Drop one session's cached entry without writing back.
    *
-   * Call this on the session-deleted path, where the on-disk file has
-   * already been removed and writing it back would resurrect the
-   * deletion.  Differs from TTL eviction (which saves first because
-   * the entry is merely idle, not deleted); differs from
-   * `_resetForTesting` (which drops the whole cache at once).
-   * No-op when the session is not cached; never throws.
+   * The caller owns the store side of the decision: the deletion path
+   * removes the file first (writing the entry back would resurrect the
+   * deletion), the runtime-release path saves it first (the entry is
+   * dropped, the compression is not).  Differs from TTL eviction (which
+   * saves first because the entry is merely idle, not released);
+   * differs from `_resetForTesting` (which drops the whole cache at
+   * once).  No-op when the session is not cached; never throws.
    *
    * @param sessionId - The session identifier to drop from cache.
    */

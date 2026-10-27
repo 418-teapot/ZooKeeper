@@ -215,6 +215,7 @@ describe("poly full profile — registration parity", () => {
       [
         "command.execute.before",
         "config",
+        "dispose",
         "event",
         "experimental.chat.messages.transform",
         "experimental.chat.system.transform",
@@ -1322,7 +1323,14 @@ describe("null profile — skip profile-driven registration", () => {
     const plugin = await makePlugin({ validation: POLY_ZOO.validation });
     assert.deepEqual(
       Object.keys(plugin).sort(),
-      ["config", "event", "experimental.chat.system.transform"].sort(),
+      // The host's dispose hook is resident too: it stops the lifecycle
+      // scopes even when the profile registered nothing.
+      [
+        "config",
+        "dispose",
+        "event",
+        "experimental.chat.system.transform",
+      ].sort(),
     );
   });
 

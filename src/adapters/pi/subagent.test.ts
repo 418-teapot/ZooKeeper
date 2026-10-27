@@ -31,6 +31,12 @@ import {
   initLogger,
 } from "../../utils/logger.js";
 import {
+  associatePiSdkSession,
+  hasPiSdkSession,
+  resetPiSdkLifecycleBridge,
+  SDK_STOP_REASON,
+} from "./sdk-lifecycle.js";
+import {
   createPiSubagentDriver,
   type PiAgentSession,
   type PiCreateSessionOptions,
@@ -1665,5 +1671,98 @@ describe("pi subagent driver — subagent skill discovery", () => {
     await run(h);
     assert.equal(h.loaderCalls.length, 0);
     assert.equal(h.factoryCalls[0].resourceLoader, undefined);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// SDK lifecycle bridge
+// ---------------------------------------------------------------------------
+
+describe("pi subagent driver — lifecycle bridge", () => {
+  afterEach(resetPiSdkLifecycleBridge);
+
+  it("stops the sub-session's lifecycle scope before disposing it", async () => {
+    const h = harness();
+    h.s.setPromptBehavior({ kind: "resolves", emitOnPrompt: okEvents() });
+    const order: string[] = [];
+    associatePiSdkSession("child-session", {}, async (reason) => {
+      // The SDK session is still owned by the extension at this point.
+      order.push(`stop:${reason}:disposed=${h.s.disposed}`);
+      return { errors: [] };
+    });
+
+    const result = await h.driver.run(
+      { agent: "beaver", prompt: "do it", tools: [], model: "p/m" },
+      { signal: new AbortController().signal },
+    );
+
+    assert.equal(result.kind, "ok");
+    assert.deepEqual(order, [`stop:${SDK_STOP_REASON}:disposed=0`]);
+    assert.equal(h.s.disposed, 1);
+    assert.equal(hasPiSdkSession("child-session"), false);
+  });
+
+  it("keeps a session no extension discovered a no-op", async () => {
+    const h = harness();
+    h.s.setPromptBehavior({ kind: "resolves", emitOnPrompt: okEvents() });
+
+    const result = await h.driver.run(
+      { agent: "beaver", prompt: "do it", tools: [], model: "p/m" },
+      { signal: new AbortController().signal },
+    );
+
+    assert.equal(result.kind, "ok");
+    assert.equal(h.s.disposed, 1);
+    assert.equal(hasPiSdkSession("child-session"), false);
+  });
+
+  it("stops the scope on the pre-aborted path", async () => {
+    const h = harness();
+    h.s.setPromptBehavior({ kind: "resolves" });
+    const calls: string[] = [];
+    associatePiSdkSession("child-session", {}, async (reason) => {
+      calls.push(reason);
+      return { errors: [] };
+    });
+    const controller = new AbortController();
+    controller.abort();
+
+    const result = await h.driver.run(
+      { agent: "beaver", prompt: "do it", tools: [], model: "p/m" },
+      { signal: controller.signal },
+    );
+
+    assert.equal(result.kind, "aborted");
+    assert.deepEqual(calls, [SDK_STOP_REASON]);
+    assert.equal(h.s.disposed, 1);
+  });
+
+  it("stops the scope when the run errors", async () => {
+    const s = mockSession();
+    const calls: string[] = [];
+    associatePiSdkSession("child-session", {}, async (reason) => {
+      calls.push(reason);
+      return { errors: [] };
+    });
+    const driver = createPiSubagentDriver({
+      createSession: async () => {
+        throw new Error("sdk exploded");
+      },
+      createSessionManager: async () => mockSessionManager(),
+      resolveModel: async () => ({
+        model: { provider: "p", id: "m" },
+        modelRuntime: { getModel: () => undefined },
+      }),
+    });
+
+    const result = await driver.run(
+      { agent: "beaver", prompt: "do it", tools: [], model: "p/m" },
+      { signal: new AbortController().signal },
+    );
+
+    assert.equal(result.kind, "error");
+    assert.deepEqual(calls, [SDK_STOP_REASON]);
+    assert.equal(s.disposed, 0);
+    assert.equal(hasPiSdkSession("child-session"), false);
   });
 });

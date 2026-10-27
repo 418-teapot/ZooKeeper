@@ -55,6 +55,7 @@ import {
   toolStartFact,
   userMessageFact,
 } from "./run-facts.js";
+import { stopPiSdkSession } from "./sdk-lifecycle.js";
 
 /**
  * Duck-type of the pi `AgentSession` surface the driver uses.
@@ -845,6 +846,16 @@ export function createPiSubagentDriver(
         // that might still be reading the log.  The empty list is the
         // stream's end-of-stream marker, not a fact.
         runLog?.setPartial([]);
+        // Stop the sub-session's lifecycle scope EXPLICITLY before the SDK
+        // session is disposed: pi emits no `session_shutdown` for a
+        // sub-session, so the extension instance that ensured this session
+        // would otherwise leak its resources.  A session no extension
+        // discovered (creation failed, pre-aborted, SDK error) is a no-op.
+        if (sessionId !== "") {
+          // Cleanup failures are logged and reported by the bridge; the
+          // driver stays result-based and never fails the run for them.
+          await stopPiSdkSession(sessionId);
+        }
         session?.dispose();
       }
     },

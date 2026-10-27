@@ -16,17 +16,19 @@
  * `clonePhases` convention), so a caller mutating a returned array can
  * never corrupt the cache.
  *
- * Ownership is per host-extension instance: the host entry point creates
- * one store per extension factory execution and injects it through
- * `Capabilities.todoStore`, so each session (main or subagent child) reads and
- * writes only the store backed by its own transcript.  A process-wide
- * singleton would let a late compose replace the candidate source and
- * make one session's cache miss scan another session's transcript.
+ * Ownership is one store per session.  A store caches one session's state,
+ * so it is bound to that session's scope and released when the scope stops:
+ * on pi the composition receives an extension-scope catalog
+ * (`adapters/pi/todo-sessions.ts`) that routes every call to the store the
+ * named session owns.  Sharing one store across sessions would let a cache
+ * miss scan another session's transcript and serve that state as this
+ * session's plan.
  *
- * The store also owns the serialisation gate for todo state changes
- * (`serialize`): the lock lives with the cache it protects, so
- * concurrent tool calls cannot lose updates without asking the host to
- * run the tool alone.
+ * The store also offers a serialisation gate (`serialize`): callers that
+ * hold one store and must not interleave their read-modify-write cycles
+ * run them through it.  A port that routes several sessions to several
+ * stores owns a gate of its own beside the routing, so the cycles it
+ * serves stay serialised across sessions as well.
  *
  * @module
  */

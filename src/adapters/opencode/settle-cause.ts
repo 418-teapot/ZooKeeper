@@ -3,10 +3,11 @@
  *
  * Classifies why a session's turn ended for the loop engine's settle
  * strategies, and reports whether the settled turn made any tool call.
- * The `session.error` flag recorded by the always-on event hook is checked
- * first (cheap and explicit); otherwise the transcript is inspected for an
- * aborted last assistant turn or an unanswered question tool call.  The
- * same transcript fetch yields the turn's tool calls, reduced to the plain
+ * The abort this host observed on `session.error` is checked first (cheap
+ * and explicit) through the session's own record, which is consumed once so
+ * it cannot linger; otherwise the transcript is inspected for an aborted
+ * last assistant turn or an unanswered question tool call.  The same
+ * transcript fetch yields the turn's tool calls, reduced to the plain
  * activity fact the engine uses for its awaiting-progress lock.  When the
  * transcript cannot be read the signal is unobservable, so the caller must
  * fail closed and skip — the classifier returns `null`.
@@ -37,19 +38,34 @@ export interface IdleOutcome {
 }
 
 /**
+ * The abort record of one session, as the classifier consumes it.
+ *
+ * It is owned by the session scope (see `services.ts`), so classifying one
+ * session's settle can never consume another session's abort.
+ */
+export interface AbortRecord {
+  /**
+   * Claim the abort observed for this session.
+   *
+   * @returns Whether an abort was recorded since the last claim.
+   */
+  takeAborted(): boolean;
+}
+
+/**
  * Classify why a settled session's turn ended, and whether it had activity.
  *
  * @param client - The host client (may lack `session.messages`).
- * @param abortedSessions - Sessions with an observed abort; consumed once.
+ * @param abortRecord - The settled session's abort record; consumed once.
  * @param sessionID - The settled session.
  * @returns The cause and activity fact, or `null` when unobservable.
  */
 export async function classifyStopCause(
   client: MessagesClient | undefined,
-  abortedSessions: Set<string>,
+  abortRecord: AbortRecord,
   sessionID: string,
 ): Promise<IdleOutcome | null> {
-  if (abortedSessions.delete(sessionID)) {
+  if (abortRecord.takeAborted()) {
     return { cause: "aborted", hadActivity: false };
   }
   const fetchMessages = client?.session?.messages;

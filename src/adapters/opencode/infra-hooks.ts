@@ -3,11 +3,19 @@
  *
  * These hooks are resident regardless of the active mode profile, so a
  * null profile (absent or invalid) still leaves them working: the `event`
- * hook tracks agent identity, records aborts, cleans up deleted sessions,
- * and runs the loop settle path; `experimental.chat.system.transform`
- * captures the live model's context limit and swaps the model-conditional
- * prompt wording.  The mutable loop state (the engine, the aborted-session
- * set, the injected-wake echo map) lives in this factory's closure.
+ * hook tracks agent identity, records aborts, gives the host's session
+ * events to the lifecycle wiring, and runs the loop settle path;
+ * `experimental.chat.system.transform` captures the live model's context
+ * limit and swaps the model-conditional prompt wording.
+ *
+ * The mutable state lives with its owner: the loop engine and every
+ * session's abort flag and pending wake echo are lifecycle services (see
+ * `services.ts`), reached only through the session the current event
+ * names.  No collection here is keyed by session, so one session's abort
+ * cannot silence its sibling and a deleted session cannot hand its echo to
+ * another one.  Every path ensures the session first: an event other than
+ * `session.created` can be the host's first word about a session, and a
+ * session the host deleted (or the plugin disposed) is never rebuilt.
  *
  * The loop settle path is role-gated: the session must resolve to the
  * orchestrator the assembly selected, which arrives as an input — this
@@ -18,9 +26,6 @@
  */
 
 import { setModelLimit } from "../../core/context/model-limits.js";
-import { cleanupSession } from "../../core/context/runtime.js";
-import { createLoopEngine } from "../../core/loop/index.js";
-import type { SettledContribution } from "../../core/loop/settle.js";
 import {
   applyModelVariant,
   type PromptVariantPair,
@@ -28,7 +33,30 @@ import {
 import { sessionAgentRegistry } from "../../core/session-agent.js";
 import { log } from "../../utils/logger.js";
 import { ABORT_ERROR_NAMES, newInjectedMessageID } from "./message-shape.js";
+import type { OpenCodeSessionState } from "./services.js";
 import { classifyStopCause } from "./settle-cause.js";
+
+/**
+ * The lifecycle surface the always-on hooks drive.
+ *
+ * The hooks address one session's state by id and hand the host's session
+ * events to the wiring; they never see a scope, another session's state,
+ * or the kernel itself.
+ */
+export interface InfraSessionLifecycle {
+  /**
+   * Ensure the session scope of `sessionID` and return its state.
+   *
+   * `null` covers every "no session" case — an absent or blank id, a
+   * session the host already deleted, a disposed plugin — and none of
+   * them may create or rebuild anything.
+   */
+  sessionState(
+    sessionID: string | null | undefined,
+  ): Promise<OpenCodeSessionState | null>;
+  /** Map one host session event (creation, deletion) onto the kernel. */
+  handleEvent(event: unknown): Promise<unknown>;
+}
 
 /**
  * The wiring surfaces the infrastructure hooks close over.
@@ -38,8 +66,6 @@ export interface InfraHookDeps {
   client: any;
   /** Resolve a session's bound agent from the shared registry. */
   resolveAgent(sessionID: string): string | undefined;
-  /** The profile's settle strategies; none disables the loop engine. */
-  onSettled: SettledContribution[];
   /**
    * Model-family prompt wordings from the composed agents, with the
    * overlapping pairs filtered out (`filterDisjointVariants`).  Empty
@@ -53,41 +79,39 @@ export interface InfraHookDeps {
    * it the settle path stays inert (fail-closed).
    */
   orchestrator?: string;
+  /** The lifecycle wiring of this plugin instance. */
+  sessions: InfraSessionLifecycle;
 }
 
 /**
  * Build the always-on infrastructure hooks.
  *
- * The loop engine is built whenever the profile contributes at least one
- * settle strategy (fail-closed: no contribution, no engine, no settle
- * branch).  Each strategy declares its own wake allowance, so the engine
- * needs no configuration of its own; this host owns the settle-cause
- * classification and the wake delivery.
+ * The loop engine is a lifecycle service, built once per plugin instance
+ * when the profile contributes at least one settle strategy (fail-closed:
+ * no contribution, no engine, no settle branch).  Each strategy declares
+ * its own wake allowance, so the engine needs no configuration of its own;
+ * this host owns the settle-cause classification and the wake delivery.
  *
  * @param deps - The wiring surfaces the hooks close over.
  * @returns The `event` and `experimental.chat.system.transform` hooks.
  */
 export function buildInfraHooks(deps: InfraHookDeps) {
-  const { client, resolveAgent, orchestrator } = deps;
-  const engine =
-    deps.onSettled.length > 0 ? createLoopEngine(deps.onSettled) : undefined;
-  // Sessions with an observed abort (`session.error`), consumed once at
-  // the next idle so the classification does not linger.
-  const abortedSessions = new Set<string>();
-  // Sessions with an in-flight wake whose next user
-  // `message.updated` is this host's own `promptAsync` echo.  Keyed by
-  // session, valued by the injected user message id: an incoming user
-  // message is swallowed only when its id matches, so a real user
-  // message arriving in the window still resets the budget.  Consume-once;
-  // an assistant update also clears it so a missing echo can never linger
-  // into a later real user message.
-  const injectedEchoMessages = new Map<string, string>();
+  const { client, resolveAgent, orchestrator, sessions } = deps;
 
   return {
     async event(input: {
       event: { type: string; properties?: Record<string, unknown> };
     }) {
       const { type, properties } = input.event;
+
+      // Session lifetime belongs to the wiring: `session.created` is a real
+      // start notice and `session.deleted` stops exactly that session (or
+      // releases a session this instance never observed).  Neither is a
+      // reason to create a scope here.
+      if (type === "session.created" || type === "session.deleted") {
+        await sessions.handleEvent(input.event);
+        return;
+      }
 
       // Track agent identity from message.updated events.
       // Covers user messages, assistant responses, and system messages
@@ -102,28 +126,28 @@ export function buildInfraHooks(deps: InfraHookDeps) {
               id?: string;
             }
           | undefined;
-        if (info?.agent && info.sessionID) {
-          sessionAgentRegistry.bind(info.sessionID, info.agent);
+        // A message update may be the first thing this instance hears about
+        // the session, and a session the host deleted stays deleted: ensure
+        // before touching any of its state.
+        const session = await sessions.sessionState(info?.sessionID);
+        if (session === null) return;
+        if (info?.agent) {
+          sessionAgentRegistry.bind(session.sessionID, info.agent);
         }
         // Budget bookkeeping: only a real user message resets the
         // per-session reminder counter.  This host's own wake
-        // also arrives as a user message, carrying the id recorded in
-        // `injectedEchoMessages`; it is swallowed only when the ids
-        // match, so a real user message in the delivery window is never
-        // mistaken for the echo.
-        if (typeof info?.sessionID === "string") {
-          if (info.role === "assistant") {
-            injectedEchoMessages.delete(info.sessionID);
-          } else if (info.role === "user") {
-            const echoID = injectedEchoMessages.get(info.sessionID);
-            if (echoID !== undefined && info.id === echoID) {
-              // Consume-once: the injected wake echo.
-              injectedEchoMessages.delete(info.sessionID);
-            } else if (info.synthetic !== true) {
-              engine?.reset(info.sessionID);
-            }
+        // also arrives as a user message, carrying the id recorded on the
+        // session; it is swallowed only when the ids match, so a real user
+        // message in the delivery window is never mistaken for the echo.
+        if (info?.role === "assistant") {
+          session.clearEcho();
+        } else if (info?.role === "user") {
+          const isEcho = session.takeEcho(info.id);
+          if (!isEcho && info.synthetic !== true) {
+            session.engine?.reset(session.sessionID);
           }
         }
+        return;
       }
 
       // Record an aborted turn so the next idle classifies as aborted
@@ -134,24 +158,15 @@ export function buildInfraHooks(deps: InfraHookDeps) {
           | undefined;
         const name = props?.error?.name;
         if (
-          typeof props?.sessionID === "string" &&
-          typeof name === "string" &&
-          ABORT_ERROR_NAMES.has(name)
+          typeof props?.sessionID !== "string" ||
+          typeof name !== "string" ||
+          !ABORT_ERROR_NAMES.has(name)
         ) {
-          abortedSessions.add(props.sessionID);
+          return;
         }
-      }
-
-      // Clean up on session deletion — single entry point that drops
-      // every per-session record (maps, model limit, pruning state).
-      if (type === "session.deleted") {
-        const info = properties?.info as { id?: string } | undefined;
-        if (info?.id) {
-          cleanupSession(info.id);
-          engine?.reset(info.id);
-          abortedSessions.delete(info.id);
-          injectedEchoMessages.delete(info.id);
-        }
+        const session = await sessions.sessionState(props.sessionID);
+        session?.markAborted();
+        return;
       }
 
       // Loop settle: the orchestrator's turn settled with unfinished
@@ -163,13 +178,13 @@ export function buildInfraHooks(deps: InfraHookDeps) {
         if (typeof sessionID !== "string") return;
         if (orchestrator === undefined) return;
         if (resolveAgent(sessionID) !== orchestrator) return;
-        if (engine === undefined) return;
+        // The gates above read host facts only; the session's own state is
+        // read below, so the scope is ensured here.
+        const session = await sessions.sessionState(sessionID);
+        const engine = session?.engine;
+        if (session === null || engine === undefined) return;
 
-        const outcome = await classifyStopCause(
-          client,
-          abortedSessions,
-          sessionID,
-        );
+        const outcome = await classifyStopCause(client, session, sessionID);
         if (outcome === null) return;
 
         const decision = await engine.run({
@@ -193,7 +208,7 @@ export function buildInfraHooks(deps: InfraHookDeps) {
         // Tag the injected message so its echo is recognizable by
         // `info.id` when the corresponding `message.updated` arrives.
         const messageID = newInjectedMessageID();
-        injectedEchoMessages.set(sessionID, messageID);
+        session.expectEcho(messageID);
         try {
           await client.session.promptAsync({
             path: { id: sessionID },
@@ -213,7 +228,7 @@ export function buildInfraHooks(deps: InfraHookDeps) {
             hadActivity: outcome.hadActivity,
           });
         } catch (err) {
-          injectedEchoMessages.delete(sessionID);
+          session.clearEcho();
           log.warn({
             hook: "loop",
             event: "wake_inject_failed",
@@ -233,14 +248,18 @@ export function buildInfraHooks(deps: InfraHookDeps) {
     ) {
       // Capture the active model's context window per session so the
       // pruning nudge phase can resolve percentage thresholds against
-      // the real limit.  Missing session IDs / limits are ignored by
-      // the registry itself.
+      // the real limit.  The session must be live first: capturing a limit
+      // for a deleted session would recreate the record the deletion
+      // released.
       if (input.model?.limit?.context !== undefined) {
-        setModelLimit(
-          input.sessionID ?? "",
-          input.model.limit.context,
-          input.model.id,
-        );
+        const session = await sessions.sessionState(input.sessionID);
+        if (session !== null) {
+          setModelLimit(
+            session.sessionID,
+            input.model.limit.context,
+            input.model.id,
+          );
+        }
       }
       // Swap the model-conditional prompt wording in the live system
       // prompt so a session that switches models follows the switch.

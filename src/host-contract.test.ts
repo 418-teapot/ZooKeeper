@@ -106,6 +106,7 @@ const OPENCODE_CAPABILITY_KEYS = [
 /** The OpenCode hook keys that stay regardless of the selection. */
 const OPENCODE_RESIDENT_KEYS = [
   "config",
+  "dispose",
   "event",
   "experimental.chat.system.transform",
 ] as const;

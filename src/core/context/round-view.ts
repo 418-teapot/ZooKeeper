@@ -18,8 +18,9 @@
  * handed to the model.
  *
  * The record is runtime-only (never persisted — loss on restart is
- * benign: the next transform republishes) and per-session, so
- * `cleanupSession` drops it alongside the other session-level records.
+ * benign: the next transform republishes) and per-session, so the
+ * release entry points in `runtime.ts` drop it alongside the other
+ * session-level runtime records.
  *
  * @module
  */
@@ -140,9 +141,10 @@ export function getRoundView(sessionId: string): RoundView | undefined {
 /**
  * Drop the session's cached round view.
  *
- * Called by `cleanupSession` on `session.deleted`, and by the pi host's
- * `session_start` handler — pi reports no session-deletion event, so a
- * replayed session_start (reload / resume) is the only place its
+ * Called by `cleanupSession` on `session.deleted`, by
+ * `releaseSessionRuntime` on a plugin dispose or reload, and by the pi
+ * host's `session_start` handler — pi reports no session-deletion event,
+ * so a replayed session_start (reload / resume) is the only place its
  * long-lived process can reclaim the entry.
  *
  * @param sessionId - The session identifier.

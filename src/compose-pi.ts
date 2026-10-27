@@ -528,17 +528,23 @@ export interface PiCommandRegistration {
  *
  * @param commands - The composed command contributions, keyed by name.
  * @param refresh - Optional callback receiving the raw pi command context.
+ * @param beforeHandle - Optional asynchronous hook run after `refresh` and
+ *   before the command body: the entry point ensures the session scope here
+ *   so a command that is the session's first observation still has its
+ *   resources.
  * @returns The pi command registrations (empty for an empty slot).
  */
 export function buildPiCommandRegistrationPlan(
   commands: ComposedResult["commands"],
   refresh?: (ctx: PiCommandContext) => void,
+  beforeHandle?: (ctx: PiCommandContext) => Promise<void>,
 ): PiCommandRegistration[] {
   return Object.values(commands).map((contribution) => ({
     name: contribution.name,
     description: contribution.description,
     handler: async (args, ctx) => {
       refresh?.(ctx);
+      await beforeHandle?.(ctx);
       const sessionID = ctx?.sessionManager?.getSessionId() ?? "";
       await contribution.handle({
         command: contribution.name,
@@ -562,6 +568,7 @@ export function buildPiCommandRegistrationPlan(
  */
 export const PI_RESIDENT_EVENT_KEYS = [
   "session_start",
+  "session_shutdown",
   "before_agent_start",
   "resources_discover",
   "tool_result",
@@ -609,6 +616,7 @@ const RESIDENT_HANDLERS: Record<
   (handlers: PiEventHandlers) => PiEventHandler
 > = {
   session_start: (handlers) => handlers.sessionStart,
+  session_shutdown: (handlers) => handlers.sessionShutdown,
   before_agent_start: (handlers) => handlers.beforeAgentStart,
   resources_discover: (handlers) => handlers.resourcesDiscover,
   tool_result: (handlers) => handlers.toolResult,

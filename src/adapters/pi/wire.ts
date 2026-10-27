@@ -5,12 +5,17 @@
  * composition (`buildPiContributions`), the session → agent resolver
  * (`buildPiResolveAgent`), the profile skill-directory lookup
  * (`collectSkillPaths`), and the registration boundary itself
- * (`buildPiHandlers`) — the mutable context holder, the single tool host,
- * the todo store, the tool baseline, the fleet widget and switch host, the
- * composed contributions, the loop engine, and pi's `registerTool` /
- * `registerCommand` / `registerEntryRenderer` calls.
+ * (`buildPiHandlers`) — the host services the lifecycle kernel creates (see
+ * `services.ts`: the live context, the adapter and tool host built on it,
+ * the todo and profile catalogs, the tool baselines, the fleet surface and
+ * the switch surface), the composed contributions, the loop engine, and
+ * pi's `registerTool` / `registerCommand` / `registerEntryRenderer` calls.
  *
- * The thirteen event handlers themselves are built by
+ * The entry point activates the extension scope BEFORE composing, so the
+ * composition receives extension-scope ports the kernel owns.  Session
+ * scopes come into existence only when an event names a session.
+ *
+ * The fourteen event handlers themselves are built by
  * `createPiEventHandlers` (see `handlers.ts`); this module only supplies
  * their wiring surfaces.
  *
@@ -55,8 +60,6 @@ import {
 import type { SubagentRun } from "../../core/subagent/registry.js";
 import { findByChildSession } from "../../core/subagent/registry.js";
 import { todoSourceFromStore } from "../../core/todo/source.js";
-import type { FetchCandidates } from "../../core/todo/store.js";
-import { createTodoStore } from "../../core/todo/store.js";
 import type { ValidationLimits } from "../../core/validate.js";
 import { REGISTRY } from "../../registry.js";
 import { log } from "../../utils/logger.js";
@@ -65,23 +68,18 @@ import { loadAgentsJson } from "./agent-models.js";
 import { presentAskForm } from "./ask-form.js";
 import { createPiEventHandlers } from "./handlers.js";
 import { createPiHandoffTarget, type PiCommandCtx } from "./handoff-target.js";
+import type { PiLifecycleContext } from "./lifecycle.js";
+import { createPiLifecycleWiring } from "./lifecycle-wiring.js";
+import type { PiLiveContext } from "./live-context.js";
 import { createPiMessageInjector } from "./message-injector.js";
+import { createPiHostServices } from "./services.js";
 import { createPiSubagentDriver } from "./subagent.js";
-import type { PiHistoryEntry } from "./subagent-scan.js";
-import { createPiSwitchHost } from "./switch-host.js";
 import { mergeTerminalToolDetails, truecolorWrap } from "./terminal-details.js";
-import { scanTodoSnapshots } from "./todo-scan.js";
-import {
-  createPiToolHost,
-  type PiContextHolder,
-  type PiToolHostContext,
-} from "./tool-host.js";
 import {
   buildSubagentCardRenderer,
   buildTodoCardRenderer,
 } from "./tui/index.js";
 import { buildPiNoticeEntryRenderer } from "./tui/notice.js";
-import { createFleetWiring } from "./tui/wiring.js";
 import type { ExtensionAPI, PiEventHandlers } from "./types.js";
 
 // realpathSync follows the symlink to the real module location, so the
@@ -189,8 +187,8 @@ export function buildPiResolveAgent(
  * session-agent registry (subagent child sessions → their delegated
  * agent, the root session → the orchestrator the selection resolved;
  * see `buildPiResolveAgent`), and the host adapter / tool host are taken
- * from `hostDeps` when provided (the entry point supplies the live
- * context holder so event handlers can update it).
+ * from `hostDeps` when provided (the entry point supplies the
+ * kernel-created adapter and tool host).
  *
  * This host also declares the product's orchestrator role
  * (`ORCHESTRATOR_AGENT_NAME`) to the planner: a profile that cannot
@@ -204,8 +202,8 @@ export function buildPiResolveAgent(
  * loaded from disk.
  *
  * @param zooConfig - The `zoo` section of config.toml.
- * @param hostDeps - Optional host adapter and tool host (used by the entry
- *   point to share the mutable context holder with handlers).
+ * @param hostDeps - Optional host adapter and tool host (the entry point
+ *   passes the extension-scope services the kernel created).
  * @returns The parsed profile (or `null`), the composed result, and the
  *   parsed validation limits.
  */
@@ -235,12 +233,14 @@ export function buildPiContributions(
      */
     subagentRenderer?: Partial<Capabilities>["subagentRenderer"];
     /**
-     * Per-session todo state store (only on the pi host).  Built by the
-     * entry point over its own transcript scan, so each extension instance
-     * (main session or subagent child session) owns a separate store.
-     * Undefined without it — the todo tool unit contributes no tools
-     * (fail-closed, the subagent precedent), so `todo` never registers on
-     * a host that cannot restore todo state from its transcript.
+     * todo port the composition reads (only on the pi host).  Built by the
+     * host's extension-scope service over its own transcript scan; it is a
+     * routing catalog, so the todo tool unit and the progress hooks reach
+     * the store of the session a call names without holding one session's
+     * state.  Undefined without it — the todo tool unit contributes no
+     * tools (fail-closed, the subagent precedent), so `todo` never
+     * registers on a host that cannot restore todo state from its
+     * transcript.
      */
     todoStore?: Partial<Capabilities>["todoStore"];
     /**
@@ -344,14 +344,18 @@ export function buildPiContributions(
       // The pi subagent transcript-card renderer.  Only the real pi entry
       // point supplies one; without it the tool stays text-only.
       subagentRenderer: hostDeps?.subagentRenderer,
-      // The per-instance todo state store (pi host only).  Without it the
-      // todo tool unit is skipped (fail-closed).
+      // The todo port (pi host only).  The extension-scope service provides
+      // a routing catalog; without it the todo tool unit is skipped
+      // (fail-closed).
       todoStore: hostDeps?.todoStore,
       // The todo read port the progress hooks consume.  pi has no SDK client
-      // to read todos from, so the port is bound to the same per-instance
-      // store the todo tool uses.  Absent without a store: the nudge hooks
-      // keep firing without the todo reminder, and the continuation hook
-      // degrades to an empty list (fail-closed in both cases).
+      // to read todos from, so the port is bound to the same catalog the
+      // todo tool uses.  The catalog's session stores are released with
+      // their session scopes, so an unbound session is read through the
+      // transcript without being cached.  Absent without a catalog: the
+      // nudge hooks keep firing without the todo reminder, and the
+      // continuation hook degrades to an empty list (fail-closed in both
+      // cases).
       todoSource:
         hostDeps?.todoStore === undefined
           ? undefined
@@ -406,8 +410,8 @@ export function buildPiContributions(
       // the composed shape) a default no-op provider is used.
       adapter: hostDeps?.adapter ?? createPiAdapter(() => undefined),
       // The `/go` handoff target.  `getCommandCtx` reads the mutable pi
-      // command-context holder, refreshed by the command handler before
-      // the handoff target runs.  Built from host facts only — the
+      // live context, published by the command handler before the handoff
+      // target runs.  Built from host facts only — the
       // executor agent travels with each handoff call, so the target is
       // the same for every selection.
       handoffTarget: createPiHandoffTarget({
@@ -486,16 +490,18 @@ export function collectSkillPaths(profileSkills: string[]): string[] {
 /**
  * Build the pi handlers and register the profile's pi surfaces.
  *
- * Builds the host wiring (context holder, tool host, todo store, tool
- * baseline, fleet widget, switch host), composes the profile against it,
- * creates the loop engine when the profile contributes a settle strategy,
- * registers the composed tools / commands / notice renderer with pi, and
- * returns the event handlers over those surfaces.
+ * Activates the host services (live context, adapter, tool host, todo
+ * catalog, profile catalog, tool baselines, fleet surface, switch surface)
+ * through the lifecycle kernel, composes the profile against those
+ * extension-scope ports, creates the loop engine when the profile
+ * contributes a settle strategy, registers the composed tools / commands /
+ * notice renderer with pi, and returns the event handlers over those
+ * surfaces.
  *
- * Asynchronous because the tool-registration boundary awaits the composed
- * `tool.definition` enhancers (a contributor's `handle` may return a
- * promise), so pi's own async extension factory must wait for the tools
- * to be registered.
+ * Asynchronous because the extension activation awaits the kernel and the
+ * tool-registration boundary awaits the composed `tool.definition`
+ * enhancers (a contributor's `handle` may return a promise), so pi's own
+ * async extension factory must wait for the tools to be registered.
  *
  * Exported for unit testing — `zookeeperPi` wires this with the config
  * loaded from disk.
@@ -509,7 +515,7 @@ export function collectSkillPaths(profileSkills: string[]): string[] {
  * @param overrides - Optional host-dependency overrides.  Only used by
  *   tests: a bridge test injects a fake subagent driver so the registered
  *   tool executes without loading the real pi SDK.
- * @returns A promise of the thirteen handlers plus the registration gates.
+ * @returns A promise of the fourteen handlers plus the registration gates.
  */
 export async function buildPiHandlers(
   zooConfig: any,
@@ -532,12 +538,6 @@ export async function buildPiHandlers(
     zdebugExec?: Partial<Capabilities>["zdebugExec"];
   },
 ): Promise<PiEventHandlers> {
-  // Mutable holder updated by every event handler so the pi adapter and
-  // tool host always see the latest ExtensionContext.
-  const contextHolder: PiContextHolder = { current: undefined };
-  const sessionIdProvider = () =>
-    contextHolder.current?.sessionManager?.getSessionId();
-  const adapter = createPiAdapter(sessionIdProvider);
   // The single pi tool host routes every in-session chat notification
   // (tool prompts, /dcp reports, command failures) through pi's
   // `appendEntry` channel as a `zoo-notice` custom entry — persistent,
@@ -546,88 +546,11 @@ export async function buildPiHandlers(
   // passed as a value, so it is defensively bound to the API object when
   // present (pi's current implementation is closure-based and works
   // unbound, but a future `this`-dependent implementation would silently
-  // break otherwise).
+  // break otherwise).  The tool host service (declared below) reads it.
   const appendEntry =
     typeof piApi?.appendEntry === "function"
       ? piApi.appendEntry.bind(piApi)
       : undefined;
-  const toolHost = createPiToolHost(contextHolder, appendEntry);
-  // The todo tool's snapshot candidate source: the newest-first `details`
-  // payloads of the session's `todo` tool results.  Built ONLY when a real
-  // pi API instance is supplied — without it there is no todo store at all,
-  // so the todo tool unit contributes no tools (fail-closed, the subagent
-  // precedent) and `todo` never registers on a host that cannot restore its
-  // state from the transcript.
-  //
-  // The scan reads the CURRENT live session through the shared context
-  // holder: pi exposes exactly one live session per extension instance, so
-  // the store's sessionId argument cannot be resolved to a different
-  // session manager here and is deliberately ignored.
-  //
-  // `getBranch` (not `buildContextEntries`): it returns the raw entries of
-  // the active branch INCLUDING pre-compaction ones, so a cache miss after
-  // a compaction still finds the last snapshot.  It MUST be called as a
-  // method on the session manager (an extracted reference unbinds `this`
-  // and crashes), matching the `session_start` rebuild precedent.  An
-  // unavailable manager yields an empty candidate list; a THROWING read is
-  // logged and rethrown, because the store's no-cache-on-failure policy
-  // owns the semantics — a transient error must not be cached as empty.
-  const todoHistory: FetchCandidates | undefined = piApi
-    ? async () => {
-        const sessionManager = contextHolder.current?.sessionManager;
-        if (sessionManager?.getBranch === undefined) return [];
-        try {
-          return scanTodoSnapshots(
-            sessionManager.getBranch() as PiHistoryEntry[],
-          );
-        } catch (err) {
-          log.warn({
-            hook: "plugin",
-            event: "todo_history_failed",
-            error: String(err),
-          });
-          throw err;
-        }
-      }
-    : undefined;
-  // The per-instance todo state store: created here so it lives exactly as
-  // long as this extension factory execution (pi re-runs the factory per
-  // session, including subagent child sessions).  A process-wide singleton
-  // would let a child's compose replace the candidate source and make the
-  // main session's cache miss scan the child's transcript.
-  const todoStore =
-    todoHistory !== undefined ? createTodoStore(todoHistory) : undefined;
-  // The untrimmed tool BASELINE is captured ONCE before any trim can
-  // mutate the active set, and shared by the session-start primary trim
-  // and the switch command: every consumer computes
-  // `baseline minus deniedTools(target)` from this fixed set, so tool
-  // denies never accumulate across switches.  The capture is DEFERRED to
-  // the first post-bind call (lazily, then cached) instead of running at
-  // extension-load time: pi forbids calling action methods (including
-  // `getActiveTools`) during extension loading — the runtime only binds
-  // real actions after the extension factory returns.  When the API
-  // reports no baseline the host returns `undefined` and consumers skip
-  // the trim (fail-closed).
-  let toolBaseline: string[] | undefined;
-  // Lazily capture the shared untrimmed baseline.  It is deliberately
-  // captured before the first trim (the first session-start or switch
-  // handler), so a trim applied at session start can never become the
-  // baseline a later switch filters — otherwise a primary switched to
-  // afterwards could never restore the tools its predecessor denied
-  // (denies would silently accumulate).  A `[]` report is cached too:
-  // callers treat it as "no baseline" and skip the trim rather than
-  // wiping every tool.
-  const captureToolBaseline = (): string[] | undefined => {
-    if (toolBaseline === undefined) {
-      // Copy the reported names: the baseline must stay frozen even if the
-      // host hands back a live array that a later `setActiveTools` mutates.
-      toolBaseline = piApi?.getActiveTools?.()?.slice();
-    }
-    return toolBaseline;
-  };
-  // The subagent capability baseline, captured lazily once on the first
-  // subagent execution and cached (mirrors the switch baseline above).
-  let subagentToolBaseline: string[] | undefined;
   // The per-agent status-bar colors (`[agent.<name>].color`), parsed
   // fail-closed from the whole config root.  Only the `zoo` widget text
   // is colorized below — the tool / command surfaces stay plain.
@@ -638,11 +561,6 @@ export async function buildPiHandlers(
   // rules; an agent absent from the map (or no primary) contributes
   // unfiltered (default-allow, machinery-off unchanged).
   const skillPermissions = parseSkillPermissions(rawConfig ?? {});
-  // The profile-declared skill directory names.  Declared here (empty) so
-  // the subagent driver can read them lazily at delegation time; assigned
-  // once the profile is composed below.
-  let profileSkills: string[] = [];
-
   // Wrap a name in a truecolor ANSI foreground sequence when the agent
   // has a configured color; otherwise return it unchanged (fail-closed).
   // pi's widget Text component preserves ANSI codes and is
@@ -677,47 +595,63 @@ export async function buildPiHandlers(
     return (text) => truecolorWrap(hex, text);
   };
 
-  // The `zoo` fleet widget, its todo column, and the enter-inspect
-  // transcript overlay.  The wiring owns the per-session caches (the todo
-  // phases, the request sequence, the seed flag, and the deferred overlay
-  // opens) and reads every host surface live through the shared context
-  // holder, so a primary switch or a registry write only needs to nudge a
-  // refresh.  See `adapters/pi/tui/wiring.ts`.
-  const { fleetWidget, refreshTodoView, seedTodoView } = createFleetWiring({
-    getPrimary: () => getPrimary(),
+  // The host service declarations.  Every state owner the composition
+  // touches — the live context, the adapter and tool host built on it, the
+  // todo catalog, the profile catalog, the tool baselines, the fleet
+  // surface and the switch surface — is a lifecycle service, so the kernel
+  // creates (and stops) them.  The composition below receives those
+  // extension-scope ports, never a session-scoped store.
+  const declarations = createPiHostServices({
+    piApi,
+    appendEntry,
     colorizeAgent,
-    getSessionId: sessionIdProvider,
-    getEditorText: () => contextHolder.current?.ui?.getEditorText?.() ?? "",
     titleForRun: runTitle,
     borderColorizeForRun: agentBorderColorize,
-    // Read the pi `ui.custom` overlay opener fresh on each enter (pi
-    // exposes it on every event context's `ui`).
-    getOpenOverlay: () => {
-      const ui = contextHolder.current?.ui;
-      if (ui?.custom === undefined) return undefined;
-      return ui.custom.bind(ui);
-    },
-    todoStore,
   });
-  // The pi switch surfaces for the `/<agent>` commands.  Built ONLY when a
-  // pi API instance is supplied: without one (test-only or a host without
-  // the surfaces) the switch command unit contributes no commands
-  // (fail-closed).  A `zoo` widget write is a "primary changed" nudge to
-  // the fleet widget; every other key passes through to the live context's
-  // `ui`.  See `adapters/pi/switch-host.ts`.
-  const switchController = piApi
-    ? createPiSwitchHost({
-        getBaselineTools: captureToolBaseline,
-        setActiveTools: (names) => piApi.setActiveTools?.(names),
-        refreshFleetWidget: () => fleetWidget.refresh(),
-        getUi: () => contextHolder.current?.ui,
-        getCommandCtx: () => contextHolder.current as PiCommandCtx | undefined,
-        setContext: (ctx) => {
-          contextHolder.current = ctx as PiToolHostContext;
-        },
-      })
-    : undefined;
-  const switchHost: SwitchHost | undefined = switchController?.host;
+
+  // The session id an event context names; the live context is the fallback
+  // for entry points that carry no context.  `live` is filled by the
+  // activation below, which runs before any event can be handled.
+  let live: PiLiveContext | undefined;
+  const resolveSessionID = (ctx?: unknown): string | undefined =>
+    (ctx as PiLifecycleContext | undefined)?.sessionManager?.getSessionId?.() ??
+    live?.sessionId();
+
+  // The lifecycle wiring of this extension instance: the extension
+  // activation, session ensure, the real start notice, and the extension
+  // stop pi's `session_shutdown` drives.  Handlers and the tool / command
+  // bridges below route through it before touching session resources.
+  const lifecycle = createPiLifecycleWiring({
+    extensionServices: declarations.extension,
+    sessionServices: declarations.session,
+    // pi keeps the live session id on the event context's session manager;
+    // the live context is the fallback when an event carries no context.
+    getSessionID: resolveSessionID,
+  });
+
+  // Activate the extension scope BEFORE composing: the profile is composed
+  // over services the kernel created, not over objects this function built
+  // and then wrapped.  No session exists at this point — the session scopes
+  // are created when an event first names one.
+  const extension = await lifecycle.activateExtension();
+  const {
+    liveContext,
+    adapter,
+    toolHost,
+    todo,
+    profileCatalog,
+    toolBaselines,
+    fleet,
+    switchHost: switchSurface,
+  } = extension.services;
+  live = liveContext;
+
+  // The switch surface of this extension instance.  Built by the kernel
+  // service, which stays closed without a pi API instance: no API, no
+  // `/<agent>` command (fail-closed).  Its pending post-replacement
+  // operations ride the explicit process-level handoff store, because a
+  // switch spans two factory executions — see `adapters/pi/switch-host.ts`.
+  const switchHost: SwitchHost | undefined = switchSurface.host;
   const contributions = buildPiContributions(
     zooConfig,
     {
@@ -729,9 +663,9 @@ export async function buildPiHandlers(
       directory: overrides?.directory,
       zdebugExec: overrides?.zdebugExec,
       // The `/go` handoff target reads the latest pi command context
-      // through this supplier: the command handler refreshes the shared
-      // holder immediately before the handler body runs.
-      getCommandCtx: () => contextHolder.current as PiCommandCtx | undefined,
+      // through this supplier: the command handler publishes its context
+      // immediately before the handler body runs.
+      getCommandCtx: () => liveContext.current() as PiCommandCtx | undefined,
       // The `/debug` startup injector sends a model-visible user message
       // through pi's `sendUserMessage`.  Only the real pi API instance
       // provides it; test-only compositions stay without one.
@@ -744,13 +678,14 @@ export async function buildPiHandlers(
       // from the same config/profile sources the main session's
       // `resources_discover` uses: each sub-session is seeded with the
       // skill directories its OWN `[agent.<name>.permission.skill]` rules
-      // allow (`profileSkills` is read lazily, after it is composed).
+      // allow.  The profile catalog is read lazily, per run, so a delegation
+      // that starts after composition sees the published value.
       subagentDriver:
         overrides?.subagentDriver ??
         (piApi
           ? createPiSubagentDriver({
               skillPermissions,
-              getProfileSkills: () => profileSkills,
+              getProfileSkills: () => profileCatalog.get(),
               collectSkillPaths,
             })
           : undefined),
@@ -767,10 +702,14 @@ export async function buildPiHandlers(
       // then carries renderCall / renderResult.  Without it (OpenCode,
       // test-only compositions) the tool stays text-only.
       todoRenderer: piApi ? buildTodoCardRenderer() : undefined,
-      // The todo state store (pi host only, see its definition).  Owned by
-      // this factory execution: the todo tool unit and the `session_tree`
-      // handler always reach the same instance through this closure.
-      todoStore,
+      // The todo port (pi host only).  The extension-scope catalog routes
+      // every call to the store of the session the call names, so the todo
+      // tool unit and the `session_tree` handler reach the state of the
+      // session they belong to without owning it.  Absent without a pi API
+      // instance: the tool unit is then skipped (fail-closed) and `todo`
+      // never registers on a host that cannot restore its state from the
+      // transcript.
+      todoStore: piApi === undefined ? undefined : todo,
       // The subagent capability baseline: pi's full untrimmed active tool
       // set, captured lazily on first subagent execution and cached —
       // mirroring the switch command's baseline capture so tool denies
@@ -778,21 +717,14 @@ export async function buildPiHandlers(
       // The capture is DEFERRED because pi forbids calling action methods
       // (including `getActiveTools`) during extension loading; the first
       // subagent execution always happens post-bind, so the lazily-captured
-      // set is the real untrimmed universe.  `undefined` when unavailable →
-      // capability computation yields an empty set (fail-closed).  A `[]`
-      // report is cached too: callers treat it as "no baseline" rather than
-      // shrinking the subagent tool face to nothing.
-      subagentBaseline: piApi
-        ? () => {
-            if (subagentToolBaseline === undefined) {
-              subagentToolBaseline = piApi.getActiveTools?.();
-            }
-            return subagentToolBaseline;
-          }
-        : undefined,
+      // set is the real untrimmed universe.  `undefined` when unavailable
+      // (also after the extension stopped) → capability computation yields
+      // an empty set (fail-closed).
+      subagentBaseline:
+        piApi === undefined ? undefined : () => toolBaselines.subagent(),
       // Registry-write notification → the fleet widget re-renders with the
       // latest registry state (start / update / finish all nudge it).
-      onSubagentRunChange: () => fleetWidget.refresh(),
+      onSubagentRunChange: () => fleet.refresh(),
       // Native HTML→Markdown converter for the fetch tool.  Wired here (the
       // real pi entry point); the wrapper warns once when the addon is
       // unavailable, the assembly then declares no `htmlConverter` key, and
@@ -840,7 +772,7 @@ export async function buildPiHandlers(
   // pi has no host-level per-agent permission enforcement (unlike
   // OpenCode), so the extension trims pi's process-wide registered tool
   // face per session.  The trim is computed from the SHARED untrimmed
-  // baseline (`captureToolBaseline`) minus the current primary's
+  // baseline (`toolBaselines.primary`) minus the current primary's
   // tool-level denies, so it is idempotent and denies never accumulate
   // across repeated calls or primary switches.  Subagent sessions are
   // skipped: their tool face is already restricted by the driver's
@@ -855,7 +787,7 @@ export async function buildPiHandlers(
     if (primary === undefined) return;
     const denied = agentPermissions[primary] ?? [];
     if (denied.length === 0) return;
-    const baseline = captureToolBaseline();
+    const baseline = toolBaselines.primary();
     if (baseline === undefined || baseline.length === 0) return;
     const deniedSet = new Set(denied);
     // Always write the FULL `baseline minus denies` set (never a delta):
@@ -875,71 +807,23 @@ export async function buildPiHandlers(
     }
   };
 
-  // The terminal-input unsubscribe handle returned by `ui.onTerminalInput`,
-  // released when the widget is disposed (pi re-runs the extension factory
-  // on session replacement, so each session's registration cleans up after
-  // itself) or re-bound on a re-registration.  Registration is idempotent:
-  // every `session_start` / `before_agent_start` trigger re-runs it (pi
-  // replays `session_start` after a reload / resume, destroying the previous
-  // widget component, so re-running the registration must re-seed it instead
-  // of leaving it permanently gone); the listener is released before
-  // re-binding, so re-registration never stacks a second one.
-  let inputUnsubscribe: (() => void) | undefined;
-
-  // Register the `zoo` fleet widget (component factory) above the editor.
+  // Register the `zoo` fleet widget (component factory) above the editor
+  // through the fleet resources of the session the event names.
   //
-  // The factory reads the active primary and the run registry LIVE on every
-  // render, so registration is a setWidget call and all subsequent updates
-  // (primary switch, registry write) are `refresh()` nudges.  The keyboard
-  // listener is bound to the same `ui` surface so the expanded list responds
-  // to `↑↓ / jk` while the editor is empty.
+  // The session scope owns every host write the widget needs — the
+  // `setWidget` binding and the terminal-input listener — so a session that
+  // stops (or whose extension stops) releases both, and a later registration
+  // on a stopped scope writes nothing.  Registration stays idempotent: pi
+  // replays `session_start` after a reload / resume, so re-registering
+  // re-seeds the widget and releases the previous listener instead of
+  // stacking a second one.  The factory reads the active primary and the run
+  // registry LIVE on every render, so registration is a `setWidget` call and
+  // all subsequent updates are `refresh()` nudges.
   //
-  // Fails closed: no pi API, no active primary, or no `ui` surface all
-  // no-op silently.
-  const registerFleetWidget = (): void => {
-    if (!piApi) return;
-    const ui = contextHolder.current?.ui;
-    if (!ui) return;
-    // Fail-closed: without an active primary (no configured primary agent)
-    // no widget is registered — the fleet line is primary-driven and a
-    // primary-less session renders nothing.
-    if (getPrimary() === undefined) return;
-    // Release any previous terminal-input listener before re-binding so a
-    // re-registration (pi replays `session_start` after a reload / resume)
-    // never stacks a second listener.
-    if (inputUnsubscribe !== undefined) {
-      inputUnsubscribe();
-      inputUnsubscribe = undefined;
-    }
-    if (typeof ui.setWidget === "function") {
-      ui.setWidget(
-        "zoo",
-        (tui, theme) => {
-          fleetWidget.attach(
-            tui as Parameters<typeof fleetWidget.attach>[0],
-            theme as Parameters<typeof fleetWidget.attach>[1],
-          );
-          return {
-            render: (width: number) => fleetWidget.render(width),
-            invalidate: () => fleetWidget.refresh(),
-            dispose: () => {
-              if (inputUnsubscribe !== undefined) {
-                inputUnsubscribe();
-                inputUnsubscribe = undefined;
-              }
-              fleetWidget.dispose();
-            },
-          };
-        },
-        { placement: "aboveEditor" },
-      );
-    }
-    if (typeof ui.onTerminalInput === "function") {
-      inputUnsubscribe = ui.onTerminalInput((data) =>
-        fleetWidget.handleKey(data),
-      );
-    }
-    fleetWidget.refresh();
+  // Fails closed: no session id, no scope for that session, no active
+  // primary, or no `ui` surface all no-op silently.
+  const registerFleetWidget = (ctx?: unknown): void => {
+    fleet.register(resolveSessionID(ctx));
   };
 
   // Startup anchor: mirror the OpenCode host's `plugin_init` event so a
@@ -954,7 +838,10 @@ export async function buildPiHandlers(
     limits,
   });
 
-  profileSkills = composed.skills.map((skill) => skill.name);
+  // Publish the composed profile's skill directory names.  The subagent
+  // driver reads them per run and `resources_discover` reads them per bind,
+  // so both consume this one publication — no mutable local is handed out.
+  profileCatalog.publish(composed.skills.map((skill) => skill.name));
 
   // Register profile tools with pi when an API instance is supplied.
   // The composed `tool.definition` contributions (the subagent-prompt format
@@ -1012,6 +899,16 @@ export async function buildPiHandlers(
           onUpdate: unknown,
           ctx: unknown,
         ) => {
+          // Publish the tool event's context FIRST: a tool call may be the
+          // first event that observes the session (flows without a
+          // `session_start`), and every session-scoped reader — the todo
+          // transcript scan, the session's fleet ui — resolves the context
+          // by session id.  Ensuring the scope before publishing would let
+          // the first session-facing read see no context at all.
+          liveContext.publish(ctx);
+          // Then ensure the session scope, before the contribution touches
+          // session resources.  No session id, nothing created.
+          await lifecycle.ensureSession(ctx);
           // Forward the native execution surface to the contribution: the
           // abort `signal`, the tool-call `callId` (the run's registry id
           // for the fleet widget), and the `onUpdate` repaint-signal
@@ -1053,12 +950,23 @@ export async function buildPiHandlers(
   }
 
   // Register profile commands with pi when an API instance is supplied.
-  // The handler refreshes the shared context holder with pi's command
-  // context so the unified tool host can resolve the session / history.
+  // The handler publishes pi's command context on the live context so the
+  // unified tool host can resolve the session / history.
   if (piApi?.registerCommand) {
-    const plan = buildPiCommandRegistrationPlan(composed.commands, (ctx) => {
-      contextHolder.current = ctx as PiToolHostContext;
-    });
+    const plan = buildPiCommandRegistrationPlan(
+      composed.commands,
+      (ctx) => {
+        liveContext.publish(ctx);
+      },
+      // The command execution bridge: ensure the session scope of the
+      // command's OWN context before the command body touches session
+      // resources.  Reading the context from the argument keeps the
+      // session resolution on the command that is running instead of on
+      // whichever event published last.
+      async (ctx) => {
+        await lifecycle.ensureSession(ctx);
+      },
+    );
     for (const registration of plan) {
       piApi.registerCommand(registration.name, {
         description: registration.description,
@@ -1082,23 +990,26 @@ export async function buildPiHandlers(
       >[1],
     );
   }
-  // The twelve handlers close over the wiring surfaces assembled above;
+  // The fourteen handlers close over the wiring surfaces assembled above;
   // their bodies live in `handlers.ts`.
   return createPiEventHandlers({
-    contextHolder,
-    getSessionId: sessionIdProvider,
+    liveContext,
+    getSessionId: () => liveContext.sessionId(),
     composed,
     engine,
     skillPermissions,
-    profileSkills,
+    getProfileSkills: () => profileCatalog.get(),
     collectSkillPaths,
     applyPrimaryToolTrim,
     registerFleetWidget,
-    refreshFleetWidget: () => fleetWidget.refresh(),
-    refreshTodoView,
-    seedTodoView,
-    drainPendingSwitchOps: () => switchController?.drainPendingOps(),
-    invalidateTodo: (sessionId) => todoStore?.invalidate(sessionId),
+    refreshFleetWidget: () => fleet.refresh(),
+    refreshTodoView: fleet.refreshTodoView,
+    seedTodoView: fleet.seedTodoView,
+    drainPendingSwitchOps: () => switchSurface.drainPendingOps(),
+    invalidateTodo: (sessionId) => todo.invalidate(sessionId),
     resolveCallerAgent,
+    ensureSession: (ctx) => lifecycle.ensureSession(ctx),
+    startSession: (event, ctx) => lifecycle.startSession(event, ctx),
+    stopExtension: (event) => lifecycle.stopExtension(event),
   });
 }

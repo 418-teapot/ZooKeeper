@@ -35,6 +35,7 @@ import {
   SESSION_CTX,
 } from "../../testkits/pi-wiring.js";
 import { _getBufferForTesting, _resetForTesting } from "../../utils/logger.js";
+import { hasPiSdkSession } from "./sdk-lifecycle.js";
 import { buildPiContributions, buildPiHandlers } from "./wire.js";
 
 afterEach(resetPiTestState);
@@ -88,10 +89,10 @@ describe("session_tree — todo cache invalidation", () => {
     );
 
     const { ctx, scans } = scanCtx("sess-tree");
-    // Seed the holder's live session: the scan reads the session manager
-    // through it (pi exposes exactly one live session per instance).  This
-    // seeding path does not refresh the widget, so the scan count below
-    // only reflects the tool's cache behaviour.
+    // Publish this session to the shared holder: the scan reads the
+    // latest handled event's session manager through it.  This seeding path
+    // does not refresh the widget, so the scan count below only reflects
+    // the tool's cache behaviour.
     await handlers.beforeAgentStart({ systemPrompt: "base" }, ctx);
 
     await todo.execute("call-1", { op: "view" }, undefined, undefined, ctx);
@@ -290,6 +291,81 @@ describe("todo view — widget cache refresh triggers", () => {
       afterStart + 1,
       "tree navigation must re-read the store for the widget",
     );
+  });
+
+  it("keeps each session's widget and todo column on that session", async () => {
+    const api = mockApi();
+    const handlers = await buildPiHandlers(TODO_ZOO, api as any, MODES_RAW);
+    if (getPrimary() === undefined) setPrimary("dolphin");
+    const a = todoWidgetCtx("sess-widget-a");
+    const b = todoWidgetCtx("sess-widget-b");
+    await handlers.sessionStart({ type: "session_start" }, a.ctx);
+    await handlers.sessionStart({ type: "session_start" }, b.ctx);
+    await flush();
+    const todo = api.tools.find((tool: any) => tool.name === "todo") as any;
+    await todo.execute(
+      "call-a",
+      { op: "init", tasks: ["Plan A"] },
+      undefined,
+      undefined,
+      a.ctx,
+    );
+    await todo.execute(
+      "call-b",
+      { op: "init", tasks: ["Plan B"] },
+      undefined,
+      undefined,
+      b.ctx,
+    );
+
+    // Only session A's tool result refreshes a todo column: it may refresh
+    // A's, and must leave B's untouched.
+    await handlers.toolResult(
+      {
+        type: "tool_result",
+        toolName: "todo",
+        toolCallId: "call-a",
+        content: [{ type: "text", text: "ok" }],
+        isError: false,
+      },
+      a.ctx,
+    );
+    await flush();
+
+    const renderedA = renderZooWidget(a.calls);
+    const renderedB = renderZooWidget(b.calls);
+    try {
+      const linesA = renderedA.lines.join("\n");
+      const linesB = renderedB.lines.join("\n");
+      assert.ok(linesA.includes("Plan A"), linesA);
+      assert.ok(!linesA.includes("Plan B"), "A never shows B's plan");
+      assert.ok(
+        !linesB.includes("Plan A"),
+        "B's widget must not render A's todo column",
+      );
+    } finally {
+      renderedA.dispose();
+      renderedB.dispose();
+    }
+
+    // A second session's own result refreshes its own column only.
+    await handlers.toolResult(
+      {
+        type: "tool_result",
+        toolName: "todo",
+        toolCallId: "call-b",
+        content: [{ type: "text", text: "ok" }],
+        isError: false,
+      },
+      b.ctx,
+    );
+    await flush();
+    const afterB = renderZooWidget(b.calls);
+    try {
+      assert.ok(afterB.lines.join("\n").includes("Plan B"));
+    } finally {
+      afterB.dispose();
+    }
   });
 
   it("no store → the three triggers stay harmless", async () => {
@@ -965,5 +1041,293 @@ describe("buildPiHandlers — tool_call delegation gate", () => {
     const reason = refusal?.reason ?? "";
     assert.ok(reason.includes("beaver can only delegate to"));
     assert.ok(reason.includes("mola"));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Lifecycle scope (ensure / start / shutdown)
+// ---------------------------------------------------------------------------
+
+describe("lifecycle scope", () => {
+  /** The poly profile plus the todo tool, so the tool bridge is exercised. */
+  const TODO_ZOO = {
+    ...POLY_ZOO,
+    mode: {
+      poly: { ...POLY_PROFILE, tools: [...POLY_PROFILE.tools, "todo"] },
+    },
+  };
+
+  /** A ui ctx that records widget registration and terminal-input binds. */
+  function lifecycleCtx(sessionId: string) {
+    const state = { widgets: 0, binds: 0, unsubscribes: 0 };
+    const ctx = {
+      sessionManager: { getSessionId: () => sessionId },
+      ui: {
+        notify: () => {},
+        setWidget: () => {
+          state.widgets += 1;
+        },
+        onTerminalInput: () => {
+          state.binds += 1;
+          return () => {
+            state.unsubscribes += 1;
+          };
+        },
+      },
+    };
+    return { state, ctx };
+  }
+
+  it("ensures the session from the first turn without a session_start", async () => {
+    const api = mockApi();
+    const handlers = await buildPiHandlers(POLY_ZOO, api as any, MODES_RAW);
+    const { state, ctx } = lifecycleCtx("sess-first-turn");
+
+    await handlers.beforeAgentStart({ systemPrompt: "base" }, ctx);
+
+    assert.equal(state.widgets, 1, "the first turn seeds the session widget");
+    assert.equal(state.binds, 1, "the first turn binds the listener");
+    assert.equal(
+      hasPiSdkSession("sess-first-turn"),
+      true,
+      "the ensured session is associated with this extension",
+    );
+  });
+
+  it("re-registers on a repeated start without stacking a listener", async () => {
+    const api = mockApi();
+    const handlers = await buildPiHandlers(POLY_ZOO, api as any, MODES_RAW);
+    const { state, ctx } = lifecycleCtx("sess-reregister");
+    const start = { type: "session_start", reason: "startup" };
+
+    await handlers.sessionStart(start, ctx);
+    await handlers.sessionStart(start, ctx);
+
+    assert.equal(state.unsubscribes, 1, "the previous listener is released");
+    assert.equal(state.binds - state.unsubscribes, 1, "exactly one live bind");
+  });
+
+  it("creates and registers nothing without a session id", async () => {
+    const api = mockApi();
+    const handlers = await buildPiHandlers(POLY_ZOO, api as any, MODES_RAW);
+    const state = { widgets: 0, binds: 0 };
+    const ctx = {
+      ui: {
+        notify: () => {},
+        setWidget: () => {
+          state.widgets += 1;
+        },
+        onTerminalInput: () => {
+          state.binds += 1;
+          return () => {};
+        },
+      },
+    };
+
+    await handlers.sessionStart(
+      { type: "session_start", reason: "startup" },
+      ctx,
+    );
+
+    assert.deepEqual(state, { widgets: 0, binds: 0 });
+    assert.equal(hasPiSdkSession(""), false);
+  });
+
+  it("session_shutdown releases the session resources and stops further writes", async () => {
+    const api = mockApi();
+    const handlers = await buildPiHandlers(POLY_ZOO, api as any, MODES_RAW);
+    const { state, ctx } = lifecycleCtx("sess-shutdown");
+    await handlers.sessionStart(
+      { type: "session_start", reason: "startup" },
+      ctx,
+    );
+    const registered = state.widgets;
+
+    await handlers.sessionShutdown(
+      { type: "session_shutdown", reason: "quit" },
+      ctx,
+    );
+
+    assert.equal(state.unsubscribes, 1, "the listener is released");
+    assert.equal(hasPiSdkSession("sess-shutdown"), false);
+
+    // A late event during teardown must not write to the stopped scope.
+    await handlers.beforeAgentStart({ systemPrompt: "base" }, ctx);
+    assert.equal(state.widgets, registered, "no registration after stop");
+    assert.equal(state.binds - state.unsubscribes, 0, "no new listener");
+  });
+
+  it("a tool execution bridge ensures the session", async () => {
+    const api = mockApi();
+    const handlers = await buildPiHandlers(TODO_ZOO, api as any, MODES_RAW);
+    assert.ok(handlers, "handlers are wired");
+    const todo = api.tools.find((tool: any) => tool.name === "todo") as any;
+
+    await todo.execute(
+      "call-first",
+      { op: "init", tasks: ["bridge"] },
+      undefined,
+      undefined,
+      { sessionManager: { getSessionId: () => "sess-tool-first" } },
+    );
+
+    assert.equal(hasPiSdkSession("sess-tool-first"), true);
+  });
+
+  it("publishes the tool event's context before ensuring the session", async () => {
+    const api = mockApi();
+    await buildPiHandlers(TODO_ZOO, api as any, MODES_RAW);
+    const todo = api.tools.find((tool: any) => tool.name === "todo") as any;
+    // A tool call may be the FIRST event a session produces (flows without a
+    // `session_start`).  Its context must be published before the session
+    // scope is ensured, so the todo restore already resolves this session's
+    // transcript instead of finding no context at all.
+    const ctx = {
+      sessionManager: {
+        getSessionId: () => "sess-tool-plan",
+        getBranch: () => [
+          {
+            type: "message",
+            message: {
+              role: "toolResult",
+              toolCallId: "call-0",
+              toolName: "todo",
+              content: [],
+              isError: false,
+              details: {
+                op: "init",
+                phases: [
+                  {
+                    name: "Todos",
+                    tasks: [{ content: "Restored from transcript" }],
+                  },
+                ],
+              },
+            },
+          },
+        ],
+      },
+    };
+
+    const view = await todo.execute(
+      "call-view",
+      { op: "view" },
+      undefined,
+      undefined,
+      ctx,
+    );
+
+    assert.ok(
+      joinedText(view).includes("Restored from transcript"),
+      "the first tool event must already see its own session's transcript",
+    );
+  });
+
+  it("restores two interleaved sessions' plans from their own transcripts", async () => {
+    const api = mockApi();
+    const handlers = await buildPiHandlers(TODO_ZOO, api as any, MODES_RAW);
+    const todo = api.tools.find((tool: any) => tool.name === "todo") as any;
+    const plan = (task: string) => ({
+      sessionManager: {
+        getSessionId: () => `sess-${task}`,
+        getBranch: () => [
+          {
+            type: "message",
+            message: {
+              role: "toolResult",
+              toolCallId: `call-${task}`,
+              toolName: "todo",
+              content: [],
+              isError: false,
+              details: {
+                op: "init",
+                phases: [
+                  {
+                    name: "Todos",
+                    tasks: [{ content: `plan ${task}` }],
+                  },
+                ],
+              },
+            },
+          },
+        ],
+      },
+    });
+    const first = plan("a");
+    const second = plan("b");
+    await handlers.beforeAgentStart({ systemPrompt: "base" }, first);
+    await handlers.beforeAgentStart({ systemPrompt: "base" }, second);
+
+    // The latest handled session is `sess-b`; a read for `sess-a` must still
+    // restore a's plan.
+    const viewA = await todo.execute(
+      "call-a",
+      { op: "view" },
+      undefined,
+      undefined,
+      first,
+    );
+    const viewB = await todo.execute(
+      "call-b",
+      { op: "view" },
+      undefined,
+      undefined,
+      second,
+    );
+    assert.ok(joinedText(viewA).includes("plan a"), joinedText(viewA));
+    assert.ok(!joinedText(viewA).includes("plan b"));
+    assert.ok(joinedText(viewB).includes("plan b"), joinedText(viewB));
+  });
+
+  it("a stopped session's todo state is not resurrected by a late tool call", async () => {
+    const api = mockApi();
+    const handlers = await buildPiHandlers(TODO_ZOO, api as any, MODES_RAW);
+    const todo = api.tools.find((tool: any) => tool.name === "todo") as any;
+    const ctx = lifecycleCtx("sess-stopped-todo");
+    await handlers.sessionStart(
+      { type: "session_start", reason: "startup" },
+      ctx.ctx,
+    );
+    await todo.execute(
+      "call-init",
+      { op: "init", tasks: ["before-stop"] },
+      undefined,
+      undefined,
+      ctx.ctx,
+    );
+
+    await handlers.sessionShutdown(
+      { type: "session_shutdown", reason: "quit" },
+      ctx.ctx,
+    );
+
+    // A tool call that arrives during teardown must not reach the stopped
+    // session's state: the plan belonged to the scope that just stopped, so
+    // the late call sees an empty list instead of a resurrected one.
+    const view = await todo.execute(
+      "call-view",
+      { op: "view" },
+      undefined,
+      undefined,
+      ctx.ctx,
+    );
+    assert.ok(
+      !joinedText(view).includes("before-stop"),
+      "the stopped session's plan must not survive its scope",
+    );
+  });
+
+  it("a command execution bridge ensures the session", async () => {
+    const api = mockApi();
+    await buildPiHandlers(POLY_ZOO, api as any, MODES_RAW);
+    const dcp = api.commands.find((command) => command.name === "dcp");
+    assert.ok(dcp && typeof dcp.handler === "function");
+
+    await (dcp.handler as (args: string, ctx: unknown) => Promise<void>)("", {
+      sessionManager: { getSessionId: () => "sess-command-first" },
+      ui: { notify: () => {} },
+    });
+
+    assert.equal(hasPiSdkSession("sess-command-first"), true);
   });
 });

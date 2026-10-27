@@ -29,6 +29,18 @@
  * ready selection the adapter adopts that agent as the host's
  * `default_agent`.
  *
+ * One lifecycle kernel backs the plugin instance (see
+ * `adapters/opencode/lifecycle-wiring.ts`): its session scopes own the
+ * per-session state the always-on hooks drive, so `session.created` is a
+ * real start notice, `session.deleted` stops exactly that session, and the
+ * host's `dispose` stops every remaining session and then the extension.
+ * Every assembled hook that names a session ensures it first, so a hook
+ * call that is the host's first word about a session still gets its scope
+ * — and a session the host deleted is never rebuilt.  The hooks naming no
+ * session (`config`, and `event`, which ensures exactly the paths it
+ * drives) stay unwrapped: the configuration stage never enters the
+ * session lifecycle.
+ *
  * @module
  */
 
@@ -36,7 +48,15 @@ import config from "../config.toml" with { type: "toml" };
 import { createV1Adapter } from "./adapters/opencode/adapter.js";
 import { createOpenCodeHandoffTarget } from "./adapters/opencode/handoff-target.js";
 import { buildInfraHooks } from "./adapters/opencode/infra-hooks.js";
+import {
+  createOpenCodeLifecycleWiring,
+  withEnsuredSessions,
+} from "./adapters/opencode/lifecycle-wiring.js";
 import { createOpenCodeMessageInjector } from "./adapters/opencode/message-injector.js";
+import {
+  createOpenCodeHostServices,
+  sessionScopeState,
+} from "./adapters/opencode/services.js";
 import { todoSourceFromClient } from "./adapters/opencode/todo-source.js";
 import {
   createV1ToolHost,
@@ -185,17 +205,49 @@ export async function buildPlugin(
     });
   }
 
-  return {
+  // One lifecycle kernel backs this plugin instance: the session scopes own
+  // the per-session state the always-on hooks drive (the observed abort and
+  // the pending wake echo), and the loop engine those hooks settle with is
+  // an extension service of the same instance.
+  const hostServices = createOpenCodeHostServices({
+    onSettled: composed.onSettled,
+  });
+  const lifecycle = createOpenCodeLifecycleWiring({
+    extensionServices: hostServices.extension,
+    sessionServices: hostServices.session,
+  });
+  // Every hook addresses one session's state, never a whole scope: this is
+  // the surface the always-on event hook drives.
+  const sessions = {
+    sessionState: async (sessionID: string | null | undefined) =>
+      sessionScopeState(await lifecycle.ensureSession(sessionID)),
+    handleEvent: (event: unknown) => lifecycle.handleEvent(event),
+  };
+
+  const hooks = {
     // Always-on infrastructure hooks.
     ...buildInfraHooks({
       client,
       resolveAgent,
-      onSettled: composed.onSettled,
       promptVariants,
       orchestrator: selection.orchestrator,
+      sessions,
     }),
     // Selection-driven registrations (from the adapter).
     ...selectionHooks,
+  };
+
+  return {
+    // Every assembled hook that names a session ensures it first: a tool
+    // call, a command or a transform can be the host's first word about a
+    // session, and a session the host deleted is never rebuilt.  `config`
+    // and `event` name no session and stay unwrapped.
+    ...withEnsuredSessions(hooks, sessions.sessionState),
+    // The host disposes the plugin: stop every remaining session and then
+    // the extension, logging each cleanup failure instead of dropping it.
+    async dispose() {
+      await lifecycle.dispose();
+    },
   };
 }
 

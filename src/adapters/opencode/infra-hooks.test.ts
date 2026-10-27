@@ -14,6 +14,8 @@ import type { Decision } from "../../core/loop/settle.js";
 import { makeTmpDir } from "../../testkits/tmp.js";
 import { _resetForTesting, initLogger } from "../../utils/logger.js";
 import { buildInfraHooks } from "./infra-hooks.js";
+import { createOpenCodeLifecycleWiring } from "./lifecycle-wiring.js";
+import { createOpenCodeHostServices, sessionScopeState } from "./services.js";
 
 let _loggerDir: string;
 
@@ -49,17 +51,22 @@ const SETTLED_TRANSCRIPT = {
 };
 
 /**
- * Build the infrastructure hooks with one wake-capable settle strategy.
+ * Build the infrastructure hooks over the real OpenCode lifecycle wiring.
  *
  * @param agents - Session → agent bindings the resolver answers from.
  * @param orchestrator - The orchestrator the selection resolved.
- * @returns The hooks plus the recorded `promptAsync` bodies.
+ * @returns The hooks, the lifecycle, and the recorded `promptAsync` bodies.
  */
 function makeHooks(
   agents: Record<string, string>,
   orchestrator: string | undefined,
 ) {
   const wakes: Array<{ agent?: string; parts: unknown[] }> = [];
+  const declarations = createOpenCodeHostServices({ onSettled: [WAKE] });
+  const wiring = createOpenCodeLifecycleWiring({
+    extensionServices: declarations.extension,
+    sessionServices: declarations.session,
+  });
   const hooks = buildInfraHooks({
     client: {
       session: {
@@ -71,11 +78,15 @@ function makeHooks(
       },
     },
     resolveAgent: (sessionID) => agents[sessionID],
-    onSettled: [WAKE],
     promptVariants: [],
     orchestrator,
+    sessions: {
+      sessionState: async (sessionID) =>
+        sessionScopeState(await wiring.ensureSession(sessionID)),
+      handleEvent: (event) => wiring.handleEvent(event),
+    },
   });
-  return { hooks, wakes };
+  return { hooks, wakes, wiring };
 }
 
 /** Send one `session.idle` event for `sessionID`. */
@@ -114,5 +125,54 @@ describe("infra hooks — orchestrator gate", () => {
     await idle(hooks, "s1");
 
     assert.equal(wakes.length, 0);
+  });
+});
+
+describe("infra hooks — per-session state", () => {
+  /** Send one `session.error` abort for `sessionID`. */
+  async function abort(
+    hooks: ReturnType<typeof makeHooks>["hooks"],
+    sessionID: string,
+  ): Promise<void> {
+    await hooks.event({
+      event: {
+        type: "session.error",
+        properties: { sessionID, error: { name: "MessageAbortedError" } },
+      },
+    });
+  }
+
+  it("records an abort on a session whose first event is the abort", async () => {
+    const { hooks, wakes } = makeHooks({ s1: "planner" }, "planner");
+
+    // No `session.created` ever arrives: the abort is the first thing this
+    // instance hears about the session.
+    await abort(hooks, "s1");
+    await idle(hooks, "s1");
+
+    assert.equal(wakes.length, 0, "the aborted turn must stay silent");
+  });
+
+  it("consumes the abort once, so the next settle is judged again", async () => {
+    const { hooks, wakes } = makeHooks({ s1: "planner" }, "planner");
+
+    await abort(hooks, "s1");
+    await idle(hooks, "s1");
+    await idle(hooks, "s1");
+
+    assert.equal(wakes.length, 1, "the second settle is not aborted");
+  });
+
+  it("keeps one session's abort away from its sibling", async () => {
+    const { hooks, wakes } = makeHooks(
+      { s1: "planner", s2: "planner" },
+      "planner",
+    );
+
+    await abort(hooks, "s1");
+    await idle(hooks, "s2");
+
+    assert.equal(wakes.length, 1);
+    assert.equal(wakes[0].agent, "planner");
   });
 });

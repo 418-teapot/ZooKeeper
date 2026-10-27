@@ -10,6 +10,7 @@
  */
 
 import assert from "node:assert/strict";
+import { resetPiSdkLifecycleBridge } from "../adapters/pi/sdk-lifecycle.js";
 import { _resetPendingSwitchOpsForTesting } from "../adapters/pi/switch-host.js";
 import type { ToolHost } from "../core/ports/tool-host.js";
 import { sessionAgentRegistry } from "../core/session-agent.js";
@@ -189,8 +190,9 @@ export function joinedText(
 /**
  * Reset the process-wide state a pi host test can observe: the log
  * buffer, the identity machinery, the pending switch operations, the
- * subagent run registry, and the registry's lazy session → agent
- * bindings (so memoized identities never leak between tests).
+ * subagent run registry, the registry's lazy session → agent bindings
+ * (so memoized identities never leak between tests), and the SDK session
+ * lifecycle bridge.
  */
 export function resetPiTestState(): void {
   _resetForTesting();
@@ -198,6 +200,7 @@ export function resetPiTestState(): void {
   _resetPendingSwitchOpsForTesting();
   resetRegistry();
   sessionAgentRegistry.clear();
+  resetPiSdkLifecycleBridge();
   delete process.env.ZOO_MODE_FILE;
 }
 

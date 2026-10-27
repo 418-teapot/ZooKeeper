@@ -1039,7 +1039,8 @@ function stubHandlers(
     messageEnd: () => undefined,
     toolCall: async () => undefined,
     sessionStart: async () => {},
-    sessionTree: () => {},
+    sessionShutdown: async () => {},
+    sessionTree: async () => {},
     hasSettledHandlers,
     hasGateHandlers,
     agentEnd: () => {},
@@ -1064,6 +1065,7 @@ describe("registerPiHandlers", () => {
     // would silently disable one event and mis-fire another.
     const expected: Record<string, unknown> = {
       session_start: handlers.sessionStart,
+      session_shutdown: handlers.sessionShutdown,
       before_agent_start: handlers.beforeAgentStart,
       resources_discover: handlers.resourcesDiscover,
       tool_result: handlers.toolResult,
@@ -1138,6 +1140,7 @@ describe("registerPiHandlers", () => {
         "context",
         "message_end",
         "resources_discover",
+        "session_shutdown",
         "session_start",
         "session_tree",
         "tool_result",
@@ -1165,7 +1168,7 @@ describe("registerPiHandlers", () => {
       ...PI_GATE_EVENT_KEYS,
       ...PI_SETTLE_EVENT_KEYS,
     ]);
-    assert.equal(union.size, 13, "no key may appear in both tables");
+    assert.equal(union.size, 14, "no key may appear in both tables");
   });
 
   it("records the registration decision in the loop log", () => {

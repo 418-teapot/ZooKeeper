@@ -360,8 +360,13 @@ export interface PiEventHandlers {
   ): Promise<PiToolCallResult | undefined>;
   /** `session_start`: seed the `zoo` widget at startup / resume. */
   sessionStart(evt?: unknown, ctx?: unknown): Promise<void>;
+  /**
+   * `session_shutdown`: stop the extension's lifecycle scope (nested
+   * sessions first) because pi replaces its extension runtime.
+   */
+  sessionShutdown(evt?: unknown, ctx?: unknown): Promise<void>;
   /** `session_tree`: drop the todo cache after a tree navigation. */
-  sessionTree(evt?: unknown, ctx?: unknown): void;
+  sessionTree(evt?: unknown, ctx?: unknown): Promise<void>;
   /**
    * Whether the composition contributes any settle handlers.  The entry
    * point registers the loop settle events only when this is true, so a

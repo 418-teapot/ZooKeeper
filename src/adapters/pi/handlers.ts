@@ -1,13 +1,17 @@
 /**
  * Pi event handler factory.
  *
- * Builds the thirteen handlers the pi host registers, each closing over the
+ * Builds the fourteen handlers the pi host registers, each closing over the
  * explicit {@link PiEventHandlerDeps} the wiring layer supplies:
  *
- *  - `session_start` seeds the `zoo` widget and the todo column at
- *    startup / resume, trims the active tool set by the primary's denies,
- *    drops the session's cached round view, and rebuilds the run registry
- *    from the persisted transcript.
+ *  - `session_start` ensures the session's lifecycle scope with pi's own
+ *    reason, then seeds the `zoo` widget and the todo column at startup /
+ *    resume, trims the active tool set by the primary's denies, drops the
+ *    session's cached round view, and rebuilds the run registry from the
+ *    persisted transcript.
+ *  - `session_shutdown` stops that scope (nested sessions first, then the
+ *    extension services) and reports every cleanup failure: pi replaces its
+ *    extension runtime, so the session resources must not outlive it.
  *  - `before_agent_start` resolves the current agent identity through the
  *    identity core and prepends the matching composed agent prompt to the
  *    chainable system prompt; an unresolved identity or an agent outside
@@ -45,12 +49,15 @@ import {
 } from "../../compose-pi.js";
 import type { ComposedResult } from "../../core/compose.js";
 import { clearRoundView } from "../../core/context/round-view.js";
+import type { CleanupReport } from "../../core/lifecycle/index.js";
 import type { LoopEngine, StopCause } from "../../core/loop/index.js";
 import type { SkillPermissionMap } from "../../core/permissions/skill-permissions.js";
 import { filterAllowedSkills } from "../../core/permissions/skill-permissions.js";
 import { applyModelVariant } from "../../core/prompt-variant.js";
 import { getPrimary, resolveIdentity } from "../../core/subagent/identity.js";
 import { flushLogs, log } from "../../utils/logger.js";
+import type { PiLifecycleOutcome } from "./lifecycle.js";
+import type { PiLiveContext } from "./live-context.js";
 import {
   askWentUnanswered,
   boundaryEntries,
@@ -60,21 +67,25 @@ import {
   settledTurnMessages,
 } from "./settled-turn.js";
 import { type PiHistoryEntry, rebuildSubagentRuns } from "./subagent-scan.js";
-import type { PiContextHolder, PiToolHostContext } from "./tool-host.js";
 import type { PiEventHandlers } from "./types.js";
 
 /**
  * The wiring surfaces the event handlers close over.
  *
  * Everything the handlers cannot derive from the composed result is
- * injected here: the mutable pi context holder, the loop engine, and the
+ * injected here: the extension-scope live context, the loop engine, and the
  * wiring-layer callbacks (`applyPrimaryToolTrim`, the widget and todo
- * refresh hooks, the switch drain, the todo cache invalidator).
+ * refresh hooks, the switch drain, the todo cache invalidator, the
+ * lifecycle operations).
  */
 export interface PiEventHandlerDeps {
-  /** Mutable holder shared with the adapter and tool host. */
-  contextHolder: PiContextHolder;
-  /** The current session id, read through the shared context holder. */
+  /**
+   * The extension-scope live context: every handler publishes the context
+   * of the event it is handling, and the adapter, tool host, fleet widget
+   * and switch host read it from there.
+   */
+  liveContext: PiLiveContext;
+  /** The current session id, read from the live context. */
   getSessionId(): string | undefined;
   /** The composed profile contributions. */
   composed: ComposedResult;
@@ -82,14 +93,23 @@ export interface PiEventHandlerDeps {
   engine: LoopEngine | undefined;
   /** Per-agent skill permission rules (`[agent.<name>].permission.skill`). */
   skillPermissions: SkillPermissionMap;
-  /** Skill directory names declared by the profile. */
-  profileSkills: string[];
+  /**
+   * The composed profile's skill directory names.
+   *
+   * Read per bind from the published profile catalog, so a bind that
+   * happens after composition contributes the same list the subagent driver
+   * seeds its sub-sessions with.
+   */
+  getProfileSkills(): string[];
   /** Resolve the absolute paths of the existing profile skill directories. */
   collectSkillPaths(names: string[]): string[];
   /** Apply the active primary's tool denies to the active tool set. */
   applyPrimaryToolTrim(): void;
-  /** Register (or re-seed) the `zoo` fleet widget. */
-  registerFleetWidget(): void;
+  /**
+   * Register (or re-seed) the `zoo` fleet widget of the session the event
+   * context names.  An absent / unknown session registers nothing.
+   */
+  registerFleetWidget(ctx?: unknown): void;
   /** Re-render the fleet widget (registry / primary change nudge). */
   refreshFleetWidget(): void;
   /** Re-read the session's todo state and re-render the widget. */
@@ -98,6 +118,25 @@ export interface PiEventHandlerDeps {
   seedTodoView(): void;
   /** Drain post-replacement switch operations in the new session closure. */
   drainPendingSwitchOps(): void;
+  /**
+   * Ensure the session scope of the id the current event context carries.
+   *
+   * Handlers call this before touching session resources (the fleet widget,
+   * its listener, the todo view).  A context with no usable session id
+   * creates nothing and reports `false`.
+   */
+  ensureSession(ctx?: unknown): Promise<boolean>;
+  /**
+   * Forward a real `session_start` to the lifecycle kernel: the scope is
+   * ensured and pi's reason reaches the start hooks unmodified.  A payload
+   * without a reason only ensures the scope.
+   */
+  startSession(event: unknown, ctx?: unknown): Promise<PiLifecycleOutcome>;
+  /**
+   * Stop the extension on `session_shutdown` (nested sessions first, then
+   * extension services) and report every cleanup failure.
+   */
+  stopExtension(event: unknown): Promise<CleanupReport>;
   /** Drop a session's cached todo state after a tree navigation. */
   invalidateTodo(sessionId: string): void;
   /**
@@ -113,12 +152,12 @@ export interface PiEventHandlerDeps {
  * Build the pi event handlers over an explicit set of wiring surfaces.
  *
  * @param deps - The wiring surfaces the handlers close over.
- * @returns The thirteen handlers plus the registration gates.
+ * @returns The fourteen handlers plus the registration gates.
  */
 export function createPiEventHandlers(
   deps: PiEventHandlerDeps,
 ): PiEventHandlers {
-  const { contextHolder } = deps;
+  const { liveContext } = deps;
   // Open blocking UI prompt count: a run that ends while this is > 0 was
   // waiting for the user, not genuinely finished.
   let uiPromptDepth = 0;
@@ -136,7 +175,11 @@ export function createPiEventHandlers(
 
   return {
     async beforeAgentStart(evt, ctx?) {
-      if (ctx) contextHolder.current = ctx as PiToolHostContext;
+      liveContext.publish(ctx);
+      // A turn may be the first event that observes the session (flows
+      // without a `session_start`), so the scope is ensured before the
+      // widget / todo wiring touches session resources.  No id, nothing.
+      await deps.ensureSession(ctx);
       // Reset the session's reminder budget when a real user message starts
       // a turn.  pi emits `before_agent_start` only for a top-level user
       // prompt (`prompt()`); a wake continued at the pre-settle boundary
@@ -171,7 +214,7 @@ export function createPiEventHandlers(
       // identity is set, or a session begins without a `session_start` in
       // some flows.  Registration is idempotent — re-running it re-seeds the
       // widget and never stacks a terminal-input listener.
-      deps.registerFleetWidget();
+      deps.registerFleetWidget(ctx);
       // Seed the todo column on the first turn that resolves a session when
       // `session_start` did not already do so; the one-shot flag keeps later
       // turns from re-reading the store.
@@ -195,8 +238,14 @@ export function createPiEventHandlers(
             : `${applyModelVariant(agent.prompt, resolveContextModelId(ctx), agent.promptVariants)}\n\n${evt.systemPrompt}`,
       };
     },
-    async sessionStart(_evt?, ctx?) {
-      if (ctx) contextHolder.current = ctx as PiToolHostContext;
+    async sessionStart(evt?, ctx?) {
+      liveContext.publish(ctx);
+      // The real start notice: ensure the session scope and run the start
+      // hooks with pi's own reason.  This also creates the session's fleet
+      // resources, so the registration below seeds the scope they belong
+      // to (no separate ensure here — a first-use create+start must not
+      // register twice).
+      await deps.startSession(evt, ctx);
       // Trim the session's active tool set by the current primary's denies at
       // session bind time (startup / reload / resume / replacement), so the
       // primary's deny list takes effect from the first turn — before the
@@ -207,7 +256,7 @@ export function createPiEventHandlers(
       // Register the fleet widget at session startup / resume (before any
       // LLM turn), so the current primary shows immediately.
       // `before_agent_start` runs the same registration as a fallback.
-      deps.registerFleetWidget();
+      deps.registerFleetWidget(ctx);
       // Seed the widget's todo column from this session's plan; the store
       // read is async, so the column appears once it resolves.
       deps.refreshTodoView();
@@ -225,8 +274,14 @@ export function createPiEventHandlers(
       // never duplicates or overwrites an existing entry.  Best-effort: an
       // unavailable session manager / history leaves the registry untouched
       // (fresh session).
-      const sessionId = contextHolder.current?.sessionManager?.getSessionId();
-      const sessionManager = contextHolder.current?.sessionManager;
+      const sessionId = deps.getSessionId();
+      // Resolve this session's own context: a registry rebuild must read the
+      // transcript of the session the event names, never whichever context
+      // was published last.
+      const sessionManager =
+        sessionId === undefined
+          ? undefined
+          : liveContext.forSession(sessionId)?.sessionManager;
       // Drop this session's cached round view.  pi never fires a session
       // deleted event, so `cleanupSession` (the only other caller of
       // `clearRoundView`) is never reached in this process: without this
@@ -276,7 +331,11 @@ export function createPiEventHandlers(
       deps.refreshFleetWidget();
     },
     async resourcesDiscover(_evt?, ctx?) {
-      if (ctx) contextHolder.current = ctx as PiToolHostContext;
+      liveContext.publish(ctx);
+      // Ensure the session scope: this bind-time event may be the first one
+      // that observes a session (flows without `session_start`).  No id,
+      // nothing created.
+      await deps.ensureSession(ctx);
       // Filter the contributed skill directories by the active primary's
       // `[agent.<name>].permission.skill` rules.  The filter applies at
       // session-bind time against the primary active AT THAT MOMENT — pi's
@@ -290,11 +349,12 @@ export function createPiEventHandlers(
       const primary = getPrimary();
       const rules =
         primary === undefined ? undefined : deps.skillPermissions[primary];
+      const profileSkills = deps.getProfileSkills();
       if (rules === undefined) {
-        return { skillPaths: deps.collectSkillPaths(deps.profileSkills) };
+        return { skillPaths: deps.collectSkillPaths(profileSkills) };
       }
-      const kept = filterAllowedSkills(deps.profileSkills, rules);
-      const dropped = deps.profileSkills.length - kept.length;
+      const kept = filterAllowedSkills(profileSkills, rules);
+      const dropped = profileSkills.length - kept.length;
       log.info({
         hook: "resources",
         event: "skills_filtered",
@@ -304,8 +364,9 @@ export function createPiEventHandlers(
       });
       return { skillPaths: deps.collectSkillPaths(kept) };
     },
-    toolResult: async (event, ctx) => {
-      if (ctx) contextHolder.current = ctx as PiToolHostContext;
+    async toolResult(event, ctx) {
+      liveContext.publish(ctx);
+      await deps.ensureSession(ctx);
       const result = await toolResultHandler(event, ctx);
       // A successful `todo` call changed this session's plan: refresh the
       // widget's todo view after the existing chain has run, without
@@ -317,15 +378,19 @@ export function createPiEventHandlers(
       return result;
     },
     contextHandler: async (event, ctx) => {
-      if (ctx) contextHolder.current = ctx as PiToolHostContext;
+      liveContext.publish(ctx);
+      // A transform event may be the session's first observation, so the
+      // scope is ensured before the composed chain reads session state.
+      await deps.ensureSession(ctx);
       return contextHandler(event, ctx);
     },
     messageEnd: (event, ctx) => {
-      if (ctx) contextHolder.current = ctx as PiToolHostContext;
+      liveContext.publish(ctx);
       return messageEndHandler(event, ctx);
     },
     async toolCall(event, ctx?) {
-      if (ctx) contextHolder.current = ctx as PiToolHostContext;
+      liveContext.publish(ctx);
+      await deps.ensureSession(ctx);
       const gate = deps.composed.gate;
       // No strategy (valid profile) → allow.  The key is not registered in
       // that case; this guard keeps a direct call inert too.
@@ -360,8 +425,9 @@ export function createPiEventHandlers(
       });
       return { block: true, reason: refusal.reason };
     },
-    sessionTree: (_evt?, ctx?) => {
-      if (ctx) contextHolder.current = ctx as PiToolHostContext;
+    async sessionTree(_evt?, ctx?) {
+      liveContext.publish(ctx);
+      await deps.ensureSession(ctx);
       // Tree navigation (`/tree`) moves the active leaf to another branch,
       // so the transcript the todo store restores from has changed: drop
       // this session's cached state and let the next `todo` call re-scan.
@@ -376,12 +442,32 @@ export function createPiEventHandlers(
     },
     hasSettledHandlers: deps.engine !== undefined,
     hasGateHandlers: deps.composed.gate !== null,
+    async sessionShutdown(evt?, _ctx?) {
+      // pi replaces its extension runtime (quit / reload / new / resume /
+      // fork), so the whole scope stops: nested sessions first, then the
+      // extension services.  The event context is stale from here on, so it
+      // is deliberately NOT published to the live context — no handler may
+      // write session resources after the scope stopped.
+      const report = await deps.stopExtension(evt);
+      // Cleanup failures are reported here: a failed disposer must never be
+      // swallowed silently.
+      for (const failure of report.errors) {
+        log.warn({
+          hook: "lifecycle",
+          event: "cleanup_failed",
+          sessionId: failure.sessionID,
+          scope: failure.scope,
+          service: failure.service,
+          error: String(failure.error),
+        });
+      }
+    },
     agentEnd(evt?, ctx?) {
       // Passive record only: the judge runs at the pre-settle boundary.  The
       // loop is inert without a settle strategy (the settle events are never
       // registered), and this guard keeps a direct call (tests) inert too.
       if (deps.engine === undefined) return;
-      if (ctx) contextHolder.current = ctx as PiToolHostContext;
+      liveContext.publish(ctx);
       // The run's terminal messages feed the boundary judge.  An unreadable
       // payload records an empty run, which yields no activity and no
       // handback fact (silence is the todo list's call, not the
@@ -398,7 +484,7 @@ export function createPiEventHandlers(
       // whole body: log and fail closed.
       let sessionID: string | undefined;
       try {
-        if (ctx) contextHolder.current = ctx as PiToolHostContext;
+        liveContext.publish(ctx);
         sessionID = deps.getSessionId();
         // pi computes the outcome from the run's terminal stop reason, so it
         // is the host's own verdict: only a run that completed may wake.  An
@@ -507,17 +593,17 @@ export function createPiEventHandlers(
       }
     },
     agentSettled(_evt?, ctx?) {
-      if (ctx) contextHolder.current = ctx as PiToolHostContext;
+      liveContext.publish(ctx);
       // A single-shot host can exit right after the last run, before the
       // periodic flush timer fires; make the verdict durable.
       flushLogs();
     },
     uiPromptStart: (_evt?, ctx?) => {
-      if (ctx) contextHolder.current = ctx as PiToolHostContext;
+      liveContext.publish(ctx);
       uiPromptDepth += 1;
     },
     uiPromptEnd: (_evt?, ctx?) => {
-      if (ctx) contextHolder.current = ctx as PiToolHostContext;
+      liveContext.publish(ctx);
       if (uiPromptDepth > 0) uiPromptDepth -= 1;
     },
   };

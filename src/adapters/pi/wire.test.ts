@@ -1269,6 +1269,30 @@ describe("buildPiHandlers — primary tool-deny trim (main session)", () => {
     assert.deepEqual(api.activeTools, []);
   });
 
+  it("serves no baseline after the extension stopped", async () => {
+    const api = mockApi();
+    api.activeTools.push(...ALL_TOOLS);
+    const handlers = await buildPiHandlers(POLY_ZOO, api as any, PERM_DENY_RAW);
+    setPrimary("beaver");
+    await handlers.sessionStart(
+      { type: "session_start", reason: "startup" },
+      SESSION_CTX,
+    );
+    assert.deepEqual(api.activeTools, ["edit", "bash"], "trimmed at bind");
+    await handlers.sessionShutdown(
+      { type: "session_shutdown", reason: "quit" },
+      SESSION_CTX,
+    );
+
+    // The host re-registers its tools for the replacement runtime.  The
+    // stopped extension must not filter that set through a baseline it
+    // captured earlier: a stale cache would silently remove the new tools.
+    api.activeTools.push("fetch");
+    await handlers.beforeAgentStart({ systemPrompt: "base" }, SESSION_CTX);
+
+    assert.deepEqual(api.activeTools, ["edit", "bash", "fetch"]);
+  });
+
   it("/go handoff: the executor primary's deny is trimmed in the new session", async () => {
     const api = mockApi();
     api.activeTools.push(...ALL_TOOLS);
@@ -1325,6 +1349,40 @@ function widgetRecordingCtx(): {
     },
   };
   return { calls, ctx };
+}
+
+/**
+ * A per-session ui ctx recording the widget registrations and the live
+ * terminal-input subscriptions of exactly that session.
+ */
+function routableSessionCtx(sessionId: string): {
+  calls: Array<[string, unknown]>;
+  live(): number;
+  ctx: {
+    sessionManager: { getSessionId(): string };
+    ui: {
+      notify(): void;
+      setWidget(key: string, content: unknown): void;
+      onTerminalInput(): () => void;
+    };
+  };
+} {
+  const calls: Array<[string, unknown]> = [];
+  let live = 0;
+  const ctx = {
+    sessionManager: { getSessionId: () => sessionId },
+    ui: {
+      notify: () => {},
+      setWidget: (key: string, content: unknown) => calls.push([key, content]),
+      onTerminalInput: () => {
+        live += 1;
+        return () => {
+          live -= 1;
+        };
+      },
+    },
+  };
+  return { calls, live: () => live, ctx };
 }
 
 /**
@@ -1514,6 +1572,36 @@ describe("buildPiHandlers — widget seeding", () => {
       1,
       "the terminal-input listener must not stack",
     );
+  });
+
+  it("routes each session's registration to its own fleet resources", async () => {
+    const api = mockApi();
+    const handlers = await buildPiHandlers(POLY_ZOO, api as any, MODES_RAW);
+    const first = routableSessionCtx("sess-a");
+    const second = routableSessionCtx("sess-b");
+
+    // The two sessions are observed interleaved: a's scope is created
+    // first, b's second, and a's first LLM turn arrives only afterwards.
+    // Each registration must reach the resources of the session the event
+    // names, never "whichever scope was created last".
+    await handlers.beforeAgentStart({ systemPrompt: "base" }, first.ctx);
+    await handlers.beforeAgentStart({ systemPrompt: "base" }, second.ctx);
+    await handlers.beforeAgentStart({ systemPrompt: "base" }, first.ctx);
+
+    assert.equal(
+      first.calls.length,
+      2,
+      "session a re-registers its own widget",
+    );
+    assert.equal(
+      second.calls.length,
+      1,
+      "session b keeps its single registration",
+    );
+    // Re-registering for session a releases a's OWN previous listener: the
+    // listener session b bound must stay live.
+    assert.equal(first.live(), 1, "session a keeps exactly one listener");
+    assert.equal(second.live(), 1, "session b's listener is not torn down");
   });
 
   it("re-registers the fleet widget after its component is disposed (reload/resume)", async () => {

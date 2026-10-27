@@ -31,7 +31,7 @@ initTheme();
 // ---------------------------------------------------------------------------
 
 describe("zookeeperPi — thin entry wiring", () => {
-  it("registers all twelve event handlers against the real config.toml (poly full)", async () => {
+  it("registers the resident event handlers against the real config.toml (poly full)", async () => {
     // The real config.toml carries [zoo.mode.poly] (and a second
     // [zoo.mode.mono] sub-table).  Point the mode state file at poly so
     // the entry selects the full profile.
@@ -39,6 +39,7 @@ describe("zookeeperPi — thin entry wiring", () => {
       const api = mockApi();
       await zookeeperPi(api as any);
       assert.equal(typeof api.handlers.session_start, "function");
+      assert.equal(typeof api.handlers.session_shutdown, "function");
       assert.equal(typeof api.handlers.before_agent_start, "function");
       assert.equal(typeof api.handlers.resources_discover, "function");
       assert.equal(typeof api.handlers.tool_result, "function");

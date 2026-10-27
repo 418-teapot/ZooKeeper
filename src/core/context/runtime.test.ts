@@ -1,35 +1,89 @@
 /**
  * Tests for the runtime singletons (`runtime.ts`).
  *
- * Covers the per-session `cleanupSession` single entry point (clears
+ * Covers the per-session `cleanupSession` deletion entry point (clears
  * the agent binding, the model-limit entry, the persisted state file,
- * and the pending view-change flag), the shared `sessionAgentRegistry`
- * the cleanup writes through, and the
- * `_resetContextStateManagerForTesting` test seam that drops the
- * singleton plus the view-change flags.  Tests run against a
- * scratch store directory so the persistence cleanup is observable.
+ * and the pending view-change flag), the `releaseSessionRuntime` entry
+ * point that keeps the persisted context (a plugin dispose or reload is
+ * not a deletion), the shared `sessionAgentRegistry` the cleanup writes
+ * through, and the `_resetContextStateManagerForTesting` test seam that
+ * drops the singleton plus the view-change flags.  Suites that observe
+ * persistence bind the singleton to a scratch store directory.
  */
 import assert from "node:assert/strict";
+import { rmSync } from "node:fs";
 import { afterEach, describe, it } from "node:test";
+import { makeTmpDir } from "../../testkits/tmp.js";
 import { sessionAgentRegistry } from "../session-agent.js";
 import * as modelLimits from "./model-limits.js";
+import { getRoundView, publishRoundView } from "./round-view.js";
 import {
   _resetContextStateManagerForTesting,
   cleanupSession,
   consumePendingViewChange,
   getContextStateManager,
+  releaseSessionRuntime,
   setPendingViewChange,
 } from "./runtime.js";
+import { createStateStore } from "./store.js";
 
 // ---------------------------------------------------------------------------
 // Test setup
 // ---------------------------------------------------------------------------
 
+/** Scratch store directories the current test created. */
+const tmpDirs: string[] = [];
+
 afterEach(() => {
   _resetContextStateManagerForTesting();
   sessionAgentRegistry.clear();
   modelLimits._resetForTesting();
+  for (const dir of tmpDirs.splice(0)) {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
+
+/**
+ * Bind the singleton manager to a scratch store.
+ *
+ * @returns The sandbox store and its directory.
+ */
+function sandboxStore() {
+  const dir = makeTmpDir("zoo-runtime");
+  tmpDirs.push(dir);
+  const store = createStateStore(dir);
+  _resetContextStateManagerForTesting(store);
+  return { dir, store };
+}
+
+/** A minimal published round view; only its presence in the cache matters. */
+const EMPTY_ROUND_VIEW = {
+  projection: { messages: [], invocations: [], byRegion: new Map() },
+  numbered: [],
+};
+
+/**
+ * Stage a cached, mutated state entry without writing it to the store.
+ *
+ * @param sessionID - The session to stage.
+ * @param summary - The block summary that must survive the release.
+ * @returns The manager and the cached state object.
+ */
+function stageCachedBlock(sessionID: string, summary: string) {
+  const manager = getContextStateManager();
+  const cached = manager.get(sessionID);
+  cached.blocks.set(1, {
+    start: 0,
+    end: 3,
+    summary,
+    spanHash: "ffff0000",
+    status: "active",
+    compressedTokens: 100,
+    summaryTokens: 20,
+    createdAt: 1000,
+  });
+  return { manager, cached };
+}
 
 // ---------------------------------------------------------------------------
 // cleanupSession
@@ -131,6 +185,61 @@ describe("cleanupSession", () => {
   it("is a no-op for an unknown session id", () => {
     // No throws, no leaked state.
     cleanupSession("never-existed");
+    assert.equal(sessionAgentRegistry.resolve("never-existed"), undefined);
+    assert.equal(modelLimits.getModelLimit("never-existed"), undefined);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// releaseSessionRuntime
+// ---------------------------------------------------------------------------
+
+describe("releaseSessionRuntime", () => {
+  it("keeps the persisted state and saves the cached mutations", () => {
+    const { store } = sandboxStore();
+    const { manager, cached } = stageCachedBlock("release-keeps", "kept");
+
+    releaseSessionRuntime("release-keeps");
+
+    assert.equal(
+      store.load("release-keeps").blocks.get(1)?.summary,
+      "kept",
+      "the cached compression must be written back, not dropped",
+    );
+    const after = manager.get("release-keeps");
+    assert.notEqual(after, cached, "the in-memory entry must be dropped");
+    assert.equal(
+      after.blocks.get(1)?.summary,
+      "kept",
+      "a later instance reloads the same state from the store",
+    );
+  });
+
+  it("drops the runtime records and keeps the session's agent binding", () => {
+    sandboxStore();
+    const sessionID = "release-runtime";
+    sessionAgentRegistry.bind(sessionID, "dolphin");
+    modelLimits.setModelLimit(sessionID, 4096, "test-model");
+    setPendingViewChange(sessionID);
+    publishRoundView(sessionID, EMPTY_ROUND_VIEW);
+
+    releaseSessionRuntime(sessionID);
+
+    assert.equal(modelLimits.getModelLimit(sessionID), undefined);
+    assert.equal(consumePendingViewChange(sessionID), false);
+    assert.equal(getRoundView(sessionID), undefined);
+    assert.equal(
+      sessionAgentRegistry.resolve(sessionID),
+      "dolphin",
+      "the agent binding is process-owned and outlives the plugin instance",
+    );
+  });
+
+  it("is a no-op for an unknown session id", () => {
+    sandboxStore();
+
+    releaseSessionRuntime("never-existed");
+
     assert.equal(sessionAgentRegistry.resolve("never-existed"), undefined);
     assert.equal(modelLimits.getModelLimit("never-existed"), undefined);
   });
