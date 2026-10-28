@@ -26,13 +26,14 @@ export { contextPruningTransformHandler, handleContextPruning };
  * `adapter` and `contextConfig` as needs, so composition skips it when
  * the host wires no adapter.  The unit is otherwise enabled
  * unconditionally: the whole pipeline runs on every host and session
- * kind (anchor protection covers the first-user message via
- * `anchorTokens`; the release notification routes through
- * `caps.toolHost` and is skipped when the host wires no tool host or
- * the session agent cannot be resolved).  `hasCompressTool` is read from
- * the `uses` projection of the selected tools, so the nudge /
- * manual-compress phases only advertise windows a selected `compress`
- * tool would accept — whether or not that tool is registered yet.
+ * kind (the first-user message stays protected by `validateRange`
+ * unconditionally, independent of config; the release notification
+ * routes through `caps.toolHost` and is skipped when the host wires no
+ * tool host or the session agent cannot be resolved).  `hasCompressTool`
+ * is read from the `uses` projection of the selected tools, so the
+ * nudge / manual-compress phases only advertise windows a selected
+ * `compress` tool would accept — whether or not that tool is
+ * registered yet.
  *
  * Fail-closed: a host without an adapter never activates the unit,
  * matching how a null mode profile disables every unit.

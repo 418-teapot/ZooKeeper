@@ -1,7 +1,7 @@
 /**
  * Tests for `parseContextConfig` in `src/core/config-parse.ts`.
  *
- * Covers the seven C11-* contracts from the semantic-equivalence
+ * Covers the six C11-* contracts from the semantic-equivalence
  * checklist audit (2026-08-17):
  *
  *  - C11-01 fail-to-skip: any invalid value in a section invalidates
@@ -9,24 +9,21 @@
  *    warn carrying the offending key); an absent section is
  *    undefined with no warn.
  *  - C11-02 zero values preserved: protected_messages:0 /
- *    released_percent:0 / anchor_tokens:0 / compress.threshold_tokens:0
- *    / compress.protected_tokens:0 are accepted without warns.
- *  - C11-03 anchorTokens missing-key default: 0 (the only missing-key
- *    default in the whole parser); negative / non-numeric invalidate
- *    the core group.
- *  - C11-04 released_percent top-level priority: only the top-level
+ *    released_percent:0 / compress.threshold_tokens:0 /
+ *    compress.protected_tokens:0 are accepted without warns.
+ *  - C11-03 released_percent top-level priority: only the top-level
  *    `[zoo.context].released_percent` is read; the legacy
  *    `[zoo.context.dedup].released_percent` is silently ignored.
  *    Bounds 0–100; out-of-range / non-finite / non-numeric invalidate
  *    the core group.
- *  - C11-05 strict section validation: compress requires all three
+ *  - C11-04 strict section validation: compress requires all three
  *    keys, max_ranges must be a positive integer; decompress requires
  *    max_fill_percent as integer 1–100; the legacy
  *    `reject_percent` is silently ignored.
- *  - C11-06 nudge strict validation: all five keys required; invalid
+ *  - C11-05 nudge strict validation: all five keys required; invalid
  *    thresholds (string for caps, malformed percentage, negative cap)
  *    drop the whole section.
- *  - C11-07 unknown keys are silently ignored (legacy / future
+ *  - C11-06 unknown keys are silently ignored (legacy / future
  *    candidates don't trigger warns).
  *
  * The test harness reads the in-memory log buffer via
@@ -71,11 +68,11 @@ describe("C11-01 fail-to-skip", () => {
   describe("core group ([zoo.context])", () => {
     it("returns undefined fields and logs context_config_invalid for string protected_messages", () => {
       const result = parseContextConfig({
-        context: { protected_messages: "abc" },
+        context: { protected_messages: "abc", released_percent: 10 },
       });
       assert.equal(result.protectedMessages, undefined);
+      // The valid sibling key is dropped too — the group fails as a whole.
       assert.equal(result.releasedPercent, undefined);
-      assert.equal(result.anchorTokens, 0);
 
       const warns = warnsOf("context_config_invalid");
       assert.equal(warns.length, 1, "exactly one warn for the section");
@@ -83,26 +80,12 @@ describe("C11-01 fail-to-skip", () => {
       assert.equal(warns[0].value, "abc");
     });
 
-    it("returns undefined fields and logs context_config_invalid for negative anchor_tokens", () => {
-      const result = parseContextConfig({
-        context: { anchor_tokens: -5 },
-      });
-      assert.equal(result.protectedMessages, undefined);
-      assert.equal(result.releasedPercent, undefined);
-      assert.equal(result.anchorTokens, 0);
-
-      const warns = warnsOf("context_config_invalid");
-      assert.equal(warns.length, 1);
-      assert.equal(warns[0].key, "anchor_tokens");
-    });
-
     it("returns undefined fields and logs context_config_invalid for non-finite released_percent", () => {
       const result = parseContextConfig({
-        context: { released_percent: NaN },
+        context: { protected_messages: 3, released_percent: NaN },
       });
       assert.equal(result.protectedMessages, undefined);
       assert.equal(result.releasedPercent, undefined);
-      assert.equal(result.anchorTokens, 0);
 
       const warns = warnsOf("context_config_invalid");
       assert.equal(warns.length, 1);
@@ -293,7 +276,6 @@ describe("C11-01 fail-to-skip", () => {
       const result = parseContextConfig({});
       assert.equal(result.protectedMessages, undefined);
       assert.equal(result.releasedPercent, undefined);
-      assert.equal(result.anchorTokens, 0);
       assert.equal(result.dedup, undefined);
       assert.equal(result.purgeErrors, undefined);
       assert.equal(result.nudge, undefined);
@@ -315,7 +297,6 @@ describe("C11-01 fail-to-skip", () => {
       const result = parseContextConfig({ context: {} });
       assert.equal(result.protectedMessages, undefined);
       assert.equal(result.releasedPercent, undefined);
-      assert.equal(result.anchorTokens, 0);
       assert.equal(result.dedup, undefined);
       assert.equal(result.purgeErrors, undefined);
       assert.equal(result.nudge, undefined);
@@ -355,7 +336,6 @@ describe("C11-01 fail-to-skip", () => {
       // Core group dropped.
       assert.equal(result.protectedMessages, undefined);
       assert.equal(result.releasedPercent, undefined);
-      assert.equal(result.anchorTokens, 0);
       // Other sub-sections remain valid.
       assert.deepEqual(result.dedup, {
         minMessages: 20,
@@ -381,7 +361,6 @@ describe("C11-01 fail-to-skip", () => {
         context: {
           protected_messages: 3,
           released_percent: 10,
-          anchor_tokens: 0,
           dedup: {
             min_messages: 20,
             threshold_context: 50,
@@ -398,7 +377,6 @@ describe("C11-01 fail-to-skip", () => {
       // Core & dedup & decompress remain valid.
       assert.equal(result.protectedMessages, 3);
       assert.equal(result.releasedPercent, 10);
-      assert.equal(result.anchorTokens, 0);
       assert.deepEqual(result.dedup, {
         minMessages: 20,
         thresholdContext: 50,
@@ -419,8 +397,8 @@ describe("C11-01 fail-to-skip", () => {
 
 // =============================================================================
 // C11-02 zero values preserved: protected_messages:0 / released_percent:0 /
-// anchor_tokens:0 / compress.threshold_tokens:0 / compress.protected_tokens:0
-// are accepted without warns and round-trip as 0.
+// compress.threshold_tokens:0 / compress.protected_tokens:0 are accepted
+// without warns and round-trip as 0.
 // =============================================================================
 
 describe("C11-02 zero values preserved", () => {
@@ -437,14 +415,6 @@ describe("C11-02 zero values preserved", () => {
       context: { released_percent: 0 },
     });
     assert.equal(result.releasedPercent, 0);
-    assert.equal(warnCount("context_config_invalid"), 0);
-  });
-
-  it("accepts anchor_tokens: 0 (no warn, returns 0)", () => {
-    const result = parseContextConfig({
-      context: { anchor_tokens: 0 },
-    });
-    assert.equal(result.anchorTokens, 0);
     assert.equal(warnCount("context_config_invalid"), 0);
   });
 
@@ -485,75 +455,21 @@ describe("C11-02 zero values preserved", () => {
       context: {
         protected_messages: 0,
         released_percent: 0,
-        anchor_tokens: 0,
       },
     });
     assert.equal(result.protectedMessages, 0);
     assert.equal(result.releasedPercent, 0);
-    assert.equal(result.anchorTokens, 0);
     assert.equal(warnCount("context_config_invalid"), 0);
   });
 });
 
 // =============================================================================
-// C11-03 anchorTokens missing-key default: 0 (the only missing-key default
-// in the parser); negative / non-numeric values invalidate the core group.
-// =============================================================================
-
-describe("C11-03 anchorTokens default and validation", () => {
-  it("returns anchorTokens: 0 when anchor_tokens key is absent (no warn)", () => {
-    const result = parseContextConfig({ context: { protected_messages: 3 } });
-    assert.equal(result.anchorTokens, 0);
-    assert.equal(warnCount("context_config_invalid"), 0);
-  });
-
-  it("returns anchorTokens: 0 when [zoo.context] is entirely absent (no warn)", () => {
-    const result = parseContextConfig({});
-    assert.equal(result.anchorTokens, 0);
-    assert.equal(warnCount("context_config_invalid"), 0);
-  });
-
-  it("drops core group and warns for negative anchor_tokens", () => {
-    const result = parseContextConfig({
-      context: { protected_messages: 3, anchor_tokens: -5 },
-    });
-    assert.equal(result.anchorTokens, 0);
-    assert.equal(result.protectedMessages, undefined);
-    const warns = warnsOf("context_config_invalid");
-    assert.equal(warns.length, 1);
-    assert.equal(warns[0].key, "anchor_tokens");
-  });
-
-  it("drops core group and warns for non-numeric anchor_tokens", () => {
-    const result = parseContextConfig({
-      context: { anchor_tokens: "abc" },
-    });
-    assert.equal(result.anchorTokens, 0);
-    assert.equal(result.protectedMessages, undefined);
-    const warns = warnsOf("context_config_invalid");
-    assert.equal(warns.length, 1);
-    assert.equal(warns[0].key, "anchor_tokens");
-  });
-
-  it("drops core group and warns for non-finite anchor_tokens (Infinity)", () => {
-    const result = parseContextConfig({
-      context: { anchor_tokens: Infinity },
-    });
-    assert.equal(result.anchorTokens, 0);
-    assert.equal(result.protectedMessages, undefined);
-    const warns = warnsOf("context_config_invalid");
-    assert.equal(warns.length, 1);
-    assert.equal(warns[0].key, "anchor_tokens");
-  });
-});
-
-// =============================================================================
-// C11-04 released_percent top-level priority: only the top-level
+// C11-03 released_percent top-level priority: only the top-level
 // `[zoo.context].released_percent` is read; the legacy
 // `[zoo.context.dedup].released_percent` is silently ignored. Bounds 0–100.
 // =============================================================================
 
-describe("C11-04 released_percent precedence and bounds", () => {
+describe("C11-03 released_percent precedence and bounds", () => {
   describe("top-level priority", () => {
     it("returns top-level value when both top-level and [dedup] are present", () => {
       const result = parseContextConfig({
@@ -675,12 +591,12 @@ describe("C11-04 released_percent precedence and bounds", () => {
 });
 
 // =============================================================================
-// C11-05 strict section validation: compress requires all three keys +
+// C11-04 strict section validation: compress requires all three keys +
 // max_ranges must be a positive integer; decompress requires max_fill_percent
 // as integer 1–100; legacy `reject_percent` is silently ignored.
 // =============================================================================
 
-describe("C11-05 strict section validation", () => {
+describe("C11-04 strict section validation", () => {
   describe("compress — three keys all required", () => {
     it("drops compress when threshold_tokens is missing", () => {
       const result = parseContextConfig({
@@ -906,11 +822,11 @@ describe("C11-05 strict section validation", () => {
 });
 
 // =============================================================================
-// C11-06 nudge strict validation: all five keys required; invalid thresholds
+// C11-05 nudge strict validation: all five keys required; invalid thresholds
 // (string for caps, malformed percentage, negative cap) drop the whole section.
 // =============================================================================
 
-describe("C11-06 nudge strict validation", () => {
+describe("C11-05 nudge strict validation", () => {
   /** A valid 5-key nudge config — used as the baseline. */
   const VALID_NUDGE = {
     min_context: 1000,
@@ -1106,11 +1022,11 @@ describe("C11-06 nudge strict validation", () => {
 });
 
 // =============================================================================
-// C11-07 unknown keys are silently ignored (legacy / future candidates don't
+// C11-06 unknown keys are silently ignored (legacy / future candidates don't
 // trigger warns).
 // =============================================================================
 
-describe("C11-07 unknown keys ignored", () => {
+describe("C11-06 unknown keys ignored", () => {
   it("ignores unknown top-level key in [zoo.context]", () => {
     const result = parseContextConfig({
       context: {
@@ -1226,7 +1142,6 @@ describe("C11-07 unknown keys ignored", () => {
     });
     assert.equal(result.protectedMessages, undefined);
     assert.equal(result.releasedPercent, undefined);
-    assert.equal(result.anchorTokens, 0);
     assert.equal(result.dedup, undefined);
     assert.equal(result.purgeErrors, undefined);
     assert.equal(result.nudge, undefined);
@@ -1251,7 +1166,6 @@ describe("parseContextConfig — fully valid config", () => {
       context: {
         protected_messages: 3,
         released_percent: 10,
-        anchor_tokens: 0,
         dedup: {
           min_messages: 20,
           threshold_context: 50,
@@ -1279,7 +1193,6 @@ describe("parseContextConfig — fully valid config", () => {
     });
     assert.equal(result.protectedMessages, 3);
     assert.equal(result.releasedPercent, 10);
-    assert.equal(result.anchorTokens, 0);
     assert.deepEqual(result.dedup, {
       minMessages: 20,
       thresholdContext: 50,

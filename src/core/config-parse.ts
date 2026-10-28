@@ -698,10 +698,9 @@ function isValidNudgeThreshold(v: unknown): boolean {
  * section — the mode profile decides whether the pruning pipeline and
  * the compress / decompress tools load at all:
  *
- *  - The core group (`protected_messages`, `released_percent`,
- *    `anchor_tokens`) — keys are individually optional; any PRESENT
- *    invalid key invalidates the whole group (all become `undefined`,
- *    `anchor_tokens` falls back to 0) with one
+ *  - The core group (`protected_messages`, `released_percent`) — keys
+ *    are individually optional; any PRESENT invalid key invalidates the
+ *    whole group (both become `undefined`) with one
  *    `context_config_invalid` warn.
  *  - `dedup` / `purge_errors` — keys individually optional; any present
  *    invalid key drops the whole sub-section (`undefined`) with one
@@ -711,11 +710,8 @@ function isValidNudgeThreshold(v: unknown): boolean {
  *    whole sub-section with one `nudge_config_invalid` /
  *    `compress_config_invalid` / `decompress_config_invalid` warn.
  *
- * Unknown keys are silently ignored.
- *
- * `anchor_tokens` is the only key in the context-pruning config with a
- * missing-key default: absent → `0` (anchor protection disabled) —
- * every other field of this config stays `undefined` when absent.
+ * Unknown keys are silently ignored.  An absent key never gets a
+ * default: every field of this config stays `undefined` when absent.
  *
  * @param zooConfig - The `zoo` section of the parsed config.toml.
  * @returns The unified context-pruning config (fail to skip).
@@ -723,17 +719,14 @@ function isValidNudgeThreshold(v: unknown): boolean {
 export function parseContextConfig(zooConfig: any): ContextPruningConfig {
   const c = (zooConfig.context ?? {}) as Record<string, unknown>;
 
-  // ── Core group (protected_messages / released_percent / anchor_tokens) ─
+  // ── Core group (protected_messages / released_percent) ───────────────
   // Keys are individually optional; a PRESENT invalid key invalidates the
-  // whole group (fail to skip) and logs exactly one warn.  Missing
-  // `anchor_tokens` maps to 0 — the parse layer's only default.
+  // whole group (fail to skip) and logs exactly one warn.
   let protectedMessages: number | undefined;
   let releasedPercent: number | undefined;
-  let anchorTokens: number | undefined;
   const coreChecks: KeyCheck[] = [
     ["protected_messages", c.protected_messages, isOptionalNonNegativeNumber],
     ["released_percent", c.released_percent, isOptionalPercent],
-    ["anchor_tokens", c.anchor_tokens, isOptionalNonNegativeNumber],
   ];
   const badCore = findBadKey(coreChecks);
   if (badCore) {
@@ -741,7 +734,6 @@ export function parseContextConfig(zooConfig: any): ContextPruningConfig {
   } else {
     protectedMessages = c.protected_messages as number | undefined;
     releasedPercent = c.released_percent as number | undefined;
-    anchorTokens = c.anchor_tokens as number | undefined;
   }
 
   // ── Dedup producer gate ───────────────────────────────────────────────
@@ -886,7 +878,6 @@ export function parseContextConfig(zooConfig: any): ContextPruningConfig {
   return {
     protectedMessages,
     releasedPercent,
-    anchorTokens: anchorTokens ?? 0,
     nudge,
     dedup,
     purgeErrors,

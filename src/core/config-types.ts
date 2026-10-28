@@ -212,7 +212,7 @@ export type AgentColorMap = Record<string, string>;
  * Unified context-pruning configuration.
  *
  * Each producer (dedup, purge-errors) has its own gate sub-config;
- * `turnProtection` and `releaseThresholdPercent` remain shared.
+ * `protectedMessages` and `releasedPercent` remain shared.
  * Enablement is decided exclusively by the mode profile: registering
  * the `context-pruning` hook unit runs the whole pipeline, and
  * registering the `compress` tool gates the nudge / manual-compress
@@ -224,19 +224,6 @@ export interface ContextPruningConfig {
    * Undefined → skip all producers (they early-return).
    */
   protectedMessages?: number;
-  /**
-   * Anchor token threshold for the first-user message ref protection.
-   *
-   * The first non-ignored user message in the session view is skipped
-   * (no message ref assigned) when its heuristic token estimate does
-   * not exceed this value; a larger estimate treats it as an ordinary
-   * message.  `0` disables the protection.
-   *
-   * The parse layer maps a missing `anchor_tokens` key to `0`, so a
-   * parsed config always carries a concrete number — the missing-key
-   * default lives only at the parse boundary.
-   */
-  anchorTokens?: number;
   /**
    * Minimum percentage of prompt-side total that pending marks must
    * reach before batch release.  Undefined → skip release check.
