@@ -51,9 +51,9 @@ export const SPIDER_AGENT_LINE = `- **spider** — 只读网页调研：查找�
 
 export const BEAVER_AGENT_LINE = `- **beaver** — 代码实现：编写或修改代码、补充测试，并验证变更结果。`;
 
-export const EAGLE_AGENT_LINE = `- **eagle** — 只读代码审查：识别有具体证据、足以影响合并决策的问题；需要审查时加载 \`code-review\` skill。`;
+export const EAGLE_AGENT_LINE = `- **eagle** — 只读代码审查：识别有具体证据、足以影响合并决策的问题；**必须**通过加载 \`code-review\` skill 调用。`;
 
-export const KIWI_AGENT_LINE = `- **kiwi** — 只读知识分析：整理和核验外部 URL、文档或 wiki 内容；按任务加载相应的 wiki skill。`;
+export const KIWI_AGENT_LINE = `- **kiwi** — 只读知识分析：整理和核验外部 URL、文档或 wiki 内容；**必须**通过加载相应的 wiki skill 调用。`;
 
 // ---------------------------------------------------------------------------
 // Leaf subagent listing — shared across beaver + mola
