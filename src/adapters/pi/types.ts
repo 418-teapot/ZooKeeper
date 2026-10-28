@@ -322,9 +322,15 @@ export type PiBoundaryResult = BoundaryResult;
  * settle keys are registered at all.
  */
 export interface PiEventHandlers {
-  /** `before_agent_start`: inject the resolved identity's agent prompt. */
+  /**
+   * `before_agent_start`: inject the resolved identity's agent prompt.
+   *
+   * pi fires it for a submitted prompt (`"user"`) and for a run started by
+   * `sendMessage({ triggerTurn: true })` while idle (`"custom"`), so work
+   * that belongs to a real user turn must check `messageType`.
+   */
   beforeAgentStart(
-    evt: { systemPrompt: string },
+    evt: { systemPrompt: string; messageType: "user" | "custom" },
     ctx?: unknown,
   ): Promise<{ systemPrompt: string }>;
   /** `resources_discover`: contribute the profile's skill directories. */

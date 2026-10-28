@@ -1,0 +1,666 @@
+{
+  "scenario": "G-MS-04",
+  "rounds": [
+    {
+      "label": "accumulate-below-threshold",
+      "view": [
+        {
+          "role": "user",
+          "toolParts": [],
+          "text": "[m1] call c1"
+        },
+        {
+          "role": "assistant",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "",
+              "pruned": false,
+              "input": "{\"cmd\":\"echo c1\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m2] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+              "pruned": false,
+              "input": null,
+              "inputPruned": false
+            }
+          ]
+        }
+      ],
+      "toolResult": null,
+      "toolError": null,
+      "notifications": []
+    },
+    {
+      "label": "accumulate-more",
+      "view": [
+        {
+          "role": "user",
+          "toolParts": [],
+          "text": "[m1] call c1"
+        },
+        {
+          "role": "assistant",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "",
+              "pruned": false,
+              "input": "{\"cmd\":\"echo c1\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m2] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+              "pruned": false,
+              "input": null,
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "toolParts": [],
+          "text": "[m3] call c3"
+        },
+        {
+          "role": "assistant",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "",
+              "pruned": false,
+              "input": "{\"cmd\":\"echo c3\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m4] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+              "pruned": false,
+              "input": null,
+              "inputPruned": false
+            }
+          ]
+        }
+      ],
+      "toolResult": null,
+      "toolError": null,
+      "notifications": []
+    },
+    {
+      "label": "reach-threshold-release",
+      "view": [
+        {
+          "role": "user",
+          "toolParts": [],
+          "text": "[m1] call c1"
+        },
+        {
+          "role": "assistant",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "",
+              "pruned": false,
+              "input": "{\"cmd\":\"echo c1\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m2] [Output removed to save context - information superseded or no longer needed]",
+              "pruned": true,
+              "input": null,
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "toolParts": [],
+          "text": "[m3] call c3"
+        },
+        {
+          "role": "assistant",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "",
+              "pruned": false,
+              "input": "{\"cmd\":\"echo c3\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m4] [Output removed to save context - information superseded or no longer needed]",
+              "pruned": true,
+              "input": null,
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "toolParts": [],
+          "text": "[m5] call c5"
+        },
+        {
+          "role": "assistant",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "",
+              "pruned": false,
+              "input": "{\"cmd\":\"echo c5\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m6] [Output removed to save context - information superseded or no longer needed]",
+              "pruned": true,
+              "input": null,
+              "inputPruned": false
+            }
+          ]
+        }
+      ],
+      "toolResult": null,
+      "toolError": null,
+      "notifications": [
+        "上下文清理：已折叠 3 个工具调用，约回收 5.0K tokens"
+      ]
+    },
+    {
+      "label": "seed-pending-below-threshold",
+      "view": [
+        {
+          "role": "user",
+          "toolParts": [],
+          "text": "[m1] call c1"
+        },
+        {
+          "role": "assistant",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "",
+              "pruned": false,
+              "input": "{\"cmd\":\"echo c1\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m2] [Output removed to save context - information superseded or no longer needed]",
+              "pruned": true,
+              "input": null,
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "toolParts": [],
+          "text": "[m3] call c3"
+        },
+        {
+          "role": "assistant",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "",
+              "pruned": false,
+              "input": "{\"cmd\":\"echo c3\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m4] [Output removed to save context - information superseded or no longer needed]",
+              "pruned": true,
+              "input": null,
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "toolParts": [],
+          "text": "[m5] call c5"
+        },
+        {
+          "role": "assistant",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "",
+              "pruned": false,
+              "input": "{\"cmd\":\"echo c5\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m6] [Output removed to save context - information superseded or no longer needed]",
+              "pruned": true,
+              "input": null,
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "toolParts": [],
+          "text": "[m7] call c7"
+        },
+        {
+          "role": "assistant",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "",
+              "pruned": false,
+              "input": "{\"cmd\":\"echo c7\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m8] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+              "pruned": false,
+              "input": null,
+              "inputPruned": false
+            }
+          ]
+        }
+      ],
+      "toolResult": null,
+      "toolError": null,
+      "notifications": []
+    },
+    {
+      "label": "forced-flush-view-change",
+      "view": [
+        {
+          "role": "user",
+          "toolParts": [],
+          "text": "[m1] call c1"
+        },
+        {
+          "role": "assistant",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "",
+              "pruned": false,
+              "input": "{\"cmd\":\"echo c1\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m2] [Output removed to save context - information superseded or no longer needed]",
+              "pruned": true,
+              "input": null,
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "toolParts": [],
+          "text": "[m3] call c3"
+        },
+        {
+          "role": "assistant",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "",
+              "pruned": false,
+              "input": "{\"cmd\":\"echo c3\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m4] [Output removed to save context - information superseded or no longer needed]",
+              "pruned": true,
+              "input": null,
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "toolParts": [],
+          "text": "[m5] call c5"
+        },
+        {
+          "role": "assistant",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "",
+              "pruned": false,
+              "input": "{\"cmd\":\"echo c5\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m6] [Output removed to save context - information superseded or no longer needed]",
+              "pruned": true,
+              "input": null,
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "toolParts": [],
+          "text": "[m7] call c7"
+        },
+        {
+          "role": "assistant",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "",
+              "pruned": false,
+              "input": "{\"cmd\":\"echo c7\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m8] [Output removed to save context - information superseded or no longer needed]",
+              "pruned": true,
+              "input": null,
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "toolParts": [],
+          "text": "[m9] call c9"
+        },
+        {
+          "role": "assistant",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "",
+              "pruned": false,
+              "input": "{\"cmd\":\"echo c9\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m10] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+              "pruned": false,
+              "input": null,
+              "inputPruned": false
+            }
+          ]
+        }
+      ],
+      "toolResult": null,
+      "toolError": null,
+      "notifications": [
+        "上下文清理：已折叠 1 个工具调用，约回收 100 tokens"
+      ]
+    },
+    {
+      "label": "no-pending-no-notification",
+      "view": [
+        {
+          "role": "user",
+          "toolParts": [],
+          "text": "[m1] call c1"
+        },
+        {
+          "role": "assistant",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "",
+              "pruned": false,
+              "input": "{\"cmd\":\"echo c1\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m2] [Output removed to save context - information superseded or no longer needed]",
+              "pruned": true,
+              "input": null,
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "toolParts": [],
+          "text": "[m3] call c3"
+        },
+        {
+          "role": "assistant",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "",
+              "pruned": false,
+              "input": "{\"cmd\":\"echo c3\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m4] [Output removed to save context - information superseded or no longer needed]",
+              "pruned": true,
+              "input": null,
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "toolParts": [],
+          "text": "[m5] call c5"
+        },
+        {
+          "role": "assistant",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "",
+              "pruned": false,
+              "input": "{\"cmd\":\"echo c5\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m6] [Output removed to save context - information superseded or no longer needed]",
+              "pruned": true,
+              "input": null,
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "toolParts": [],
+          "text": "[m7] call c7"
+        },
+        {
+          "role": "assistant",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "",
+              "pruned": false,
+              "input": "{\"cmd\":\"echo c7\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m8] [Output removed to save context - information superseded or no longer needed]",
+              "pruned": true,
+              "input": null,
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "toolParts": [],
+          "text": "[m9] call c9"
+        },
+        {
+          "role": "assistant",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "",
+              "pruned": false,
+              "input": "{\"cmd\":\"echo c9\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m10] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+              "pruned": false,
+              "input": null,
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "toolParts": [],
+          "text": "[m11] call c11"
+        },
+        {
+          "role": "assistant",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "",
+              "pruned": false,
+              "input": "{\"cmd\":\"echo c11\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m12] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+              "pruned": false,
+              "input": null,
+              "inputPruned": false
+            }
+          ]
+        }
+      ],
+      "toolResult": null,
+      "toolError": null,
+      "notifications": []
+    }
+  ]
+}

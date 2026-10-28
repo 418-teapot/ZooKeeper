@@ -3,18 +3,7 @@
 set -euo pipefail
 
 PY_TEST_DIRS=("installer/tests/")
-
-# Auto-discover all *.test.ts files under the plugin source tree plus the
-# golden behaviour baseline suite.
-TS_TEST_FILES=()
-while IFS= read -r -d '' f; do
-  TS_TEST_FILES+=("$f")
-done < <(find src tests/golden -type f -name '*.test.ts' -print0 | sort -z)
-
-if [ ${#TS_TEST_FILES[@]} -eq 0 ]; then
-  echo "ERROR: no *.test.ts files found under src/ or tests/golden/" >&2
-  exit 1
-fi
+TS_PATHS=("src/" "tests/")
 
 # Shared line-coverage threshold for the TypeScript suite and every Rust crate.
 COV_THRESHOLD=90
@@ -179,7 +168,9 @@ fi
 
 section "TypeScript tests"
 set +e
-TS_OUTPUT=$(bun test --coverage "${TS_TEST_FILES[@]}" 2>&1)
+# bun discovers *.test.ts recursively in each directory argument, so the
+# in-process host harness self-tests run here with the rest of the suite.
+TS_OUTPUT=$(bun test --coverage "${TS_PATHS[@]}" 2>&1)
 TS_EXIT=$?
 set -e
 
@@ -201,6 +192,10 @@ if [ $TS_EXIT -ne 0 ]; then
   fail "ts tests (exit code $TS_EXIT)"
   FAILED=1
 fi
+
+# Real pi host suite.
+run_section "Host pi" "pi host core scenarios" \
+  bun tests/host/pi/run.ts
 
 if [ "$FAILED" -eq 0 ]; then
   section "All tests passed"

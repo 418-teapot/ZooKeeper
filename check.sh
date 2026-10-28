@@ -7,7 +7,7 @@
 set -euo pipefail
 
 PY_FILES="install.py installer/ tests/ tools/ skills/"
-TS_DIR="src/"
+TS_PATHS=("src/" "tests/")
 ZOO_DIR="tools/"
 
 RED='\033[0;31m'
@@ -38,7 +38,7 @@ uv run ruff check --fix $PY_FILES && ok "ruff fix" || fail "ruff fix"
 uv run ruff format $PY_FILES      && ok "ruff format" || fail "ruff format"
 
 echo "TypeScript …"
-bunx biome check --error-on-warnings --write "$TS_DIR" && ok "biome fix" || fail "biome fix"
+bunx biome check --error-on-warnings --write "${TS_PATHS[@]}" && ok "biome fix" || fail "biome fix"
 
 echo "Rust …"
 (cd "$ZOO_DIR" && cargo clippy --all-targets --all-features --fix --allow-dirty --allow-staged) && ok "cargo clippy fix" || fail "cargo clippy fix"
@@ -51,7 +51,7 @@ echo "Python …"
 uv run ruff check $PY_FILES && ok "ruff check" || { fail "ruff check"; FAILED=1; }
 
 echo "TypeScript …"
-bunx biome lint --error-on-warnings "$TS_DIR" && ok "biome lint" || { fail "biome lint"; FAILED=1; }
+bunx biome lint --error-on-warnings "${TS_PATHS[@]}" && ok "biome lint" || { fail "biome lint"; FAILED=1; }
 bunx tsc --noEmit && ok "tsc" || { fail "tsc"; FAILED=1; }
 
 echo "Rust …"

@@ -1,0 +1,328 @@
+{
+  "scenario": "PI-SUMMARY-01",
+  "rounds": [
+    {
+      "label": "baseline",
+      "view": [
+        {
+          "role": "user",
+          "toolParts": [],
+          "text": "[m1] 开场问题"
+        },
+        {
+          "role": "assistant",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "",
+              "pruned": false,
+              "input": "{\"cmd\":\"ls\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m2] data 1",
+              "pruned": false,
+              "input": null,
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "toolParts": [],
+          "text": "[m3] 中间问题"
+        },
+        {
+          "role": "assistant",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "",
+              "pruned": false,
+              "input": "{\"cmd\":\"find\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m4] data 2",
+              "pruned": false,
+              "input": null,
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "toolParts": [],
+          "text": "[m5] 最后一个问题"
+        },
+        {
+          "role": "assistant",
+          "toolParts": [],
+          "text": "[m6] 回答完毕"
+        }
+      ],
+      "toolResult": null,
+      "toolError": null,
+      "notifications": []
+    },
+    {
+      "label": "create-block-materializes-user-summary",
+      "view": [
+        {
+          "role": "user",
+          "toolParts": [],
+          "text": "[m1] 开场问题"
+        },
+        {
+          "role": "user",
+          "toolParts": [],
+          "text": "[m2] [Block b1 · 2 条] 第一段\nfirst summary."
+        },
+        {
+          "role": "user",
+          "toolParts": [],
+          "text": "[m3] 中间问题"
+        },
+        {
+          "role": "assistant",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "",
+              "pruned": false,
+              "input": "{\"cmd\":\"find\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m4] data 2",
+              "pruned": false,
+              "input": null,
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "toolParts": [],
+          "text": "[m5] 最后一个问题"
+        },
+        {
+          "role": "assistant",
+          "toolParts": [],
+          "text": "[m6] 回答完毕"
+        }
+      ],
+      "toolResult": null,
+      "toolError": null,
+      "notifications": []
+    },
+    {
+      "label": "validate-block-survives-round",
+      "view": [
+        {
+          "role": "user",
+          "toolParts": [],
+          "text": "[m1] 开场问题"
+        },
+        {
+          "role": "user",
+          "toolParts": [],
+          "text": "[m2] [Block b1 · 2 条] 第一段\nfirst summary."
+        },
+        {
+          "role": "user",
+          "toolParts": [],
+          "text": "[m3] 中间问题"
+        },
+        {
+          "role": "assistant",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "",
+              "pruned": false,
+              "input": "{\"cmd\":\"find\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m4] data 2",
+              "pruned": false,
+              "input": null,
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "toolParts": [],
+          "text": "[m5] 最后一个问题"
+        },
+        {
+          "role": "assistant",
+          "toolParts": [],
+          "text": "[m6] 回答完毕"
+        }
+      ],
+      "toolResult": null,
+      "toolError": null,
+      "notifications": []
+    },
+    {
+      "label": "add-second-block",
+      "view": [
+        {
+          "role": "user",
+          "toolParts": [],
+          "text": "[m1] 开场问题"
+        },
+        {
+          "role": "user",
+          "toolParts": [],
+          "text": "[m2] [Block b1 · 2 条] 第一段\nfirst summary."
+        },
+        {
+          "role": "user",
+          "toolParts": [],
+          "text": "[m3] 中间问题"
+        },
+        {
+          "role": "user",
+          "toolParts": [],
+          "text": "[m4] [Block b2 · 2 条] 第二段\nsecond summary."
+        },
+        {
+          "role": "user",
+          "toolParts": [],
+          "text": "[m5] 最后一个问题"
+        },
+        {
+          "role": "assistant",
+          "toolParts": [],
+          "text": "[m6] 回答完毕"
+        }
+      ],
+      "toolResult": null,
+      "toolError": null,
+      "notifications": []
+    },
+    {
+      "label": "both-blocks-survive",
+      "view": [
+        {
+          "role": "user",
+          "toolParts": [],
+          "text": "[m1] 开场问题"
+        },
+        {
+          "role": "user",
+          "toolParts": [],
+          "text": "[m2] [Block b1 · 2 条] 第一段\nfirst summary."
+        },
+        {
+          "role": "user",
+          "toolParts": [],
+          "text": "[m3] 中间问题"
+        },
+        {
+          "role": "user",
+          "toolParts": [],
+          "text": "[m4] [Block b2 · 2 条] 第二段\nsecond summary."
+        },
+        {
+          "role": "user",
+          "toolParts": [],
+          "text": "[m5] 最后一个问题"
+        },
+        {
+          "role": "assistant",
+          "toolParts": [],
+          "text": "[m6] 回答完毕"
+        }
+      ],
+      "toolResult": null,
+      "toolError": null,
+      "notifications": []
+    },
+    {
+      "label": "deactivate-first-unfolds-one",
+      "view": [
+        {
+          "role": "user",
+          "toolParts": [],
+          "text": "[m1] 开场问题"
+        },
+        {
+          "role": "assistant",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "",
+              "pruned": false,
+              "input": "{\"cmd\":\"ls\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m2] data 1",
+              "pruned": false,
+              "input": null,
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "toolParts": [],
+          "text": "[m3] 中间问题"
+        },
+        {
+          "role": "user",
+          "toolParts": [],
+          "text": "[m4] [Block b2 · 2 条] 第二段\nsecond summary."
+        },
+        {
+          "role": "user",
+          "toolParts": [],
+          "text": "[m5] 最后一个问题"
+        },
+        {
+          "role": "assistant",
+          "toolParts": [],
+          "text": "[m6] 回答完毕"
+        }
+      ],
+      "toolResult": null,
+      "toolError": null,
+      "notifications": []
+    }
+  ]
+}

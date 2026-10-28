@@ -1,0 +1,215 @@
+/**
+ * Scenarios — decompress dual path and restore gate, pi lane.
+ *
+ * A range over N tool exchanges covers 2N messages here (see
+ * `conversation.ts`), so the covered counts and the reclaimed-token
+ * figures in the tool results are roughly doubled.
+ *
+ * - G-DEC-01: restore vs recall — active block restores (two-round view
+ *   effect), a block that stopped folding keeps its record and recalls
+ *   its persisted summary, long summaries are truncated with a Chinese
+ *   tail note, and invalid / missing block ids error loudly.
+ * - G-DEC-02: maxFillPercent gate three states — restore allowed, and
+ *   gate skipped when no model limit is known.
+ *
+ * @module
+ */
+
+import type { Scenario } from "../types.js";
+import { longConversation, makeRange } from "./conversation.js";
+
+const SID = "golden-pi-g-dec-01";
+
+/** Compress + decompress config shared by both scenarios. */
+function decConfig(maxFillPercent: number) {
+  return {
+    protectedMessages: 15,
+    releasedPercent: 10,
+    dedup: {},
+    purgeErrors: {},
+    compress: {
+      thresholdTokens: 2000,
+      protectedTokens: 20000,
+      maxRanges: 8,
+    },
+    decompress: { maxFillPercent },
+  };
+}
+
+/**
+ * G-DEC-01 — restore and recall dual path.
+ *
+ * b1 ([1, 13)) is consumed by b2 ([1, 31)); the record stays in the
+ * map, so its recall reads back the persisted summary.  Restoring b2
+ * consumes it the same way, and both records stay recallable — the
+ * invented-id error lists them.  A third block with a 17000-char summary
+ * is created (under the next id, never a reused one) and then consumed
+ * by b4; its recall truncates to the cap.  Invalid ids error loudly.
+ */
+export const G_DEC_01: Scenario = {
+  id: "G-DEC-01",
+  sessionID: SID,
+  config: decConfig(90),
+  rounds: [
+    {
+      label: "baseline-refs",
+      messages: longConversation(SID),
+    },
+    {
+      label: "create-b1",
+      messages: longConversation(SID),
+      action: {
+        kind: "compress-tool",
+        // makeRange(1, 6) → [1, 13): 12 messages (6 tool pairs).
+        ranges: [makeRange(1, 6, "第一段")],
+      },
+    },
+    {
+      label: "consume-b1-create-b2",
+      messages: longConversation(SID),
+      action: {
+        kind: "compress-tool",
+        // b1 = [1, 13) is active, so the folded view puts its summary
+        // at m2 and numbers the following units from m3.  fromRef m2
+        // (the b1 summary → [1, 13)) + toRef m11 (the a15/tr15 unit
+        // over [29, 31)) resolve to [1, 31), which swallows b1 → b2:
+        // the range stays inside the protection boundary (38).
+        ranges: [
+          {
+            fromRef: "m0002",
+            toRef: "m0011",
+            title: "第二段",
+            summary: "用户请求执行命令，助手完成了操作。",
+          },
+        ],
+      },
+    },
+    {
+      label: "recall-inactive-b1",
+      messages: longConversation(SID),
+      action: { kind: "decompress-tool", blockId: "b1" },
+    },
+    {
+      label: "restore-active-b2",
+      messages: longConversation(SID),
+      action: { kind: "decompress-tool", blockId: "b2" },
+    },
+    {
+      label: "recall-b1-idempotent",
+      messages: longConversation(SID),
+      action: { kind: "decompress-tool", blockId: "b1" },
+    },
+    {
+      label: "recall-b2-after-restore",
+      messages: longConversation(SID),
+      action: { kind: "decompress-tool", blockId: "b2" },
+    },
+    {
+      label: "decompress-nonexistent",
+      messages: longConversation(SID),
+      action: { kind: "decompress-tool", blockId: "b99" },
+    },
+    {
+      label: "decompress-bad-format",
+      messages: longConversation(SID),
+      action: { kind: "decompress-tool", blockId: "3" },
+    },
+    {
+      label: "create-long-summary-block",
+      messages: longConversation(SID),
+      action: {
+        kind: "compress-tool",
+        // makeRange(9, 12) → [17, 25): 8 messages (4 tool pairs).
+        ranges: [makeRange(9, 12, "长摘要", "x".repeat(17000))],
+      },
+    },
+    {
+      label: "consume-b3-create-b4",
+      messages: longConversation(SID),
+      action: {
+        kind: "compress-tool",
+        // b1 and b2 are consumed, b3 = [17, 25) is active: the folded
+        // view puts b3's summary at m10 and the a17/tr17 unit over
+        // [33, 35) at m15, so fromRef m10 + toRef m15 → [17, 35)
+        // swallows the long-summary block → b4.
+        ranges: [
+          {
+            fromRef: "m0010",
+            toRef: "m0015",
+            title: "第四段",
+            summary: "第四段",
+          },
+        ],
+      },
+    },
+    {
+      label: "recall-truncated",
+      messages: longConversation(SID),
+      action: { kind: "decompress-tool", blockId: "b3" },
+    },
+  ],
+};
+
+/**
+ * G-DEC-02 — maxFillPercent gate three states.
+ *
+ * Restoring b1 with no model limit skips the gate.  The next compress
+ * range creates b2 (ids never repeat), and restoring that block with a
+ * 20000-token limit at 30% fill is rejected with the delta-guidance
+ * error text and zero state change; the same restore with a
+ * 500000-token limit passes.
+ */
+export const G_DEC_02: Scenario = {
+  id: "G-DEC-02",
+  sessionID: "golden-pi-g-dec-02",
+  config: decConfig(30),
+  rounds: [
+    {
+      label: "baseline-refs",
+      messages: longConversation("golden-pi-g-dec-02"),
+    },
+    {
+      label: "create-b1",
+      messages: longConversation("golden-pi-g-dec-02"),
+      action: {
+        kind: "compress-tool",
+        // makeRange(1, 6) → [1, 13): 12 messages (6 tool pairs).
+        ranges: [makeRange(1, 6, "第一段")],
+      },
+    },
+    {
+      label: "restore-no-model-limit-skipped",
+      messages: longConversation("golden-pi-g-dec-02"),
+      action: { kind: "decompress-tool", blockId: "b1" },
+    },
+    {
+      label: "create-b2",
+      messages: longConversation("golden-pi-g-dec-02"),
+      action: {
+        kind: "compress-tool",
+        // makeRange(6, 9) → [11, 19): 8 messages (4 tool pairs).
+        ranges: [makeRange(6, 9, "第四段")],
+      },
+    },
+    {
+      label: "set-limit-20k",
+      messages: longConversation("golden-pi-g-dec-02"),
+      action: { kind: "set-model-limit", context: 20000 },
+    },
+    {
+      label: "restore-rejected-at-limit",
+      messages: longConversation("golden-pi-g-dec-02"),
+      action: { kind: "decompress-tool", blockId: "b2" },
+    },
+    {
+      label: "set-limit-500k",
+      messages: longConversation("golden-pi-g-dec-02"),
+      action: { kind: "set-model-limit", context: 500000 },
+    },
+    {
+      label: "restore-allowed-at-limit",
+      messages: longConversation("golden-pi-g-dec-02"),
+      action: { kind: "decompress-tool", blockId: "b2" },
+    },
+  ],
+};

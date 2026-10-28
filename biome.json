@@ -15,7 +15,11 @@
     }
   },
   "files": {
-    "includes": ["src/**/*.ts", "src/**/*.tsx", "tests/golden/**/*.ts"]
+    "includes": [
+      "src/**/*.ts",
+      "src/**/*.tsx",
+      "tests/**/*.ts"
+    ]
   },
   "javascript": {
     "formatter": {

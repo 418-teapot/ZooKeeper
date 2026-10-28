@@ -1,0 +1,388 @@
+{
+  "scenario": "G-FOLD-03",
+  "rounds": [
+    {
+      "label": "create-block-fold",
+      "view": [
+        {
+          "role": "user",
+          "toolParts": [],
+          "text": "[m1] hello"
+        },
+        {
+          "role": "assistant",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "",
+              "pruned": false,
+              "input": "{\"cmd\":\"x\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m2] data",
+              "pruned": false,
+              "input": null,
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "assistant",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "",
+              "pruned": false,
+              "input": "{\"cmd\":\"y\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m3] done",
+              "pruned": false,
+              "input": null,
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "toolParts": [],
+          "text": "[m4] [Block b1 · 3 条] third\nthird turn summary."
+        }
+      ],
+      "toolResult": null,
+      "toolError": null,
+      "notifications": []
+    },
+    {
+      "label": "seed-pending-marks",
+      "view": [
+        {
+          "role": "user",
+          "toolParts": [],
+          "text": "[m1] hello"
+        },
+        {
+          "role": "assistant",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "",
+              "pruned": false,
+              "input": "{\"cmd\":\"x\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m2] data",
+              "pruned": false,
+              "input": null,
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "assistant",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "",
+              "pruned": false,
+              "input": "{\"cmd\":\"y\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m3] done",
+              "pruned": false,
+              "input": null,
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "toolParts": [],
+          "text": "[m4] [Block b1 · 3 条] third\nthird turn summary."
+        }
+      ],
+      "toolResult": null,
+      "toolError": null,
+      "notifications": []
+    },
+    {
+      "label": "seed-pending-mark-two",
+      "view": [
+        {
+          "role": "user",
+          "toolParts": [],
+          "text": "[m1] hello"
+        },
+        {
+          "role": "assistant",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "",
+              "pruned": false,
+              "input": "{\"cmd\":\"x\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m2] data",
+              "pruned": false,
+              "input": null,
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "assistant",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "",
+              "pruned": false,
+              "input": "{\"cmd\":\"y\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m3] done",
+              "pruned": false,
+              "input": null,
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "toolParts": [],
+          "text": "[m4] [Block b1 · 3 条] third\nthird turn summary."
+        }
+      ],
+      "toolResult": null,
+      "toolError": null,
+      "notifications": []
+    },
+    {
+      "label": "revert-anchor-deleted-deactivate-flush",
+      "view": [
+        {
+          "role": "user",
+          "toolParts": [],
+          "text": "[m1] hello"
+        },
+        {
+          "role": "assistant",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "",
+              "pruned": false,
+              "input": "{\"cmd\":\"x\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m2] data",
+              "pruned": false,
+              "input": null,
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "assistant",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "",
+              "pruned": false,
+              "input": "{\"cmd\":\"y\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m3] done",
+              "pruned": false,
+              "input": null,
+              "inputPruned": false
+            }
+          ]
+        }
+      ],
+      "toolResult": null,
+      "toolError": null,
+      "notifications": []
+    },
+    {
+      "label": "next-turn-release-applied",
+      "view": [
+        {
+          "role": "user",
+          "toolParts": [],
+          "text": "[m1] hello"
+        },
+        {
+          "role": "assistant",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "",
+              "pruned": false,
+              "input": "{\"cmd\":\"x\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m2] [Output removed to save context - information superseded or no longer needed]",
+              "pruned": true,
+              "input": null,
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "assistant",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "",
+              "pruned": false,
+              "input": "{\"cmd\":\"y\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m3] [Output removed to save context - information superseded or no longer needed]",
+              "pruned": true,
+              "input": null,
+              "inputPruned": false
+            }
+          ]
+        }
+      ],
+      "toolResult": null,
+      "toolError": null,
+      "notifications": [
+        "上下文清理：已折叠 2 个工具调用，约回收 300 tokens"
+      ]
+    },
+    {
+      "label": "effective-marks-reapply",
+      "view": [
+        {
+          "role": "user",
+          "toolParts": [],
+          "text": "[m1] hello"
+        },
+        {
+          "role": "assistant",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "",
+              "pruned": false,
+              "input": "{\"cmd\":\"x\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m2] [Output removed to save context - information superseded or no longer needed]",
+              "pruned": true,
+              "input": null,
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "assistant",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "",
+              "pruned": false,
+              "input": "{\"cmd\":\"y\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m3] [Output removed to save context - information superseded or no longer needed]",
+              "pruned": true,
+              "input": null,
+              "inputPruned": false
+            }
+          ]
+        }
+      ],
+      "toolResult": null,
+      "toolError": null,
+      "notifications": []
+    }
+  ]
+}

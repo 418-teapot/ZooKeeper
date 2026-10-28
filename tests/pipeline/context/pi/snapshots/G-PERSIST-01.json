@@ -1,0 +1,260 @@
+{
+  "scenario": "G-PERSIST-01",
+  "rounds": [
+    {
+      "label": "create-mark-and-block-persist",
+      "view": [
+        {
+          "role": "user",
+          "toolParts": [],
+          "text": "[m1] hello"
+        },
+        {
+          "role": "assistant",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "",
+              "pruned": false,
+              "input": "{\"cmd\":\"echo hello\"}",
+              "inputPruned": false
+            },
+            {
+              "tool": "bash",
+              "output": "",
+              "pruned": false,
+              "input": "{\"cmd\":\"echo hello\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m2] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+              "pruned": false,
+              "input": null,
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+              "pruned": false,
+              "input": null,
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "toolParts": [],
+          "text": "[m3] [Block b1 · 1 条] test\ntest summary."
+        },
+        {
+          "role": "assistant",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "",
+              "pruned": false,
+              "input": "{\"cmd\":\"echo x\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m4] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+              "pruned": false,
+              "input": null,
+              "inputPruned": false
+            }
+          ]
+        }
+      ],
+      "toolResult": null,
+      "toolError": null,
+      "notifications": []
+    },
+    {
+      "label": "restart-continues",
+      "view": [
+        {
+          "role": "user",
+          "toolParts": [],
+          "text": "[m1] hello"
+        },
+        {
+          "role": "assistant",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "",
+              "pruned": false,
+              "input": "{\"cmd\":\"echo hello\"}",
+              "inputPruned": false
+            },
+            {
+              "tool": "bash",
+              "output": "",
+              "pruned": false,
+              "input": "{\"cmd\":\"echo hello\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m2] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+              "pruned": false,
+              "input": null,
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+              "pruned": false,
+              "input": null,
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "toolParts": [],
+          "text": "[m3] [Block b1 · 1 条] test\ntest summary."
+        },
+        {
+          "role": "assistant",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "",
+              "pruned": false,
+              "input": "{\"cmd\":\"echo x\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m4] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+              "pruned": false,
+              "input": null,
+              "inputPruned": false
+            }
+          ]
+        }
+      ],
+      "toolResult": null,
+      "toolError": null,
+      "notifications": []
+    },
+    {
+      "label": "second-turn-after-restart",
+      "view": [
+        {
+          "role": "user",
+          "toolParts": [],
+          "text": "[m1] hello"
+        },
+        {
+          "role": "assistant",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "",
+              "pruned": false,
+              "input": "{\"cmd\":\"echo hello\"}",
+              "inputPruned": false
+            },
+            {
+              "tool": "bash",
+              "output": "",
+              "pruned": false,
+              "input": "{\"cmd\":\"echo hello\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m2] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+              "pruned": false,
+              "input": null,
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+              "pruned": false,
+              "input": null,
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "toolParts": [],
+          "text": "[m3] [Block b1 · 1 条] test\ntest summary."
+        },
+        {
+          "role": "assistant",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "",
+              "pruned": false,
+              "input": "{\"cmd\":\"echo x\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m4] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+              "pruned": false,
+              "input": null,
+              "inputPruned": false
+            }
+          ]
+        }
+      ],
+      "toolResult": null,
+      "toolError": null,
+      "notifications": []
+    }
+  ]
+}

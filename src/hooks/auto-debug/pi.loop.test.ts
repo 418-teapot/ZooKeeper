@@ -446,9 +446,32 @@ describe("buildPiHandlers — loop settle", () => {
     assert.equal(wakes(spent).length, 0, "second run is budget-exhausted");
 
     // A real user prompt starts a fresh budget.
-    await handlers.beforeAgentStart({ systemPrompt: "base" }, c);
+    await handlers.beforeAgentStart(
+      { messageType: "user", systemPrompt: "base" },
+      c,
+    );
     const fresh = await settle(handlers, RUN_ENDED, c);
     assert.equal(wakes(fresh).length, 1, "a user turn grants a fresh reminder");
+  });
+
+  it("keeps the budget spent when a custom message starts the run", async () => {
+    // pi also emits `before_agent_start` for a run started by
+    // `sendMessage({ triggerTurn: true })`; only a user turn grants a
+    // fresh budget, so the custom run must not revive the reminder.
+    const api = mockApi();
+    const handlers = await buildPiHandlers(ZOO_LIMIT_1, api as any, RAW_AGENTS);
+    const c = settleCtx("sess-custom", ACTIVE_BRANCH);
+
+    await settle(handlers, RUN_ENDED, c);
+    const spent = await settle(handlers, RUN_ENDED, c);
+    assert.equal(wakes(spent).length, 0, "second run is budget-exhausted");
+
+    await handlers.beforeAgentStart(
+      { messageType: "custom", systemPrompt: "base" },
+      c,
+    );
+    const after = await settle(handlers, RUN_ENDED, c);
+    assert.equal(wakes(after).length, 0, "a custom run keeps the budget spent");
   });
 
   it("never propagates a stale-context error out of the judge", async () => {
@@ -570,7 +593,7 @@ describe("buildPiHandlers — loop settle", () => {
     // Neither lifecycle hook touches the map: no reset, no eviction, no
     // insertion.
     await handlers.beforeAgentStart(
-      { systemPrompt: "base" },
+      { messageType: "user", systemPrompt: "base" },
       settleCtx("sess-keep", ACTIVE_BRANCH),
     );
     await handlers.sessionStart(
@@ -598,7 +621,7 @@ describe("buildPiHandlers — loop settle", () => {
     assert.equal(handlers.hasSettledHandlers, false);
 
     await handlers.beforeAgentStart(
-      { systemPrompt: "base" },
+      { messageType: "user", systemPrompt: "base" },
       settleCtx("sess-keep", ACTIVE_BRANCH),
     );
     await handlers.sessionStart(
@@ -1014,7 +1037,10 @@ describe("buildPiHandlers — settled-turn facts", () => {
 
     // A real user prompt resets the budget AND clears the lock, so even
     // a text-only settle under the fresh budget wakes again.
-    await handlers.beforeAgentStart({ systemPrompt: "base" }, c);
+    await handlers.beforeAgentStart(
+      { messageType: "user", systemPrompt: "base" },
+      c,
+    );
     const third = await settle(handlers, textOnlyRun(), c);
 
     assert.equal(wakes(third).length, 1, "the user turn cleared the lock too");

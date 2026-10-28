@@ -181,15 +181,16 @@ export function createPiEventHandlers(
       // widget / todo wiring touches session resources.  No id, nothing.
       await deps.ensureSession(ctx);
       // Reset the session's reminder budget when a real user message starts
-      // a turn.  pi emits `before_agent_start` only for a top-level user
-      // prompt (`prompt()`); a wake continued at the pre-settle boundary
-      // resumes the run through `agent.continue()` and never emits this
-      // event.  The `BeforeAgentStartEvent` payload itself carries no
-      // source field, so the emission boundary is the reliable signal: the
-      // counter resets for every real user turn and never for the injected
-      // wake.
+      // a turn.  pi fires `before_agent_start` for a submitted prompt and
+      // for a run started by `sendMessage({ triggerTurn: true })` while
+      // idle, and only the former is a user turn: the event's `messageType`
+      // is the field that tells them apart.  A wake continued at the
+      // pre-settle boundary resumes through `agent.continue()` and never
+      // emits this event, so the injected wake keeps its spent budget
+      // either way.
       const promptSessionId = deps.getSessionId();
       if (
+        evt.messageType === "user" &&
         deps.engine !== undefined &&
         promptSessionId !== undefined &&
         promptSessionId.length > 0

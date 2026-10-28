@@ -93,7 +93,10 @@ describe("session_tree — todo cache invalidation", () => {
     // latest handled event's session manager through it.  This seeding path
     // does not refresh the widget, so the scan count below only reflects
     // the tool's cache behaviour.
-    await handlers.beforeAgentStart({ systemPrompt: "base" }, ctx);
+    await handlers.beforeAgentStart(
+      { messageType: "user", systemPrompt: "base" },
+      ctx,
+    );
 
     await todo.execute("call-1", { op: "view" }, undefined, undefined, ctx);
     assert.equal(scans.count, 1, "a cache miss scans the transcript once");
@@ -400,6 +403,7 @@ describe("buildPiHandlers — prompt injection + skill discovery", () => {
   it("poly full → default primary prompt prepended, all 11 skill dirs discovered", async () => {
     const handlers = await buildPiHandlers(POLY_ZOO, undefined, MODES_RAW);
     const result = await handlers.beforeAgentStart({
+      messageType: "user",
       systemPrompt: "base",
     });
     assert.ok(result.systemPrompt.startsWith("<Role>"));
@@ -423,6 +427,7 @@ describe("buildPiHandlers — prompt injection + skill discovery", () => {
   it("null profile → prompt untouched, no skill paths", async () => {
     const handlers = await buildPiHandlers({});
     const result = await handlers.beforeAgentStart({
+      messageType: "user",
       systemPrompt: "base",
     });
     assert.equal(result.systemPrompt, "base");
@@ -444,6 +449,7 @@ describe("buildPiHandlers — prompt injection + skill discovery", () => {
     };
     const handlers = await buildPiHandlers(zoo, undefined, MODES_RAW);
     const result = await handlers.beforeAgentStart({
+      messageType: "user",
       systemPrompt: "base",
     });
     assert.equal(result.systemPrompt, "base");
@@ -591,7 +597,10 @@ describe("buildPiHandlers — identity-dispatch prompt injection", () => {
     const handlers = await buildPiHandlers(POLY_ZOO, undefined, MODES_RAW);
     assert.equal(getPrimary(), "dolphin");
 
-    const result = await handlers.beforeAgentStart({ systemPrompt: "base" });
+    const result = await handlers.beforeAgentStart({
+      messageType: "user",
+      systemPrompt: "base",
+    });
     assert.ok(result.systemPrompt.startsWith("<Role>"));
     assert.ok(
       result.systemPrompt.includes("对最终交付负责"),
@@ -611,13 +620,16 @@ describe("buildPiHandlers — identity-dispatch prompt injection", () => {
     assert.equal(getPrimary(), "dolphin");
 
     const gpt = await handlers.beforeAgentStart(
-      { systemPrompt: "base" },
+      { messageType: "user", systemPrompt: "base" },
       { model: { id: "openai/gpt-5.5" } },
     );
     assert.ok(gpt.systemPrompt.includes(GPT), "gpt model uses the gpt line");
     assert.ok(!gpt.systemPrompt.includes(BASE));
 
-    const unknown = await handlers.beforeAgentStart({ systemPrompt: "base" });
+    const unknown = await handlers.beforeAgentStart({
+      messageType: "user",
+      systemPrompt: "base",
+    });
     assert.ok(unknown.systemPrompt.includes(BASE), "no model falls back");
     assert.ok(!unknown.systemPrompt.includes(GPT));
   });
@@ -628,7 +640,10 @@ describe("buildPiHandlers — identity-dispatch prompt injection", () => {
     // before_agent_start: the second primary (mola) prompt is injected.
     const handlers = await buildPiHandlers(POLY_ZOO, undefined, MODES_RAW);
     setPrimary("mola");
-    const result = await handlers.beforeAgentStart({ systemPrompt: "base" });
+    const result = await handlers.beforeAgentStart({
+      messageType: "user",
+      systemPrompt: "base",
+    });
     assert.ok(result.systemPrompt.startsWith("<Role>"));
     assert.ok(
       result.systemPrompt.includes("你是 mola，一个方案规划 agent"),
@@ -642,6 +657,7 @@ describe("buildPiHandlers — identity-dispatch prompt injection", () => {
     let injected = "";
     await runWithIdentity({ kind: "subagent", name: "beaver" }, async () => {
       const result = await handlers.beforeAgentStart({
+        messageType: "user",
         systemPrompt: "base",
       });
       injected = result.systemPrompt;
@@ -654,6 +670,7 @@ describe("buildPiHandlers — identity-dispatch prompt injection", () => {
     let injected = "";
     await runWithIdentity({ kind: "subagent", name: "lynx" }, async () => {
       const result = await handlers.beforeAgentStart({
+        messageType: "user",
         systemPrompt: "base",
       });
       injected = result.systemPrompt;
@@ -701,6 +718,7 @@ describe("buildPiHandlers — identity-dispatch prompt injection", () => {
     // resolveIdentity falls back to the stale sentinel, which is not in
     // the profile — zero injection.
     const promptResult = await handlers.beforeAgentStart({
+      messageType: "user",
       systemPrompt: "base",
     });
     assert.equal(promptResult.systemPrompt, "base");
@@ -1083,7 +1101,10 @@ describe("lifecycle scope", () => {
     const handlers = await buildPiHandlers(POLY_ZOO, api as any, MODES_RAW);
     const { state, ctx } = lifecycleCtx("sess-first-turn");
 
-    await handlers.beforeAgentStart({ systemPrompt: "base" }, ctx);
+    await handlers.beforeAgentStart(
+      { messageType: "user", systemPrompt: "base" },
+      ctx,
+    );
 
     assert.equal(state.widgets, 1, "the first turn seeds the session widget");
     assert.equal(state.binds, 1, "the first turn binds the listener");
@@ -1152,7 +1173,10 @@ describe("lifecycle scope", () => {
     assert.equal(hasPiSdkSession("sess-shutdown"), false);
 
     // A late event during teardown must not write to the stopped scope.
-    await handlers.beforeAgentStart({ systemPrompt: "base" }, ctx);
+    await handlers.beforeAgentStart(
+      { messageType: "user", systemPrompt: "base" },
+      ctx,
+    );
     assert.equal(state.widgets, registered, "no registration after stop");
     assert.equal(state.binds - state.unsubscribes, 0, "no new listener");
   });
@@ -1255,8 +1279,14 @@ describe("lifecycle scope", () => {
     });
     const first = plan("a");
     const second = plan("b");
-    await handlers.beforeAgentStart({ systemPrompt: "base" }, first);
-    await handlers.beforeAgentStart({ systemPrompt: "base" }, second);
+    await handlers.beforeAgentStart(
+      { messageType: "user", systemPrompt: "base" },
+      first,
+    );
+    await handlers.beforeAgentStart(
+      { messageType: "user", systemPrompt: "base" },
+      second,
+    );
 
     // The latest handled session is `sess-b`; a read for `sess-a` must still
     // restore a's plan.

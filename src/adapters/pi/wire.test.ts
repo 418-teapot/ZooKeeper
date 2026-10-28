@@ -1147,7 +1147,7 @@ describe("buildPiHandlers — primary-switch command wiring", () => {
     // pending ops with the fresh (non-stale) API.  No confirmation entry
     // is appended: the widget already shows the active primary.
     await handlers.beforeAgentStart(
-      { systemPrompt: "base" },
+      { messageType: "user", systemPrompt: "base" },
       { sessionManager: { getSessionId: () => "sess-new" } },
     );
     // Tool-level deny (webfetch) removed; bash (fine-grained sub-table)
@@ -1220,10 +1220,16 @@ describe("buildPiHandlers — primary tool-deny trim (main session)", () => {
     api.activeTools.push(...ALL_TOOLS);
     const handlers = await buildPiHandlers(POLY_ZOO, api as any, PERM_DENY_RAW);
     setPrimary("beaver");
-    await handlers.beforeAgentStart({ systemPrompt: "base" }, SESSION_CTX);
+    await handlers.beforeAgentStart(
+      { messageType: "user", systemPrompt: "base" },
+      SESSION_CTX,
+    );
     assert.deepEqual(api.activeTools, ["edit", "bash"]);
     // Repeated calls filter the FIXED baseline, so denies never accumulate.
-    await handlers.beforeAgentStart({ systemPrompt: "base" }, SESSION_CTX);
+    await handlers.beforeAgentStart(
+      { messageType: "user", systemPrompt: "base" },
+      SESSION_CTX,
+    );
     assert.deepEqual(api.activeTools, ["edit", "bash"]);
   });
 
@@ -1238,7 +1244,10 @@ describe("buildPiHandlers — primary tool-deny trim (main session)", () => {
     );
     assert.deepEqual(api.activeTools, ["edit", "bash"]);
     setPrimary("dolphin");
-    await handlers.beforeAgentStart({ systemPrompt: "base" }, SESSION_CTX);
+    await handlers.beforeAgentStart(
+      { messageType: "user", systemPrompt: "base" },
+      SESSION_CTX,
+    );
     assert.deepEqual(api.activeTools, ALL_TOOLS);
   });
 
@@ -1288,7 +1297,10 @@ describe("buildPiHandlers — primary tool-deny trim (main session)", () => {
     // stopped extension must not filter that set through a baseline it
     // captured earlier: a stale cache would silently remove the new tools.
     api.activeTools.push("fetch");
-    await handlers.beforeAgentStart({ systemPrompt: "base" }, SESSION_CTX);
+    await handlers.beforeAgentStart(
+      { messageType: "user", systemPrompt: "base" },
+      SESSION_CTX,
+    );
 
     assert.deepEqual(api.activeTools, ["edit", "bash", "fetch"]);
   });
@@ -1465,7 +1477,10 @@ describe("buildPiHandlers — widget seeding", () => {
     // The first per-session event registers the `zoo` fleet widget (a
     // component factory) with the default primary (dolphin) — even though
     // no switch has happened.
-    await handlers.beforeAgentStart({ systemPrompt: "base" }, ctx);
+    await handlers.beforeAgentStart(
+      { messageType: "user", systemPrompt: "base" },
+      ctx,
+    );
     assert.equal(calls.length, 1);
     assert.equal(calls[0][0], "zoo");
     assert.equal(typeof calls[0][1], "function");
@@ -1490,10 +1505,16 @@ describe("buildPiHandlers — widget seeding", () => {
 
     // No session_start: the first LLM turn must seed the widget's todo
     // column so a plan rendered before startup still appears.
-    await handlers.beforeAgentStart({ systemPrompt: "base" }, ctx);
+    await handlers.beforeAgentStart(
+      { messageType: "user", systemPrompt: "base" },
+      ctx,
+    );
     assert.equal(scans.count, 1, "the first turn seeds the todo column");
     // Later turns are one-shot: the store is never re-read.
-    await handlers.beforeAgentStart({ systemPrompt: "base" }, ctx);
+    await handlers.beforeAgentStart(
+      { messageType: "user", systemPrompt: "base" },
+      ctx,
+    );
     assert.equal(scans.count, 1, "the todo seed must be one-shot");
   });
 
@@ -1521,8 +1542,14 @@ describe("buildPiHandlers — widget seeding", () => {
       },
     };
 
-    await handlers.beforeAgentStart({ systemPrompt: "base" }, ctx);
-    await handlers.beforeAgentStart({ systemPrompt: "base" }, ctx);
+    await handlers.beforeAgentStart(
+      { messageType: "user", systemPrompt: "base" },
+      ctx,
+    );
+    await handlers.beforeAgentStart(
+      { messageType: "user", systemPrompt: "base" },
+      ctx,
+    );
     assert.equal(calls.length, 2, "each trigger re-registers the widget");
     assert.equal(
       activeSubscriptions,
@@ -1565,7 +1592,10 @@ describe("buildPiHandlers — widget seeding", () => {
 
     // A later beforeAgentStart (first LLM turn) re-runs the registration
     // (idempotent — re-seeding is safe) without stacking the listener.
-    await handlers.beforeAgentStart({ systemPrompt: "base" }, ctx);
+    await handlers.beforeAgentStart(
+      { messageType: "user", systemPrompt: "base" },
+      ctx,
+    );
     assert.equal(calls.length, 2, "registration re-runs on each trigger");
     assert.equal(
       activeSubscriptions,
@@ -1584,9 +1614,18 @@ describe("buildPiHandlers — widget seeding", () => {
     // first, b's second, and a's first LLM turn arrives only afterwards.
     // Each registration must reach the resources of the session the event
     // names, never "whichever scope was created last".
-    await handlers.beforeAgentStart({ systemPrompt: "base" }, first.ctx);
-    await handlers.beforeAgentStart({ systemPrompt: "base" }, second.ctx);
-    await handlers.beforeAgentStart({ systemPrompt: "base" }, first.ctx);
+    await handlers.beforeAgentStart(
+      { messageType: "user", systemPrompt: "base" },
+      first.ctx,
+    );
+    await handlers.beforeAgentStart(
+      { messageType: "user", systemPrompt: "base" },
+      second.ctx,
+    );
+    await handlers.beforeAgentStart(
+      { messageType: "user", systemPrompt: "base" },
+      first.ctx,
+    );
 
     assert.equal(
       first.calls.length,
@@ -1716,7 +1755,10 @@ describe("buildPiHandlers — widget seeding", () => {
         },
       },
     };
-    await handlers.beforeAgentStart({ systemPrompt: "base" }, ctx);
+    await handlers.beforeAgentStart(
+      { messageType: "user", systemPrompt: "base" },
+      ctx,
+    );
     assert.equal(widgetCalls, 0, "no host → no seed");
   });
 
@@ -1742,7 +1784,10 @@ describe("buildPiHandlers — widget seeding", () => {
         },
       },
     };
-    await handlers.beforeAgentStart({ systemPrompt: "base" }, ctx);
+    await handlers.beforeAgentStart(
+      { messageType: "user", systemPrompt: "base" },
+      ctx,
+    );
     assert.equal(widgetCalls, 0, "no orchestrator → no seed");
     assert.equal(getPrimary(), undefined);
   });
@@ -2755,7 +2800,10 @@ describe("buildPiHandlers — zoo widget colorization", () => {
     const { calls, ctx } = widgetRecordingCtx();
     // The default primary (dolphin) carries #66CCFF → the widget's collapsed
     // line embeds the truecolor-wrapped name (inside the muted status hue).
-    await handlers.beforeAgentStart({ systemPrompt: "base" }, ctx);
+    await handlers.beforeAgentStart(
+      { messageType: "user", systemPrompt: "base" },
+      ctx,
+    );
     const { lines, dispose } = renderZooWidget(calls);
     assert.equal(lines.length, 1);
     assert.ok(lines[0].includes(colorize("dolphin", "#66CCFF")), lines[0]);
@@ -2768,7 +2816,10 @@ describe("buildPiHandlers — zoo widget colorization", () => {
     // primary falls back to the plain agent name (fail-closed).
     const handlers = await buildPiHandlers(POLY_ZOO, api as any, MODES_RAW);
     const { calls, ctx } = widgetRecordingCtx();
-    await handlers.beforeAgentStart({ systemPrompt: "base" }, ctx);
+    await handlers.beforeAgentStart(
+      { messageType: "user", systemPrompt: "base" },
+      ctx,
+    );
     const { lines, dispose } = renderZooWidget(calls);
     assert.ok(lines[0].includes("dolphin"), lines[0]);
     assert.ok(!lines[0].includes("\u001b["), "no ANSI when uncolored");
@@ -2787,7 +2838,10 @@ describe("buildPiHandlers — zoo widget colorization", () => {
     });
     const { calls, ctx } = widgetRecordingCtx();
     // Malformed color is omitted by the parser → the primary stays plain.
-    await handlers.beforeAgentStart({ systemPrompt: "base" }, ctx);
+    await handlers.beforeAgentStart(
+      { messageType: "user", systemPrompt: "base" },
+      ctx,
+    );
     const { lines, dispose } = renderZooWidget(calls);
     assert.ok(lines[0].includes("dolphin"), lines[0]);
     assert.ok(!lines[0].includes("\u001b["), "no ANSI for a malformed color");
@@ -2927,7 +2981,10 @@ describe("buildPiHandlers — null profile fail-closed", () => {
         ui: { notify: () => {}, setWidget: () => {} },
       },
     );
-    const prompt = await handlers.beforeAgentStart({ systemPrompt: "base" });
+    const prompt = await handlers.beforeAgentStart({
+      messageType: "user",
+      systemPrompt: "base",
+    });
     assert.equal(prompt.systemPrompt, "base");
     assert.deepEqual((await handlers.resourcesDiscover()).skillPaths, []);
     assert.equal(

@@ -101,6 +101,7 @@ describe("zookeeperPi — thin entry wiring", () => {
       );
 
       const prompt = (await api.handlers.before_agent_start({
+        messageType: "user",
         systemPrompt: "base",
       })) as { systemPrompt: string };
       assert.ok(prompt.systemPrompt.startsWith("<Role>"));

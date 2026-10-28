@@ -1,0 +1,1609 @@
+{
+  "scenario": "G-MS-01",
+  "rounds": [
+    {
+      "label": "gate-closed-below-threshold",
+      "view": [
+        {
+          "role": "user",
+          "toolParts": [],
+          "text": "[m1] filler 0"
+        },
+        {
+          "role": "assistant",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "",
+              "pruned": false,
+              "input": "{\"cmd\":\"echo filler\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m2] ok",
+              "pruned": false,
+              "input": null,
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "toolParts": [],
+          "text": "[m3] filler 1"
+        },
+        {
+          "role": "assistant",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "",
+              "pruned": false,
+              "input": "{\"cmd\":\"echo filler\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m4] ok",
+              "pruned": false,
+              "input": null,
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "toolParts": [],
+          "text": "[m5] filler 2"
+        },
+        {
+          "role": "assistant",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "",
+              "pruned": false,
+              "input": "{\"cmd\":\"echo filler\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m6] ok",
+              "pruned": false,
+              "input": null,
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "toolParts": [],
+          "text": "[m7] filler 3"
+        },
+        {
+          "role": "assistant",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "",
+              "pruned": false,
+              "input": "{\"cmd\":\"echo filler\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m8] ok",
+              "pruned": false,
+              "input": null,
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "toolParts": [],
+          "text": "[m9] filler 4"
+        },
+        {
+          "role": "assistant",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "",
+              "pruned": false,
+              "input": "{\"cmd\":\"echo filler\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m10] ok",
+              "pruned": false,
+              "input": null,
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "toolParts": [],
+          "text": "[m11] filler 5"
+        },
+        {
+          "role": "assistant",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "",
+              "pruned": false,
+              "input": "{\"cmd\":\"echo filler\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m12] ok",
+              "pruned": false,
+              "input": null,
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "toolParts": [],
+          "text": "[m13] filler 6"
+        },
+        {
+          "role": "assistant",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "",
+              "pruned": false,
+              "input": "{\"cmd\":\"echo filler\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m14] ok",
+              "pruned": false,
+              "input": null,
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "toolParts": [],
+          "text": "[m15] do it"
+        },
+        {
+          "role": "assistant",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "",
+              "pruned": false,
+              "input": "{\"cmd\":\"echo hello\"}",
+              "inputPruned": false
+            },
+            {
+              "tool": "bash",
+              "output": "",
+              "pruned": false,
+              "input": "{\"cmd\":\"echo hello\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m16] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+              "pruned": false,
+              "input": null,
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+              "pruned": false,
+              "input": null,
+              "inputPruned": false
+            }
+          ]
+        }
+      ],
+      "toolResult": null,
+      "toolError": null,
+      "notifications": []
+    },
+    {
+      "label": "protected-window-skips",
+      "view": [
+        {
+          "role": "user",
+          "toolParts": [],
+          "text": "[m1] filler 0"
+        },
+        {
+          "role": "assistant",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "",
+              "pruned": false,
+              "input": "{\"cmd\":\"echo filler\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m2] ok",
+              "pruned": false,
+              "input": null,
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "toolParts": [],
+          "text": "[m3] filler 1"
+        },
+        {
+          "role": "assistant",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "",
+              "pruned": false,
+              "input": "{\"cmd\":\"echo filler\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m4] ok",
+              "pruned": false,
+              "input": null,
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "toolParts": [],
+          "text": "[m5] filler 2"
+        },
+        {
+          "role": "assistant",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "",
+              "pruned": false,
+              "input": "{\"cmd\":\"echo filler\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m6] ok",
+              "pruned": false,
+              "input": null,
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "toolParts": [],
+          "text": "[m7] filler 3"
+        },
+        {
+          "role": "assistant",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "",
+              "pruned": false,
+              "input": "{\"cmd\":\"echo filler\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m8] ok",
+              "pruned": false,
+              "input": null,
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "toolParts": [],
+          "text": "[m9] filler 4"
+        },
+        {
+          "role": "assistant",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "",
+              "pruned": false,
+              "input": "{\"cmd\":\"echo filler\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m10] ok",
+              "pruned": false,
+              "input": null,
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "toolParts": [],
+          "text": "[m11] filler 5"
+        },
+        {
+          "role": "assistant",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "",
+              "pruned": false,
+              "input": "{\"cmd\":\"echo filler\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m12] ok",
+              "pruned": false,
+              "input": null,
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "toolParts": [],
+          "text": "[m13] filler 6"
+        },
+        {
+          "role": "assistant",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "",
+              "pruned": false,
+              "input": "{\"cmd\":\"echo filler\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m14] ok",
+              "pruned": false,
+              "input": null,
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "toolParts": [],
+          "text": "[m15] do it"
+        },
+        {
+          "role": "assistant",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "",
+              "pruned": false,
+              "input": "{\"cmd\":\"echo hello\"}",
+              "inputPruned": false
+            },
+            {
+              "tool": "bash",
+              "output": "",
+              "pruned": false,
+              "input": "{\"cmd\":\"echo hello\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m16] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+              "pruned": false,
+              "input": null,
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+              "pruned": false,
+              "input": null,
+              "inputPruned": false
+            }
+          ]
+        }
+      ],
+      "toolResult": null,
+      "toolError": null,
+      "notifications": []
+    },
+    {
+      "label": "gate-open-marks-created-not-applied",
+      "view": [
+        {
+          "role": "user",
+          "toolParts": [],
+          "text": "[m1] filler 0"
+        },
+        {
+          "role": "assistant",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "",
+              "pruned": false,
+              "input": "{\"cmd\":\"echo filler\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m2] ok",
+              "pruned": false,
+              "input": null,
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "toolParts": [],
+          "text": "[m3] filler 1"
+        },
+        {
+          "role": "assistant",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "",
+              "pruned": false,
+              "input": "{\"cmd\":\"echo filler\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m4] ok",
+              "pruned": false,
+              "input": null,
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "toolParts": [],
+          "text": "[m5] filler 2"
+        },
+        {
+          "role": "assistant",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "",
+              "pruned": false,
+              "input": "{\"cmd\":\"echo filler\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m6] ok",
+              "pruned": false,
+              "input": null,
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "toolParts": [],
+          "text": "[m7] filler 3"
+        },
+        {
+          "role": "assistant",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "",
+              "pruned": false,
+              "input": "{\"cmd\":\"echo filler\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m8] ok",
+              "pruned": false,
+              "input": null,
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "toolParts": [],
+          "text": "[m9] filler 4"
+        },
+        {
+          "role": "assistant",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "",
+              "pruned": false,
+              "input": "{\"cmd\":\"echo filler\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m10] ok",
+              "pruned": false,
+              "input": null,
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "toolParts": [],
+          "text": "[m11] filler 5"
+        },
+        {
+          "role": "assistant",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "",
+              "pruned": false,
+              "input": "{\"cmd\":\"echo filler\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m12] ok",
+              "pruned": false,
+              "input": null,
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "toolParts": [],
+          "text": "[m13] filler 6"
+        },
+        {
+          "role": "assistant",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "",
+              "pruned": false,
+              "input": "{\"cmd\":\"echo filler\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m14] ok",
+              "pruned": false,
+              "input": null,
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "toolParts": [],
+          "text": "[m15] do it"
+        },
+        {
+          "role": "assistant",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "",
+              "pruned": false,
+              "input": "{\"cmd\":\"echo hello\"}",
+              "inputPruned": false
+            },
+            {
+              "tool": "bash",
+              "output": "",
+              "pruned": false,
+              "input": "{\"cmd\":\"echo hello\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m16] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+              "pruned": false,
+              "input": null,
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+              "pruned": false,
+              "input": null,
+              "inputPruned": false
+            }
+          ]
+        }
+      ],
+      "toolResult": null,
+      "toolError": null,
+      "notifications": []
+    },
+    {
+      "label": "applies-next-turn",
+      "view": [
+        {
+          "role": "user",
+          "toolParts": [],
+          "text": "[m1] filler 0"
+        },
+        {
+          "role": "assistant",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "",
+              "pruned": false,
+              "input": "{\"cmd\":\"echo filler\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m2] ok",
+              "pruned": false,
+              "input": null,
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "toolParts": [],
+          "text": "[m3] filler 1"
+        },
+        {
+          "role": "assistant",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "",
+              "pruned": false,
+              "input": "{\"cmd\":\"echo filler\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m4] ok",
+              "pruned": false,
+              "input": null,
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "toolParts": [],
+          "text": "[m5] filler 2"
+        },
+        {
+          "role": "assistant",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "",
+              "pruned": false,
+              "input": "{\"cmd\":\"echo filler\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m6] ok",
+              "pruned": false,
+              "input": null,
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "toolParts": [],
+          "text": "[m7] filler 3"
+        },
+        {
+          "role": "assistant",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "",
+              "pruned": false,
+              "input": "{\"cmd\":\"echo filler\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m8] ok",
+              "pruned": false,
+              "input": null,
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "toolParts": [],
+          "text": "[m9] filler 4"
+        },
+        {
+          "role": "assistant",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "",
+              "pruned": false,
+              "input": "{\"cmd\":\"echo filler\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m10] ok",
+              "pruned": false,
+              "input": null,
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "toolParts": [],
+          "text": "[m11] filler 5"
+        },
+        {
+          "role": "assistant",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "",
+              "pruned": false,
+              "input": "{\"cmd\":\"echo filler\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m12] ok",
+              "pruned": false,
+              "input": null,
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "toolParts": [],
+          "text": "[m13] filler 6"
+        },
+        {
+          "role": "assistant",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "",
+              "pruned": false,
+              "input": "{\"cmd\":\"echo filler\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m14] ok",
+              "pruned": false,
+              "input": null,
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "toolParts": [],
+          "text": "[m15] do it"
+        },
+        {
+          "role": "assistant",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "",
+              "pruned": false,
+              "input": "{\"cmd\":\"echo hello\"}",
+              "inputPruned": false
+            },
+            {
+              "tool": "bash",
+              "output": "",
+              "pruned": false,
+              "input": "{\"cmd\":\"echo hello\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m16] [Output removed to save context - information superseded or no longer needed]",
+              "pruned": true,
+              "input": null,
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+              "pruned": false,
+              "input": null,
+              "inputPruned": false
+            }
+          ]
+        }
+      ],
+      "toolResult": null,
+      "toolError": null,
+      "notifications": [
+        "上下文清理：已折叠 1 个工具调用，约回收 105 tokens"
+      ]
+    },
+    {
+      "label": "zero-benefit-short-output",
+      "view": [
+        {
+          "role": "user",
+          "toolParts": [],
+          "text": "[m1] filler 0"
+        },
+        {
+          "role": "assistant",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "",
+              "pruned": false,
+              "input": "{\"cmd\":\"echo filler\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m2] ok",
+              "pruned": false,
+              "input": null,
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "toolParts": [],
+          "text": "[m3] filler 1"
+        },
+        {
+          "role": "assistant",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "",
+              "pruned": false,
+              "input": "{\"cmd\":\"echo filler\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m4] ok",
+              "pruned": false,
+              "input": null,
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "toolParts": [],
+          "text": "[m5] filler 2"
+        },
+        {
+          "role": "assistant",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "",
+              "pruned": false,
+              "input": "{\"cmd\":\"echo filler\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m6] ok",
+              "pruned": false,
+              "input": null,
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "toolParts": [],
+          "text": "[m7] filler 3"
+        },
+        {
+          "role": "assistant",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "",
+              "pruned": false,
+              "input": "{\"cmd\":\"echo filler\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m8] ok",
+              "pruned": false,
+              "input": null,
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "toolParts": [],
+          "text": "[m9] filler 4"
+        },
+        {
+          "role": "assistant",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "",
+              "pruned": false,
+              "input": "{\"cmd\":\"echo filler\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m10] ok",
+              "pruned": false,
+              "input": null,
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "toolParts": [],
+          "text": "[m11] filler 5"
+        },
+        {
+          "role": "assistant",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "",
+              "pruned": false,
+              "input": "{\"cmd\":\"echo filler\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m12] ok",
+              "pruned": false,
+              "input": null,
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "toolParts": [],
+          "text": "[m13] filler 6"
+        },
+        {
+          "role": "assistant",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "",
+              "pruned": false,
+              "input": "{\"cmd\":\"echo filler\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m14] ok",
+              "pruned": false,
+              "input": null,
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "toolParts": [],
+          "text": "[m15] do it"
+        },
+        {
+          "role": "assistant",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "",
+              "pruned": false,
+              "input": "{\"cmd\":\"echo hello\"}",
+              "inputPruned": false
+            },
+            {
+              "tool": "bash",
+              "output": "",
+              "pruned": false,
+              "input": "{\"cmd\":\"echo hello\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m16] [Output removed to save context - information superseded or no longer needed]",
+              "pruned": true,
+              "input": null,
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+              "pruned": false,
+              "input": null,
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "toolParts": [],
+          "text": "[m17] again"
+        },
+        {
+          "role": "assistant",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "",
+              "pruned": false,
+              "input": "{\"cmd\":\"echo hi\"}",
+              "inputPruned": false
+            },
+            {
+              "tool": "bash",
+              "output": "",
+              "pruned": false,
+              "input": "{\"cmd\":\"echo hi\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m18] ok",
+              "pruned": false,
+              "input": null,
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "ok",
+              "pruned": false,
+              "input": null,
+              "inputPruned": false
+            }
+          ]
+        }
+      ],
+      "toolResult": null,
+      "toolError": null,
+      "notifications": []
+    },
+    {
+      "label": "idempotent-rerun-no-new-marks",
+      "view": [
+        {
+          "role": "user",
+          "toolParts": [],
+          "text": "[m1] filler 0"
+        },
+        {
+          "role": "assistant",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "",
+              "pruned": false,
+              "input": "{\"cmd\":\"echo filler\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m2] ok",
+              "pruned": false,
+              "input": null,
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "toolParts": [],
+          "text": "[m3] filler 1"
+        },
+        {
+          "role": "assistant",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "",
+              "pruned": false,
+              "input": "{\"cmd\":\"echo filler\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m4] ok",
+              "pruned": false,
+              "input": null,
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "toolParts": [],
+          "text": "[m5] filler 2"
+        },
+        {
+          "role": "assistant",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "",
+              "pruned": false,
+              "input": "{\"cmd\":\"echo filler\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m6] ok",
+              "pruned": false,
+              "input": null,
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "toolParts": [],
+          "text": "[m7] filler 3"
+        },
+        {
+          "role": "assistant",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "",
+              "pruned": false,
+              "input": "{\"cmd\":\"echo filler\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m8] ok",
+              "pruned": false,
+              "input": null,
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "toolParts": [],
+          "text": "[m9] filler 4"
+        },
+        {
+          "role": "assistant",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "",
+              "pruned": false,
+              "input": "{\"cmd\":\"echo filler\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m10] ok",
+              "pruned": false,
+              "input": null,
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "toolParts": [],
+          "text": "[m11] filler 5"
+        },
+        {
+          "role": "assistant",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "",
+              "pruned": false,
+              "input": "{\"cmd\":\"echo filler\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m12] ok",
+              "pruned": false,
+              "input": null,
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "toolParts": [],
+          "text": "[m13] filler 6"
+        },
+        {
+          "role": "assistant",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "",
+              "pruned": false,
+              "input": "{\"cmd\":\"echo filler\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m14] ok",
+              "pruned": false,
+              "input": null,
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "toolParts": [],
+          "text": "[m15] do it"
+        },
+        {
+          "role": "assistant",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "",
+              "pruned": false,
+              "input": "{\"cmd\":\"echo hello\"}",
+              "inputPruned": false
+            },
+            {
+              "tool": "bash",
+              "output": "",
+              "pruned": false,
+              "input": "{\"cmd\":\"echo hello\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m16] [Output removed to save context - information superseded or no longer needed]",
+              "pruned": true,
+              "input": null,
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+              "pruned": false,
+              "input": null,
+              "inputPruned": false
+            }
+          ]
+        }
+      ],
+      "toolResult": null,
+      "toolError": null,
+      "notifications": []
+    }
+  ]
+}
