@@ -30,7 +30,7 @@ import {
 import { fold } from "./fold.js";
 import type { HostMessage } from "./lens.js";
 import { computeSpanHash } from "./spanhash.js";
-import { type Block, hasActiveOverlap, RECALL_MAX_CHARS } from "./state.js";
+import { type Block, findActiveOverlap, RECALL_MAX_CHARS } from "./state.js";
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -394,7 +394,7 @@ describe("stale blocks", () => {
     state.blocks.set(1, makeBlock(history, 1, 4, { status: "stale" }));
 
     // A stale block folds no interval, so a new block may cover it.
-    assert.equal(hasActiveOverlap(state, 2, 3), false);
+    assert.equal(findActiveOverlap(state, 2, 3), undefined);
   });
 });
 

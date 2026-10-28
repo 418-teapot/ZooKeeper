@@ -18,28 +18,34 @@
  *    flips the released marks effective.  Runs FIRST so marks written
  *    last turn take effect this turn (the two-turn lifecycle).  The
  *    notify callback and the `marks_released` log fire on a flip.
- * 3. **Producers** — dedup / purge-errors run only when both their
+ * 3. **Fold** — `fold` computes the folded view; every active block
+ *    that does not render is retired: a block whose span no longer
+ *    validates or whose interval does not resolve against the unit grid
+ *    moves to the stale status (record retained, with a diagnostic log
+ *    of the interval and the cause), and a view change arms the
+ *    pending-view-change flag that forces the next release.  Runs
+ *    BEFORE the producers so they read this round's view.
+ * 4. **Producers** — dedup / purge-errors run only when both their
  *    configured `thresholdContext` and `minMessages` are defined; a
- *    missing gate key skips the producer entirely.  Marks are pending
- *    for the next turn's release.
- * 4. **Fold** — `fold` computes the folded view; blocks whose span no
- *    longer validates move to the stale status (record retained, with a
- *    diagnostic log of the interval and both hashes), and a view change
- *    arms the pending-view-change flag that forces the next release.
+ *    missing gate key skips the producer entirely.  Their
+ *    `prunedOrdinals` predicate comes from the folded view, so the
+ *    lines the model no longer sees are exactly the lines they never
+ *    mark.  Marks are pending for the next turn's release.
  * 5. **Publish + materialize** — the round's folded view is numbered and
  *    published to the compression tools (`core/context/round-view.ts`,
  *    frozen), the render plan is computed over that numbering
  *    (`core/context/render-plan.ts`), and `adapter.materialize` turns the
  *    plan into the host's messages (synthetic summary messages, per-round
  *    `[mN] ` line refs).
- * 6. **Nudge / manual compress** — `evaluateNudge` decides and renders
- *    the context-pressure reminder (transform-only synthetic message
+ * 6. **Nudge** — `evaluateNudge` decides and renders the
+ *    context-pressure reminder (transform-only synthetic message
  *    appended at the END via `adapter.appendUserMessage`, never
  *    ref-assigned), and the same decision point fires the optional
- *    transient-UI toast (human-facing, host-rendered); the `/dcp
- *    compress` one-shot `pendingManualTrigger` flag injects the
- *    synthetic user command driving the `compress` tool.
- * 7. **Persist** — the session state is written back to the shared
+ *    transient-UI toast (human-facing, host-rendered).
+ * 7. **Manual compress** — the `/dcp compress` one-shot
+ *    `pendingManualTrigger` flag injects the synthetic user command
+ *    driving the `compress` tool.
+ * 8. **Persist** — the session state is written back to the shared
  *    store, followed by the `prune_completed` summary log.
  *
  * The two-turn effect ("turn N marks apply on turn N+1") means that
@@ -65,7 +71,7 @@ import { MANUAL_COMPRESS_TEMPLATE } from "../prompts.js";
 import type { TransformOutput } from "../unit.js";
 import { computeProtectedStartOrdinal } from "./compress.js";
 import { formatTokens } from "./context-report.js";
-import { fold } from "./fold.js";
+import { type FoldExpiryReason, fold } from "./fold.js";
 import type { HostAdapter, HostMessage, Projection, ViewItem } from "./lens.js";
 import { promptSideTokens } from "./measure.js";
 import { getModelLimit, type ModelLimitInfo } from "./model-limits.js";
@@ -93,9 +99,9 @@ import {
   setPendingViewChange,
 } from "./runtime.js";
 import type { SessionStateManager } from "./session-state.js";
-import { checkSpan, validateBlock } from "./spanhash.js";
-import { markStale, type SessionState } from "./state.js";
-import { type NumberedItem, numberView } from "./view-refs.js";
+import { checkSpan } from "./spanhash.js";
+import { type Block, markStale } from "./state.js";
+import { itemInterval, type NumberedItem, numberView } from "./view-refs.js";
 
 // ---------------------------------------------------------------------------
 // Pipeline helpers
@@ -119,31 +125,6 @@ function fractionOf(
 ): number | undefined {
   if (contextLimit === undefined || contextLimit <= 0) return undefined;
   return absolute / contextLimit;
-}
-
-/**
- * Collect the ordinals covered by active, hash-valid blocks.
- *
- * The producers' `prunedOrdinals` predicate — messages folded into a
- * block are never marked.  Validated the same way fold decides
- * survival, so the predicate and the fold never disagree.
- *
- * @param state - The session state.
- * @param snapshot - The projection snapshot.
- * @returns The covered ordinals.
- */
-function coveredOrdinalsOf(
-  state: SessionState,
-  snapshot: Projection,
-): Set<number> {
-  const covered = new Set<number>();
-  for (const block of state.blocks.values()) {
-    if (block.status !== "active" || !validateBlock(snapshot, block)) continue;
-    for (let ordinal = block.start; ordinal < block.end; ordinal++) {
-      covered.add(ordinal);
-    }
-  }
-  return covered;
 }
 
 // ---------------------------------------------------------------------------
@@ -190,7 +171,7 @@ interface PipelinePhaseContext {
   contextLimit: number | undefined;
   /** This round's numbered view over the fold. */
   numbered: NumberedItem[];
-  /** The folded view items from phase 4, rendered in phase 5. */
+  /** The folded view items, read by the producers and rendered. */
   foldedItems: ViewItem[];
   /** Window protection inputs shared by the nudge, its log line, and
    * the manual-compress window. */
@@ -313,7 +294,76 @@ function releasePhase(ctx: PipelinePhaseContext): void {
 }
 
 // ---------------------------------------------------------------------------
-// Phase 3: producers (dedup / purge-errors)
+// Phase 3: fold + block maintenance
+// ---------------------------------------------------------------------------
+
+/**
+ * Log fields describing why an active block did not render.
+ *
+ * Keyed by the fold's expiry reason, so a new `FoldExpiryReason` fails the
+ * type check until it names its diagnostic fields.  A `boundary` failure
+ * leaves the span hash intact, so no hash comparison describes it; a hash
+ * failure re-derives the precise span-check reason and both hashes.
+ */
+const EXPIRY_DIAGNOSTICS: Record<
+  FoldExpiryReason,
+  (snapshot: Projection, block: Block) => Record<string, unknown>
+> = {
+  boundary: () => ({ reason: "boundary-misaligned" }),
+  "hash-invalid": (snapshot, block) => {
+    const check = checkSpan(snapshot, block);
+    return {
+      reason: check.reason,
+      storedHash: check.storedHash,
+      currentHash: check.currentHash,
+    };
+  },
+};
+
+/**
+ * Fold the view and maintain block records.
+ *
+ * Every active block that does not render moves to the stale status and
+ * is reported with the cause the fold observed: `hash-invalid` (the span
+ * no longer validates — anchor messages vanished or content changed) or
+ * `boundary` (the interval no longer resolves against the unit grid).
+ * The transition keeps the record — interval, title, summary and stored
+ * hash — so the loss stays diagnosable and the summary recallable.
+ * Staling and any other fold change arm the view-change flag that forces
+ * the next release regardless of the releasedPercent threshold.
+ */
+function foldPhase(ctx: PipelinePhaseContext): void {
+  const { sessionId, state, snapshot } = ctx;
+  const folded = fold(snapshot, state);
+  if (folded.expired.length > 0) {
+    for (const { id, reason } of folded.expired) {
+      const block = state.blocks.get(id);
+      if (block === undefined) continue;
+      const entry = {
+        hook: "context-pruning",
+        event: "compress_block_stale",
+        sessionId,
+        blockId: id,
+        start: block.start,
+        end: block.end,
+        historyLength: snapshot.messages.length,
+        ...(block.title !== undefined ? { title: block.title } : {}),
+      };
+      log.warn({ ...entry, ...EXPIRY_DIAGNOSTICS[reason](snapshot, block) });
+    }
+    markStale(
+      state,
+      folded.expired.map((entry) => entry.id),
+    );
+  }
+  if (folded.viewChanged) {
+    setPendingViewChange(sessionId);
+  }
+  ctx.foldedItems = folded.items;
+}
+
+// ---------------------------------------------------------------------------
+// Phase 4: producers (dedup / purge-errors)
 // ---------------------------------------------------------------------------
 
 /**
@@ -325,6 +375,10 @@ function releasePhase(ctx: PipelinePhaseContext): void {
  * needs a known model limit — when it cannot be evaluated the producer
  * fails closed.  New marks are pending for the NEXT turn's release
  * (two-turn lifecycle).
+ *
+ * Runs AFTER the fold: the `prunedOrdinals` predicate is the union of
+ * this round's summary intervals, so a producer never marks a line the
+ * model cannot read.
  */
 function producersPhase(ctx: PipelinePhaseContext): void {
   const { config, sessionId, state, snapshot } = ctx;
@@ -337,7 +391,15 @@ function producersPhase(ctx: PipelinePhaseContext): void {
           config.protectedMessages,
           protectedTokens,
         );
-  const covered = coveredOrdinalsOf(state, snapshot);
+  // Coverage comes from this round's view: the ordinals a summary item
+  // replaced are exactly the ones the model no longer reads, so the
+  // predicate cannot drift from what was rendered.
+  const covered = new Set<number>();
+  for (const item of ctx.foldedItems) {
+    if (item.type !== "summary") continue;
+    const { start, end } = itemInterval(item);
+    for (let ordinal = start; ordinal < end; ordinal++) covered.add(ordinal);
+  }
   const prunedOrdinals = (ordinal: number): boolean => covered.has(ordinal);
 
   const dedupGate = config.dedup;
@@ -399,52 +461,6 @@ function producersPhase(ctx: PipelinePhaseContext): void {
       }
     }
   }
-}
-
-// ---------------------------------------------------------------------------
-// Phase 4: fold + block maintenance
-// ---------------------------------------------------------------------------
-
-/**
- * Fold the view and maintain block records.
- *
- * Blocks that no longer validate (anchor messages vanished or content
- * changed) move to the stale status and are reported; the transition
- * keeps the record — interval, title, summary and stored hash — so the
- * loss stays diagnosable and the summary recallable.  Staling and any
- * other fold change arm the view-change flag that forces the next
- * release regardless of the releasedPercent threshold.
- */
-function foldPhase(ctx: PipelinePhaseContext): void {
-  const { sessionId, state, snapshot } = ctx;
-  const folded = fold(snapshot, state);
-  if (folded.expiredBlockIds.length > 0) {
-    for (const id of folded.expiredBlockIds) {
-      const block = state.blocks.get(id);
-      if (block === undefined) continue;
-      // The fold already decided the span is invalid; re-derive the
-      // reason here so the log says why, not just that.
-      const check = checkSpan(snapshot, block);
-      log.warn({
-        hook: "context-pruning",
-        event: "compress_block_stale",
-        sessionId,
-        blockId: id,
-        start: block.start,
-        end: block.end,
-        reason: check.reason,
-        storedHash: check.storedHash,
-        currentHash: check.currentHash,
-        historyLength: check.historyLength,
-        ...(block.title !== undefined ? { title: block.title } : {}),
-      });
-    }
-    markStale(state, folded.expiredBlockIds);
-  }
-  if (folded.viewChanged) {
-    setPendingViewChange(sessionId);
-  }
-  ctx.foldedItems = folded.items;
 }
 
 // ---------------------------------------------------------------------------
@@ -585,7 +601,7 @@ function nudgePhase(ctx: PipelinePhaseContext): void {
 }
 
 // ---------------------------------------------------------------------------
-// Phase 6b: manual compress trigger — synthetic user command
+// Phase 7: manual compress trigger — synthetic user command
 // ---------------------------------------------------------------------------
 
 /**
@@ -662,7 +678,7 @@ function manualCompressPhase(ctx: PipelinePhaseContext): void {
 }
 
 // ---------------------------------------------------------------------------
-// Phase 7: persist
+// Phase 8: persist
 // ---------------------------------------------------------------------------
 
 /**
@@ -750,8 +766,8 @@ export function contextPruningTransformHandler(
     sessionId,
   });
   releasePhase(ctx);
-  producersPhase(ctx);
   foldPhase(ctx);
+  producersPhase(ctx);
   publishPhase(ctx);
   nudgePhase(ctx);
   manualCompressPhase(ctx);

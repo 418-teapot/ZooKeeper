@@ -2,9 +2,8 @@
  * Tests for the context-pruning transform handler.
  *
  * Focused suite covering the handler contracts and the pipeline phase
- * wiring (state → history → release → two producers →
- * fold + block maintenance → view render → nudge / manual compress →
- * save):
+ * wiring (state → history → release → fold + block maintenance →
+ * two producers → view render → nudge / manual compress → save):
  *
  * - Release notification fires exactly once, text carries the
  *   "上下文清理" / "约回收" wording.

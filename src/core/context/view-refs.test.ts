@@ -363,22 +363,23 @@ describe("swallowed blocks occupy no line", () => {
     assert.deepEqual(resolveEndpoint("m2", numbered), { start: 1, end: 5 });
   });
 
-  it("fold merges overlapping blocks so only one summary line exists", () => {
+  it("fold renders one block only, so the conflicting block has no line", () => {
     const history = makeTranscript(7);
     const state = makeState();
     state.blocks.set(1, makeBlock(history, 1, 3));
     state.blocks.set(2, makeBlock(history, 2, 5));
-    const { items } = fold(projectMessages(history), state);
-    // One summary item for the union; the swallowed block's summary item
-    // is absent, so the numbering has no gap.
+    const { items, expired } = fold(projectMessages(history), state);
+    // One summary item for the first block; the conflicting block
+    // renders nothing and is reported, so the numbering has no gap.
     assert.equal(items.filter((item) => item.type === "summary").length, 1);
+    assert.deepEqual(expired, [{ id: 2, reason: "boundary" }]);
     assert.deepEqual(
       items.map((item) => (item.type === "original" ? item.start : "s")),
-      [0, "s", 5, 6],
+      [0, "s", 3, 4, 5, 6],
     );
     assert.deepEqual(
       numberView(items, noneHidden).map((x) => x.n),
-      [1, 2, 3, 4],
+      [1, 2, 3, 4, 5, 6],
     );
   });
 });

@@ -11,16 +11,23 @@
  * the compile- and runtime guarantee that a `Block` satisfies both the
  * fold view contract (`BlockSpan`) and the span validation contract
  * (`HashedSpan`), atomic write (temp file + rename, no residue),
- * `hasActiveOverlap` interval checking, and the `blockIdOf`
- * interval→id lookup.  Persistence tests run against a
- * per-suite temporary directory injected into the store factory.
+ * `findActiveOverlap` overlap rejection at the hydration gate
+ * (`store.load`), the same half-open interval rule applied inline at
+ * the landing gate (`validateRange`), and the `blockIdOf` interval→id
+ * lookup.  Persistence tests run against a per-suite temporary
+ * directory injected into the store factory.
  */
 import assert from "node:assert/strict";
 import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { after, describe, it } from "node:test";
+import { after, afterEach, describe, it } from "node:test";
 import { makeMark, makeState } from "../../testkits/context.js";
 import { makeTmpDir } from "../../testkits/tmp.js";
+import {
+  _getBufferForTesting,
+  _resetForTesting,
+  initLogger,
+} from "../../utils/logger.js";
 import type { BlockSpan } from "./lens.js";
 import type { HashedSpan } from "./spanhash.js";
 import {
@@ -29,7 +36,7 @@ import {
   blockIdOf,
   clearConsumedBlockRange,
   deriveNextBlockId,
-  hasActiveOverlap,
+  findActiveOverlap,
   markKey,
   markStale,
   type SessionState,
@@ -280,6 +287,12 @@ describe("schema migration within the persisted version", () => {
 // ---------------------------------------------------------------------------
 
 describe("defensive load", () => {
+  // The overlap-rejection test initialises the logger to capture its
+  // warn; reset it so no buffer entry or flush timer survives the suite.
+  const logDir = makeTmpDir("zoo-state-load");
+  after(() => rmSync(logDir, { recursive: true, force: true }));
+  afterEach(_resetForTesting);
+
   it("a corrupt JSON file recovers to an empty state without throwing", () => {
     const { dir, store } = scratchStore();
     writeFileSync(join(dir, "broken.json"), "{ not valid json !!!");
@@ -424,6 +437,44 @@ describe("defensive load", () => {
       const loaded = store.load("nudge-half");
       assert.deepEqual(loaded.nudges, { lastNudgeTokens: 140000 });
     }
+  });
+
+  it("a file whose active blocks intersect loads as empty state", () => {
+    // Two active blocks may never coexist: the fold would render one
+    // interval and lose the other, so the store rejects the whole file
+    // (fail-closed, like a corrupt one).
+    initLogger("test", { logDir });
+
+    const { store } = scratchStore();
+    const state = makeState();
+    state.blocks.set(1, makeBlock({ start: 1, end: 4 }));
+    state.blocks.set(2, makeBlock({ start: 3, end: 6 }));
+    store.save("overlap", state);
+
+    const loaded = store.load("overlap");
+    assert.equal(loaded.blocks.size, 0);
+    assert.equal(loaded.marks.size, 0);
+    const entry = _getBufferForTesting().find(
+      (e) => e.event === "state_load_rejected",
+    );
+    assert.ok(entry, "the rejection is logged");
+    assert.equal(entry.level, "warn");
+    assert.equal(entry.blockId, 2);
+    assert.deepEqual([entry.start, entry.end], [3, 6]);
+    assert.equal(entry.conflictBlockId, 1);
+    assert.deepEqual([entry.conflictStart, entry.conflictEnd], [1, 4]);
+  });
+
+  it("blocks that only touch edges or stopped folding still load", () => {
+    const { store } = scratchStore();
+    const state = makeState();
+    state.blocks.set(1, makeBlock({ start: 0, end: 3 }));
+    state.blocks.set(2, makeBlock({ start: 3, end: 6 })); // touching edge
+    state.blocks.set(3, makeBlock({ start: 1, end: 5, status: "stale" }));
+    store.save("touching", state);
+
+    const loaded = store.load("touching");
+    assert.equal(loaded.blocks.size, 3);
   });
 });
 
@@ -653,37 +704,37 @@ describe("atomic persistence", () => {
 });
 
 // ---------------------------------------------------------------------------
-// 7. hasActiveOverlap — caller invariant for landing new blocks
+// 7. findActiveOverlap — the hydration gate
 // ---------------------------------------------------------------------------
 
-describe("hasActiveOverlap", () => {
-  it("detects overlap with an active block", () => {
+describe("findActiveOverlap", () => {
+  it("names the active block that intersects the interval", () => {
     const state = makeState();
-    state.blocks.set(1, makeBlock({ start: 2, end: 5 }));
-    assert.equal(hasActiveOverlap(state, 3, 4), true); // fully inside
-    assert.equal(hasActiveOverlap(state, 1, 3), true); // straddles left edge
-    assert.equal(hasActiveOverlap(state, 4, 6), true); // straddles right edge
-    assert.equal(hasActiveOverlap(state, 0, 8), true); // contains the block
+    state.blocks.set(7, makeBlock({ start: 2, end: 5 }));
+    assert.equal(findActiveOverlap(state, 3, 4)?.id, 7); // fully inside
+    assert.equal(findActiveOverlap(state, 1, 3)?.id, 7); // straddles left edge
+    assert.equal(findActiveOverlap(state, 4, 6)?.id, 7); // straddles right edge
+    assert.equal(findActiveOverlap(state, 0, 8)?.id, 7); // contains the block
   });
 
   it("touching edges do not overlap (half-open intervals)", () => {
     const state = makeState();
     state.blocks.set(1, makeBlock({ start: 2, end: 5 }));
-    assert.equal(hasActiveOverlap(state, 5, 7), false); // starts at block end
-    assert.equal(hasActiveOverlap(state, 0, 2), false); // ends at block start
+    assert.equal(findActiveOverlap(state, 5, 7), undefined); // block end
+    assert.equal(findActiveOverlap(state, 0, 2), undefined); // block start
   });
 
   it("ignores blocks that stopped folding", () => {
     const state = makeState();
     state.blocks.set(1, makeBlock({ start: 0, end: 5, status: "consumed" }));
     state.blocks.set(2, makeBlock({ start: 0, end: 5, status: "stale" }));
-    assert.equal(hasActiveOverlap(state, 1, 3), false);
+    assert.equal(findActiveOverlap(state, 1, 3), undefined);
   });
 
   it("an empty interval never overlaps", () => {
     const state = makeState();
     state.blocks.set(1, makeBlock({ start: 0, end: 5 }));
-    assert.equal(hasActiveOverlap(state, 3, 3), false);
+    assert.equal(findActiveOverlap(state, 3, 3), undefined);
   });
 });
 

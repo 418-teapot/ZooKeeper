@@ -229,15 +229,24 @@ export function allocateBlockId(state: SessionState): number {
 }
 
 /**
- * Check whether any active block overlaps the interval `[start, end)`.
+ * Find the active block that intersects the interval `[start, end)`.
  *
- * **Caller invariant:** before landing a new compression block, the
- * caller must verify the interval has no overlap with any active block
- * — a new block must never fold an interval an active block already
- * folds.  This helper is that verification; the fold-time span check
- * keeps the invariant satisfiable over time by moving blocks whose
- * interval no longer validates to the stale status (`markStale`), after
- * which they stop counting as overlaps.
+ * Two entry points guard the invariant that active blocks never overlap:
+ *
+ * - **Landing a block** — `validateRange` (compress.ts) applies the same
+ *   half-open rule with its own inline scan before a compression block
+ *   is stored, so a new block never folds an interval an active block
+ *   already folds.  That scan also reports which blocks the range
+ *   swallows, so it stays separate from this lookup.
+ * - **Hydrating a file** — `createStateStore().load` calls this function
+ *   and discards the whole state when one active entry overlaps the
+ *   blocks already read, so two intersecting active blocks can never
+ *   reach the in-memory state the fold walks.  Naming the conflicting
+ *   block lets the rejection log point at both intervals.
+ *
+ * The fold-time span check keeps the invariant satisfiable over time by
+ * moving blocks whose interval no longer validates to the stale status
+ * (`markStale`), after which they stop counting as overlaps.
  *
  * Intervals are half-open, so touching edges (`end === block.start` or
  * `start === block.end`) do not overlap.  Terminal-status blocks never
@@ -246,22 +255,23 @@ export function allocateBlockId(state: SessionState): number {
  * @param state - The session state.
  * @param start - First ordinal (inclusive).
  * @param end - Last ordinal (exclusive).
- * @returns True when an active block's interval intersects `[start, end)`.
+ * @returns The first active block whose interval intersects
+ *   `[start, end)`, with its block id, or undefined when none does.
  */
-export function hasActiveOverlap(
+export function findActiveOverlap(
   state: SessionState,
   start: number,
   end: number,
-): boolean {
-  for (const block of state.blocks.values()) {
+): { id: number; block: Block } | undefined {
+  for (const [id, block] of state.blocks) {
     if (block.status !== "active") continue;
     // Non-empty intersection of two half-open intervals; correct even
     // for an empty query interval, which overlaps nothing.
     if (Math.max(block.start, start) < Math.min(block.end, end)) {
-      return true;
+      return { id, block };
     }
   }
-  return false;
+  return undefined;
 }
 
 /**

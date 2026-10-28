@@ -2,13 +2,15 @@
  * Tests for the pure fold view (`fold.ts`).
  *
  * Covers: basic folding (head block → one summary + trailing
- * originals), adjacent and nested block view layout, silent expansion of
- * hash-invalidated blocks with `viewChanged` / `expiredBlockIds`
- * reporting (spanhash linkage), terminal blocks (consumed / stale) never
- * refolding (unfold protection), the defensive overlapping-block merge
- * branch, empty-history and no-block pass-through, hidden-message
- * visibility, unit-granular folding (call/result units; a block whose
- * boundary falls inside a unit does not fold), and fold purity.
+ * originals), adjacent and nested block view layout, expansion of
+ * hash-invalidated blocks with `viewChanged` / `expired` reporting
+ * (spanhash linkage), boundary failures (off-seam and already-folded
+ * intervals) reported with their own cause, the coverage invariant that
+ * every active valid block is rendered or reported, terminal blocks
+ * (consumed / stale) never refolding (unfold protection), empty-history
+ * and no-block pass-through, hidden-message visibility,
+ * unit-granular folding (call/result units; a block whose boundary falls
+ * inside a unit does not fold), and fold purity.
  * Fixtures are built through the shared testing helpers; block hashes come from
  * `computeSpanHash`.
  */
@@ -44,7 +46,7 @@ describe("basic fold", () => {
       { type: "original", start: 5, end: 6 },
     ]);
     assert.equal(result.viewChanged, false);
-    assert.deepEqual(result.expiredBlockIds, []);
+    assert.deepEqual(result.expired, []);
   });
 
   it("a mid-history block keeps both gap and trailing originals", () => {
@@ -60,7 +62,7 @@ describe("basic fold", () => {
       { type: "original", start: 5, end: 6 },
     ]);
     assert.equal(result.viewChanged, false);
-    assert.deepEqual(result.expiredBlockIds, []);
+    assert.deepEqual(result.expired, []);
   });
 
   it("a tail block folds while keeping the leading originals", () => {
@@ -75,7 +77,7 @@ describe("basic fold", () => {
       { type: "summary", block: state.blocks.get(1) },
     ]);
     assert.equal(result.viewChanged, false);
-    assert.deepEqual(result.expiredBlockIds, []);
+    assert.deepEqual(result.expired, []);
   });
 });
 
@@ -99,10 +101,10 @@ describe("adjacent and nested block views", () => {
       { type: "original", start: 7, end: 8 },
     ]);
     assert.equal(result.viewChanged, false);
-    assert.deepEqual(result.expiredBlockIds, []);
+    assert.deepEqual(result.expired, []);
   });
 
-  it("a nested block merges into the containing summary item", () => {
+  it("a nested block is reported while its container folds", () => {
     const history = makeTranscript(8);
     const state = makeState();
     state.blocks.set(1, makeBlock(history, 1, 5));
@@ -115,8 +117,10 @@ describe("adjacent and nested block views", () => {
       { type: "original", start: 6, end: 7 },
       { type: "original", start: 7, end: 8 },
     ]);
-    assert.equal(result.viewChanged, false);
-    assert.deepEqual(result.expiredBlockIds, []);
+    // The container folded across the nested block's start, so the nested
+    // interval has no place in the view and is reported.
+    assert.equal(result.viewChanged, true);
+    assert.deepEqual(result.expired, [{ id: 2, reason: "boundary" }]);
   });
 });
 
@@ -133,7 +137,7 @@ describe("hash-invalid blocks silently expand", () => {
     // no longer hashes to the stored value.
     setRegionText(history[2], 0, "edited question");
     const result = fold(projectMessages(history), state);
-    assert.deepEqual(result.expiredBlockIds, [7]);
+    assert.deepEqual(result.expired, [{ id: 7, reason: "hash-invalid" }]);
     assert.equal(result.viewChanged, true);
     // Silent expansion: no summary item and no tombstone hint; the edited
     // message reappears as a plain original item.
@@ -153,7 +157,7 @@ describe("hash-invalid blocks silently expand", () => {
     state.blocks.set(7, makeBlock(history, 1, 4));
     const truncated = history.slice(0, 3); // block end 4 > length 3
     const result = fold(projectMessages(truncated), state);
-    assert.deepEqual(result.expiredBlockIds, [7]);
+    assert.deepEqual(result.expired, [{ id: 7, reason: "hash-invalid" }]);
     assert.equal(result.viewChanged, true);
     assert.deepEqual(result.items, [
       { type: "original", start: 0, end: 1 },
@@ -168,7 +172,7 @@ describe("hash-invalid blocks silently expand", () => {
     state.blocks.set(1, makeBlock(history, 1, 3));
     state.blocks.set(2, makeBlock(history, 4, 6, { spanHash: "deadbeef" }));
     const result = fold(projectMessages(history), state);
-    assert.deepEqual(result.expiredBlockIds, [2]);
+    assert.deepEqual(result.expired, [{ id: 2, reason: "hash-invalid" }]);
     assert.equal(result.viewChanged, true);
     assert.deepEqual(result.items, [
       { type: "original", start: 0, end: 1 },
@@ -210,7 +214,7 @@ describe("terminal blocks never refold", () => {
     // A block that already stopped folding is steady state, not a change
     // this round made — and it is never reported as expired.
     assert.equal(result.viewChanged, false);
-    assert.deepEqual(result.expiredBlockIds, []);
+    assert.deepEqual(result.expired, []);
     // The block object is untouched by fold.
     assert.equal(block.status, "consumed");
     assert.equal(state.blocks.size, 1);
@@ -229,7 +233,7 @@ describe("terminal blocks never refold", () => {
 
     // Reporting no expiry proves the span was never re-hashed: a stale
     // block is a terminal status, not a pending re-check.
-    assert.deepEqual(result.expiredBlockIds, []);
+    assert.deepEqual(result.expired, []);
     assert.equal(result.viewChanged, false);
     assert.equal(result.items.length, 6);
     assert.ok(result.items.every((item) => item.type === "original"));
@@ -243,7 +247,7 @@ describe("terminal blocks never refold", () => {
 
     const result = fold(projectMessages(history), state);
 
-    assert.deepEqual(result.expiredBlockIds, []);
+    assert.deepEqual(result.expired, []);
     assert.equal(result.viewChanged, false);
     assert.deepEqual(result.items, [
       { type: "original", start: 0, end: 1 },
@@ -257,53 +261,41 @@ describe("terminal blocks never refold", () => {
 });
 
 // ---------------------------------------------------------------------------
-// 5. Overlapping surviving blocks merge — defensive branch
+// 5. Blocks that cannot render are reported — hash vs boundary
 // ---------------------------------------------------------------------------
 
-describe("overlapping surviving blocks merge (defensive branch)", () => {
-  it("two intersecting blocks fold into one summary over the union", () => {
+describe("blocks that cannot render are reported", () => {
+  it("a block whose interval a preceding block already folded is a boundary failure", () => {
     const history = makeTranscript(8);
     const state = makeState();
     state.blocks.set(1, makeBlock(history, 1, 4));
     state.blocks.set(2, makeBlock(history, 3, 6));
     const result = fold(projectMessages(history), state);
-    // Union [1, 6) is covered by a single summary rendered from the
-    // first-appearing block (id 1); ordinals 0, 6, 7 stay original.
+    // The first block folds [1, 4); the second one's start is already
+    // behind the walk, so its interval stays original and it is reported
+    // instead of vanishing from the view without a trace.
     assert.deepEqual(result.items, [
       { type: "original", start: 0, end: 1 },
       { type: "summary", block: state.blocks.get(1) },
+      { type: "original", start: 4, end: 5 },
+      { type: "original", start: 5, end: 6 },
       { type: "original", start: 6, end: 7 },
       { type: "original", start: 7, end: 8 },
     ]);
-    assert.equal(result.viewChanged, false);
-    assert.deepEqual(result.expiredBlockIds, []);
+    assert.deepEqual(result.expired, [{ id: 2, reason: "boundary" }]);
+    assert.equal(result.viewChanged, true);
   });
 
-  it("three overlapping blocks collapse into one item", () => {
+  it("a hash-invalid block and a boundary failure are told apart", () => {
     const history = makeTranscript(8);
     const state = makeState();
     state.blocks.set(1, makeBlock(history, 1, 4));
-    state.blocks.set(2, makeBlock(history, 3, 5));
-    state.blocks.set(3, makeBlock(history, 4, 7));
+    state.blocks.set(2, makeBlock(history, 2, 6, { spanHash: "deadbeef" }));
+    state.blocks.set(3, makeBlock(history, 3, 6));
     const result = fold(projectMessages(history), state);
-    assert.deepEqual(result.items, [
-      { type: "original", start: 0, end: 1 },
-      { type: "summary", block: state.blocks.get(1) },
-      { type: "original", start: 7, end: 8 },
-    ]);
-  });
-
-  it("a block extending past its container extends the merged union", () => {
-    const history = makeTranscript(8);
-    const state = makeState();
-    state.blocks.set(1, makeBlock(history, 1, 5));
-    state.blocks.set(2, makeBlock(history, 3, 6)); // overlaps and extends
-    const result = fold(projectMessages(history), state);
-    assert.deepEqual(result.items, [
-      { type: "original", start: 0, end: 1 },
-      { type: "summary", block: state.blocks.get(1) },
-      { type: "original", start: 6, end: 7 },
-      { type: "original", start: 7, end: 8 },
+    assert.deepEqual(result.expired, [
+      { id: 2, reason: "hash-invalid" },
+      { id: 3, reason: "boundary" },
     ]);
   });
 });
@@ -317,7 +309,7 @@ describe("empty history and no blocks pass through", () => {
     const result = fold(projectMessages([]), makeState());
     assert.deepEqual(result.items, []);
     assert.equal(result.viewChanged, false);
-    assert.deepEqual(result.expiredBlockIds, []);
+    assert.deepEqual(result.expired, []);
   });
 
   it("messages with no blocks pass through as originals", () => {
@@ -329,7 +321,7 @@ describe("empty history and no blocks pass through", () => {
       { type: "original", start: 2, end: 3 },
     ]);
     assert.equal(result.viewChanged, false);
-    assert.deepEqual(result.expiredBlockIds, []);
+    assert.deepEqual(result.expired, []);
   });
 
   it("hidden messages appear as originals (fold does no hidden filtering)", () => {
@@ -366,7 +358,7 @@ describe("empty history and no blocks pass through", () => {
     const result = fold(projectMessages([]), state);
     assert.deepEqual(result.items, []);
     assert.equal(result.viewChanged, true);
-    assert.deepEqual(result.expiredBlockIds, [1]);
+    assert.deepEqual(result.expired, [{ id: 1, reason: "hash-invalid" }]);
   });
 });
 
@@ -460,8 +452,9 @@ describe("unit folding", () => {
   });
 
   it("does not fold a block whose boundary falls inside a unit", () => {
-    // A block whose end sits mid unit has no seam-aligned interval; fold
-    // leaves it to the silent expansion path and the units stay whole.
+    // A block whose end sits mid unit has no seam-aligned interval: it
+    // expands into the unit's original items and is reported as a
+    // boundary failure.
     const history = batchTranscript();
     const state = makeState();
     state.blocks.set(1, makeBlock(history, 0, 2));
@@ -471,15 +464,15 @@ describe("unit folding", () => {
       { type: "original", start: 1, end: 4 },
       { type: "original", start: 4, end: 5 },
     ]);
-    // An off-seam block is neither expired nor a view change: it is not
-    // a hash failure, it just cannot fold.
-    assert.equal(result.viewChanged, false);
-    assert.deepEqual(result.expiredBlockIds, []);
+    // An off-seam block cannot be placed on the unit grid: it is reported
+    // as a boundary failure, not as a hash failure.
+    assert.equal(result.viewChanged, true);
+    assert.deepEqual(result.expired, [{ id: 1, reason: "boundary" }]);
   });
 
   it("an off-seam block does not block a later seam-aligned block", () => {
-    // The off-seam block is dropped before the walk, so the aligned block
-    // after its interval still folds.
+    // The off-seam block is reported before the walk, so the aligned
+    // block after its interval still folds.
     const history = batchTranscript();
     const state = makeState();
     state.blocks.set(1, makeBlock(history, 0, 2));
@@ -490,8 +483,29 @@ describe("unit folding", () => {
       { type: "original", start: 1, end: 4 },
       { type: "summary", block: state.blocks.get(2) },
     ]);
-    assert.equal(result.viewChanged, false);
-    assert.deepEqual(result.expiredBlockIds, []);
+    assert.deepEqual(result.expired, [{ id: 1, reason: "boundary" }]);
+  });
+
+  it("every active valid block is rendered or reported", () => {
+    // Three seam-aligned blocks plus one off-seam block: the view renders
+    // the first three and reports the fourth, so no valid block is
+    // dropped silently.
+    const history = batchTranscript();
+    const state = makeState();
+    const first = makeBlock(history, 0, 1);
+    const second = makeBlock(history, 1, 4);
+    const third = makeBlock(history, 4, 5);
+    state.blocks.set(1, first);
+    state.blocks.set(2, second);
+    state.blocks.set(3, third);
+    state.blocks.set(4, makeBlock(history, 0, 2));
+    const result = fold(projectMessages(history), state);
+    const rendered = result.items.flatMap((item) =>
+      item.type === "summary" ? [item.block] : [],
+    );
+    assert.deepEqual(rendered, [first, second, third]);
+    assert.deepEqual(result.expired, [{ id: 4, reason: "boundary" }]);
+    assert.equal(rendered.length + result.expired.length, state.blocks.size);
   });
 });
 
@@ -534,7 +548,7 @@ describe("fold is pure", () => {
     state.blocks.set(1, makeBlock(history, 1, 4));
     setRegionText(history[2], 0, "edited");
     const result = fold(projectMessages(history), state);
-    assert.deepEqual(result.expiredBlockIds, [1]);
+    assert.deepEqual(result.expired, [{ id: 1, reason: "hash-invalid" }]);
     // The status transition is the caller's decision — fold only reports.
     assert.equal(state.blocks.get(1)?.status, "active");
     assert.equal(state.blocks.size, 1);

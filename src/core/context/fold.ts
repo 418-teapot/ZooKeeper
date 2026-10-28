@@ -6,17 +6,30 @@
  * units (a tool call and its result travel together) and walks those
  * units in order, replacing each unit interval covered by a surviving
  * block with a single summary item; every other unit keeps its original
- * item.  A block survives only
- * when it is active and its span hash still matches the current content
- * (`validateBlock`).
+ * item.
  *
- * Failure handling is silent by design: an active block that no longer
- * validates expands back into plain original items — its id is reported
- * in `expiredBlockIds` and `viewChanged` is set, but no tombstone or
- * hint is added to the view.  Blocks already in a terminal status
- * (`consumed`, `stale`) expand the same way but are neither reported
- * nor re-validated — their interval is ordinary content again, and
- * re-checking a hash nothing folds any more would only add work.
+ * Coverage invariant: every active block whose span still validates is
+ * either rendered as a summary item or reported in `expired` with the
+ * cause.  No valid block can leave the view without a trace, so the
+ * caller can retire it and the summarised content stays accounted for.
+ *
+ * Two causes are reported:
+ *
+ * - `"hash-invalid"` — the span hash no longer matches the transcript
+ *   (`validateBlock`).  The block expands back into plain original items
+ *   and `viewChanged` is set.
+ * - `"boundary"` — the block's interval cannot be located on the unit
+ *   grid: a boundary falls inside a unit, or a preceding block already
+ *   folded past its start.  The interval likewise expands into original
+ *   items.  The compression path builds blocks from resolved view
+ *   ranges, whose endpoints are unit boundaries by construction, so this
+ *   cause signals a block that no longer matches the current transcript
+ *   structure.
+ *
+ * Blocks already in a terminal status (`consumed`, `stale`) expand the
+ * same way but are neither reported nor re-validated — their interval is
+ * ordinary content again, and re-checking a hash nothing folds any more
+ * would only add work.
  *
  * `viewChanged` therefore signals a change made by THIS fold: an active
  * block dropped out of the view.  Retaining terminal blocks in the
@@ -24,20 +37,9 @@
  * so steady-state rounds over them must not report a change (the caller
  * arms a release bypass on this signal, which has to stay a one-shot).
  *
- * Unit alignment: a block folds only when its boundaries coincide with
- * unit seams.  The compression path builds blocks from resolved view
- * ranges, whose endpoints are unit boundaries by construction, so an
- * off-seam block cannot arise from normal operation.  The read side does
- * not widen such a block to the nearest seam: it expands into plain
- * original items, silently like a hash-invalid one.
- *
- * Defensive merge: surviving blocks whose aligned intervals intersect (a
- * condition the normal compression path prevents via `hasActiveOverlap`)
- * fold into a single summary item over the union of their intervals,
- * rendered from the first-appearing block's reference.
- *
  * The module never mutates its inputs: expired-block reporting returns
- * ids only, and the status transition is the caller's decision.
+ * ids and causes only, and the status transition is the caller's
+ * decision.
  *
  * @module
  */
@@ -48,21 +50,41 @@ import { validateBlock } from "./spanhash.js";
 import type { Block, SessionState } from "./state.js";
 
 /**
+ * Why an active block could not be rendered as a view item.
+ *
+ * - `"hash-invalid"` — its span no longer hashes to the stored value.
+ * - `"boundary"` — its interval does not resolve against the unit grid:
+ *   a boundary falls inside a unit, or a preceding block folded past its
+ *   start.
+ */
+export type FoldExpiryReason = "hash-invalid" | "boundary";
+
+/**
+ * One active block that dropped out of the view, with its cause.
+ */
+export interface FoldExpiry {
+  /** The block id. */
+  id: number;
+  /** Why the block did not render. */
+  reason: FoldExpiryReason;
+}
+
+/**
  * Result of one fold pass.
  */
 export interface FoldResult {
   /** The folded view, in ordinal order. */
   items: ViewItem[];
   /**
-   * True when an active block dropped out of the view in this fold (its
-   * span hash no longer matches).  Signals that the produced view
-   * differs from the fully folded expectation, so the caller can notify
-   * a pending view change.  Blocks already in a terminal status fold
-   * out every round and are not a change.
+   * True when an active block dropped out of the view in this fold.
+   * Signals that the produced view differs from the fully folded
+   * expectation, so the caller can notify a pending view change.
+   * Blocks already in a terminal status fold out every round and are
+   * not a change.
    */
   viewChanged: boolean;
-  /** Ids of active blocks that failed span validation, ascending. */
-  expiredBlockIds: number[];
+  /** Active blocks that did not render, ascending by id. */
+  expired: FoldExpiry[];
 }
 
 /**
@@ -71,32 +93,15 @@ export interface FoldResult {
  * Pure function: never mutates `history` or `state`.  The transcript is
  * first partitioned into indivisible fold units (`computeUnits`) so a
  * tool call and its result stay addressable together; units not covered
- * by any surviving block become `{type: "original"}` items, and covered
- * unit intervals become one `{type: "summary"}` item per surviving block
- * (or per merged group — see below).  Hidden messages are ordinary
- * transcript members and appear inside their unit; fold does no hidden
- * filtering.
+ * by any surviving block become `{type: "original"}` items, and a
+ * surviving block's interval becomes one `{type: "summary"}` item.
+ * Hidden messages are ordinary transcript members and appear inside
+ * their unit; fold does no hidden filtering.
  *
- * Block survival is `status === "active" && validateBlock(snapshot,
- * block)`.  An active block that fails validation silently expands: its
- * ordinals revert to original items, its id lands in `expiredBlockIds`,
- * and `viewChanged` is set.  A block in a terminal status expands the
- * same way but is never reported and never hash-checked — fold has no
- * path that could re-fold it.
- *
- * A block folds only when its `start` and `end` both land on a unit
- * seam: the compression path resolves ranges from view lines
- * (`resolveRange`), so block endpoints are unit boundaries by
- * construction.  A block with a boundary inside a unit expands into
- * plain original items instead — the same silent path as a hash-invalid
- * block — and the read side never widens it to the nearest seam.
- *
- * Defensive merge: when two folding blocks' intervals intersect, the
- * view folds the union of their intervals into a single summary item
- * rendered from the first-appearing block (the one with the smallest
- * start ordinal; ties keep block-map order).  The normal compression
- * path prevents overlap via `hasActiveOverlap`, so this branch is
- * defensive — it must not be removed or left untested.
+ * A block renders only when `start` and `end` both land on a unit seam
+ * and no earlier block already folded its start.  Every other active
+ * block — hash-invalid or unaddressable — expands into plain original
+ * items and is reported in `expired` (see the module docstring).
  *
  * @param snapshot - The current projection snapshot (span validation
  *   resolves tool names through the invocation table).
@@ -104,67 +109,66 @@ export interface FoldResult {
  * @returns The folded view plus change and expiry signals.
  */
 export function fold(snapshot: Projection, state: SessionState): FoldResult {
-  const history = snapshot.messages;
-  const expiredBlockIds: number[] = [];
-  const surviving: Block[] = [];
+  const expired: FoldExpiry[] = [];
+  const candidates: Array<{ id: number; block: Block }> = [];
   let viewChanged = false;
 
   for (const [id, block] of state.blocks) {
     if (block.status !== "active") continue;
     if (!validateBlock(snapshot, block)) {
       viewChanged = true;
-      expiredBlockIds.push(id);
+      expired.push({ id, reason: "hash-invalid" });
       continue;
     }
-    surviving.push(block);
+    candidates.push({ id, block });
   }
-  expiredBlockIds.sort((a, b) => a - b);
   // Stable sort by start ordinal; equal starts keep block-map order.
-  surviving.sort((a, b) => a.start - b.start);
+  candidates.sort((a, b) => a.block.start - b.block.start);
 
-  const items: ViewItem[] = [];
-
-  // Walk the transcript at unit granularity: a fold range must never
-  // split a tool call from its result.  Only a block whose `start` and
-  // `end` both land on unit seams folds; an off-seam block is dropped
-  // from `foldable` and its interval expands into original items, the
-  // same silent path a hash-invalid block takes.
-  const units = computeUnits(snapshot.invocations, history.length);
+  const units = computeUnits(snapshot.invocations, snapshot.messages.length);
   const unitStarts = new Set<number>();
   const unitEnds = new Set<number>();
   for (const { start, end } of units) {
     unitStarts.add(start);
     unitEnds.add(end);
   }
-  const foldable = surviving.filter(
-    (block) => unitStarts.has(block.start) && unitEnds.has(block.end),
-  );
 
+  const items: ViewItem[] = [];
+  const original = (unit: { start: number; end: number }): ViewItem => ({
+    type: "original",
+    start: unit.start,
+    end: unit.end,
+  });
+
+  // Walk the units once, in step with the blocks: a block must never
+  // split a tool call from its result, and a folded interval must not
+  // skip a unit the walk has not reached yet.
   let unit = 0;
-  let index = 0;
-  while (unit < units.length) {
-    const block = foldable[index];
-    if (block === undefined || block.start !== units[unit].start) {
-      items.push({
-        type: "original",
-        start: units[unit].start,
-        end: units[unit].end,
-      });
-      unit += 1;
+  for (const { id, block } of candidates) {
+    if (!(unitStarts.has(block.start) && unitEnds.has(block.end))) {
+      viewChanged = true;
+      expired.push({ id, reason: "boundary" });
       continue;
     }
-    // Absorb every following block whose interval intersects the running
-    // union (overlapping / nested defensive branch).
-    let end = block.end;
-    while (index + 1 < foldable.length && foldable[index + 1].start < end) {
-      index += 1;
-      if (foldable[index].end > end) end = foldable[index].end;
+    while (unit < units.length && units[unit].start < block.start) {
+      items.push(original(units[unit]));
+      unit += 1;
     }
-    // Skip every unit the merged union covers; the union ends on a seam.
-    while (unit < units.length && units[unit].end <= end) unit += 1;
+    if (unit === units.length || units[unit].start !== block.start) {
+      // An earlier block already folded across this start; the interval
+      // has no place left in the view.
+      viewChanged = true;
+      expired.push({ id, reason: "boundary" });
+      continue;
+    }
+    while (unit < units.length && units[unit].end <= block.end) unit += 1;
     items.push({ type: "summary", block });
-    index += 1;
+  }
+  while (unit < units.length) {
+    items.push(original(units[unit]));
+    unit += 1;
   }
 
-  return { items, viewChanged, expiredBlockIds };
+  expired.sort((a, b) => a.id - b.id);
+  return { items, viewChanged, expired };
 }

@@ -12,7 +12,10 @@
  * The schema carries a version field; an incompatible version (the old
  * layout or any future one) loads as empty and is discarded —
  * compression state is volatile by design and the transcript itself
- * survives, so restarting from scratch is always safe.  Additions within
+ * survives, so restarting from scratch is always safe.  A file whose
+ * active blocks intersect is discarded the same way (with a warn): the
+ * invariant that active blocks never overlap is enforced when a block
+ * lands, so such a file is corrupt.  Additions within
  * the current version (block status, the next-block-id field) are read
  * tolerantly: a file written before the field existed migrates — the
  * legacy `active` flag becomes a status, the next id derives from the
@@ -32,12 +35,13 @@ import {
 } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { log } from "../../utils/logger.js";
 import { isRecord } from "../records.js";
 import {
   type Block,
   type BlockStatus,
   deriveNextBlockId,
-  type Mark,
+  findActiveOverlap,
   markKey,
   type Nudges,
   type SessionState,
@@ -300,15 +304,40 @@ export function createStateStore(storageDir?: string): StateStore {
       if (!isRecord(parsed.blocks) || !isRecord(parsed.marks)) return empty();
 
       const blocks = new Map<number, Block>();
+      const state: SessionState = { blocks, marks: new Map() };
       for (const [key, value] of Object.entries(parsed.blocks)) {
         const id = Number(key);
         if (!Number.isInteger(id) || id < 1) return empty();
         const block = parsePersistedBlock(value);
         if (block === null) return empty();
+        // Two active blocks may never coexist: the fold renders one
+        // interval and the other leaves the view without a trace.  The
+        // compression path refuses to land such a block, so a file that
+        // carries one is hand-edited or corrupt — reject it whole and
+        // name the block it intersects.
+        const conflict =
+          block.status === "active"
+            ? findActiveOverlap(state, block.start, block.end)
+            : undefined;
+        if (conflict !== undefined) {
+          log.warn({
+            hook: "context-pruning",
+            event: "state_load_rejected",
+            sessionId,
+            reason: "overlapping active blocks",
+            blockId: id,
+            start: block.start,
+            end: block.end,
+            conflictBlockId: conflict.id,
+            conflictStart: conflict.block.start,
+            conflictEnd: conflict.block.end,
+          });
+          return empty();
+        }
         blocks.set(id, block);
       }
 
-      const marks = new Map<string, Mark>();
+      const marks = state.marks;
       for (const [, value] of Object.entries(parsed.marks)) {
         const mark = parsePersistedMark(value);
         if (mark === null) return empty();
@@ -317,7 +346,6 @@ export function createStateStore(storageDir?: string): StateStore {
         marks.set(markKey(mark.anchorOrdinal, mark.regionIndex), mark);
       }
 
-      const state: SessionState = { blocks, marks };
       // The next-id field persists so ids are never re-issued; a file
       // written before it existed migrates to the id following the
       // highest one stored.
