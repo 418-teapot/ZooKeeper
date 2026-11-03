@@ -13,7 +13,7 @@ import assert from "node:assert/strict";
 import { resetPiSdkLifecycleBridge } from "../adapters/pi/sdk-lifecycle.js";
 import { _resetPendingSwitchOpsForTesting } from "../adapters/pi/switch-host.js";
 import type { ToolHost } from "../core/ports/tool-host.js";
-import { sessionAgentRegistry } from "../core/session-agent.js";
+import { sessionAgentRegistry } from "../core/session/agent.js";
 import { _resetForTesting as resetIdentityForTesting } from "../core/subagent/identity.js";
 import { resetRegistry } from "../core/subagent/registry.js";
 import { _resetForTesting } from "../utils/logger.js";

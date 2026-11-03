@@ -5,9 +5,11 @@
  * `session_start` becomes a real start notice for the session pi keeps on
  * the event context, `session_shutdown` becomes an extension stop because
  * pi tears its whole extension runtime down, and any other event is an
- * explicit no-op.  The expectations below are the kernel's observable
- * effects — factory, `start` and disposer calls — plus the returned
- * outcome, never a replay of the mapping's own branching.
+ * explicit no-op.  pi never deletes a session, so every session it stops
+ * receives the `release-runtime` mode.  The expectations below are the
+ * kernel's observable effects — factory, `start` and disposer calls with
+ * their mode — plus the returned outcome, never a replay of the mapping's
+ * own branching.
  */
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
@@ -47,8 +49,8 @@ function buildKernel(log: string[], failSessionDispose = false) {
     start: (service, { reason }) => {
       log.push(`start:worker:${service.sessionID}:${reason}`);
     },
-    dispose: (service, { reason }) => {
-      log.push(`dispose:worker:${service.sessionID}:${reason}`);
+    dispose: (service, { reason, mode }) => {
+      log.push(`dispose:worker:${service.sessionID}:${reason}:${mode}`);
       if (failSessionDispose) throw new Error("boom");
     },
   });
@@ -106,7 +108,7 @@ describe("pi lifecycle mapping", () => {
     });
 
     assert.deepEqual(log.slice(3), [
-      "dispose:worker:session-1:quit",
+      "dispose:worker:session-1:quit:release-runtime",
       "dispose:ext:quit",
     ]);
     assert.deepEqual(outcome, {

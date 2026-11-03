@@ -46,7 +46,6 @@ import {
 } from "../../core/context/round-view.js";
 import {
   _resetContextStateManagerForTesting,
-  cleanupSession,
   consumePendingViewChange,
   getContextStateManager,
   getRuntimeFlaggedState,
@@ -56,6 +55,7 @@ import { computeSpanHash } from "../../core/context/spanhash.js";
 import { allocateBlockId, markKey } from "../../core/context/state.js";
 import type { Capabilities } from "../../core/ports/index.js";
 import type { ToolHost } from "../../core/ports/tool-host.js";
+import { sessionResources } from "../../core/session/resources.js";
 import { REGISTRY } from "../../registry.js";
 import {
   assembleForTest,
@@ -520,10 +520,10 @@ describe("retained terminal blocks do not force every release", () => {
 //
 // A fold view change arms the bypass after the release phase has already
 // consumed it, so the flag survives the final round of a session. The
-// deleted-session cleanup must drop it with the session's other records.
+// session deletion must drop it with the session's other records.
 // ---------------------------------------------------------------------------
 
-describe("cleanupSession drops a bypass armed by the fold", () => {
+describe("a session deletion drops a bypass armed by the fold", () => {
   /** A three-message transcript addressed to the given session. */
   const turnFor = (
     sessionID: string,
@@ -562,7 +562,7 @@ describe("cleanupSession drops a bypass armed by the fold", () => {
     assert.equal(state.blocks.get(1)?.status, "stale", "the span went stale");
   }
 
-  it("leaves no armed flag behind once the session is cleaned up", () => {
+  it("leaves no armed flag behind once the session is deleted", async () => {
     // Control: without cleanup the armed flag is pending for the next
     // round, so the assertion below is not vacuously true.
     armBypass("sess-cleanup-control");
@@ -573,11 +573,11 @@ describe("cleanupSession drops a bypass armed by the fold", () => {
     );
 
     armBypass("sess-cleanup-bypass");
-    cleanupSession("sess-cleanup-bypass");
+    await sessionResources.delete("sess-cleanup-bypass");
     assert.equal(
       consumePendingViewChange("sess-cleanup-bypass"),
       false,
-      "cleanupSession must drop the fold-armed bypass",
+      "a session deletion must drop the fold-armed bypass",
     );
   });
 });

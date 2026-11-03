@@ -30,7 +30,7 @@ import {
   applyModelVariant,
   type PromptVariantPair,
 } from "../../core/prompt-variant.js";
-import { sessionAgentRegistry } from "../../core/session-agent.js";
+import { sessionAgentRegistry } from "../../core/session/agent.js";
 import { log } from "../../utils/logger.js";
 import { ABORT_ERROR_NAMES, newInjectedMessageID } from "./message-shape.js";
 import type { OpenCodeSessionState } from "./services.js";

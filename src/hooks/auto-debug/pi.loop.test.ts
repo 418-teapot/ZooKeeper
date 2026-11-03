@@ -29,16 +29,17 @@
  * budget stops further wakes, and an aborted run is interdicted before
  * the strategy is consulted.
  *
- * Also covers the budget-map lifecycle: a `session_start` drops a
- * (re)starting session's stale entry, the size cap evicts the
- * oldest-inserted sessions, and a profile without the feature performs no
- * bookkeeping writes at all.
+ * Also covers the budget-map lifecycle: a `session_start` keeps the
+ * session's entry (a start notice is not a stop), a `session_shutdown`
+ * drops every started session's entry through its session scope, the size
+ * cap evicts the oldest-inserted sessions, and a profile without the
+ * feature performs no bookkeeping writes at all.
  */
 import assert from "node:assert/strict";
 import { afterEach, beforeEach, describe, it } from "node:test";
 import type { PiBoundaryResult } from "../../adapters/pi/types.js";
 import { buildPiHandlers } from "../../adapters/pi/wire.js";
-import { sessionAgentRegistry } from "../../core/session-agent.js";
+import { sessionAgentRegistry } from "../../core/session/agent.js";
 import { _resetForTesting as resetIdentityForTesting } from "../../core/subagent/identity.js";
 import { resetRegistry } from "../../core/subagent/registry.js";
 import {
@@ -530,7 +531,7 @@ describe("buildPiHandlers — loop settle", () => {
     assert.equal(wakes(result).length, 0);
   });
 
-  it("drops a session's budget on session_start so it restarts fresh", async () => {
+  it("keeps a session's budget across a session_start", async () => {
     const api = mockApi();
     const reminders = new Map<string, Map<string, number>>();
     const handlers = await buildPiHandlers(
@@ -541,17 +542,48 @@ describe("buildPiHandlers — loop settle", () => {
         remindersUsed: reminders,
       },
     );
-    const c = settleCtx("sess-del", ACTIVE_BRANCH);
+    const c = settleCtx("sess-resume", ACTIVE_BRANCH);
 
     await settle(handlers, RUN_ENDED, c);
-    assert.equal(reminders.get("sess-del")?.get("todoContinuation"), 1);
+    assert.equal(reminders.get("sess-resume")?.get("todoContinuation"), 1);
 
-    // The same session starting again begins with a fresh budget.
+    // A start notice is not a stop: the session's loop state keeps its
+    // spent budget and is released only when the scope stops.
     await handlers.sessionStart({ type: "session_start" }, c);
-    assert.equal(reminders.has("sess-del"), false);
+    assert.equal(reminders.get("sess-resume")?.get("todoContinuation"), 1);
 
+    const resumed = await settle(handlers, RUN_ENDED, c);
+    assert.equal(
+      wakes(resumed).length,
+      0,
+      "the spent budget is kept, so no second reminder is granted",
+    );
+  });
+
+  it("drops the started sessions' budgets on a shutdown", async () => {
+    const api = mockApi();
+    const reminders = new Map<string, Map<string, number>>();
+    const handlers = await buildPiHandlers(ZOO, api as any, RAW_AGENTS, {
+      remindersUsed: reminders,
+    });
+    const c = settleCtx("sess-shutdown", ACTIVE_BRANCH);
+
+    // The start notice gives the session a scope, so the stop path owns the
+    // budget entry from here on.
+    await handlers.sessionStart({ type: "session_start" }, c);
     await settle(handlers, RUN_ENDED, c);
-    assert.equal(reminders.get("sess-del")?.get("todoContinuation"), 1);
+    assert.equal(reminders.has("sess-shutdown"), true);
+
+    await handlers.sessionShutdown({
+      type: "session_shutdown",
+      reason: "quit",
+    });
+
+    assert.equal(
+      reminders.has("sess-shutdown"),
+      false,
+      "the session scope releases its loop state on a shutdown",
+    );
   });
 
   it("caps the budget store, evicting the oldest-inserted sessions", async () => {

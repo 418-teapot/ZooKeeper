@@ -31,6 +31,7 @@ import {
   type PiServiceHost,
 } from "./services.js";
 import type { ExtensionAPI } from "./types.js";
+import { buildPiContributions } from "./wire.js";
 
 afterEach(() => {
   resetIdentityForTesting();
@@ -209,9 +210,14 @@ describe("pi profile catalog", () => {
 });
 
 describe("pi host services — declarations", () => {
-  /** Build the declarations over a pi API stand-in. */
+  /** Build the declarations over a pi API stand-in and a null profile. */
   function buildHost(piApi?: ExtensionAPI): PiServiceHost {
-    return { piApi, appendEntry: undefined, ...HOST_HELPERS };
+    return {
+      piApi,
+      appendEntry: undefined,
+      composeProfile: () => buildPiContributions({}),
+      ...HOST_HELPERS,
+    };
   }
 
   it("creates the extension services before any session exists", async () => {
@@ -510,7 +516,7 @@ describe("pi host services — declarations", () => {
 
     // Stopping s1 releases its listener and drops only its live-context
     // view; s2's fleet and context stay live.
-    await kernel.stopSession("s1", "test");
+    await kernel.stopSession("s1", "test", "release-runtime");
     assert.deepEqual(a.state, { widgets: 1, unsubscribes: 1 });
     assert.deepEqual(b.state, { widgets: 1, unsubscribes: 0 });
     assert.equal(services.liveContext.forSession("s1"), undefined);
@@ -561,7 +567,13 @@ describe("pi host services — declarations", () => {
     // before both of them: it is then released last.
     assert.deepEqual(
       declarations.session.map((definition) => definition.name),
-      ["sessionContext", "todoStore", "fleetSession"],
+      [
+        "sessionContext",
+        "todoStore",
+        "fleetSession",
+        "loopSession",
+        "sessionResources",
+      ],
     );
   });
 

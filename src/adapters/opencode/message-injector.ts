@@ -42,11 +42,11 @@ export interface InjectorClient {
 
 /**
  * Build the OpenCode message injector from a v1 client and the
- * session-agent resolver.
+ * session agent resolver.
  *
  * @param client - The OpenCode client (may be partial or absent).
  * @param resolveAgent - Resolves a session's agent name from the shared
- *   session-agent registry.
+ *   session agent registry.
  * @returns The OpenCode message injector.
  */
 export function createOpenCodeMessageInjector(

@@ -7,27 +7,28 @@
  * This accessor pins the singleton; the backing store uses the default
  * storage directory.
  *
- * Two release entry points sit here, and they differ in what survives:
+ * Two records sit here, and they differ in what a stop keeps:
  *
- *  - `cleanupSession` drops every per-session record on
- *    `session.deleted` events — including the persisted state file and
- *    the session's binding in the shared agent registry
- *    (`core/session-agent.ts`, read by units through
- *    `Capabilities.resolveAgent`).
- *  - `releaseSessionRuntime` drops only the in-memory state for a stop
- *    that is not a deletion (a plugin dispose or reload), keeping the
- *    persisted state and the agent binding so a later instance restores
- *    the same session.
+ *  - the in-memory state cache (`sessionStateCacheResource`) drops its entry
+ *    on every stop, writing the cached mutations back on a runtime release
+ *    so a stop never discards the compression this instance made;
+ *  - the persisted state file (`sessionStateFileResource`) survives a
+ *    runtime release, because the session still exists on the host side,
+ *    and only a deletion removes it.
  *
- * Adding a new session-level record means registering its release in
- * both entry points, not adding a line to the host's event handler.
+ * Both are declared as session resources (`session/resources.ts`),
+ * so a host stop reaches them through the session scope.  Adding a new
+ * session-level record means declaring it there, not adding a line to a
+ * host's event handler.
  *
  * @module
  */
 
-import { sessionAgentRegistry } from "../session-agent.js";
-import { clearModelLimit } from "./model-limits.js";
-import { _resetRoundViewsForTesting, clearRoundView } from "./round-view.js";
+import type {
+  ReleasedSessionResource,
+  RetainedSessionResource,
+} from "../session/resources.js";
+import { _resetRoundViewsForTesting } from "./round-view.js";
 import {
   createSessionStateManager,
   type SessionStateManager,
@@ -36,71 +37,61 @@ import type { SessionState } from "./state.js";
 import { createStateStore, type StateStore } from "./store.js";
 
 let manager: SessionStateManager | null = null;
+let store: StateStore | null = null;
+
+/** Return the store the resident state lives in, creating it on first use. */
+function stateStore(): StateStore {
+  store ??= createStateStore();
+  return store;
+}
 
 /** Return the shared manager, creating it on first use. */
 export function getContextStateManager(): SessionStateManager {
-  manager ??= createSessionStateManager(createStateStore());
+  manager ??= createSessionStateManager(stateStore());
   return manager;
 }
 
 // ---------------------------------------------------------------------------
-// Cleanup
+// Session state records
 // ---------------------------------------------------------------------------
 
 /**
- * Drop every per-session record for the given session ID.
+ * The in-memory state cache of one session.
  *
- * Deletion entry point, called only when the host reports
- * `session.deleted`: drops the session-agent binding, the model-limit
- * entry, the persisted state file, the pending view-change flag (however
- * it was armed), the cached round view, and the in-memory cache entry via
- * `SessionStateManager.evict`.  The cache eviction is silent (no
- * write-back) because the on-disk file has already been removed and
- * writing it back would resurrect the deletion — TTL eviction is
- * reserved for entries that are merely idle, not deleted.
+ * A runtime release writes the cached mutations back before dropping the
+ * entry, so releasing never discards a compression; a deletion drops the
+ * entry silently, because the file record removes the file and a write-back
+ * would resurrect the deletion.
  *
- * This is deliberately not `releaseSessionRuntime` plus a file delete:
- * that entry point saves the cache back before evicting, which would
- * recreate the file this call just removed.
- *
- * @param sessionID - The session identifier to clean up.
+ * A stop never creates the manager: no manager means this process loaded no
+ * state at all, so there is nothing cached to drop.
  */
-export function cleanupSession(sessionID: string): void {
-  sessionAgentRegistry.delete(sessionID);
-  clearModelLimit(sessionID);
-  pendingViewChangeFlags.delete(sessionID);
-  clearRoundView(sessionID);
-  const manager = getContextStateManager();
-  manager.store.delete(sessionID);
-  // Silent drop — the store file is already gone, so writing the
-  // cached entry back here would resurrect it on disk.
-  manager.evict(sessionID);
-}
+export const sessionStateCacheResource: ReleasedSessionResource = {
+  name: "sessionStateCache",
+  runtime: "release",
+  release(sessionID) {
+    manager?.save(sessionID);
+    manager?.evict(sessionID);
+  },
+  delete(sessionID) {
+    manager?.evict(sessionID);
+  },
+};
 
 /**
- * Release the runtime state of one session, keeping its persisted context.
+ * The persisted state file of one session.
  *
- * Used for every stop that is not a session deletion — a plugin dispose
- * or reload — where the session itself still exists on the host side.
- * The model limit, the cached round view, the pending view-change flag
- * and the cached state entry are dropped, while the store file and the
- * session-agent binding stay: the next plugin instance must be able to
- * restore the session's context and identity.  Cached mutations are
- * written back before the entry is dropped, so releasing runtime state
- * never discards the compression this instance performed.
- *
- * @param sessionID - The session identifier to release.
+ * A runtime release keeps it, so the next instance restores the session's
+ * context.  A deletion removes it — also for a session this process never
+ * loaded, so the file record resolves the store without a manager.
  */
-export function releaseSessionRuntime(sessionID: string): void {
-  clearModelLimit(sessionID);
-  pendingViewChangeFlags.delete(sessionID);
-  clearRoundView(sessionID);
-  const manager = getContextStateManager();
-  // Save before evicting: a silent drop here would discard every
-  // compression this instance made, because the file stays on disk.
-  manager.save(sessionID);
-  manager.evict(sessionID);
-}
+export const sessionStateFileResource: RetainedSessionResource = {
+  name: "sessionStateFile",
+  runtime: "retain",
+  delete(sessionID) {
+    stateStore().delete(sessionID);
+  },
+};
 
 // ---------------------------------------------------------------------------
 // Runtime-only state flags
@@ -155,10 +146,26 @@ export function getRuntimeFlaggedState(sessionId: string): RuntimeFlaggedState {
  * pending marks flip in the same turn the view changes.  Armed by the
  * fold phase (a block dropped out of this round's fold) and by the
  * compress/decompress tools and the /dcp command after mutating
- * blocks.  Never persisted — loss on restart is benign; the release
- * entry points drop it with the session's other runtime records.
+ * blocks.  Never persisted — loss on restart is benign; a session stop drops
+ * it with the session's other runtime records.
  */
 const pendingViewChangeFlags = new Map<string, boolean>();
+
+/** Drop the session's pending-view-change flag. */
+function clearPendingViewChange(sessionID: string): void {
+  pendingViewChangeFlags.delete(sessionID);
+}
+
+/**
+ * The pending-view-change flags are runtime-only: both stop modes drop the
+ * flag, because the next release phase consumes it once.
+ */
+export const pendingViewChangeFlagResource: ReleasedSessionResource = {
+  name: "pendingViewChangeFlag",
+  runtime: "release",
+  release: clearPendingViewChange,
+  delete: clearPendingViewChange,
+};
 
 /** Arm the session's pending-view-change flag. */
 export function setPendingViewChange(sessionId: string): void {
@@ -175,11 +182,21 @@ export function consumePendingViewChange(sessionId: string): boolean {
 /**
  * Test affordance: drop the singleton so suites can isolate state.
  *
- * @param store - Optional store to bind the fresh manager to; suites that
- *   observe persistence pass a sandbox store instead of the default one.
+ * @param storeOverride - Optional store the next manager binds to, and the
+ *   store a stop resolves; suites that observe persistence pass a sandbox
+ *   store instead of the default one.  No manager is created here, so a test
+ *   can stop a session this process never loaded.
  */
-export function _resetContextStateManagerForTesting(store?: StateStore): void {
-  manager = store === undefined ? null : createSessionStateManager(store);
+export function _resetContextStateManagerForTesting(
+  storeOverride?: StateStore,
+): void {
+  manager = null;
+  store = storeOverride ?? null;
   pendingViewChangeFlags.clear();
   _resetRoundViewsForTesting();
+}
+
+/** Test affordance: whether the shared manager exists yet. */
+export function _hasContextStateManagerForTesting(): boolean {
+  return manager !== null;
 }

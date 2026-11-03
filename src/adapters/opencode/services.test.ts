@@ -8,9 +8,9 @@
  * answers of one session's runtime, so an implementation that shares
  * state between sessions fails here.
  *
- * The release expectations are split by stop reason: only the host's
- * `session.deleted` ends a session's persisted context, while a plugin
- * dispose or an unrecognised reason must leave it restorable.
+ * The release expectations are split by stop mode: only a `delete-session`
+ * stop ends a session's persisted context, while a `release-runtime` stop (a
+ * plugin dispose) must leave it restorable.
  */
 import assert from "node:assert/strict";
 import { rmSync } from "node:fs";
@@ -26,9 +26,9 @@ import {
 } from "../../core/context/runtime.js";
 import { createStateStore } from "../../core/context/store.js";
 import { createLifecycleKernel } from "../../core/lifecycle/index.js";
-import { sessionAgentRegistry } from "../../core/session-agent.js";
+import { sessionAgentRegistry } from "../../core/session/agent.js";
 import { makeTmpDir } from "../../testkits/tmp.js";
-import { createOpenCodeHostServices } from "./services.js";
+import { createOpenCodeHostServices, sessionScopeState } from "./services.js";
 
 /** Scratch store directories the current test created. */
 const tmpDirs: string[] = [];
@@ -165,15 +165,15 @@ describe("OpenCode session runtime — wake echo", () => {
   });
 });
 
-describe("OpenCode session runtime — release reason", () => {
-  it("keeps the persisted context and the agent binding on dispose", async () => {
+describe("OpenCode session runtime — release mode", () => {
+  it("keeps the persisted context and the agent binding on a runtime release", async () => {
     const dir = sandboxWithCachedBlock("s1");
     const { kernel } = buildKernel();
     await kernel.ensureSession("s1");
     sessionAgentRegistry.bind("s1", "dolphin");
     setModelLimit("s1", 1000, "model");
 
-    await kernel.stopSession("s1", "dispose");
+    await kernel.stopSession("s1", "dispose", "release-runtime");
 
     assert.equal(
       createStateStore(dir).load("s1").blocks.get(1)?.summary,
@@ -188,29 +188,26 @@ describe("OpenCode session runtime — release reason", () => {
     assert.equal(getModelLimit("s1"), undefined, "runtime state is released");
   });
 
-  it("keeps the persisted context on an unrecognised reason", async () => {
+  it("decides deletion from the mode, not the reason", async () => {
     const dir = sandboxWithCachedBlock("s1");
     const { kernel } = buildKernel();
     await kernel.ensureSession("s1");
     sessionAgentRegistry.bind("s1", "dolphin");
 
-    await kernel.stopSession("s1", "extension.reload");
+    // The reason is diagnostic only: the mode alone selects the cleanup.
+    await kernel.stopSession("s1", "extension.reload", "delete-session");
 
-    assert.equal(
-      createStateStore(dir).load("s1").blocks.get(1)?.summary,
-      "kept",
-      "an unknown reason must keep the data instead of deleting it",
-    );
-    assert.equal(sessionAgentRegistry.resolve("s1"), "dolphin");
+    assert.equal(createStateStore(dir).load("s1").blocks.size, 0);
+    assert.equal(sessionAgentRegistry.resolve("s1"), undefined);
   });
 
-  it("deletes the persisted context and the binding on session.deleted", async () => {
+  it("deletes the persisted context and the binding on a session deletion", async () => {
     const dir = sandboxWithCachedBlock("s1");
     const { kernel } = buildKernel();
     await kernel.ensureSession("s1");
     sessionAgentRegistry.bind("s1", "dolphin");
 
-    await kernel.stopSession("s1", "session.deleted");
+    await kernel.stopSession("s1", "session.deleted", "delete-session");
 
     assert.equal(
       createStateStore(dir).load("s1").blocks.size,
@@ -237,7 +234,7 @@ describe("OpenCode session runtime — release reason", () => {
 });
 
 describe("OpenCode host services — declarations", () => {
-  it("exposes one extension scope and one session runtime service", async () => {
+  it("exposes the loop extension and the session services", async () => {
     const { kernel } = buildKernel();
 
     const extension = await kernel.ensureExtension();
@@ -245,7 +242,10 @@ describe("OpenCode host services — declarations", () => {
 
     assert.ok(extension);
     assert.deepEqual(Object.keys(extension.services), ["loop"]);
-    assert.deepEqual(Object.keys(session?.services ?? {}), ["sessionRuntime"]);
+    assert.deepEqual(Object.keys(session?.services ?? {}), [
+      "sessionRuntime",
+      "sessionResources",
+    ]);
   });
 
   it("builds no loop engine when the profile contributed no strategy", async () => {
@@ -268,7 +268,7 @@ describe("OpenCode session runtime — release", () => {
     },
   };
 
-  it("resets only the stopped session's reminder budget", async () => {
+  it("resets the deleted session's loop state only", async () => {
     const { kernel } = buildKernel([WAKE]);
 
     const first = (await kernel.ensureSession("s1"))?.services.sessionRuntime;
@@ -278,10 +278,26 @@ describe("OpenCode session runtime — release", () => {
     first.engine.record("s1", "strategy");
     first.engine.record("s2", "strategy");
 
-    await kernel.stopSession("s1", "session.deleted");
+    await kernel.stopSession("s1", "session.deleted", "delete-session");
 
     assert.equal(first.engine.used("s1", "strategy"), 0);
     assert.equal(second?.engine?.used("s2", "strategy"), 1);
+  });
+
+  it("resets the released session's loop state on a runtime release", async () => {
+    const { kernel } = buildKernel([WAKE]);
+
+    const session = (await kernel.ensureSession("s1"))?.services.sessionRuntime;
+    assert.ok(session?.engine);
+    session.engine.record("s1", "strategy");
+
+    await kernel.stopSession("s1", "dispose", "release-runtime");
+
+    assert.equal(
+      session.engine.used("s1", "strategy"),
+      0,
+      "a plugin dispose must drop the session's reminder budget",
+    );
   });
 
   it("drops the stopped session's process-level records only", async () => {
@@ -293,11 +309,32 @@ describe("OpenCode session runtime — release", () => {
       setModelLimit(sessionID, 1000, "model");
     }
 
-    await kernel.stopSession("s1", "session.deleted");
+    await kernel.stopSession("s1", "session.deleted", "delete-session");
 
     assert.equal(sessionAgentRegistry.resolve("s1"), undefined);
     assert.equal(getModelLimit("s1"), undefined);
     assert.equal(sessionAgentRegistry.resolve("s2"), "dolphin");
     assert.ok(getModelLimit("s2"));
+  });
+});
+
+describe("OpenCode session scope state", () => {
+  it("returns the session's own runtime instance", async () => {
+    const { kernel } = buildKernel();
+    const scope = await kernel.ensureSession("s1");
+    assert.ok(scope);
+
+    const state = sessionScopeState(scope);
+
+    assert.equal(state, scope.services.sessionRuntime);
+    assert.equal(
+      sessionScopeState(scope),
+      state,
+      "the state is the service instance, never a rebuilt view",
+    );
+  });
+
+  it("returns null when there is no session", () => {
+    assert.equal(sessionScopeState(null), null);
   });
 });

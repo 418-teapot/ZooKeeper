@@ -6,7 +6,9 @@
  * idempotent, and stopping disposes in reverse dependency order while
  * reporting every cleanup failure.  Real session starts are a separate
  * notification path so a first-use `ensureSession` can never fabricate a
- * start reason.
+ * start reason.  A session stop carries its reason (diagnostics) and its
+ * mode (what the stop does); an extension stop releases the runtime of the
+ * sessions nested in it.
  *
  * The expectations below are literal event sequences and factory counts,
  * never a replay of the kernel's own ordering logic.
@@ -225,7 +227,7 @@ describe("lifecycle kernel", () => {
     const kernel = createLifecycleKernel({ extension: [], session: [service] });
 
     assert.equal(await kernel.notifySessionStart("s1", "session.start"), true);
-    await kernel.stopSession("s1", "session.idle");
+    await kernel.stopSession("s1", "session.idle", "release-runtime");
 
     assert.equal(
       await kernel.notifySessionStart("s1", "session.resume"),
@@ -259,7 +261,11 @@ describe("lifecycle kernel", () => {
     const notifying = kernel.notifySessionStart("s1", "session.start");
     await entered.promise;
 
-    const stopping = kernel.stopSession("s1", "session.idle");
+    const stopping = kernel.stopSession(
+      "s1",
+      "session.idle",
+      "release-runtime",
+    );
     const queued = kernel.notifySessionStart("s1", "session.resume");
     await Promise.resolve();
 
@@ -305,7 +311,11 @@ describe("lifecycle kernel", () => {
       /hook-boom/,
     );
 
-    const report = await kernel.stopSession("s1", "session.idle");
+    const report = await kernel.stopSession(
+      "s1",
+      "session.idle",
+      "release-runtime",
+    );
 
     assert.deepEqual(report.errors, []);
     assert.deepEqual(events, [
@@ -383,7 +393,8 @@ describe("lifecycle kernel", () => {
     assert.equal(await kernel.ensureSession("   "), null);
     assert.equal(await kernel.notifySessionStart(undefined, "start"), false);
     assert.deepEqual(
-      (await kernel.stopSession(undefined, "session.stop")).errors,
+      (await kernel.stopSession(undefined, "session.stop", "release-runtime"))
+        .errors,
       [],
     );
     assert.equal(createCount, 0);
@@ -412,7 +423,11 @@ describe("lifecycle kernel", () => {
 
     const ensuring = kernel.ensureSession("s1");
     await started.promise;
-    const stopping = kernel.stopSession("s1", "session.stop");
+    const stopping = kernel.stopSession(
+      "s1",
+      "session.stop",
+      "release-runtime",
+    );
     gate.resolve();
 
     const [scope, report] = await Promise.all([ensuring, stopping]);
@@ -466,8 +481,16 @@ describe("lifecycle kernel", () => {
 
     await kernel.ensureSession("s1");
 
-    const first = await kernel.stopSession("s1", "session.stop");
-    const second = await kernel.stopSession("s1", "session.stop");
+    const first = await kernel.stopSession(
+      "s1",
+      "session.stop",
+      "release-runtime",
+    );
+    const second = await kernel.stopSession(
+      "s1",
+      "session.stop",
+      "release-runtime",
+    );
     assert.deepEqual(first.errors, []);
     assert.deepEqual(second.errors, []);
     assert.equal(sessionDispose, 1);
@@ -529,7 +552,7 @@ describe("lifecycle kernel", () => {
     });
 
     await kernel.ensureSession("s1");
-    await kernel.stopSession("s1", "session.stop");
+    await kernel.stopSession("s1", "session.stop", "release-runtime");
     assert.deepEqual(disposed, ["sessionSecond", "sessionFirst"]);
 
     disposed.length = 0;
@@ -537,23 +560,24 @@ describe("lifecycle kernel", () => {
     assert.deepEqual(disposed, ["top", "middle", "base"]);
   });
 
-  it("passes the stop reason through to every disposer", async () => {
+  it("passes the stop reason and mode through to the disposers", async () => {
     const events: string[] = [];
 
     const ext = defineExtensionService({
       name: "ext",
       deps: [],
       create: () => ({}),
-      dispose: (_service, { reason }) => {
-        events.push(`ext:${reason}`);
+      dispose: (_service, context) => {
+        events.push(`ext:${context.reason}`);
+        assert.equal("mode" in context, false, "an extension stop has no mode");
       },
     });
     const session = defineSessionService({
       name: "session",
       deps: [],
       create: () => ({}),
-      dispose: (_service, { reason }) => {
-        events.push(`session:${reason}`);
+      dispose: (_service, { reason, mode }) => {
+        events.push(`session:${reason}:${mode}`);
       },
     });
     const kernel = createLifecycleKernel({
@@ -562,15 +586,16 @@ describe("lifecycle kernel", () => {
     });
 
     await kernel.ensureSession("s1");
-    await kernel.stopSession("s1", "session.idle");
+    await kernel.stopSession("s1", "session.idle", "delete-session");
 
     await kernel.ensureSession("s2");
     const report = await kernel.stopExtension("host.shutdown");
 
     assert.deepEqual(report.errors, []);
     assert.deepEqual(events, [
-      "session:session.idle",
-      "session:host.shutdown",
+      "session:session.idle:delete-session",
+      // An extension stop releases the runtime; it never ends a session.
+      "session:host.shutdown:release-runtime",
       "ext:host.shutdown",
     ]);
   });
@@ -608,7 +633,11 @@ describe("lifecycle kernel", () => {
     });
 
     await kernel.ensureSession("s1");
-    const sessionReport = await kernel.stopSession("s1", "session.stop");
+    const sessionReport = await kernel.stopSession(
+      "s1",
+      "session.stop",
+      "release-runtime",
+    );
     assert.equal(sessionReport.errors.length, 1);
     assert.equal(sessionReport.errors[0]?.scope, "session");
     assert.equal(sessionReport.errors[0]?.sessionID, "s1");
@@ -670,7 +699,7 @@ describe("lifecycle kernel", () => {
     await kernel.ensureSession("s1");
     assert.equal(signal?.aborted, false);
 
-    await kernel.stopSession("s1", "session.stop");
+    await kernel.stopSession("s1", "session.stop", "release-runtime");
     assert.equal(signal?.aborted, true);
     await cancelled;
   });

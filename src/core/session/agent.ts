@@ -18,17 +18,21 @@
  *
  * `clear` is the test seam; the process-wide singleton lives on the
  * `sessionAgentRegistry` export, shared by every host entry point and
- * read by units through `Capabilities.resolveAgent`.
+ * read by units through `Capabilities.resolveAgent`.  The binding is a
+ * retained session record (see `resources.ts`), so a session deletion
+ * removes it.
  *
  * @module
  */
 
+import type { RetainedSessionResource } from "./resources.js";
+
 /**
  * Registry of session → agent bindings.
  *
- * All state is in-memory and per-process; bindings are dropped by
- * `cleanupSession` (via `delete`) when the host reports a session
- * deletion.
+ * All state is in-memory and per-process; a binding is process-owned, so a
+ * runtime release keeps it (the next instance resolves the same session)
+ * and only a session deletion drops it.
  */
 export class SessionAgentRegistry {
   private readonly bindings = new Map<string, string>();
@@ -72,8 +76,21 @@ export class SessionAgentRegistry {
  * The process-wide registry shared by every host entry point.
  *
  * The hosts' event handlers are the writers (OpenCode via
- * `message.updated`; pi via lazy resolution inside `resolveAgent`);
- * `cleanupSession` removes entries on session deletion; hook units
+ * `message.updated`; pi via lazy resolution inside `resolveAgent`); the
+ * session resource catalog removes entries on session deletion; hook units
  * read through `Capabilities.resolveAgent`.
  */
 export const sessionAgentRegistry = new SessionAgentRegistry();
+
+/**
+ * The agent binding outlives a runtime release.
+ *
+ * Identity belongs to the process, not to a plugin instance: a stopped
+ * runtime keeps the binding so the next instance resolves the same session,
+ * and only a session deletion drops it.
+ */
+export const sessionAgentResource: RetainedSessionResource = {
+  name: "sessionAgent",
+  runtime: "retain",
+  delete: (sessionID) => sessionAgentRegistry.delete(sessionID),
+};

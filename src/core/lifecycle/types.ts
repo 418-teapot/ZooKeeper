@@ -47,15 +47,31 @@ export type DependencyServices<Deps extends readonly AnyServiceDefinition[]> = {
 };
 
 /**
+ * What a session stop does with the session's own resources.
+ *
+ * `release-runtime` keeps whatever outlives the scope (a session the host
+ * still owns); `delete-session` also drops what belongs to the session
+ * itself.  The mode is explicit: no caller infers it from the reason.
+ */
+export type SessionStopMode = "release-runtime" | "delete-session";
+
+/**
  * Context handed to every `dispose` call.
  *
  * `reason` is the caller-supplied stop reason.  A session stopped because
  * its extension stopped receives the extension's stop reason, so cleanup
- * still records why it ran.
+ * still records why it ran.  A session disposer receives
+ * {@link SessionDisposeContext} instead.
  */
 export interface DisposeContext {
   /** Host-supplied stop reason from the stop call that reached this service. */
   readonly reason: string;
+}
+
+/** Context handed to a session service's `dispose` call. */
+export interface SessionDisposeContext extends DisposeContext {
+  /** What this stop does with the session's resources. */
+  readonly mode: SessionStopMode;
 }
 
 /** Create context for an extension-scoped service. */
@@ -133,7 +149,10 @@ export interface SessionServiceDefinition<
    */
   start?(service: Service, context: SessionStartContext): void | Promise<void>;
   /** Release the service; errors are collected by the stop report. */
-  dispose?(service: Service, context: DisposeContext): void | Promise<void>;
+  dispose?(
+    service: Service,
+    context: SessionDisposeContext,
+  ): void | Promise<void>;
 }
 
 /** Declarations accepted by {@link createLifecycleKernel}. */
@@ -252,15 +271,17 @@ export interface LifecycleKernel<
   /**
    * Stop one session scope.
    *
-   * `reason` is required and reaches every session disposer through
-   * {@link DisposeContext}.  Safe to repeat and safe to race with
-   * `ensureSession`; a stopped ID is tombstoned so a late event cannot
+   * `reason` and `mode` are both required and reach every session disposer
+   * through {@link SessionDisposeContext}: the reason records why the stop
+   * ran, the mode decides what it does.  Safe to repeat and safe to race
+   * with `ensureSession`; a stopped ID is tombstoned so a late event cannot
    * recreate it.  Never rejects for cleanup failures — inspect
    * {@link CleanupReport.errors}.
    */
   stopSession(
     sessionID: string | null | undefined,
     reason: string,
+    mode: SessionStopMode,
   ): Promise<CleanupReport>;
   /**
    * Stop the extension: every remaining session first, then extension
@@ -268,6 +289,8 @@ export interface LifecycleKernel<
    *
    * `reason` reaches extension disposers, and also the disposers of the
    * nested sessions this call stops, so those cleanups stay traceable.
+   * Nested sessions always stop with {@link SessionStopMode}
+   * `release-runtime`: an extension stop never ends a session.
    * Safe to repeat and never rejects for cleanup failures.
    */
   stopExtension(reason: string): Promise<CleanupReport>;

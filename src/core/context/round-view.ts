@@ -18,13 +18,13 @@
  * handed to the model.
  *
  * The record is runtime-only (never persisted — loss on restart is
- * benign: the next transform republishes) and per-session, so the
- * release entry points in `runtime.ts` drop it alongside the other
- * session-level runtime records.
+ * benign: the next transform republishes) and per-session, so the session
+ * stop path drops it (see `session/resources.ts`).
  *
  * @module
  */
 
+import type { ReleasedSessionResource } from "../session/resources.js";
 import type { HostMessage, Invocation, Projection } from "./lens.js";
 import { project } from "./lens.js";
 import type { NumberedItem } from "./view-refs.js";
@@ -141,17 +141,25 @@ export function getRoundView(sessionId: string): RoundView | undefined {
 /**
  * Drop the session's cached round view.
  *
- * Called by `cleanupSession` on `session.deleted`, by
- * `releaseSessionRuntime` on a plugin dispose or reload, and by the pi
- * host's `session_start` handler — pi reports no session-deletion event,
- * so a replayed session_start (reload / resume) is the only place its
- * long-lived process can reclaim the entry.
+ * The round view is a session resource (`session/resources.ts`), so a
+ * session's stop clears it.
  *
  * @param sessionId - The session identifier.
  */
 export function clearRoundView(sessionId: string): void {
   roundViews.delete(sessionId);
 }
+
+/**
+ * The cached round view is runtime-only: both stop modes drop it, and the
+ * next pruning round republishes the current one.
+ */
+export const roundViewResource: ReleasedSessionResource = {
+  name: "roundView",
+  runtime: "release",
+  release: clearRoundView,
+  delete: clearRoundView,
+};
 
 /** Test affordance: the sessions that currently hold a cached round view. */
 export function _listRoundViewSessionsForTesting(): string[] {

@@ -73,7 +73,7 @@ import { initPluginLogger } from "./core/config-parse.js";
 import { ORCHESTRATOR_AGENT_NAME } from "./core/orchestrator.js";
 import type { Capabilities } from "./core/ports/index.js";
 import { filterDisjointVariants } from "./core/prompt-variant.js";
-import { sessionAgentRegistry } from "./core/session-agent.js";
+import { sessionAgentRegistry } from "./core/session/agent.js";
 import { REGISTRY } from "./registry.js";
 import { log } from "./utils/logger.js";
 
@@ -130,7 +130,7 @@ export async function buildPlugin(
     modeProfile === null ? undefined : await readHostMaterialisation(client);
 
   // `sessionAgentRegistry` is the shared session → agent registry held
-  // by core/session-agent.ts; the infrastructure hooks populate it via
+  // by core/session/agent.ts; the infrastructure hooks populate it via
   // `message.updated` events and the units read it through
   // `resolveAgent`.
   const resolveAgent = (sessionID: string): string | undefined =>

@@ -28,7 +28,9 @@ export {
   type LifecycleKernel,
   type ServiceMap,
   type SessionCreateContext,
+  type SessionDisposeContext,
   type SessionScope,
   type SessionServiceDefinition,
   type SessionStartContext,
+  type SessionStopMode,
 } from "./types.js";

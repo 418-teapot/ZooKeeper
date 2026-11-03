@@ -10,36 +10,30 @@
  *
  *  - the `loop` extension service owns the loop engine, built once per
  *    plugin instance when the active profile contributed a settle
- *    strategy.  Its per-session reminder budgets and awaiting-progress
- *    locks stay inside the engine; the session runtime resets them when
- *    the session is released.
- *  - the `sessionRuntime` session service holds the consume-once abort flag
- *    and the pending wake echo.
+ *    strategy.
+ *  - the `sessionRuntime` session service is the session's whole state: the
+ *    consume-once abort flag, the pending wake echo and the instance's
+ *    engine.  The engine's per-session reminder budgets and
+ *    awaiting-progress locks belong to this scope, so every stop of a
+ *    session resets that session's loop state.
  *
- * The context pipeline's per-session records (`cleanupSession` and
- * `releaseSessionRuntime`: the persisted state, the model limit, the round
- * view, the session's entry in the shared agent registry) stay
- * process-level: the hook, the tools and the `/dcp` command share one
- * store per process, so they cannot be re-created per plugin instance.
- * The session scope is their release boundary — a scope that stops is a
- * session this plugin instance is done with.
+ * The context pipeline's per-session records (the persisted state, the model
+ * limit, the round view, the pending view-change flag, the session's entry in
+ * the shared agent registry) stay process-level: the hook, the tools and the
+ * `/dcp` command share one store per process, so they cannot be re-created per
+ * plugin instance.  They are declared in `core/session/resources.ts` and
+ * released through the `sessionResources` session service: the session scope
+ * is their stop boundary, and the stop mode decides what it does to them.
  *
- * What a stop does to those records depends on why the scope stopped.
- * Only the host's `session.deleted` ends the session itself, so only that
- * reason deletes the persisted context.  A plugin dispose or reload stops
- * the scope while the session lives on: the runtime state is released and
- * the persisted context (plus the session's agent binding, whose owner is
- * the process rather than this plugin instance) survives for the next
- * instance.  An unrecognised reason is treated as "keep": losing a
- * session's compression is unrecoverable, keeping a stale cache is not.
+ * Only a `delete-session` stop ends a session, so only that mode deletes the
+ * persisted context and the agent binding.  A `release-runtime` stop (the
+ * plugin dispose) stops the scope while the session lives on: the runtime
+ * records are released and the persisted context survives for the next
+ * instance.  The reason is diagnostic and never selects the cleanup step.
  *
  * @module
  */
 
-import {
-  cleanupSession,
-  releaseSessionRuntime,
-} from "../../core/context/runtime.js";
 import {
   defineExtensionService,
   defineSessionService,
@@ -51,7 +45,7 @@ import {
   type LoopEngine,
   type SettledContribution,
 } from "../../core/loop/index.js";
-import { SESSION_DELETED_REASON } from "./lifecycle.js";
+import { sessionResourcesService } from "../../core/session/resources.js";
 
 /** The host inputs the service declarations close over. */
 export interface OpenCodeServiceHost {
@@ -60,10 +54,13 @@ export interface OpenCodeServiceHost {
 }
 
 /**
- * The per-session state the always-on hooks drive.
+ * The per-session state the always-on hooks drive: the `sessionRuntime`
+ * service value.
  *
- * Every reader goes through the session it addresses, so no caller can
- * observe another session's abort flag or pending echo.
+ * The abort flag and the pending echo belong to one session: a reader goes
+ * through the session it addresses, so neither crosses a session boundary.
+ * The engine is the plugin instance's shared object, so its budget
+ * bookkeeping stays readable for every session of the instance.
  */
 export interface OpenCodeSessionState {
   /** The session this state belongs to. */
@@ -91,28 +88,17 @@ export interface OpenCodeSessionState {
   clearEcho(): void;
 }
 
-/** The session service value: the state plus the scope's release step. */
-export interface OpenCodeSessionRuntime extends OpenCodeSessionState {
-  /**
-   * Release this session's state, budget, and process-level records.
-   *
-   * @param reason - The stop reason the kernel recorded; only
-   *   {@link SESSION_DELETED_REASON} deletes the persisted context.
-   */
-  release(reason: string): void;
-}
-
 /**
  * Build the session runtime of one session scope.
  *
  * @param sessionID - The owning session.
- * @param engine - The plugin instance's loop engine, if any.
- * @returns The session runtime; its disposer releases it.
+ * @param engine - The instance's loop engine, if the profile built one.
+ * @returns The session runtime; its disposer drops it.
  */
 function createSessionRuntime(
   sessionID: string,
   engine: LoopEngine | undefined,
-): OpenCodeSessionRuntime {
+): OpenCodeSessionState {
   let aborted = false;
   let echoMessageID: string | undefined;
 
@@ -140,39 +126,7 @@ function createSessionRuntime(
     clearEcho() {
       echoMessageID = undefined;
     },
-    release(reason) {
-      // Dropping the state is what makes a late event read as "no abort, no
-      // echo": the kernel never hands a stopped session out again.
-      aborted = false;
-      echoMessageID = undefined;
-      engine?.reset(sessionID);
-      // The host deleting the session is the only stop that ends its
-      // persisted context.  A plugin dispose or reload stops the scope
-      // while the session lives on, so its state must survive; an unknown
-      // reason is treated the same way.
-      if (reason === SESSION_DELETED_REASON) {
-        cleanupSession(sessionID);
-        return;
-      }
-      releaseSessionRuntime(sessionID);
-    },
   };
-}
-
-/**
- * Release the process-level records of a session no scope owned.
- *
- * A `session.deleted` event can name a session this instance never created
- * a scope for (the host announces a deletion for a session whose events
- * predate the plugin), so the event path releases that session's records —
- * the same full deletion a scope's disposer performs for that reason.
- * Only the deletion path calls this: a stop that keeps the session (a
- * dispose or reload) goes through the scope's own disposer.
- *
- * @param sessionID - The deleted session.
- */
-export function releaseUnscopedSession(sessionID: string): void {
-  cleanupSession(sessionID);
 }
 
 /**
@@ -195,17 +149,19 @@ export function createOpenCodeHostServices(host: OpenCodeServiceHost) {
     }),
   });
 
+  // The engine's per-session budget and awaiting lock are the session's own
+  // resources: every stop of the session resets them, in both stop modes.
   const sessionRuntime = defineSessionService({
     name: "sessionRuntime",
     deps: [loop],
     create: ({ deps, sessionID }) =>
       createSessionRuntime(sessionID, deps.loop.engine),
-    dispose: (runtime, { reason }) => runtime.release(reason),
+    dispose: (session) => session.engine?.reset(session.sessionID),
   });
 
   return {
     extension: [loop] as const,
-    session: [sessionRuntime] as const,
+    session: [sessionRuntime, sessionResourcesService] as const,
   };
 }
 
@@ -218,7 +174,9 @@ export type OpenCodeServiceDeclarations = ReturnType<
  * Narrow a session scope to the state the always-on hooks drive.
  *
  * The lifecycle wiring hands out whole scopes; the hooks address one
- * session's state only, so the session service is unwrapped here.
+ * session's state only, so the scope is unwrapped here.  The state is the
+ * `sessionRuntime` service instance itself, so every reader sees the same
+ * object until the session stops.
  *
  * @param scope - The ensured session scope, or `null` for no session.
  * @returns The session state, or `null`.
@@ -228,5 +186,6 @@ export function sessionScopeState(
     ServiceMap<OpenCodeServiceDeclarations["session"]>
   > | null,
 ): OpenCodeSessionState | null {
-  return scope?.services.sessionRuntime ?? null;
+  if (scope === null) return null;
+  return scope.services.sessionRuntime;
 }

@@ -17,16 +17,19 @@
  *  - `dispose` is the plugin's teardown hook: it stops every remaining
  *    session and then the extension, and reports the cleanup outcome.
  *    A dispose is not a deletion — the sessions still exist on the host
- *    side — so their persisted context survives for the next instance.
+ *    side — so those scopes stop with the `release-runtime` mode and their
+ *    persisted context survives for the next instance.
  *
  * Cleanup failures are never swallowed: the wiring logs each of them and
  * still returns the report.  A `session.deleted` naming a session this
- * instance never created a scope for still releases that session's
+ * instance never created a scope for still deletes that session's
  * process-level records (the context pipeline keeps one store per process —
- * see `services.ts`), while a session a scope owned is released by that
- * scope's own disposer.  Ownership therefore covers both ways a scope is
- * created: the first-use `ensureSession` and the `session.created`
- * notice, so a created-then-deleted session never runs both releases.
+ * see `services.ts`): the catalog applies the same declarations a scope's
+ * disposer applies, without creating a scope.  A session a scope owned is
+ * deleted by that scope's own disposer, and its failures join the returned
+ * report.  Ownership therefore covers both ways a scope is created: the
+ * first-use `ensureSession` and the `session.created` notice, so a
+ * created-then-deleted session never runs both deletions.
  *
  * @module
  */
@@ -40,13 +43,13 @@ import {
   type ServiceMap,
   type SessionScope,
 } from "../../core/lifecycle/index.js";
+import { sessionResources } from "../../core/session/resources.js";
 import { log } from "../../utils/logger.js";
 import {
   createOpenCodeLifecycleMapping,
   type OpenCodeLifecycleOutcome,
   openCodeEventSessionID,
 } from "./lifecycle.js";
-import { releaseUnscopedSession } from "./services.js";
 
 /** Options for {@link createOpenCodeLifecycleWiring}. */
 export interface OpenCodeLifecycleWiringOptions<
@@ -242,15 +245,16 @@ export function createOpenCodeLifecycleWiring<
     if (outcome.action !== "stop-session") return outcome;
 
     const sessionID = normalizeSessionID(outcome.sessionID);
-    if (sessionID !== null) {
-      const wasOwned = owned.delete(sessionID);
-      // A session whose scope this instance owned was released by that
-      // scope's disposer; one it never created keeps the deletion's own
-      // process-level release so nothing is left behind.
-      if (!wasOwned) releaseUnscopedSession(sessionID);
+    let report = outcome.report;
+    // A session whose scope this instance owned was deleted by that scope's
+    // disposer; one it never created still gets the deletion, so nothing is
+    // left behind and its failures reach the caller as well.
+    if (sessionID !== null && !owned.delete(sessionID)) {
+      const fallback = await sessionResources.delete(sessionID);
+      report = { errors: [...fallback.errors, ...report.errors] };
     }
-    logCleanupFailures(outcome.report);
-    return outcome;
+    logCleanupFailures(report);
+    return report === outcome.report ? outcome : { ...outcome, report };
   }
 
   async function dispose(): Promise<CleanupReport> {

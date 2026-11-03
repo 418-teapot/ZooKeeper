@@ -17,7 +17,9 @@
  *
  * Real session starts are a separate entry point
  * ({@link LifecycleKernel.notifySessionStart}) so a first-use ensure can
- * never fabricate a start reason.
+ * never fabricate a start reason.  A session stop carries its reason for
+ * diagnostics and an explicit mode that decides whether it also deletes
+ * what belongs to the session.
  *
  * @module
  */
@@ -32,9 +34,14 @@ import {
   type LifecycleDeclarations,
   LifecycleDefinitionError,
   type LifecycleKernel,
+  type SessionDisposeContext,
   type SessionScope,
   type SessionStartContext,
+  type SessionStopMode,
 } from "./types.js";
+
+/** Context a disposer receives: session stops add the explicit mode. */
+type DisposableContext = DisposeContext | SessionDisposeContext;
 
 /** Structural definition view used by ordering, creation, and cleanup. */
 interface ErasedDefinition {
@@ -45,7 +52,7 @@ interface ErasedDefinition {
     signal: AbortSignal;
     sessionID?: string;
   }): unknown;
-  dispose?(service: unknown, context: DisposeContext): void | Promise<void>;
+  dispose?(service: unknown, context: DisposableContext): void | Promise<void>;
   start?(service: unknown, context: SessionStartContext): void | Promise<void>;
 }
 
@@ -171,7 +178,7 @@ async function disposeCreated(
   created: readonly CreatedService[],
   scope: "extension" | "session",
   sessionID: string | undefined,
-  reason: string,
+  context: DisposableContext,
   errors: CleanupFailure[],
 ): Promise<void> {
   for (let index = created.length - 1; index >= 0; index -= 1) {
@@ -180,7 +187,7 @@ async function disposeCreated(
       continue;
     }
     try {
-      await entry.definition.dispose(entry.service, { reason });
+      await entry.definition.dispose(entry.service, context);
     } catch (error) {
       errors.push({
         scope,
@@ -325,7 +332,7 @@ export function createLifecycleKernel<
         extensionCreated,
         "extension",
         undefined,
-        "create.failed",
+        { reason: "create.failed" },
         errors,
       );
       extensionCreated = [];
@@ -398,7 +405,7 @@ export function createLifecycleKernel<
         record.created,
         "session",
         record.sessionID,
-        "create.failed",
+        { reason: "create.failed", mode: "release-runtime" },
         errors,
       );
       record.created.length = 0;
@@ -540,6 +547,7 @@ export function createLifecycleKernel<
   function stopSession(
     rawSessionID: string | null | undefined,
     reason: string,
+    mode: SessionStopMode,
   ): Promise<CleanupReport> {
     const sessionID = normalizeSessionID(rawSessionID);
     if (sessionID === null) return Promise.resolve(emptyReport());
@@ -561,7 +569,7 @@ export function createLifecycleKernel<
           record.created,
           "session",
           sessionID,
-          reason,
+          { reason, mode },
           errors,
         );
         record.created.length = 0;
@@ -595,7 +603,9 @@ export function createLifecycleKernel<
       const errors: CleanupFailure[] = [];
 
       for (const sessionID of [...sessions.keys()]) {
-        const report = await stopSession(sessionID, reason);
+        // An extension stop never ends a session: its resources are
+        // released, not deleted.
+        const report = await stopSession(sessionID, reason, "release-runtime");
         errors.push(...report.errors);
       }
 
@@ -612,7 +622,7 @@ export function createLifecycleKernel<
         extensionCreated,
         "extension",
         undefined,
-        reason,
+        { reason },
         errors,
       );
       extensionCreated = [];

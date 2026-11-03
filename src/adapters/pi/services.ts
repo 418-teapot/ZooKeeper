@@ -12,10 +12,17 @@
  *    activates the extension (before composition) and stopped by every path
  *    that stops it: the live context, the adapter built on it, the tool
  *    host built on it, the todo catalog, the profile catalog, the tool
- *    baselines, the fleet surface and the switch surface;
+ *    baselines, the fleet surface, the switch surface, the composed
+ *    profile and the loop engine built from it;
  *  - session-scope services are created lazily, once per session, and
  *    release their own resources: the session's entry in the live context,
- *    its todo store and its own fleet (widget, todo column, host writes).
+ *    its todo store, its own fleet (widget, todo column, host writes), and
+ *    its loop state (the engine's reminder budget and awaiting lock).
+ *    The `sessionResources` service carries no state of its own: it applies
+ *    the process-level session records' declarations
+ *    (`core/session/resources.ts`) to the stopping scope, so a pi
+ *    `session_shutdown` releases their runtime state while the persisted
+ *    context and the agent bindings stay for the next runtime.
  *
  * A factory receives only the services it declares, so the dependency
  * direction is visible in the declarations: the adapter and the tool host
@@ -33,14 +40,24 @@
  * @module
  */
 
+import type { ComposedResult } from "../../core/compose.js";
+import type { AgentModeMap, ModeProfile } from "../../core/config-types.js";
 import {
   defineExtensionService,
   defineSessionService,
 } from "../../core/lifecycle/index.js";
+import {
+  type BudgetStore,
+  createLoopEngine,
+  type LoopEngine,
+} from "../../core/loop/index.js";
+import type { AgentPermissionMap } from "../../core/permissions/deny-tools.js";
 import type { SwitchHost } from "../../core/ports/switch.js";
+import { sessionResourcesService } from "../../core/session/resources.js";
 import { getPrimary } from "../../core/subagent/identity.js";
 import type { SubagentRun } from "../../core/subagent/registry.js";
 import type { FetchCandidates } from "../../core/todo/store.js";
+import type { ValidationLimits } from "../../core/validate.js";
 import { log } from "../../utils/logger.js";
 import { createPiAdapter } from "./adapter.js";
 import {
@@ -231,6 +248,19 @@ export interface PiServiceHost {
   readonly piApi?: ExtensionAPI;
   /** pi's `appendEntry` binding for the tool host's notifications. */
   readonly appendEntry?: PiAppendEntry;
+  /**
+   * Compose the active profile over the extension-scope ports.
+   *
+   * The composition reads services the kernel created, so it is the
+   * `composition` service's factory: the loop engine that consumes its
+   * settle strategies is a service of the same graph, created after it.
+   */
+  composeProfile(ports: PiCompositionPorts): PiContributions;
+  /**
+   * Test seam: the per-(session, strategy) reminder-budget store to
+   * observe and seed.  Defaults to a fresh store when omitted.
+   */
+  readonly loopStore?: BudgetStore;
   /** Colorize an agent name per its configured `[agent.<name>].color`. */
   colorizeAgent(name: string): string;
   /** The overlay title for a run. */
@@ -239,6 +269,42 @@ export interface PiServiceHost {
   borderColorizeForRun(
     run: SubagentRun,
   ): ((text: string) => string) | undefined;
+}
+
+/** The extension-scope services the composed profile reads. */
+export interface PiCompositionPorts {
+  /** The extension-scope live context. */
+  readonly liveContext: PiLiveContext;
+  /** The host adapter built on the live context. */
+  readonly adapter: ReturnType<typeof createPiAdapter>;
+  /** The tool host built on the live context. */
+  readonly toolHost: ReturnType<typeof createPiToolHost>;
+  /** The todo catalog restoring each session's plan. */
+  readonly todo: ReturnType<typeof createPiTodoSessions>;
+  /** The published profile skill directories. */
+  readonly profileCatalog: PiProfileCatalog;
+  /** The untrimmed tool baselines. */
+  readonly toolBaselines: PiToolBaselines;
+  /** The fleet facade of this extension instance. */
+  readonly fleet: PiFleetFacade;
+  /** The `/<agent>` switch surface. */
+  readonly switchHost: PiSwitchSurface;
+}
+
+/** The composed profile and the facts the entry point reads from it. */
+export interface PiContributions {
+  /** The active mode profile, or `null` when the selection loaded none. */
+  readonly profile: ModeProfile | null;
+  /** The host-agnostic contributions of the selection. */
+  readonly composed: ComposedResult;
+  /** The parsed validation limits of the profile. */
+  readonly limits: ValidationLimits;
+  /** The per-agent mode map of the profile. */
+  readonly agentModes: AgentModeMap;
+  /** The per-agent tool-deny rules of the profile. */
+  readonly agentPermissions: AgentPermissionMap;
+  /** The caller resolver the delegation gate reads. */
+  readonly resolveCallerAgent: () => Promise<string | undefined>;
 }
 
 /** The todo transcript scan of pi's live session manager. */
@@ -405,6 +471,48 @@ export function createPiHostServices(host: PiServiceHost) {
     create: ({ deps }) => createPiSwitchSurface(host, deps),
   });
 
+  // The composed profile.  It reads extension-scope ports only, so it is a
+  // service like them: the entry point activates the extension to obtain it
+  // instead of composing outside the graph.
+  const composition = defineExtensionService({
+    name: "composition",
+    deps: [
+      liveContext,
+      adapter,
+      toolHost,
+      todo,
+      profileCatalog,
+      toolBaselines,
+      fleet,
+      switchHost,
+    ],
+    create: ({ deps }) => host.composeProfile(deps),
+  });
+
+  // The loop engine over the composed settle strategies.  A profile that
+  // contributes none gets no engine (fail-closed: no settle judge, no wake).
+  //
+  // The session cap bounds the tracked sessions: pi fires no session-deletion
+  // event, so a long-lived process would otherwise retain one budget entry
+  // per session ever opened.  The engine evicts the oldest-inserted sessions
+  // once the bound is exceeded (the budget is only ever a soft reminder
+  // ceiling).
+  const LOOP_SESSION_CAP = 100;
+  const loop = defineExtensionService({
+    name: "loop",
+    deps: [composition],
+    create: ({ deps }): { engine: LoopEngine | undefined } => {
+      const strategies = deps.composition.composed.onSettled;
+      if (strategies.length === 0) return { engine: undefined };
+      return {
+        engine: createLoopEngine([...strategies], {
+          cap: LOOP_SESSION_CAP,
+          ...(host.loopStore === undefined ? {} : { store: host.loopStore }),
+        }),
+      };
+    },
+  });
+
   // The session's entry in the live context.  Declared FIRST so it is
   // disposed LAST: the session's todo store and fleet read the context
   // indexed for this session, so it must outlive both of them.
@@ -469,6 +577,16 @@ export function createPiHostServices(host: PiServiceHost) {
     dispose: (service) => service.dispose(),
   });
 
+  // The engine's per-session reminder budget and awaiting lock are the
+  // session's own resources: every stop of the session resets them, in both
+  // stop modes (a shutdown releases the runtime state, a deletion drops it).
+  const loopSession = defineSessionService({
+    name: "loopSession",
+    deps: [loop],
+    create: ({ deps, sessionID }) => ({ sessionID, engine: deps.loop.engine }),
+    dispose: (session) => session.engine?.reset(session.sessionID),
+  });
+
   return {
     extension: [
       liveContext,
@@ -479,7 +597,15 @@ export function createPiHostServices(host: PiServiceHost) {
       toolBaselines,
       fleet,
       switchHost,
+      composition,
+      loop,
     ] as const,
-    session: [sessionContext, todoStore, fleetSession] as const,
+    session: [
+      sessionContext,
+      todoStore,
+      fleetSession,
+      loopSession,
+      sessionResourcesService,
+    ] as const,
   };
 }

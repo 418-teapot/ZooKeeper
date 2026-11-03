@@ -8,10 +8,12 @@
  *
  * Neither session event carries a start or stop reason, so the host event
  * name is what the kernel records — an attributable string rather than a
- * fabricated semantic.  The deletion reason is exported as
- * {@link SESSION_DELETED_REASON} because it is the only stop reason that
- * may end a session's persisted context.  A missing or blank session id
- * is handed to the kernel, which declines without creating anything.
+ * fabricated semantic.  The reason stays diagnostic; the stop mode decides
+ * deletion.  A `session.deleted` event stops the session with
+ * `delete-session`, while the plugin's own dispose releases the runtime of
+ * every remaining session and keeps their persisted context.  A missing or
+ * blank session id is handed to the kernel, which declines without
+ * creating anything.
  *
  * This module is the OpenCode side of the adapter/kernel boundary: cleanup
  * failures come back in the returned report, and nothing is caught and
@@ -80,9 +82,8 @@ const START_REASON = "session.created";
 /**
  * Stop reason recorded for a deleted session.
  *
- * The only reason that ends the session's persisted context: the host
- * dropped the session, so nothing will restore it.  Every other stop
- * reason (a plugin dispose or reload) keeps the state.
+ * Diagnostic only: the deletion is the `delete-session` stop mode the
+ * mapping passes, never this string.
  */
 export const SESSION_DELETED_REASON = "session.deleted";
 
@@ -136,6 +137,7 @@ export function createOpenCodeLifecycleMapping(
       const report = await kernel.stopSession(
         sessionID,
         SESSION_DELETED_REASON,
+        "delete-session",
       );
       return { action: "stop-session", sessionID, report };
     }

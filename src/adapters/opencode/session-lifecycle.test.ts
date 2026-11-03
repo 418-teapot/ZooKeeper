@@ -19,7 +19,7 @@ import {
   setModelLimit,
 } from "../../core/context/model-limits.js";
 import { _resetContextStateManagerForTesting } from "../../core/context/runtime.js";
-import { sessionAgentRegistry } from "../../core/session-agent.js";
+import { sessionAgentRegistry } from "../../core/session/agent.js";
 import { buildPlugin } from "../../opencode.js";
 import { _resetForTesting } from "../../utils/logger.js";
 

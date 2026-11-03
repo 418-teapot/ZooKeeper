@@ -558,7 +558,7 @@ describe("integration: tool.execute.after → nudgeDirectWorkForAgent", () => {
 
 // ---------------------------------------------------------------------------
 // Agent-gating state transitions (message.updated / session.deleted)
-// The plugin's event hook maintains the session-agent registry; the
+// The plugin's event hook maintains the session agent registry; the
 // adapter receives the agent value `deps.resolveAgent` would yield for
 // each event-driven state.
 // ---------------------------------------------------------------------------

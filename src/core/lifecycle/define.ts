@@ -16,6 +16,7 @@ import type {
   ExtensionCreateContext,
   ExtensionServiceDefinition,
   SessionCreateContext,
+  SessionDisposeContext,
   SessionServiceDefinition,
   SessionStartContext,
 } from "./types.js";
@@ -51,7 +52,10 @@ export interface SessionServiceSpec<
   /** React to a real session start after the scope is ensured. */
   start?(service: Service, context: SessionStartContext): void | Promise<void>;
   /** Release the service; errors are collected by the stop report. */
-  dispose?(service: Service, context: DisposeContext): void | Promise<void>;
+  dispose?(
+    service: Service,
+    context: SessionDisposeContext,
+  ): void | Promise<void>;
 }
 
 /**

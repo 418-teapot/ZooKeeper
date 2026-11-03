@@ -74,13 +74,13 @@ export type V1ToolHost = ToolHost & Required<Pick<ToolHost, "fetchHistory">>;
 /**
  * Create the v1 tool host backed by an OpenCode session client.
  *
- * The client and the session-agent resolver are captured by the
+ * The client and the session agent resolver are captured by the
  * closure; the client may be partial (missing session APIs) in tests.
  *
  * @param client - The OpenCode client (session.messages / session.prompt /
  *   session.get / tui.showToast).
  * @param resolveAgent - Resolves a session's agent name from the shared
- *   session-agent registry (populated by the entry point's
+ *   session agent registry (populated by the entry point's
  *   message.updated handler).
  * @returns The v1 tool host.
  */
@@ -291,7 +291,7 @@ export function createV1ToolHost(
  * Resolve the current agent for a session.
  *
  * Resolution order:
- *   (a) `resolveAgent` — the shared session-agent registry read
+ *   (a) `resolveAgent` — the shared session agent registry read
  *       (populated solely by the message.updated handler — single
  *       source of truth)
  *   (b) `client.session.get()` API call — per-call fallback WITHOUT

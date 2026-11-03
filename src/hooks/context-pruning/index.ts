@@ -2,11 +2,11 @@
  * Context pruning hook barrel export.
  *
  * Exports the host-agnostic handler functions.  Config schema types are at
- * `src/core/config-types.ts`; the host-agnostic pipeline core lives in
+ * `src/core/config-types.ts`.  The host-agnostic pipeline core lives in
  * `src/core/context/` (state, producers, fold, release, nudge) and is
- * driven through the host adapter injected via `Capabilities.adapter`;
- * the shared
- * session maps and their cleanup live in `src/core/context/runtime.ts`.
+ * driven through the host adapter injected via `Capabilities.adapter`.
+ * The shared session maps live in `src/core/context/runtime.ts`, and the
+ * records a stop drops are declared in `src/core/session/resources.ts`.
  *
  * @module
  */

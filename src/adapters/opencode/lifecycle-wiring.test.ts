@@ -6,14 +6,15 @@
  * first thing the host says about a session), maps the host's own session
  * events onto that kernel, and tears everything down on plugin dispose.
  * The expectations below are the resources created and disposed, plus the
- * process-level records a deletion releases — never the wiring's internal
+ * process-level records a deletion drops — never the wiring's internal
  * bookkeeping.
  *
- * Two boundaries get their own assertions: a deletion releases a session
+ * Two boundaries get their own assertions: a deletion drops a session
  * exactly once whichever path created the scope (so the disposer and the
  * unknown-session fallback never both run), and a dispose keeps the
  * persisted context of the sessions it stops because those sessions still
- * exist on the host side.
+ * exist on the host side.  The two stops also differ by mode: the deletion
+ * stops with `delete-session`, the dispose with `release-runtime`.
  */
 import assert from "node:assert/strict";
 import { rmSync } from "node:fs";
@@ -32,7 +33,7 @@ import {
   defineExtensionService,
   defineSessionService,
 } from "../../core/lifecycle/index.js";
-import { sessionAgentRegistry } from "../../core/session-agent.js";
+import { sessionAgentRegistry } from "../../core/session/agent.js";
 import { makeTmpDir } from "../../testkits/tmp.js";
 import {
   _getBufferForTesting,
@@ -141,8 +142,8 @@ function buildRecordingWiring(options: { failSession?: boolean } = {}) {
       log.push(`create:worker:${sessionID}`);
       return { sessionID };
     },
-    dispose: (service, { reason }) => {
-      log.push(`dispose:worker:${service.sessionID}:${reason}`);
+    dispose: (service, { reason, mode }) => {
+      log.push(`dispose:worker:${service.sessionID}:${reason}:${mode}`);
       if (options.failSession === true) throw new Error("boom");
     },
   });
@@ -226,11 +227,13 @@ describe("OpenCode lifecycle wiring — host session events", () => {
       sessionID: "s1",
       report: { errors: [] },
     });
-    assert.deepEqual(log.slice(3), ["dispose:worker:s1:session.deleted"]);
+    assert.deepEqual(log.slice(3), [
+      "dispose:worker:s1:session.deleted:delete-session",
+    ]);
 
     await wiring.dispose();
     assert.deepEqual(log.slice(4), [
-      "dispose:worker:s2:dispose",
+      "dispose:worker:s2:dispose:release-runtime",
       "dispose:ext:dispose",
     ]);
   });
@@ -250,7 +253,7 @@ describe("OpenCode lifecycle wiring — host session events", () => {
     assert.deepEqual(log, [], "a deletion never builds a scope");
   });
 
-  it("releases the process-level records of an owned deleted session", async () => {
+  it("deletes the process-level records of an owned deleted session", async () => {
     const wiring = buildWiring();
     await wiring.ensureSession("s1");
     sessionAgentRegistry.bind("s1", "dolphin");
@@ -289,7 +292,7 @@ describe("OpenCode lifecycle wiring — host session events", () => {
 });
 
 describe("OpenCode lifecycle wiring — deletion boundary", () => {
-  it("releases a created-then-deleted session exactly once", async () => {
+  it("deletes a created-then-deleted session's records exactly once", async () => {
     const { deletes } = sandboxStore();
     const wiring = buildWiring();
 
@@ -305,11 +308,11 @@ describe("OpenCode lifecycle wiring — deletion boundary", () => {
     assert.equal(
       sessionAgentRegistry.resolve("s1"),
       undefined,
-      "the scope disposer still released the session's records",
+      "the scope disposer still deleted the session's records",
     );
   });
 
-  it("releases a first-use session exactly once", async () => {
+  it("deletes a first-use session's records exactly once", async () => {
     const { deletes } = sandboxStore();
     const wiring = buildWiring();
     await wiring.ensureSession("s1");
@@ -330,6 +333,39 @@ describe("OpenCode lifecycle wiring — deletion boundary", () => {
 
     assert.deepEqual(deletes, ["ghost"]);
     assert.equal(sessionAgentRegistry.resolve("ghost"), undefined);
+  });
+
+  it("returns the fallback failures to the caller and logs them once", async () => {
+    const { store } = sandboxStore();
+    const wiring = buildWiring();
+    sessionAgentRegistry.bind("ghost", "dolphin");
+    store.delete = () => {
+      throw new Error("boom");
+    };
+
+    const outcome = await wiring.handleEvent(
+      sessionEvent("session.deleted", "ghost"),
+    );
+
+    assert.equal(outcome.action, "stop-session");
+    const report = outcome.action === "stop-session" ? outcome.report : null;
+    assert.deepEqual(
+      report?.errors.map((failure) => [
+        failure.scope,
+        failure.sessionID,
+        failure.service,
+      ]),
+      [["session", "ghost", "sessionStateFile"]],
+    );
+    assert.match(String(report?.errors[0]?.error), /boom/);
+    const logged = _getBufferForTesting().filter(
+      (entry) => entry.event === "cleanup_failed",
+    );
+    assert.deepEqual(
+      logged.map((entry) => [entry.sessionId, entry.service]),
+      [["ghost", "sessionStateFile"]],
+      "the merged report is logged once",
+    );
   });
 
   it("keeps the persisted context of the sessions a dispose stops", async () => {
@@ -370,8 +406,8 @@ describe("OpenCode lifecycle wiring — dispose", () => {
 
     assert.deepEqual(report, { errors: [] });
     assert.deepEqual(log.slice(3), [
-      "dispose:worker:s1:dispose",
-      "dispose:worker:s2:dispose",
+      "dispose:worker:s1:dispose:release-runtime",
+      "dispose:worker:s2:dispose:release-runtime",
       "dispose:ext:dispose",
     ]);
   });

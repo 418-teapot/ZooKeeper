@@ -4,9 +4,8 @@
  * Covers: freezing (region text, message metadata, the invocation table
  * and its reverse index, and summary view items all become copied data,
  * so later host or state mutations never reach a published view),
- * publish / read / clear per session, overwrite semantics, and the
- * `cleanupSession` registration that drops the record with the rest of
- * the session's runtime state.
+ * publish / read / clear per session, overwrite semantics, and the session
+ * resource declaration that drops the record on both stop modes.
  */
 import assert from "node:assert/strict";
 import { afterEach, describe, it } from "node:test";
@@ -20,11 +19,9 @@ import {
   freezeProjection,
   getRoundView,
   publishRoundView,
+  roundViewResource,
 } from "./round-view.js";
-import {
-  _resetContextStateManagerForTesting,
-  cleanupSession,
-} from "./runtime.js";
+import { _resetContextStateManagerForTesting } from "./runtime.js";
 import type { NumberedItem } from "./view-refs.js";
 
 afterEach(() => {
@@ -192,18 +189,20 @@ describe("publishRoundView / getRoundView", () => {
   });
 });
 
-describe("session cleanup", () => {
-  it("cleanupSession drops the cached round view", () => {
-    const sessionID = "sess-cleanup-view";
-    publishRoundView(sessionID, {
-      projection: liveProjection([{ text: "x" }]).snapshot,
-      numbered: [],
-    });
-    assert.ok(getRoundView(sessionID));
+describe("session stop", () => {
+  it("drops the cached round view on both stop modes", () => {
+    for (const stop of [roundViewResource.release, roundViewResource.delete]) {
+      const sessionID = "sess-stop-view";
+      publishRoundView(sessionID, {
+        projection: liveProjection([{ text: "x" }]).snapshot,
+        numbered: [],
+      });
+      assert.ok(getRoundView(sessionID));
 
-    cleanupSession(sessionID);
+      stop(sessionID);
 
-    assert.equal(getRoundView(sessionID), undefined);
-    assert.deepEqual(_listRoundViewSessionsForTesting(), []);
+      assert.equal(getRoundView(sessionID), undefined);
+      assert.deepEqual(_listRoundViewSessionsForTesting(), []);
+    }
   });
 });

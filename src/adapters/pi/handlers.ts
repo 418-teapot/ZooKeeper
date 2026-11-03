@@ -6,9 +6,9 @@
  *
  *  - `session_start` ensures the session's lifecycle scope with pi's own
  *    reason, then seeds the `zoo` widget and the todo column at startup /
- *    resume, trims the active tool set by the primary's denies, drops the
- *    session's cached round view, and rebuilds the run registry from the
- *    persisted transcript.
+ *    resume, trims the active tool set by the primary's denies, and rebuilds
+ *    the run registry from the persisted transcript.  A start notice is not
+ *    a stop, so it releases no session record.
  *  - `session_shutdown` stops that scope (nested sessions first, then the
  *    extension services) and reports every cleanup failure: pi replaces its
  *    extension runtime, so the session resources must not outlive it.
@@ -48,7 +48,6 @@ import {
   buildPiToolResultHandler,
 } from "../../compose-pi.js";
 import type { ComposedResult } from "../../core/compose.js";
-import { clearRoundView } from "../../core/context/round-view.js";
 import type { CleanupReport } from "../../core/lifecycle/index.js";
 import type { LoopEngine, StopCause } from "../../core/loop/index.js";
 import type { SkillPermissionMap } from "../../core/permissions/skill-permissions.js";
@@ -283,25 +282,6 @@ export function createPiEventHandlers(
         sessionId === undefined
           ? undefined
           : liveContext.forSession(sessionId)?.sessionManager;
-      // Drop this session's cached round view.  pi never fires a session
-      // deleted event, so `cleanupSession` (the only other caller of
-      // `clearRoundView`) is never reached in this process: without this
-      // call every session ever opened leaves its frozen snapshot resident.
-      // The record is runtime-only and every pruning round republishes it,
-      // so clearing at startup / reload / resume is safe.  Deliberately NOT
-      // `cleanupSession` — that also deletes the persisted state file, which
-      // must survive a resume.
-      if (typeof sessionId === "string" && sessionId.length > 0) {
-        clearRoundView(sessionId);
-        // A (re)starting session begins with a fresh reminder budget, so its
-        // previous entry — left by an earlier run of the same session id —
-        // is dropped here.  pi fires no session-deletion event, so the
-        // entries of sessions that never restart are reclaimed by the
-        // engine's size cap instead.  Guarded by the engine's presence so a
-        // profile without the todo-continuation hook does zero loop
-        // bookkeeping.
-        if (deps.engine !== undefined) deps.engine.reset(sessionId);
-      }
       // A fresh session (re)bind starts with a clean prompt-depth count: if
       // a `ui_prompt_end` was ever dropped (extension reload mid-prompt,
       // host-side cancellation), a stale positive count would misclassify

@@ -23,7 +23,7 @@ import {
   getRoundView,
   publishRoundView,
 } from "../../core/context/round-view.js";
-import { sessionAgentRegistry } from "../../core/session-agent.js";
+import { sessionAgentRegistry } from "../../core/session/agent.js";
 import type { SubagentDriver } from "../../core/subagent/driver.js";
 import {
   getPrimary,
@@ -2001,15 +2001,16 @@ describe("buildPiHandlers — widget seeding", () => {
 });
 
 // ---------------------------------------------------------------------------
-// session_start — round-view cache cleanup
+// session_start — no stop cleanup
 // ---------------------------------------------------------------------------
 
-describe("buildPiHandlers — session_start drops the cached round view", () => {
-  it("clears the session's published round view (pi has no session-deleted event)", async () => {
+describe("buildPiHandlers — session_start is not a stop", () => {
+  it("keeps the session's published round view on a resume", async () => {
     const api = mockApi();
     const handlers = await buildPiHandlers(POLY_ZOO, api as any, MODES_RAW);
-    // pi never fires session.deleted, so session_start is the only place a
-    // long-lived process can reclaim a finished session's frozen snapshot.
+    // Only a session stop releases the runtime records, so a resume must
+    // leave the session's records untouched — the next pruning round
+    // republishes the view anyway.
     publishRoundView("sess-rv", {
       projection: project(
         [
@@ -2024,6 +2025,7 @@ describe("buildPiHandlers — session_start drops the cached round view", () => 
       numbered: [],
     });
     assert.ok(getRoundView("sess-rv"), "the view starts published");
+    sessionAgentRegistry.bind("sess-rv", "dolphin");
 
     await handlers.sessionStart(
       { type: "session_start", reason: "resume" },
@@ -2033,43 +2035,14 @@ describe("buildPiHandlers — session_start drops the cached round view", () => 
       },
     );
 
-    assert.equal(
+    assert.ok(
       getRoundView("sess-rv"),
-      undefined,
-      "session_start must drop the cached round view",
-    );
-  });
-
-  it("drops only the cached view — the session's other records survive", async () => {
-    const api = mockApi();
-    const handlers = await buildPiHandlers(POLY_ZOO, api as any, MODES_RAW);
-    // The session's identity binding stands in for the records a resume
-    // must keep (the binding, the persisted state file, the model limit):
-    // `cleanupSession` would have dropped all of them, so its survival
-    // proves session_start stays on the round-view-only path.
-    sessionAgentRegistry.bind("sess-rv-scope", "dolphin");
-    publishRoundView("sess-rv-scope", {
-      projection: project([], []),
-      numbered: [],
-    });
-
-    await handlers.sessionStart(
-      { type: "session_start", reason: "resume" },
-      {
-        sessionManager: { getSessionId: () => "sess-rv-scope" },
-        ui: { notify: () => {}, setWidget: () => {} },
-      },
-    );
-
-    assert.equal(
-      getRoundView("sess-rv-scope"),
-      undefined,
-      "the cached round view is dropped",
+      "a start notice must not clear the cached round view",
     );
     assert.equal(
-      sessionAgentRegistry.resolve("sess-rv-scope"),
+      sessionAgentRegistry.resolve("sess-rv"),
       "dolphin",
-      "cleanupSession must NOT run — resume keeps the persisted state",
+      "a start notice keeps the session's other records too",
     );
   });
 });

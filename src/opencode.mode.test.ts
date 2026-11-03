@@ -17,7 +17,7 @@ import {
   registerProfileToolsInConfig,
 } from "./compose-opencode.js";
 import { _resetContextStateManagerForTesting } from "./core/context/runtime.js";
-import { sessionAgentRegistry } from "./core/session-agent.js";
+import { sessionAgentRegistry } from "./core/session/agent.js";
 import type { AgentUnitDescriptor } from "./core/unit.js";
 import { DIRECT_WORK_NUDGE } from "./hooks/direct-work-nudge";
 import { JSON_ERROR_REMINDER } from "./hooks/json-error-nudge";

@@ -129,7 +129,7 @@ K8s 把控制论带进了软件工程：`Desired State → Observe → Compare �
 |----|------|--------|
 | **引擎**（`src/core/loop/`） | 执行与记账：停稳联锁、按策略分账的额度联锁、汇聚、崩溃隔离、预算状态 | 任何配置、任何任务语义、唤醒文案 |
 | **策略**（`src/hooks/*`） | 配置与判断：自己的 `maxWakes`、自己的门、wake 文案、自己的沉默词汇 | cause 与预算（引擎保证只在停稳且有额度时来问） |
-| **宿主适配**（`src/opencode.ts` / `src/pi.ts`） | 事件翻译、观测采集、身份门禁、投递通道、额度重置时机 | 判断逻辑、预算状态 |
+| **宿主适配**（`src/opencode.ts` / `src/pi.ts`） | 事件翻译、观测采集、身份门禁、投递通道、额度重置与释放时机 | 判断逻辑、预算状态 |
 
 ---
 
@@ -146,7 +146,7 @@ createLoopEngine(contributions: SettledContribution[], options?: { cap?, store? 
 interface LoopEngine {
   run(request: SettleRequest): Promise<Wake | null>;  // 判断一次停稳
   record(sessionID, name): void;   // 唤醒投递前记账并对该 (会话, 策略) 上待进展锁（先记账后派发）
-  reset(sessionID): void;          // 真实用户回合/会话重启时重置额度并清锁
+  reset(sessionID): void;          // 真实用户回合开始、会话停止时重置额度并清锁
   used(sessionID, name): number;   // 读取已用额度（日志用）
 }
 ```
@@ -228,7 +228,7 @@ interface SettledContribution {
 1. **事件翻译**：把宿主的"agent 停了"事件推导为 `StopCause`；
 2. **观测采集**：把本轮工具调用归约为 `hadActivity` 布尔——任何工具调用（含只读工具与 todo 更新）都算活动，只有纯文本轮次算无活动；宿主过滤掉格式不良的 tool part 后直接计数，工具名不进入 core；
 3. **身份门禁**：只有编排主会话的停稳才进入循环；
-4. **额度重置**：真实用户回合开始 = 新的工作意图，额度归零重新计；
+4. **额度重置与释放**：真实用户回合开始 = 新的工作意图，额度归零重新计；会话停止时，该会话的作用域释放它的额度与待进展锁；
 5. **投递**：`engine.record` 先记账，再投递 wake 文本——投递失败不会变成无界重试。
 
 ### 双宿主差异
@@ -238,7 +238,7 @@ interface SettledContribution {
 | 驱动事件 | `session.idle` | `agent_end`（事件仅在有策略贡献时注册） |
 | cause 推导 | `abortedSessions` → `lastAssistantAborted` → 未回答的问题 → 否则 settled；transcript 不可读则不上报（记 `cause_unobservable`） | `stopReason === "aborted"` → aborted；`uiPromptDepth>0 \|\| awaitingUser \|\| askUnanswered` → awaiting-input |
 | 身份门禁 | `resolveAgent(sessionID) !== "dolphin"` 直接返回 | subagent 身份记 `settle_skipped` 跳过 |
-| 额度重置时机 | 真实用户 `message.updated`（排除注入 echo 与 synthetic）+ `session.deleted` | `before_agent_start` + `session_start`；无会话删除事件，靠 `cap=100` LRU 淘汰兜底 |
+| 额度重置与释放时机 | 真实用户 `message.updated`（排除注入 echo 与 synthetic）+ 会话停止（`session.deleted`、插件 dispose） | 真实用户 `before_agent_start`（`messageType === "user"`）+ 会话停止（`session_shutdown`）；`session_start` 不重置；无会话删除事件，靠 `cap=100` LRU 淘汰兜底 |
 | 投递通道 | `client.session.promptAsync`（agent=dolphin）；注入 echo 按 message id 识别 | `sendMessage({ customType: "zoo-loop-wake", display: true }, { deliverAs: "followUp", triggerTurn: true })` |
 
 ---

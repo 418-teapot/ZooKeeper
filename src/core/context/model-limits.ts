@@ -6,11 +6,14 @@
  * session ID so the context-pruning nudge phase can resolve percentage
  * thresholds against the real window.
  *
- * Memory-only — no persistence, no framework dependencies.  Entries are
- * dropped on `session.deleted` and via `_resetForTesting`.
+ * Memory-only — no persistence, no framework dependencies.  The record is a
+ * session resource (`session/resources.ts`), so a session stop drops
+ * the entry on both stop modes; `_resetForTesting` drops them all.
  *
  * @module
  */
+
+import type { ReleasedSessionResource } from "../session/resources.js";
 
 // ---------------------------------------------------------------------------
 // Module-level state
@@ -65,13 +68,22 @@ export function getModelLimit(sessionId: string): ModelLimitInfo | undefined {
 /**
  * Drop the captured model limit for a session.
  *
- * Called on `session.deleted` events to prevent memory leaks.
- *
  * @param sessionId - The session identifier.
  */
 export function clearModelLimit(sessionId: string): void {
   modelLimits.delete(sessionId);
 }
+
+/**
+ * The captured model limit is runtime-only: both stop modes drop it, because
+ * the next transform re-captures it.
+ */
+export const modelLimitResource: ReleasedSessionResource = {
+  name: "modelLimit",
+  runtime: "release",
+  release: clearModelLimit,
+  delete: clearModelLimit,
+};
 
 // ---------------------------------------------------------------------------
 // Testing seams

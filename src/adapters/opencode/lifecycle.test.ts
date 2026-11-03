@@ -2,11 +2,12 @@
  * Tests for the OpenCode lifecycle mapping (`lifecycle.ts`).
  *
  * OpenCode announces session creation and deletion separately and disposes
- * the plugin as a whole, so a deletion stops one session while the
- * plugin's own dispose stops the extension.  Neither session event carries
- * a reason, so the host event name is what the kernel records.  The
- * expectations below are the kernel's observable effects — factory,
- * `start` and disposer calls — plus the returned outcome.
+ * the plugin as a whole, so a deletion stops one session with
+ * `delete-session` while the plugin's own dispose releases the runtime of
+ * every remaining session.  Neither session event carries a reason, so the
+ * host event name is what the kernel records.  The expectations below are
+ * the kernel's observable effects — factory, `start` and disposer calls
+ * with their mode — plus the returned outcome.
  */
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
@@ -46,8 +47,8 @@ function buildKernel(log: string[], failSessionDispose = false) {
     start: (service, { reason }) => {
       log.push(`start:worker:${service.sessionID}:${reason}`);
     },
-    dispose: (service, { reason }) => {
-      log.push(`dispose:worker:${service.sessionID}:${reason}`);
+    dispose: (service, { reason, mode }) => {
+      log.push(`dispose:worker:${service.sessionID}:${reason}:${mode}`);
       if (failSessionDispose) throw new Error("boom");
     },
   });
@@ -88,7 +89,7 @@ describe("OpenCode lifecycle mapping", () => {
 
     // Two starts: `create:ext`, then each session's create and start.
     assert.deepEqual(log.slice(5), [
-      "dispose:worker:session-1:session.deleted",
+      "dispose:worker:session-1:session.deleted:delete-session",
     ]);
     assert.deepEqual(outcome, {
       action: "stop-session",
@@ -99,7 +100,7 @@ describe("OpenCode lifecycle mapping", () => {
     // The surviving session keeps its resources until its own stop.
     await mapping.dispose();
     assert.deepEqual(log.slice(6), [
-      "dispose:worker:session-2:dispose",
+      "dispose:worker:session-2:dispose:release-runtime",
       "dispose:ext:dispose",
     ]);
   });
@@ -157,7 +158,7 @@ describe("OpenCode lifecycle mapping", () => {
     );
     // The extension disposer still ran after the failing session cleanup.
     assert.deepEqual(log.slice(3), [
-      "dispose:worker:session-1:dispose",
+      "dispose:worker:session-1:dispose:release-runtime",
       "dispose:ext:dispose",
     ]);
   });
