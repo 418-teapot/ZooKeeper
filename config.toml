@@ -569,7 +569,7 @@ ask = "deny"
 
 [agent.kiwi]
 mode  = "subagent"
-model = "{env:ZOO_HIPPO_MODEL}"
+model = "{env:ZOO_WHALE_MODEL}"
 [agent.kiwi.permission]
 subagent = "deny"
 edit = "deny"
