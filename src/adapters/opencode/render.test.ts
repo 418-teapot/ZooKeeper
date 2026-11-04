@@ -47,6 +47,7 @@ import { numberView } from "../../core/context/view-refs.js";
 import { isInjectableRegion } from "../../core/context/writable-regions.js";
 import { makeState } from "../../testkits/context.js";
 import { toolPart } from "../../testkits/opencode-messages.js";
+import { createV1Adapter } from "./adapter.js";
 import { history } from "./history.js";
 import { applyEdits, materialize } from "./render.js";
 import type { ContextMessageEntry } from "./types.js";
@@ -561,6 +562,147 @@ describe("render injection", () => {
     // The line is allocated (the item is visible) but no region qualifies.
     assert.equal((msgs[0].parts?.[0] as { text: string }).text, "步骤开始");
     assert.equal((msgs[0].parts?.[1] as { text: string }).text, "think");
+  });
+});
+
+// ===========================================================================
+// HostAdapter immutability
+// ===========================================================================
+
+describe("host adapter immutability", () => {
+  /** A two-message fixture with a text part and a tool part. */
+  function fixture(): ContextMessageEntry[] {
+    return [
+      entry("user", "u0", [text("开场")]),
+      entry("assistant", "a1", [
+        reasoning("旧推理"),
+        toolPart("bash", "ls", LONG_OUTPUT),
+      ]),
+    ];
+  }
+
+  it("applyEdits returns the edited copy and leaves the input untouched", () => {
+    const adapter = createV1Adapter();
+    const entries = fixture();
+    const before = structuredClone(entries);
+    const edits: RegionEdit[] = [
+      { messageOrdinal: 0, regionIndex: 0, text: "改写" },
+      {
+        messageOrdinal: 1,
+        regionIndex: 2,
+        text: PRUNED_TOOL_OUTPUT_REPLACEMENT,
+      },
+    ];
+
+    const out = adapter.applyEdits(entries, edits) as ContextMessageEntry[];
+
+    assert.deepEqual(entries, before, "the caller's array is unchanged");
+    assert.notEqual(out, entries, "a new array is returned");
+    assert.equal(partText(out[0], 0), "改写");
+    assert.equal(toolOutput(out[1], 1), PRUNED_TOOL_OUTPUT_REPLACEMENT);
+  });
+
+  it("materialize returns the rendered copy and leaves the input untouched", () => {
+    const adapter = createV1Adapter();
+    const entries = fixture();
+    const before = structuredClone(entries);
+    const snapshot = history(entries);
+    const state = makeState();
+    const items = fold(snapshot, state).items;
+    const lens = history(entries).messages;
+    const numbered = numberView(
+      items,
+      (ordinal) => lens[ordinal]?.hidden ?? true,
+    );
+    const plan = planViewRender(lens, items, numbered, state);
+
+    const out = adapter.materialize(entries, plan) as ContextMessageEntry[];
+
+    assert.deepEqual(entries, before, "the caller's array is unchanged");
+    assert.notEqual(out, entries, "a new array is returned");
+    assert.equal(partText(out[0], 0), "[m1] 开场");
+    assert.equal(
+      toolOutput(out[1], 1),
+      `[m2] ${LONG_OUTPUT}`,
+      "the rendered copy carries the line ref",
+    );
+  });
+
+  it("appendUserMessage returns a new array", () => {
+    const adapter = createV1Adapter();
+    const entries = fixture();
+    const before = structuredClone(entries);
+
+    const out = adapter.appendUserMessage(
+      entries,
+      "zoo-nudge",
+      "sess",
+      "提醒",
+    ) as ContextMessageEntry[];
+
+    assert.deepEqual(entries, before, "the caller's array is unchanged");
+    assert.equal(out.length, 3);
+    assert.equal(out[2].info.id, "zoo-nudge");
+  });
+
+  it("a full round through the adapter equals the in-place render", () => {
+    const adapter = createV1Adapter();
+    const options: ReleaseOptions = {
+      promptTokens: 100_000,
+      releasedPercent: 0,
+      pendingViewChange: false,
+    };
+
+    // Reference round: the in-place entry points on their own fixture.
+    const reference = runRound(
+      () => [
+        entry("user", "u0", [text("开场")]),
+        entry("assistant", "a1", [text("回答一")]),
+        entry("user", "u2", [text("第二个问题")]),
+        entry("assistant", "a3", [toolPart("bash", "ls", LONG_OUTPUT)]),
+      ],
+      (state, snapshot) => {
+        seedBlock(state, snapshot, 1, 0, 2, "第一段", "摘要正文");
+        seedMark(state, 3, 1, true, 100);
+      },
+      options,
+    );
+
+    // Adapter round: the same fixture through the HostAdapter contract.
+    const state = makeState();
+    const entries: ContextMessageEntry[] = [
+      entry("user", "u0", [text("开场")]),
+      entry("assistant", "a1", [text("回答一")]),
+      entry("user", "u2", [text("第二个问题")]),
+      entry("assistant", "a3", [toolPart("bash", "ls", LONG_OUTPUT)]),
+    ];
+    const before = structuredClone(entries);
+    const snapshot = history(entries);
+    seedBlock(state, snapshot, 1, 0, 2, "第一段", "摘要正文");
+    seedMark(state, 3, 1, true, 100);
+    const edits = computeEdits(state, snapshot.messages, options);
+    const withEdits = adapter.applyEdits(
+      entries,
+      edits,
+    ) as ContextMessageEntry[];
+    const editedSnapshot = history(withEdits);
+    const items = fold(editedSnapshot, state).items;
+    const lens = editedSnapshot.messages;
+    const numbered = numberView(
+      items,
+      (ordinal) => lens[ordinal]?.hidden ?? true,
+    );
+    const out = adapter.materialize(
+      withEdits,
+      planViewRender(lens, items, numbered, state),
+    ) as ContextMessageEntry[];
+
+    assert.deepEqual(out, reference, "the adapter round matches the render");
+    assert.deepEqual(
+      entries,
+      before,
+      "the caller's fixture is never rewritten",
+    );
   });
 });
 

@@ -15,7 +15,8 @@
  * the catalog's own loop or the record internals.
  */
 import assert from "node:assert/strict";
-import { rmSync } from "node:fs";
+import { mkdirSync, rmSync } from "node:fs";
+import { join } from "node:path";
 import { afterEach, describe, it } from "node:test";
 import { permitFor } from "../../testkits/context-runtime.js";
 import { makeTmpDir } from "../../testkits/tmp.js";
@@ -76,12 +77,12 @@ function sandboxRuntime() {
  * @param sessionID - The session to stage.
  * @returns The permit the staging ran under.
  */
-function stageSession(
+async function stageSession(
   runtime: ReturnType<typeof createContextRuntime>,
   sessionID: string,
 ) {
   const permit = permitFor(sessionID);
-  void runtime.commit(permit, (state) => {
+  await runtime.commit(permit, (state) => {
     state.blocks.set(1, {
       start: 0,
       end: 3,
@@ -92,11 +93,11 @@ function stageSession(
       summaryTokens: 20,
       createdAt: 1000,
     });
+    state.pendingViewChange = true;
   });
   sessionAgentRegistry.bind(sessionID, "dolphin");
   runtime.setModelLimit(permit, 1000, "model");
-  runtime.setPendingViewChange(permit);
-  runtime.publishRoundView(permit, {
+  runtime.publishRoundView(sessionID, {
     projection: project([], []),
     numbered: [],
   });
@@ -227,7 +228,6 @@ describe("session record declarations", () => {
       [
         ["modelLimit", "release"],
         ["roundView", "release"],
-        ["pendingViewChangeFlag", "release"],
         ["sessionStateFile", "retain"],
         ["sessionStateCache", "release"],
         ["sessionAgent", "retain"],
@@ -244,7 +244,7 @@ describe("session record deletion", () => {
   it("leaves no record and no persisted state behind", async () => {
     const { runtime, store, catalog } = sandboxRuntime();
     const sessionID = "deleted-session";
-    const permit = stageSession(runtime, sessionID);
+    const permit = await stageSession(runtime, sessionID);
 
     const report = await catalog.delete(sessionID);
 
@@ -252,7 +252,11 @@ describe("session record deletion", () => {
     assert.equal(sessionAgentRegistry.resolve(sessionID), undefined);
     assert.equal(runtime.modelLimit(sessionID), undefined);
     assert.equal(runtime.roundView(sessionID), undefined);
-    assert.equal(runtime.consumePendingViewChange(permit), false);
+    assert.equal(
+      runtime.read(permit, (state) => state.pendingViewChange),
+      undefined,
+      "the pending view change rides on the state cache",
+    );
     assert.equal(
       store.load(sessionID).blocks.size,
       0,
@@ -274,7 +278,7 @@ describe("session record release", () => {
   it("keeps the persisted state and the agent binding", async () => {
     const { runtime, store, catalog } = sandboxRuntime();
     const sessionID = "released-session";
-    const permit = stageSession(runtime, sessionID);
+    const permit = await stageSession(runtime, sessionID);
 
     const report = await catalog.release(sessionID);
 
@@ -291,11 +295,44 @@ describe("session record release", () => {
     );
     assert.equal(runtime.modelLimit(sessionID), undefined);
     assert.equal(runtime.roundView(sessionID), undefined);
-    assert.equal(runtime.consumePendingViewChange(permit), false);
+    assert.equal(
+      runtime.read(permit, (state) => state.pendingViewChange),
+      undefined,
+      "the pending view change rides on the state cache",
+    );
     assert.equal(
       runtime.read(permit, (state) => state.blocks.get(1)?.summary),
       "kept",
       "the dropped entry reloads from the file it was saved to",
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// State write failures
+// ---------------------------------------------------------------------------
+
+describe("state write failure", () => {
+  it("reports the failure of a release instead of dropping the state", async () => {
+    const { runtime, store, catalog } = sandboxRuntime();
+    const sessionID = "unwritable-session";
+    await stageSession(runtime, sessionID);
+    // Block the atomic write: the temp path becomes a directory.
+    const blocked = join(store.dir, `.${sessionID}.json.tmp`);
+    mkdirSync(blocked);
+
+    const report = await catalog.release(sessionID);
+
+    assert.deepEqual(
+      report.errors.map((error) => error.service),
+      ["sessionStateCache"],
+      "the lifecycle mechanism sees the unwritten state",
+    );
+    rmSync(blocked, { recursive: true, force: true });
+    assert.equal(
+      runtime.read(permitFor(sessionID), (state) => state.blocks.size),
+      1,
+      "the unsaved state stays cached for the next release",
     );
   });
 });
@@ -317,7 +354,7 @@ describe("session resources service", () => {
       ["deleted", "delete-session"],
     ] as const) {
       await kernel.ensureSession(sessionID);
-      stageSession(runtime, sessionID);
+      await stageSession(runtime, sessionID);
 
       const report = await kernel.stopSession(sessionID, mode, mode);
 

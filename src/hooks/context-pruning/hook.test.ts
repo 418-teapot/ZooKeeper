@@ -24,7 +24,8 @@
  * `ContextRuntime` per test, with session files cleaned up in teardown.
  */
 import assert from "node:assert/strict";
-import { rmSync } from "node:fs";
+import { mkdirSync, rmSync } from "node:fs";
+import { join } from "node:path";
 import { after, afterEach, beforeEach, describe, it } from "node:test";
 import { createV1Adapter } from "../../adapters/opencode/adapter.js";
 import type {
@@ -126,14 +127,19 @@ function setLimit(sessionID: string, context: number, modelId: string): void {
   runtime.setModelLimit(permitFor(sessionID), context, modelId);
 }
 
-/** Arm a session's pending-view-change flag. */
-function armViewChange(sessionID: string): void {
-  runtime.setPendingViewChange(permitFor(sessionID));
+/** Arm a session's pending-view-change flag through a committed state. */
+async function armViewChange(sessionID: string): Promise<void> {
+  await runtime.commit(permitFor(sessionID), (state) => {
+    state.pendingViewChange = true;
+  });
 }
 
-/** Read and clear a session's pending-view-change flag. */
-function consumeViewChange(sessionID: string): boolean {
-  return runtime.consumePendingViewChange(permitFor(sessionID));
+/** Whether the committed state carries the pending-view-change flag. */
+function viewChangePending(sessionID: string): boolean {
+  return (
+    runtime.read(permitFor(sessionID), (state) => state.pendingViewChange) ===
+    true
+  );
 }
 
 /** Delete a session's records through this instance's catalog. */
@@ -151,8 +157,14 @@ function fixtureSessionID(messages: unknown): string {
   return typeof id === "string" && id !== "" ? id : "sess-unattributed";
 }
 
-/** Drive the transform handler under a permit for the fixture session. */
-function transform(
+/**
+ * Drive the transform handler under a permit for the fixture session.
+ *
+ * The v1 adapter delivers into a private copy, so the committed view is
+ * spliced back into the fixture array; tests then observe the round's view
+ * the way the host does.
+ */
+async function transform(
   handlerAdapter: HostAdapter<unknown>,
   messages: unknown,
   config: ContextPruningConfig,
@@ -161,7 +173,7 @@ function transform(
   toast?: (payload: ToastPayload) => void,
   sessionID?: string,
 ): Promise<unknown> {
-  return contextPruningTransformHandler(
+  const result = await contextPruningTransformHandler(
     runtime,
     permitFor(sessionID ?? fixtureSessionID(messages)),
     handlerAdapter,
@@ -171,6 +183,10 @@ function transform(
     hasCompressTool,
     toast,
   );
+  if (Array.isArray(messages) && Array.isArray(result) && result !== messages) {
+    messages.splice(0, messages.length, ...result);
+  }
+  return result;
 }
 
 /** Drive the transform wrapper under a permit for the fixture session. */
@@ -640,7 +656,7 @@ describe("a session deletion drops a bypass armed by the fold", () => {
     // round, so the assertion below is not vacuously true.
     await armBypass("sess-cleanup-control");
     assert.equal(
-      consumeViewChange("sess-cleanup-control"),
+      viewChangePending("sess-cleanup-control"),
       true,
       "the fold armed the bypass",
     );
@@ -648,7 +664,7 @@ describe("a session deletion drops a bypass armed by the fold", () => {
     await armBypass("sess-cleanup-bypass");
     await deleteSession("sess-cleanup-bypass");
     assert.equal(
-      consumeViewChange("sess-cleanup-bypass"),
+      viewChangePending("sess-cleanup-bypass"),
       false,
       "a session deletion must drop the fold-armed bypass",
     );
@@ -983,8 +999,8 @@ describe("log field sets", () => {
       markedAt: 1000,
     });
     // A sibling unit (compress / decompress tool) armed the view change
-    // through the shared runtime flag map.
-    armViewChange(sessionID);
+    // on the shared session state.
+    await armViewChange(sessionID);
 
     const messages = [
       msg("user", "u1", [textPart("do it")], sessionID),
@@ -1006,9 +1022,10 @@ describe("log field sets", () => {
     assert.equal(entry.releasedCount, 1);
     assert.equal(notifyCalls.length, 1, "forced release still notifies");
 
-    // The flag is consumed — cleared by the release phase.
+    // The flag is consumed — cleared by the release phase on the draft
+    // that committed this round.
     assert.equal(
-      consumeViewChange(sessionID),
+      viewChangePending(sessionID),
       false,
       "flag consumed and cleared",
     );
@@ -1894,6 +1911,209 @@ describe("round-view publication", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Commit boundary — an uncommitted round leaves nothing behind
+//
+// Every phase runs on the state draft, so a round that never commits must
+// leave the caller's conversation, the session state, the pending view
+// change, the published view and every user-visible effect untouched.  The
+// fixtures stop the round after the render phase, which is the last phase
+// that rewrites the host messages.
+// ---------------------------------------------------------------------------
+
+describe("an uncommitted round leaves nothing behind", () => {
+  /** Session ids of this section (for persisted-file cleanup). */
+  const COMMIT_SESSION_IDS = [
+    "sess-uncommitted-throw",
+    "sess-uncommitted-cancel",
+    "sess-uncommitted-write",
+  ];
+
+  /** The success events a committed round would report. */
+  const SUCCESS_EVENTS = [
+    "marks_released",
+    "dedup_marked",
+    "purge-errors_marked",
+    "refs_assigned",
+    "nudge_injected",
+    "manual_compress_injected",
+    "prune_completed",
+  ];
+
+  afterEach(() => {
+    for (const sid of COMMIT_SESSION_IDS) store.delete(sid);
+  });
+
+  /**
+   * A two-message turn with a pending mark on the tool output and enough
+   * prompt tokens to open the release gate.
+   */
+  function turn(sessionID: string): TestMessageEntry[] {
+    return [
+      msg("user", "u1", [textPart("do it")], sessionID),
+      msg("assistant", "a1", [toolPart(LONG_OUTPUT)], undefined, {
+        input: 800000,
+        output: 200,
+      }),
+    ];
+  }
+
+  /** Seed the pending mark the release phase would flip. */
+  function seedPendingMark(sessionID: string): void {
+    const state = stateOf(sessionID);
+    state.marks.set(markKey(1, 1), {
+      anchorOrdinal: 1,
+      regionIndex: 1,
+      content: LONG_OUTPUT,
+      contentTokens: 400,
+      effective: false,
+      markedAt: 1000,
+    });
+    state.pendingViewChange = true;
+  }
+
+  /** The config that opens the release gate for the fixture turn. */
+  const CONFIG = { protectedMessages: 0, releasedPercent: 0 };
+
+  /**
+   * Assert the round left no trace.
+   *
+   * @param sessionID - The session the round ran for.
+   * @param messages - The caller's conversation.
+   * @param before - The caller's conversation before the round.
+   * @param watermark - Log buffer length before the round.
+   */
+  function assertNothingCommitted(
+    sessionID: string,
+    messages: TestMessageEntry[],
+    before: TestMessageEntry[],
+    watermark: number,
+  ): void {
+    assert.deepEqual(messages, before, "the caller's input is unchanged");
+    const state = stateOf(sessionID);
+    assert.equal(
+      state.marks.get(markKey(1, 1))?.effective,
+      false,
+      "the release never flipped the mark",
+    );
+    assert.equal(
+      state.pendingViewChange,
+      true,
+      "the armed view change survives the abandoned round",
+    );
+    assert.equal(runtime.roundView(sessionID), undefined, "no view published");
+    assert.equal(
+      store.load(sessionID).marks.size,
+      0,
+      "nothing reached the store",
+    );
+    const reported = _getBufferForTesting()
+      .slice(watermark)
+      .map((entry) => String(entry.event))
+      .filter((event) => SUCCESS_EVENTS.includes(event));
+    assert.deepEqual(reported, [], "no success log of an uncommitted round");
+  }
+
+  it("drops the round when the render throws", async () => {
+    const sessionID = "sess-uncommitted-throw";
+    const messages = turn(sessionID);
+    const before = structuredClone(messages);
+    seedPendingMark(sessionID);
+    const notices: string[] = [];
+    const toasts: ToastPayload[] = [];
+    const throwing: HostAdapter<unknown> = {
+      ...adapter,
+      materialize(conversation, plan) {
+        adapter.materialize(conversation, plan);
+        throw new Error("host rejected the render");
+      },
+    };
+    const watermark = _getBufferForTesting().length;
+
+    await assert.rejects(
+      () =>
+        contextPruningTransformHandler(
+          runtime,
+          permitFor(sessionID),
+          throwing,
+          messages,
+          CONFIG,
+          (text) => notices.push(text),
+          false,
+          (payload) => toasts.push(payload),
+        ),
+      /host rejected the render/,
+    );
+
+    assertNothingCommitted(sessionID, messages, before, watermark);
+    assert.deepEqual(notices, [], "no notice for an uncommitted round");
+    assert.deepEqual(toasts, [], "no toast for an uncommitted round");
+  });
+
+  it("drops the round when the permit lapses during the render", async () => {
+    const sessionID = "sess-uncommitted-cancel";
+    const messages = turn(sessionID);
+    const before = structuredClone(messages);
+    seedPendingMark(sessionID);
+    const notices: string[] = [];
+    const controller = new AbortController();
+    const cancelling: HostAdapter<unknown> = {
+      ...adapter,
+      materialize(conversation, plan) {
+        const rendered = adapter.materialize(conversation, plan);
+        controller.abort();
+        return rendered;
+      },
+    };
+    const watermark = _getBufferForTesting().length;
+
+    const result = await contextPruningTransformHandler(
+      runtime,
+      permitFor(sessionID, controller.signal),
+      cancelling,
+      messages,
+      CONFIG,
+      (text) => notices.push(text),
+    );
+
+    assert.equal(result, messages, "the cancelled round returns the input");
+    assertNothingCommitted(sessionID, messages, before, watermark);
+    assert.deepEqual(notices, [], "no notice for a cancelled round");
+  });
+
+  it("drops the round when the state write fails", async () => {
+    const sessionID = "sess-uncommitted-write";
+    const messages = turn(sessionID);
+    const before = structuredClone(messages);
+    seedPendingMark(sessionID);
+    // Block the atomic write at the temp file: the real store reports the
+    // failure through the commit.
+    mkdirSync(join(storeDir, `.${sessionID}.json.tmp`));
+    const watermark = _getBufferForTesting().length;
+    const output = { messages };
+
+    await transformOutput(output, CONFIG, undefined, false, adapter);
+
+    assert.equal(output.messages, messages, "the output keeps the input");
+    assertNothingCommitted(sessionID, messages, before, watermark);
+    const failures = _getBufferForTesting()
+      .slice(watermark)
+      .filter((entry) => entry.event === "handler_crashed");
+    assert.equal(failures.length, 1, "the wrapper records the failure");
+    assert.equal(failures[0].handler, "contextPruning");
+    const reported = String(failures[0].error);
+    assert.match(reported, /本次修改未生效/);
+    assert.ok(
+      !reported.includes(storeDir),
+      "no internal path reaches the report",
+    );
+    rmSync(join(storeDir, `.${sessionID}.json.tmp`), {
+      recursive: true,
+      force: true,
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Mutation-agnostic pipeline with a strictly-pure mock adapter
 // ---------------------------------------------------------------------------
 
@@ -1975,14 +2195,12 @@ describe("pure adapter pipeline support", () => {
     ];
     const snapshot = structuredClone(original);
 
-    const result = (await transform(
+    const result = (await contextPruningTransformHandler(
+      runtime,
+      permitFor(sessionID),
       mockAdapter as HostAdapter<unknown>,
       original,
       { dedup: {}, purgeErrors: {} },
-      undefined,
-      undefined,
-      undefined,
-      sessionID,
     )) as MockMessage[];
 
     assert.notEqual(result, original, "handler returned a new array");

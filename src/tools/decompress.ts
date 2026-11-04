@@ -206,11 +206,11 @@ export function createDecompressTool(
       // ── Restore path ─────────────────────────────────────────────
       // The read and the write are one commit: the block status and the
       // pending-view-change flag become committed only while the permit
-      // stays active.  Same source rule as the compress tool: the round
-      // view published by the transform is the history this tool measures
-      // and restores against; the host read is only a fallback for rounds
-      // that ran without a published view (and only on hosts that wire
-      // it).
+      // stays active and the write succeeds.  Same source rule as the
+      // compress tool: the round view published by the transform is the
+      // history this tool measures and restores against; the host read is
+      // only a fallback for rounds that ran without a published view (and
+      // only on hosts that wire it).
       const outcome = await runtime.commit(permit, async (state) => {
         const target = resolveTarget(state, input.blockId);
         if (target.kind !== "restore") {
@@ -249,6 +249,11 @@ export function createDecompressTool(
         }
 
         const restored = applyDecompress(state, target.blockId, view);
+        // The view differs next round (the block stops folding) — flag the
+        // view change so the next transform releases pending marks.  The
+        // flag rides on this draft, so it commits and fails with the block
+        // status it belongs to.
+        state.pendingViewChange = true;
         return { restored, delta: restored.restoredTokens };
       });
       if (outcome === undefined) {
@@ -256,11 +261,6 @@ export function createDecompressTool(
           "本次解压未生效：会话已停止或本次调用已取消，会话状态未改动。",
         );
       }
-
-      // Mark the view change so the next transform stops folding the block
-      // (mirrors the compress tool).  Only a committed call flags it: a
-      // permit that lapsed after the commit writes nothing.
-      runtime.setPendingViewChange(permit);
 
       log.info({
         hook: "decompress-tool",

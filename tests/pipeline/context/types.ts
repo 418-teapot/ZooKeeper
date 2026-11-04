@@ -3,8 +3,8 @@
  * seam.
  *
  * A scenario is an ordered sequence of rounds.  Each round carries the
- * message view of that turn (a fresh array every round — the transform
- * rewrites its input in place) plus an optional programmatic action that
+ * message view of that turn (a fresh array every round — the lane splices
+ * the round's view back into it) plus an optional programmatic action that
  * runs BEFORE the transform (tool calls, /dcp commands, mark seeding,
  * state restart).  The runner captures the observable output of every
  * round: the final view structure, tool results/errors, and notification

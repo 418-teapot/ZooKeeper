@@ -12,7 +12,7 @@
  * sessions were saved.
  */
 import assert from "node:assert/strict";
-import { existsSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { after, describe, it } from "node:test";
 import { makeMark } from "../../testkits/context.js";
@@ -87,6 +87,36 @@ function makeManager(dir: string): {
 } {
   const { store, counts } = countingStore(createStateStore(dir));
   return { manager: createSessionStateManager(store), counts };
+}
+
+/** Wrap a store whose next write fails, standing in for a full disk. */
+function failingStore(inner: StateStore): {
+  store: StateStore;
+  failNextWrite: () => void;
+} {
+  let failing = false;
+  const store: StateStore = {
+    get dir() {
+      return inner.dir;
+    },
+    load: (sessionId) => inner.load(sessionId),
+    save: (sessionId, state) => {
+      if (failing) throw new Error("state write failed");
+      inner.save(sessionId, state);
+    },
+    delete: (sessionId) => inner.delete(sessionId),
+  };
+  return {
+    store,
+    failNextWrite: () => {
+      failing = true;
+    },
+  };
+}
+
+/** Block every later atomic write of one session at the temp file. */
+function blockWrites(dir: string, sessionId: string): void {
+  mkdirSync(join(dir, `.${sessionId}.json.tmp`));
 }
 
 /** Persist one block for `sessionId` outside the counted store. */
@@ -374,6 +404,113 @@ describe("permit-gated commit", () => {
       return (state as RuntimeFlaggedState).pendingManualTrigger;
     });
     assert.equal(observed, true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 4b. Persistence failure
+// ---------------------------------------------------------------------------
+
+describe("persistence failure", () => {
+  const dir = makeTmpDir("zoo-session-state");
+  after(() => rmSync(dir, { recursive: true, force: true }));
+
+  it("rejects the commit and keeps the committed state", async () => {
+    const manager = createSessionStateManager(createStateStore(dir));
+    const permit = makePermit("sess-write-fail");
+    await manager.commit(permit, (state) => {
+      state.blocks.set(1, makeBlock());
+    });
+
+    blockWrites(dir, "sess-write-fail");
+    await assert.rejects(
+      () =>
+        manager.commit(permit, (state) => {
+          state.blocks.set(2, makeBlock({ start: 3, end: 6 }));
+        }),
+      "an unwritten change never reports success",
+    );
+
+    assert.deepEqual(
+      manager.read(permit, (state) => [...state.blocks.keys()]),
+      [1],
+      "the cache keeps the last committed state",
+    );
+    assert.deepEqual(
+      [...createStateStore(dir).load("sess-write-fail").blocks.keys()],
+      [1],
+      "the file keeps the last committed state",
+    );
+  });
+
+  it("reports a failed release instead of claiming success", async () => {
+    const manager = createSessionStateManager(createStateStore(dir));
+    const permit = makePermit("sess-release-fail");
+    await manager.commit(permit, (state) => {
+      state.blocks.set(1, makeBlock());
+    });
+
+    blockWrites(dir, "sess-release-fail");
+    assert.throws(() => manager.release("sess-release-fail"));
+    assert.deepEqual(
+      manager.read(permit, (state) => [...state.blocks.keys()]),
+      [1],
+      "the unsaved cache entry survives for the next attempt",
+    );
+  });
+
+  it("reports a write failure as an actionable user-facing error", async () => {
+    const { store, failNextWrite } = failingStore(createStateStore(dir));
+    const manager = createSessionStateManager(store);
+    const permit = makePermit("sess-store-fail");
+
+    failNextWrite();
+    await assert.rejects(
+      () =>
+        manager.commit(permit, (state) => {
+          state.blocks.set(1, makeBlock());
+        }),
+      (err: Error) => {
+        assert.match(err.message, /本次修改未生效/, "the error is actionable");
+        assert.match(err.message, /未改动/, "the error states the outcome");
+        assert.doesNotMatch(
+          err.message,
+          /state write failed/,
+          "the internal cause never reaches the reader",
+        );
+        assert.equal(
+          (err.cause as Error).message,
+          "state write failed",
+          "the cause stays for diagnosis",
+        );
+        return true;
+      },
+    );
+    assert.equal(
+      manager.read(permit, (state) => state.blocks.size),
+      0,
+    );
+  });
+
+  it("leaves the change's own error unwrapped", async () => {
+    const manager = createSessionStateManager(createStateStore(dir));
+    const permit = makePermit("sess-change-fail");
+
+    await assert.rejects(
+      () =>
+        manager.commit(permit, () => {
+          throw new Error("本次压缩未生效：范围无效，会话状态未改动。");
+        }),
+      (err: Error) => {
+        assert.equal(
+          err.message,
+          "本次压缩未生效：范围无效，会话状态未改动。",
+          "a change error keeps its own semantics",
+        );
+        assert.equal(err.cause, undefined, "a change error gains no cause");
+        return true;
+      },
+    );
   });
 });
 

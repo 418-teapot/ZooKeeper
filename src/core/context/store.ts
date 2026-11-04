@@ -5,9 +5,10 @@
  * under the default directory `~/.zoo/storage/` (schema version 2).
  * The directory is injectable through `createStateStore` so tests and
  * alternate deployments can point at a sandbox directory.  Writes are
- * atomic (temp file + rename), errors are swallowed (persistence must
- * never crash the caller), and loading is defensive: missing, corrupt,
- * or old-schema files yield an empty state instead of throwing.
+ * atomic (temp file + rename) and a failed write throws, so a caller
+ * never reports an unpersisted change as committed.  Loading is
+ * defensive: missing, corrupt, or old-schema files yield an empty state
+ * instead of throwing.
  *
  * The schema carries a version field; an incompatible version (the old
  * layout or any future one) loads as empty and is discarded —
@@ -112,7 +113,13 @@ export interface StateStore {
    * corrupt, or carries an incompatible schema.  Never throws.
    */
   load(sessionId: string): SessionState;
-  /** Persist a session's state atomically; never throws. */
+  /**
+   * Persist a session's state atomically.
+   *
+   * Throws when the state cannot be written (unusable session id, or a
+   * failing directory / temp file / rename), so the caller's commit
+   * fails instead of reporting an unpersisted change as committed.
+   */
   save(sessionId: string, state: SessionState): void;
   /** Remove a session's persisted files; never throws. */
   delete(sessionId: string): void;
@@ -277,9 +284,10 @@ function parseNudges(value: unknown): Nudges | undefined {
 /**
  * Create an injectable state store.
  *
- * All I/O is defensive: `load` never throws (missing/corrupt/old-schema
- * files yield an empty state), `save` and `delete` swallow errors so
- * persistence can never crash the caller.
+ * Loading is defensive: `load` never throws (missing/corrupt/old-schema
+ * files yield an empty state).  `save` reports a failed write to its
+ * caller, and `delete` swallows errors so cleanup can never crash the
+ * caller.
  *
  * @param storageDir - Directory for state files; defaults to
  *   `~/.zoo/storage/`.
@@ -361,64 +369,61 @@ export function createStateStore(storageDir?: string): StateStore {
   };
 
   const save = (sessionId: string, state: SessionState): void => {
-    try {
-      if (!SAFE_SESSION_ID_RE.test(sessionId)) return;
-      mkdirSync(dir, { recursive: true });
-
-      const blocksRecord: Record<string, PersistedBlock> = {};
-      for (const [id, block] of state.blocks) {
-        const entry: PersistedBlock = {
-          start: block.start,
-          end: block.end,
-          summary: block.summary,
-          spanHash: block.spanHash,
-          status: block.status,
-          compressedTokens: block.compressedTokens,
-          summaryTokens: block.summaryTokens,
-          createdAt: block.createdAt,
-        };
-        if (block.title !== undefined) entry.title = block.title;
-        blocksRecord[String(id)] = entry;
-      }
-
-      const marksRecord: Record<string, PersistedMark> = {};
-      for (const [key, mark] of state.marks) {
-        const entry: PersistedMark = {
-          anchorOrdinal: mark.anchorOrdinal,
-          content: mark.content,
-          effective: mark.effective,
-          markedAt: mark.markedAt,
-        };
-        if (mark.regionIndex !== undefined) {
-          entry.regionIndex = mark.regionIndex;
-        }
-        if (mark.contentTokens !== undefined) {
-          entry.contentTokens = mark.contentTokens;
-        }
-        if (mark.effectiveAt !== undefined)
-          entry.effectiveAt = mark.effectiveAt;
-        if (mark.releasedAt !== undefined) entry.releasedAt = mark.releasedAt;
-        marksRecord[key] = entry;
-      }
-
-      const data: PersistedState = {
-        schema: SCHEMA_VERSION,
-        blocks: blocksRecord,
-        marks: marksRecord,
-        lastUpdated: new Date().toISOString(),
-      };
-      if (state.nudges !== undefined) data.nudges = state.nudges;
-      if (state.nextBlockId !== undefined) {
-        data.nextBlockId = state.nextBlockId;
-      }
-
-      const filePath = join(dir, `${sessionId}.json`);
-      const tmpPath = join(dir, `.${sessionId}.json.tmp`);
-      writeFileSync(tmpPath, JSON.stringify(data, null, 2), "utf8");
-      renameSync(tmpPath, filePath);
-    } catch {
-      // Defensive: persistence failure must never crash the caller.
+    if (!SAFE_SESSION_ID_RE.test(sessionId)) {
+      throw new Error(`unpersistable session id: ${sessionId}`);
     }
+    mkdirSync(dir, { recursive: true });
+
+    const blocksRecord: Record<string, PersistedBlock> = {};
+    for (const [id, block] of state.blocks) {
+      const entry: PersistedBlock = {
+        start: block.start,
+        end: block.end,
+        summary: block.summary,
+        spanHash: block.spanHash,
+        status: block.status,
+        compressedTokens: block.compressedTokens,
+        summaryTokens: block.summaryTokens,
+        createdAt: block.createdAt,
+      };
+      if (block.title !== undefined) entry.title = block.title;
+      blocksRecord[String(id)] = entry;
+    }
+
+    const marksRecord: Record<string, PersistedMark> = {};
+    for (const [key, mark] of state.marks) {
+      const entry: PersistedMark = {
+        anchorOrdinal: mark.anchorOrdinal,
+        content: mark.content,
+        effective: mark.effective,
+        markedAt: mark.markedAt,
+      };
+      if (mark.regionIndex !== undefined) {
+        entry.regionIndex = mark.regionIndex;
+      }
+      if (mark.contentTokens !== undefined) {
+        entry.contentTokens = mark.contentTokens;
+      }
+      if (mark.effectiveAt !== undefined) entry.effectiveAt = mark.effectiveAt;
+      if (mark.releasedAt !== undefined) entry.releasedAt = mark.releasedAt;
+      marksRecord[key] = entry;
+    }
+
+    const data: PersistedState = {
+      schema: SCHEMA_VERSION,
+      blocks: blocksRecord,
+      marks: marksRecord,
+      lastUpdated: new Date().toISOString(),
+    };
+    if (state.nudges !== undefined) data.nudges = state.nudges;
+    if (state.nextBlockId !== undefined) {
+      data.nextBlockId = state.nextBlockId;
+    }
+
+    const filePath = join(dir, `${sessionId}.json`);
+    const tmpPath = join(dir, `.${sessionId}.json.tmp`);
+    writeFileSync(tmpPath, JSON.stringify(data, null, 2), "utf8");
+    renameSync(tmpPath, filePath);
   };
 
   const remove = (sessionId: string): void => {

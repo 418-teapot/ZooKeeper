@@ -352,11 +352,11 @@ async function stageRecords(sessionID: string): Promise<void> {
       summaryTokens: 20,
       createdAt: 1000,
     });
+    state.pendingViewChange = true;
   });
   sessionAgentRegistry.bind(sessionID, AGENT);
   runtime.setModelLimit(permit, 1000, "model");
-  runtime.setPendingViewChange(permit);
-  runtime.publishRoundView(permit, {
+  runtime.publishRoundView(sessionID, {
     projection: project([], []),
     numbered: [],
   });
@@ -381,7 +381,11 @@ function assertReleased(store: StateStore, sessionID: string): void {
   );
   assert.equal(runtime.modelLimit(sessionID), undefined);
   assert.equal(runtime.roundView(sessionID), undefined);
-  assert.equal(runtime.consumePendingViewChange(permitFor(sessionID)), false);
+  assert.equal(
+    runtime.read(permitFor(sessionID), (state) => state.pendingViewChange),
+    undefined,
+    "the pending view change rides on the state cache",
+  );
 }
 
 /**
@@ -395,7 +399,11 @@ function assertDeleted(store: StateStore, sessionID: string): void {
   assert.equal(sessionAgentRegistry.resolve(sessionID), undefined);
   assert.equal(runtime.modelLimit(sessionID), undefined);
   assert.equal(runtime.roundView(sessionID), undefined);
-  assert.equal(runtime.consumePendingViewChange(permitFor(sessionID)), false);
+  assert.equal(
+    runtime.read(permitFor(sessionID), (state) => state.pendingViewChange),
+    undefined,
+    "the pending view change rides on the state cache",
+  );
 }
 
 /** The host inputs pi's declarations need; no pi API means inert surfaces. */

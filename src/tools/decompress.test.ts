@@ -14,7 +14,8 @@
  * untouched).
  */
 import assert from "node:assert/strict";
-import { rmSync } from "node:fs";
+import { mkdirSync, rmSync } from "node:fs";
+import { join } from "node:path";
 import { after, afterEach, beforeEach, describe, it } from "node:test";
 import { registerProfileToolsInConfig } from "../compose-opencode.js";
 import { parseContextConfig } from "../core/config-parse.js";
@@ -263,7 +264,7 @@ function sourceHost(options: {
 }
 
 describe("decompress tool execute — permit lapses after the commit", () => {
-  it("consumes the block but flags no view change", async () => {
+  it("keeps the committed status and its view change", async () => {
     const { host } = fakeHost(makeMessages());
     seedActiveBlock();
     const controller = new AbortController();
@@ -285,12 +286,47 @@ describe("decompress tool execute — permit lapses after the commit", () => {
     // The committed restore stands.
     assert.equal(stateOf().blocks.get(1)?.status, "consumed");
     assert.ok(result.includes("3 条原始消息"));
-    // The lapsed call leaves no runtime-only record behind.
+    // The view-change flag committed with the status: the commit is the
+    // point of no return, so a permit that lapsed afterwards changes
+    // nothing.
     assert.equal(
-      runtime.consumePendingViewChange(permitFor(TEST_SESSION_ID)),
-      false,
-      "the lapsed call flags no view change",
+      stateOf().pendingViewChange,
+      true,
+      "the committed call keeps its view change",
     );
+  });
+});
+
+describe("decompress tool execute — one commit for state and view change", () => {
+  it("commits neither the status nor the view change when the write fails", async () => {
+    const { host, notifyCalls } = fakeHost(makeMessages());
+    seedActiveBlock();
+    const tool = createDecompressTool(host, PARSED_CONFIG, runtime);
+    // Block the atomic write: the temp path becomes a directory.
+    const blocked = join(storeDir, `.${TEST_SESSION_ID}.json.tmp`);
+    mkdirSync(blocked);
+
+    try {
+      await assert.rejects(
+        () => tool.execute({ blockId: "b1" }, mockToolContext, hostContext),
+        "an unwritten restore is never reported as applied",
+      );
+    } finally {
+      rmSync(blocked, { recursive: true, force: true });
+    }
+
+    const state = stateOf();
+    assert.equal(
+      state.blocks.get(1)?.status,
+      "active",
+      "the block stays active",
+    );
+    assert.equal(
+      state.pendingViewChange,
+      undefined,
+      "the view change did not outlive the failed commit",
+    );
+    assert.deepEqual(notifyCalls, [], "no notification for a failed commit");
   });
 });
 
@@ -299,7 +335,7 @@ describe("decompress tool execute — history source", () => {
     // The seeded block spans [0, 3): the round view says 3 messages, the
     // host read would answer with an empty transcript (0 messages).
     seedActiveBlock();
-    runtime.publishRoundView(permit, {
+    runtime.publishRoundView(TEST_SESSION_ID, {
       projection: projectMessages(makeMessages()),
       numbered: [],
     });
@@ -366,7 +402,7 @@ describe("decompress tool execute — restore happy path", () => {
     const block = state.blocks.get(1);
     assert.ok(block !== undefined);
     assert.equal(block.status, "consumed");
-    assert.equal(runtime.consumePendingViewChange(permit), true);
+    assert.equal(state.pendingViewChange, true);
 
     // (2) State persisted to disk by the commit.
     const persisted = store.load(TEST_SESSION_ID);
@@ -441,7 +477,7 @@ describe("decompress tool execute — recall path", () => {
     // Zero state change.
     const after = stateOf();
     assert.equal(after.blocks.get(1)?.status, "consumed");
-    assert.equal(runtime.consumePendingViewChange(permit), false);
+    assert.equal(after.pendingViewChange, undefined);
 
     // No persistence, no notification.
     const persisted = store.load(TEST_SESSION_ID);
@@ -503,7 +539,7 @@ describe("decompress tool execute — gate rejection", () => {
     // State untouched: block still active, nothing saved, no notification.
     const state = stateOf();
     assert.equal(state.blocks.get(1)?.status, "active");
-    assert.equal(runtime.consumePendingViewChange(permit), false);
+    assert.equal(state.pendingViewChange, undefined);
     assert.equal(store.load(TEST_SESSION_ID).blocks.size, 0);
     assert.equal(notifyCalls.length, 0);
   });

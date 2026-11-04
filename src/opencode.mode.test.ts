@@ -400,11 +400,27 @@ describe("poly full profile — registration parity", () => {
 
   it("messages.transform runs context-pruning", async () => {
     const plugin = await makePlugin();
-    const output = { messages: transformMessages() };
+    const input = transformMessages();
+    const output = { messages: input };
     await plugin["experimental.chat.messages.transform"]({}, output);
 
     const events = logEvents().map((e) => e.event);
     assert.ok(events.includes("refs_assigned"), "pruning handler must run");
+    assert.notEqual(
+      output.messages,
+      input,
+      "the host output holds the rendered array",
+    );
+    assert.match(
+      String(output.messages[0].parts[0].text),
+      /^\[m1\] hello$/,
+      "the host output carries the rendered line ref",
+    );
+    assert.equal(
+      input[0].parts[0].text,
+      "hello",
+      "the caller's array keeps its input text",
+    );
   });
 
   it("text.complete strips leading [mN] echoes and logs the event", async () => {

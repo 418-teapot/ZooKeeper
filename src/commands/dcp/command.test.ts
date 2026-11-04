@@ -274,7 +274,7 @@ describe("effective prune marks over storage", () => {
       effective: true,
       markedAt: 1,
     });
-    runtime.publishRoundView(permitFor(sid), {
+    runtime.publishRoundView(sid, {
       projection: projectMessages(view),
       numbered: [],
     });
@@ -477,7 +477,7 @@ describe("missing host APIs", () => {
         notices.push(text);
       },
     };
-    runtime.publishRoundView(permitFor("sess-report-round-view"), {
+    runtime.publishRoundView("sess-report-round-view", {
       projection: projectMessages([
         makeMsg("user", ["问题"]),
         makeAssistantMsg({

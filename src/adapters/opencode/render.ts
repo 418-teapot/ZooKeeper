@@ -16,9 +16,11 @@
  *   synthetic user entry, a source entry keeps its v1 message — and
  *   swaps it into the input array in place.
  *
- * Both steps are also exported separately so a caller can apply the
- * release-phase edits early and materialize later; the pipeline does
- * exactly that, and splitting the steps changes nothing observable.
+ * Both steps write into the array they receive; the adapter
+ * (`adapter.ts`) hands them a private copy so the caller's conversation
+ * is never rewritten.  They are also exported separately so a caller can
+ * apply the release-phase edits early and materialize later; the pipeline
+ * does exactly that, and splitting the steps changes nothing observable.
  *
  * @module
  */
@@ -27,7 +29,50 @@ import type { RegionEdit, RenderEntry } from "../../core/context/lens.js";
 import { applyLineInjections } from "../../core/context/render-plan.js";
 import { applyRegionEdits } from "../../core/context/writable-regions.js";
 import { history } from "./history.js";
-import type { ContextMessageEntry } from "./types.js";
+import type { ContextMessageEntry, ContextTextPart } from "./types.js";
+
+/**
+ * Copy a v1 messages array into a private, writable copy.
+ *
+ * Every message, its `info` record, its parts array, and each part are
+ * copied one level deep, and a tool part's `state` object is copied so a
+ * write-back closure can assign into it.  Nested payload values stay shared:
+ * the render layer only ever replaces `part.text`, `state.input`, and
+ * `state.output`.
+ *
+ * @param entries - The v1 messages array to copy.
+ * @returns A copy the render layer may rewrite.
+ */
+export function copyEntries(
+  entries: ContextMessageEntry[],
+): ContextMessageEntry[] {
+  return entries.map((entry) => {
+    // Null entries survive as they are: the lens maps them to hidden empty
+    // messages, so there is nothing to copy and nothing to write back.
+    if (entry === null || entry === undefined) return entry;
+    const parts = entry.parts?.map(copyPart);
+    return {
+      ...entry,
+      info: { ...entry.info },
+      ...(parts === undefined ? {} : { parts }),
+    };
+  });
+}
+
+/**
+ * Copy one v1 part, including the tool state a write-back assigns into.
+ *
+ * @param part - The part to copy.
+ * @returns The copy.
+ */
+function copyPart(part: ContextTextPart): ContextTextPart {
+  // A null part carries no text and no state: the lens skips it.
+  if (part === null || part === undefined) return part;
+  const state = (part as { state?: Record<string, unknown> }).state;
+  return state === undefined
+    ? { ...part }
+    : ({ ...part, state: { ...state } } as ContextTextPart);
+}
 
 /**
  * Apply region edits to the v1 messages array in place.

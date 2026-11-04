@@ -227,11 +227,11 @@ export interface RegionEdit {
  * cloning, message construction and delivery.  The view stays a pure
  * function recomputed every round — the adapter never caches one.
  *
- * All mutating methods return the conversation after the operation.  The
- * input may be mutated in place or replaced by a new value; callers must
- * always use the returned object and must not rely on in-place mutation.
- * Measurement of a conversation is a host-side concern and is not covered
- * by this contract.
+ * Every write operation returns the conversation after the operation and
+ * leaves its input untouched: a round that never commits therefore leaves
+ * the host's conversation exactly as it arrived.  Callers always use the
+ * returned value.  Measurement of a conversation is a host-side concern
+ * and is not covered by this contract.
  */
 export interface HostAdapter<THostConversation> {
   /**
@@ -244,8 +244,8 @@ export interface HostAdapter<THostConversation> {
    * Apply region edits to the host conversation.
    *
    * Runs before the producers and eligibility scan so placeholder text
-   * is observable through the lens.  The input may be mutated in place or
-   * replaced; callers must use the returned conversation.
+   * is observable through the lens.  The input stays untouched; callers
+   * use the returned conversation.
    *
    * @param conversation - The host conversation before edits.
    * @param edits - Region text replacements to apply.
@@ -262,9 +262,8 @@ export interface HostAdapter<THostConversation> {
    * messages.  The host applies the plan's line refs through its own lens
    * (`applyLineInjections`) and emits each entry in its message shape: a
    * `source` entry keeps the addressed message, a `summary` entry becomes
-   * a synthetic message carrying the planned text.  The input may be
-   * mutated in place or replaced; callers must use the returned
-   * conversation.
+   * a synthetic message carrying the planned text.  The input stays
+   * untouched; callers use the returned conversation.
    *
    * @param conversation - The host conversation before materialization.
    * @param plan - The render plan, in view order.
@@ -279,8 +278,7 @@ export interface HostAdapter<THostConversation> {
    *
    * Used for context-pressure nudges and manual compress triggers.  The
    * message is appended at the end and is not persisted by the host.  The
-   * input may be mutated in place or replaced; callers must use the
-   * returned conversation.
+   * input stays untouched; callers use the returned conversation.
    *
    * @param conversation - The host conversation before appending.
    * @param id - The synthetic message id.

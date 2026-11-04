@@ -12,8 +12,8 @@
  *
  * Call-scoped work uses the permit protocol: `read` observes the
  * committed state, `commit` runs one change on a draft and makes it the
- * committed state only while its permit stays active.  Lifecycle
- * cleanup uses `release`, `evict`, and `delete`.
+ * committed state only while its permit stays active and the write
+ * succeeded.  Lifecycle cleanup uses `release`, `evict`, and `delete`.
  *
  * @module
  */
@@ -50,9 +50,12 @@ export interface SessionStateManager {
    *
    * Changes of one session run one at a time in submission order.  Each
    * change runs on a draft; the draft replaces the committed cache and
-   * the store file only when the permit is still active afterwards.
-   * Returns undefined when the permit lapsed, so a caller never reports
-   * uncommitted work as committed.
+   * the store file only when the permit is still active afterwards and
+   * the write succeeded.  Returns undefined when the permit lapsed, so a
+   * caller never reports uncommitted work as committed; a failed write
+   * rejects with a user-facing error that keeps the store error as its
+   * cause and leaves the committed state in place.  An error the change
+   * itself throws passes through unchanged.
    */
   commit<T>(
     permit: WorkPermit,
@@ -61,7 +64,9 @@ export interface SessionStateManager {
   /**
    * Save the committed state of one session and drop its cache entry.
    *
-   * Lifecycle cleanup calls it after the session's work finished.
+   * Lifecycle cleanup calls it after the session's work finished.  A
+   * failed write throws and keeps the cache entry, so the cleanup
+   * mechanism reports the failure and a later release can retry.
    */
   release(sessionId: string): void;
   /**
@@ -134,7 +139,15 @@ export function createSessionStateManager(
       if (!permit.isActive()) return undefined;
       // One synchronous segment: no other commit interleaves between
       // the file write and the cache swap.
-      store.save(sessionId, draft);
+      try {
+        store.save(sessionId, draft);
+      } catch (err) {
+        throw new Error(
+          "本次修改未生效：会话状态写入磁盘失败，会话状态未改动。" +
+            "请检查磁盘空间和存储目录权限后重试。",
+          { cause: err },
+        );
+      }
       entries.set(sessionId, draft);
       return value;
     });

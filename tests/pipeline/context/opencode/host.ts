@@ -279,7 +279,7 @@ export function createV1PipelineHost(
     },
     restart: () => sandbox.restart(),
     async runTransform(sessionID, messages, config, hasCompressTool, notify) {
-      await contextPruningTransformHandler(
+      const pruned = (await contextPruningTransformHandler(
         sandbox.runtime,
         permitFor(sessionID),
         adapter,
@@ -287,7 +287,12 @@ export function createV1PipelineHost(
         config,
         notify,
         hasCompressTool,
-      );
+      )) as ContextMessageEntry[];
+      // The v1 adapter delivers into a private copy, so the round's view is
+      // spliced back into the runner's array.
+      if (pruned !== messages) {
+        messages.splice(0, messages.length, ...pruned);
+      }
     },
     runTool: (action, sessionID, config, messages, notifications) =>
       runTool(sandbox, action, sessionID, config, messages, notifications),

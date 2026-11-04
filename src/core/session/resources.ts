@@ -149,12 +149,6 @@ export function contextSessionResources(
       delete: (sessionID) => runtime.clearRoundView(sessionID),
     },
     {
-      name: "pendingViewChangeFlag",
-      runtime: "release",
-      release: (sessionID) => runtime.clearPendingViewChange(sessionID),
-      delete: (sessionID) => runtime.clearPendingViewChange(sessionID),
-    },
-    {
       name: "sessionStateFile",
       runtime: "retain",
       delete: (sessionID) => runtime.delete(sessionID),

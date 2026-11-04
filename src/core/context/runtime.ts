@@ -22,9 +22,11 @@
  *
  * Call-scoped work uses the permit protocol: `read` observes the committed
  * state, `commit` runs one change on a draft and makes it the committed
- * state only while its permit stays active, and every runtime-only write
- * (a model limit, a round view, a pending-view-change flag) is gated the
- * same way.  A lapsed permit therefore never leaves a record behind.
+ * state only while its permit stays active and the write succeeded.  The
+ * one-shot `pendingViewChange` flag rides on that draft, so it commits and
+ * fails with the state it belongs to.  A model limit and a published round
+ * view are separate records: the limit is captured under an active permit,
+ * and a round view is published by the caller that committed the round.
  *
  * @module
  */
@@ -49,19 +51,23 @@ import { createStateStore, type StateStore } from "./store.js";
 
 /**
  * In-memory-only flags carried on the session state object by sibling
- * units (the compress / decompress tools and the /dcp command).
+ * units (the compress / decompress tools, the pipeline, and the /dcp
+ * command).
  *
- * Not part of the persisted `SessionState` schema — a one-shot signal
- * consumed (cleared) by the pipeline: `pendingManualTrigger` injects the
- * synthetic compress command on the next turn.  Loss on restart is benign.
+ * Not part of the persisted `SessionState` schema — one-shot signals
+ * carried by the committed state and dropped with its cache entry:
  *
- * The flag sits on the session state object itself, so a unit that reads
- * or writes it types the object as `RuntimeFlaggedState` instead of the
- * bare `SessionState`.  `pendingViewChange` deliberately does NOT live
- * here — the runtime owns it as its own flag set.
+ *  - `pendingManualTrigger` injects the synthetic compress command on the
+ *    next turn;
+ *  - `pendingViewChange` forces the next release regardless of the
+ *    releasedPercent gate.
+ *
+ * Both are written on the state draft, so they commit and fail with the
+ * state they belong to.  Loss on restart is benign.
  */
 export interface RuntimeFlags {
   pendingManualTrigger?: boolean;
+  pendingViewChange?: boolean;
 }
 
 /** The session state plus the runtime-only flag fields. */
@@ -70,8 +76,9 @@ export type RuntimeFlaggedState = SessionState & RuntimeFlags;
 /**
  * The context records of one plugin instance.
  *
- * Every method that writes runs only under an active permit; `read` and
- * `commit` keep the manager's one-change-at-a-time guarantee per session.
+ * `read` and `commit` keep the manager's one-change-at-a-time guarantee per
+ * session, and a model limit is captured only under an active permit.  A
+ * round view is published by the caller that committed the round.
  */
 export interface ContextRuntime {
   /** The store this runtime's state is loaded from and saved to. */
@@ -91,8 +98,9 @@ export interface ContextRuntime {
    *
    * Changes of one session run one at a time in submission order, on a
    * draft.  The draft replaces the committed cache and the store file only
-   * while the permit is still active.  Returns `undefined` when the permit
-   * lapsed, so a caller never reports uncommitted work as committed.
+   * while the permit is still active and the write succeeded.  Returns
+   * `undefined` when the permit lapsed, and rejects when the write failed,
+   * so a caller never reports uncommitted work as committed.
    */
   commit<T>(
     permit: WorkPermit,
@@ -114,17 +122,15 @@ export interface ContextRuntime {
 
   /** The round view published for a session, when known. */
   roundView(sessionID: string): RoundView | undefined;
-  /** Publish the round's view; no-op for a lapsed permit. */
-  publishRoundView(permit: WorkPermit, view: RoundView): void;
+  /**
+   * Publish the view of a round that already committed.
+   *
+   * The caller publishes only after its commit succeeded, so the view and
+   * the state it addresses are the same committed result.
+   */
+  publishRoundView(sessionID: string, view: RoundView): void;
   /** Drop the session's published round view. */
   clearRoundView(sessionID: string): void;
-
-  /** Arm the session's pending-view-change flag; no-op for a lapsed permit. */
-  setPendingViewChange(permit: WorkPermit): void;
-  /** Read and clear the flag; `false` for a lapsed permit. */
-  consumePendingViewChange(permit: WorkPermit): boolean;
-  /** Drop the session's pending-view-change flag. */
-  clearPendingViewChange(sessionID: string): void;
 }
 
 /**
@@ -140,7 +146,6 @@ export function createContextRuntime(
   const manager: SessionStateManager = createSessionStateManager(store);
   const modelLimits: ModelLimitRegistry = createModelLimitRegistry();
   const roundViews: RoundViewRegistry = createRoundViewRegistry();
-  const pendingViewChanges = new Set<string>();
 
   return {
     store,
@@ -178,24 +183,11 @@ export function createContextRuntime(
     roundView(sessionID) {
       return roundViews.get(sessionID);
     },
-    publishRoundView(permit, view) {
-      if (!permit.isActive()) return;
-      roundViews.publish(permit.sessionID, view);
+    publishRoundView(sessionID, view) {
+      roundViews.publish(sessionID, view);
     },
     clearRoundView(sessionID) {
       roundViews.clear(sessionID);
-    },
-
-    setPendingViewChange(permit) {
-      if (!permit.isActive()) return;
-      pendingViewChanges.add(permit.sessionID);
-    },
-    consumePendingViewChange(permit) {
-      if (!permit.isActive()) return false;
-      return pendingViewChanges.delete(permit.sessionID);
-    },
-    clearPendingViewChange(sessionID) {
-      pendingViewChanges.delete(sessionID);
     },
   };
 }

@@ -47,11 +47,13 @@
  *    driving the `compress` tool.
  * 8. **Commit** — every phase runs on the draft of one
  *    `runtime.commit(permit, ...)`: the whole read-modify-write becomes the
- *    committed state only while the permit stays active.  The round view,
- *    the notices, the toasts, the completion log and the returned
- *    conversation follow the commit, and only while the permit is still
- *    active: a lapsed permit keeps the conversation unchanged and reports
- *    no cleanup.
+ *    committed state only while the permit stays active and the write
+ *    succeeded.  A draft that never commits leaves the caller's
+ *    conversation, the session state and the pending-view-change flag
+ *    untouched, and writes no success log, notice or toast.  Once the
+ *    commit landed the round is done: the published round view, the
+ *    notices, the toasts, the logs and the returned conversation follow it
+ *    even when the permit lapsed right after it.
  *
  * The two-turn effect ("turn N marks apply on turn N+1") means that
  * marks produced by the current turn are NOT pruned during the same
@@ -135,6 +137,21 @@ function fractionOf(
 // ---------------------------------------------------------------------------
 
 /**
+ * A log entry a phase stages for the committed round.
+ *
+ * Phases stage their success entries instead of logging them, and the
+ * handler emits them only after the commit succeeded — no success log
+ * line ever describes an uncommitted round.  Diagnostic warns stay
+ * immediate and are not staged.
+ */
+interface StagedLog {
+  /** The event name of the entry. */
+  event: string;
+  /** The event's payload fields. */
+  fields: Record<string, unknown>;
+}
+
+/**
  * State threaded through the pipeline phases.
  *
  * Phases communicate exclusively through this object: phase 1 fills the
@@ -154,16 +171,14 @@ interface PipelinePhaseContext {
   toast?: (payload: ToastPayload) => void;
   /** Session the host admitted the transform for. */
   sessionId: string;
-  /** The plugin instance's context records. */
-  runtime: ContextRuntime;
-  /** The permit this round runs under. */
-  permit: WorkPermit;
   /** The draft session state the phases mutate. */
   state: RuntimeFlaggedState;
   /** Release notices to post once the commit succeeds. */
   notices: string[];
   /** Transient-UI payloads to fire once the commit succeeds. */
   toasts: ToastPayload[];
+  /** Success log entries to emit once the commit succeeds. */
+  logs: StagedLog[];
   /** The conversation array; phases replace it as they render. */
   messages: unknown;
   /** The current projection snapshot of `messages`. */
@@ -222,8 +237,6 @@ function readPhase(
   return {
     ...inputs,
     sessionId,
-    runtime,
-    permit,
     state,
     messages,
     snapshot,
@@ -236,6 +249,7 @@ function readPhase(
     foldedItems: [],
     notices: [],
     toasts: [],
+    logs: [],
     eligibilityConfig: {
       protectedMessages: config.protectedMessages,
       protectedTokens: config.compress?.protectedTokens,
@@ -255,10 +269,9 @@ function readPhase(
  * (the host reloads the transcript fresh each turn); pending marks flip
  * when the releasedPercent gate opens or the pending-view-change bypass
  * is armed (a fold view change, a compress / decompress tool call, or a
- * block that stopped folding last turn).  The flag is consumed and
- * cleared here so it forces exactly one release; it arrives only
- * through the runtime's flag set (`runtime.setPendingViewChange`) — never
- * through a state-object field.
+ * block that stopped folding last turn).  The flag is cleared on the same
+ * state draft so it forces exactly one release, and it commits or fails
+ * together with the state it rides on.
  *
  * Runs FIRST so marks written last turn take effect this turn (the
  * two-turn lifecycle).  The release edits are applied through the
@@ -269,7 +282,8 @@ function readPhase(
  */
 function releasePhase(ctx: PipelinePhaseContext): void {
   const { adapter, config, state, sessionId } = ctx;
-  const bypass = ctx.runtime.consumePendingViewChange(ctx.permit);
+  const bypass = state.pendingViewChange === true;
+  state.pendingViewChange = false;
   const curPendingTokens = pendingTokens(state);
   const releaseOptions: ReleaseOptions = {
     promptTokens: ctx.promptTokens,
@@ -283,15 +297,16 @@ function releasePhase(ctx: PipelinePhaseContext): void {
   const released = flipReleasedMarks(state, releaseOptions);
 
   if (released.releasedCount > 0) {
-    log.info({
-      hook: "context-pruning",
+    ctx.logs.push({
       event: "marks_released",
-      sessionId,
-      releasedCount: released.releasedCount,
-      releasedTokens: released.releasedTokens,
-      pendingTokensBefore: curPendingTokens,
-      promptTokens: ctx.promptTokens,
-      ...(released.forced ? { forced: "view_change" } : {}),
+      fields: {
+        sessionId,
+        releasedCount: released.releasedCount,
+        releasedTokens: released.releasedTokens,
+        pendingTokensBefore: curPendingTokens,
+        promptTokens: ctx.promptTokens,
+        ...(released.forced ? { forced: "view_change" } : {}),
+      },
     });
 
     // Queue the user-visible notice: it is posted only after the commit
@@ -366,7 +381,7 @@ function foldPhase(ctx: PipelinePhaseContext): void {
     );
   }
   if (folded.viewChanged) {
-    ctx.runtime.setPendingViewChange(ctx.permit);
+    state.pendingViewChange = true;
   }
   ctx.foldedItems = folded.items;
 }
@@ -430,12 +445,13 @@ function producersPhase(ctx: PipelinePhaseContext): void {
         prunedOrdinals,
       });
       if (result.created > 0) {
-        log.info({
-          hook: "context-pruning",
+        ctx.logs.push({
           event: "dedup_marked",
-          sessionId,
-          markedCount: result.created,
-          markedTokens: result.tokens,
+          fields: {
+            sessionId,
+            markedCount: result.created,
+            markedTokens: result.tokens,
+          },
         });
       }
     }
@@ -460,12 +476,13 @@ function producersPhase(ctx: PipelinePhaseContext): void {
         prunedOrdinals,
       });
       if (result.created > 0) {
-        log.info({
-          hook: "context-pruning",
+        ctx.logs.push({
           event: "purge-errors_marked",
-          sessionId,
-          markedCount: result.created,
-          markedTokens: result.tokens,
+          fields: {
+            sessionId,
+            markedCount: result.created,
+            markedTokens: result.tokens,
+          },
         });
       }
     }
@@ -484,8 +501,8 @@ function producersPhase(ctx: PipelinePhaseContext): void {
  * round only).  The numbering runs over the frozen snapshot the fold
  * hashed, so the refs the model reads and the refs the tools resolve
  * cannot drift apart.  The round view is frozen HERE, before materializing
- * rewrites the host messages in place: it must carry the transcript the
- * fold hashed, never the rendered one.  The commit publishes it (see
+ * renders the conversation: it must carry the transcript the fold hashed,
+ * never the rendered one.  The commit publishes it (see
  * `contextPruningTransformHandler`).
  *
  * The render plan is computed here, once, over the lens the round's
@@ -516,11 +533,9 @@ function publishPhase(ctx: PipelinePhaseContext): void {
   if (numbered.length > 0) {
     // Line-ref allocation (per-round dense line numbers) — the
     // observability sentinel for a completed pruning round.
-    log.info({
-      hook: "context-pruning",
+    ctx.logs.push({
       event: "refs_assigned",
-      sessionId,
-      assigned: numbered.length,
+      fields: { sessionId, assigned: numbered.length },
     });
   }
 }
@@ -539,9 +554,10 @@ function publishPhase(ctx: PipelinePhaseContext): void {
  * evaluation) and the eligibility window, and renders the message from
  * the shared prompts.ts templates.  The window is measured over this
  * round's numbered view, so the refs it advertises are addresses in
- * the view the model was just rendered.  The synthetic message is
- * transform-only — appended at the END, never persisted, never
- * ref-assigned.
+ * the view the model was just rendered; the reclaim estimate measures
+ * the pre-render projection, so it excludes the `[mN] ` line refs the
+ * render injects.  The synthetic message is transform-only — appended at
+ * the END, never persisted, never ref-assigned.
  */
 function nudgePhase(ctx: PipelinePhaseContext): void {
   const { adapter, config, sessionId, state, view, toast, numbered } = ctx;
@@ -564,25 +580,26 @@ function nudgePhase(ctx: PipelinePhaseContext): void {
     decision.text,
   );
 
-  // Log the decision payload — every field is the post-write snapshot
+  // Stage the decision payload — every field is the post-write snapshot
   // the core evaluation persisted.
-  log.info({
-    hook: "context-pruning",
+  ctx.logs.push({
     event: "nudge_injected",
-    sessionId,
-    // `nudgeLevel` instead of `level` — the logger reserves `level`
-    // for the entry's log level.
-    nudgeLevel: decision.level,
-    tokens: decision.promptTokens,
-    measuredTokens: decision.measuredTokens,
-    anchor: decision.anchor,
-    ...(decision.eligibility
-      ? {
-          startRef: decision.eligibility.startRef,
-          endRef: decision.eligibility.endRef,
-          reclaimTokens: decision.eligibility.reclaimTokens,
-        }
-      : {}),
+    fields: {
+      sessionId,
+      // `nudgeLevel` instead of `level` — the logger reserves `level`
+      // for the entry's log level.
+      nudgeLevel: decision.level,
+      tokens: decision.promptTokens,
+      measuredTokens: decision.measuredTokens,
+      anchor: decision.anchor,
+      ...(decision.eligibility
+        ? {
+            startRef: decision.eligibility.startRef,
+            endRef: decision.eligibility.endRef,
+            reclaimTokens: decision.eligibility.reclaimTokens,
+          }
+        : {}),
+    },
   });
 
   // Human-facing companion of the model nudge (one decision, two
@@ -655,17 +672,18 @@ function manualCompressPhase(ctx: PipelinePhaseContext): void {
     );
     state.pendingManualTrigger = false;
 
-    log.info({
-      hook: "context-pruning",
+    ctx.logs.push({
       event: "manual_compress_injected",
-      sessionId,
-      ...(eligibility
-        ? {
-            startRef: eligibility.startRef,
-            endRef: eligibility.endRef,
-            reclaimTokens: eligibility.reclaimTokens,
-          }
-        : { eligibility: null }),
+      fields: {
+        sessionId,
+        ...(eligibility
+          ? {
+              startRef: eligibility.startRef,
+              endRef: eligibility.endRef,
+              reclaimTokens: eligibility.reclaimTokens,
+            }
+          : { eligibility: null }),
+      },
     });
   } else {
     // Compress tool / section unavailable — a stale trigger can never
@@ -727,10 +745,9 @@ function summarizePhase(ctx: PipelinePhaseContext): PruneSummary {
  * the forced field, `nudge_injected` / `manual_compress_injected` carry
  * their payloads).
  *
- * The returned conversation may be the input array mutated in place or a
- * replacement array produced by a pure adapter.  A lapsed permit returns
- * the input conversation unchanged.  Callers must always use the returned
- * value and must not rely on in-place mutation.
+ * The adapter delivers into a private copy, so the input conversation is
+ * never rewritten: a round that never committed returns it unchanged, and
+ * a committed round returns the rendered conversation to use.
  *
  * @param runtime - The plugin instance's context records.
  * @param permit - The permit the host admitted this transform under.
@@ -780,16 +797,19 @@ export async function contextPruningTransformHandler(
     return { ctx, summary: summarizePhase(ctx) };
   });
   if (committed === undefined) return messages;
-  // A permit revoked right after the commit keeps the committed state, but
-  // the lapsed call publishes no view, posts nothing and reports nothing.
-  if (!permit.isActive()) return messages;
 
-  // Hand the compression tools this round's address space: the transcript
-  // snapshot the fold ran over plus the numbered view over it.  A
-  // `compress` call made mid-turn therefore addresses exactly the `mN`
-  // lines the model was shown, with no re-derivation from the host.
-  runtime.publishRoundView(permit, committed.ctx.roundView);
+  // The commit is the point of no return: the round's view, its notices and
+  // its log lines belong to the committed state, so they follow the commit
+  // even when the permit lapsed right after it.  Hand the compression tools
+  // this round's address space: the transcript snapshot the fold ran over
+  // plus the numbered view over it.  A `compress` call made mid-turn
+  // therefore addresses exactly the `mN` lines the model was shown, with no
+  // re-derivation from the host.
+  runtime.publishRoundView(permit.sessionID, committed.ctx.roundView);
 
+  for (const entry of committed.ctx.logs) {
+    log.info({ hook: "context-pruning", event: entry.event, ...entry.fields });
+  }
   for (const text of committed.ctx.notices) notify?.(text);
   for (const payload of committed.ctx.toasts) toast?.(payload);
 

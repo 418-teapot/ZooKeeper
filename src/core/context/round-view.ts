@@ -10,7 +10,7 @@
  *
  * This module is that hand-off: the `RoundViewRegistry` holds the
  * snapshot, the transform publishes it through the per-instance
- * `ContextRuntime` (`runtime.ts`) once the round commits, and the tools
+ * `ContextRuntime` (`runtime.ts`) once the round committed, and the tools
  * read it back by session id.  The view is frozen on the way in — every
  * region text copied into a plain string and every view item copied into
  * plain data — so the cache is a snapshot, not a live handle: a host

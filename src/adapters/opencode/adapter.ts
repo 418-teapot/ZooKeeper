@@ -6,6 +6,10 @@
  * All v1-specific casts live here, so the pruning handler stays
  * host-free.
  *
+ * The write operations deliver into a private copy of the conversation:
+ * the caller's array and its message objects are never rewritten, so an
+ * abandoned round leaves the host's messages exactly as they arrived.
+ *
  * @module
  */
 
@@ -16,7 +20,7 @@ import type {
   RenderEntry,
 } from "../../core/context/lens.js";
 import { history } from "./history.js";
-import { applyEdits, materialize } from "./render.js";
+import { applyEdits, copyEntries, materialize } from "./render.js";
 import type { ContextMessageEntry } from "./types.js";
 
 /**
@@ -35,11 +39,15 @@ export function createV1Adapter(): HostAdapter<unknown> {
       return history(conversation as ContextMessageEntry[] | null | undefined);
     },
     applyEdits(conversation: unknown, edits: RegionEdit[]): unknown {
-      applyEdits(conversation as ContextMessageEntry[], edits);
-      return conversation;
+      const entries = copyEntries(conversation as ContextMessageEntry[]);
+      applyEdits(entries, edits);
+      return entries;
     },
     materialize(conversation: unknown, plan: RenderEntry[]): unknown {
-      return materialize(conversation as ContextMessageEntry[], plan);
+      return materialize(
+        copyEntries(conversation as ContextMessageEntry[]),
+        plan,
+      );
     },
     appendUserMessage(
       conversation: unknown,
@@ -47,12 +55,13 @@ export function createV1Adapter(): HostAdapter<unknown> {
       sessionId: string,
       text: string,
     ): unknown {
-      const entries = conversation as ContextMessageEntry[];
-      entries.push({
-        info: { id, role: "user", sessionID: sessionId },
-        parts: [{ type: "text", text }],
-      });
-      return conversation;
+      return [
+        ...(conversation as ContextMessageEntry[]),
+        {
+          info: { id, role: "user", sessionID: sessionId },
+          parts: [{ type: "text", text }],
+        },
+      ];
     },
   };
 }

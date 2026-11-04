@@ -18,7 +18,13 @@
  * directory injected into the store factory.
  */
 import assert from "node:assert/strict";
-import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { join } from "node:path";
 import { after, afterEach, describe, it } from "node:test";
 import { makeMark, makeState } from "../../testkits/context.js";
@@ -691,6 +697,23 @@ describe("atomic persistence", () => {
     const loaded = store.load("replace");
     assert.equal(loaded.blocks.size, 2);
     assert.equal(loaded.blocks.get(1)?.summary, "second");
+  });
+
+  it("an unsafe session id cannot reach the filesystem", () => {
+    const { dir, store } = scratchStore();
+    const state = makeState();
+    state.blocks.set(1, makeBlock());
+    const unsafeId = "../etc/zoo id";
+
+    assert.throws(
+      () => store.save(unsafeId, state),
+      /unpersistable session id/,
+    );
+    const loaded = store.load(unsafeId);
+    assert.equal(loaded.blocks.size, 0);
+    assert.equal(loaded.marks.size, 0);
+    assert.doesNotThrow(() => store.delete(unsafeId));
+    assert.deepEqual(readdirSync(dir), []);
   });
 
   it("a stale tmp file from an interrupted write is ignored on load", () => {

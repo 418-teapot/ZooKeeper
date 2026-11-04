@@ -9,7 +9,8 @@
  * the isolation of two instances in one process.
  */
 import assert from "node:assert/strict";
-import { rmSync } from "node:fs";
+import { mkdirSync, rmSync } from "node:fs";
+import { join } from "node:path";
 import { afterEach, describe, it } from "node:test";
 import { permitFor } from "../../testkits/context-runtime.js";
 import { makeTmpDir } from "../../testkits/tmp.js";
@@ -116,61 +117,103 @@ describe("commit / read under a permit", () => {
 });
 
 describe("runtime-only records", () => {
-  it("captures the model limit and publishes the round view under a permit", () => {
+  it("captures the model limit and publishes the round view", () => {
     const { runtime } = sandboxRuntime();
     const permit = permitFor("sess-records");
 
     runtime.setModelLimit(permit, 1000, "model");
-    runtime.publishRoundView(permit, {
+    runtime.publishRoundView("sess-records", {
       projection: project([], []),
       numbered: [],
     });
-    runtime.setPendingViewChange(permit);
 
     assert.deepEqual(runtime.modelLimit("sess-records"), {
       context: 1000,
       modelId: "model",
     });
     assert.ok(runtime.roundView("sess-records"));
-    assert.equal(runtime.consumePendingViewChange(permit), true);
-    assert.equal(runtime.consumePendingViewChange(permit), false);
   });
 
-  it("ignores every write of a lapsed permit", () => {
+  it("ignores a lapsed permit's model limit", () => {
     const { runtime } = sandboxRuntime();
     const controller = new AbortController();
     const permit = permitFor("sess-lapsed-records", controller.signal);
     controller.abort();
 
     runtime.setModelLimit(permit, 1000, "model");
-    runtime.publishRoundView(permit, {
-      projection: project([], []),
-      numbered: [],
-    });
-    runtime.setPendingViewChange(permit);
 
     assert.equal(runtime.modelLimit("sess-lapsed-records"), undefined);
-    assert.equal(runtime.roundView("sess-lapsed-records"), undefined);
-    assert.equal(runtime.consumePendingViewChange(permit), false);
   });
 
-  it("clears each record of one session", async () => {
+  it("clears each record of one session", () => {
     const { runtime } = sandboxRuntime();
     const permit = permitFor("sess-clear");
     runtime.setModelLimit(permit, 1000, "model");
-    runtime.publishRoundView(permit, {
+    runtime.publishRoundView("sess-clear", {
       projection: project([], []),
       numbered: [],
     });
-    runtime.setPendingViewChange(permit);
 
     runtime.clearModelLimit("sess-clear");
     runtime.clearRoundView("sess-clear");
-    runtime.clearPendingViewChange("sess-clear");
 
     assert.equal(runtime.modelLimit("sess-clear"), undefined);
     assert.equal(runtime.roundView("sess-clear"), undefined);
-    assert.equal(runtime.consumePendingViewChange(permit), false);
+  });
+});
+
+describe("pending view change", () => {
+  it("commits with the state draft", async () => {
+    const { runtime } = sandboxRuntime();
+    const permit = permitFor("sess-flag");
+
+    await runtime.commit(permit, (state) => {
+      state.pendingViewChange = true;
+    });
+
+    assert.equal(
+      runtime.read(permit, (state) => state.pendingViewChange),
+      true,
+      "the flag is part of the committed state",
+    );
+  });
+
+  it("keeps the previous flag when the write fails", async () => {
+    const { runtime, store } = sandboxRuntime();
+    const permit = permitFor("sess-flag-fail");
+    await runtime.commit(permit, (state) => {
+      state.pendingViewChange = true;
+    });
+
+    // Block the atomic write: the temp path becomes a directory.
+    mkdirSync(join(store.dir, ".sess-flag-fail.json.tmp"));
+    await assert.rejects(() =>
+      runtime.commit(permit, (state) => {
+        state.pendingViewChange = false;
+      }),
+    );
+
+    assert.equal(
+      runtime.read(permit, (state) => state.pendingViewChange),
+      true,
+      "the consumed flag stays committed until a write succeeds",
+    );
+  });
+
+  it("leaves the record with the cache entry", async () => {
+    const { runtime } = sandboxRuntime();
+    const permit = permitFor("sess-flag-release");
+    await runtime.commit(permit, (state) => {
+      state.pendingViewChange = true;
+    });
+
+    runtime.release("sess-flag-release");
+
+    assert.equal(
+      runtime.read(permit, (state) => state.pendingViewChange),
+      undefined,
+      "a release drops the in-memory flag with the cache entry",
+    );
   });
 });
 
@@ -248,11 +291,10 @@ describe("instance isolation", () => {
       state.blocks.set(1, { ...BLOCK, summary: "first" });
     });
     first.runtime.setModelLimit(firstPermit, 1000, "model-a");
-    first.runtime.publishRoundView(firstPermit, {
+    first.runtime.publishRoundView("shared-id", {
       projection: project([], []),
       numbered: [],
     });
-    first.runtime.setPendingViewChange(firstPermit);
 
     assert.equal(
       second.runtime.read(secondPermit, (state) => state.blocks.size),
@@ -261,6 +303,5 @@ describe("instance isolation", () => {
     );
     assert.equal(second.runtime.modelLimit("shared-id"), undefined);
     assert.equal(second.runtime.roundView("shared-id"), undefined);
-    assert.equal(second.runtime.consumePendingViewChange(secondPermit), false);
   });
 });

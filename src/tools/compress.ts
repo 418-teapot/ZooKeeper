@@ -26,10 +26,10 @@
  * 4. Drives the core batch pipeline (resolve → validate → apply).  Every
  *    range is validated against the same snapshot; any invalid range
  *    rejects the whole call, leaving the state untouched.
- * 5. Books the reclaimed tokens as the nudge's reclaim credit inside one
- *    `runtime.commit(permit, ...)`, which persists the session state once
- *    and only while the call's permit stays active.  The pending view change
- *    is flagged after that commit succeeded.
+ * 5. Books the reclaimed tokens as the nudge's reclaim credit and flags the
+ *    pending view change inside one `runtime.commit(permit, ...)`, which
+ *    persists the session state once and only while the call's permit stays
+ *    active.  The flag and the blocks are therefore one committed result.
  * 6. Posts a single ignored chat notification through the host, after the
  *    commit succeeded.  A missing or lapsed permit changes nothing and
  *    reports the call as not applied.
@@ -313,9 +313,9 @@ export function createCompressTool(
         maxRanges: compressCfg.maxRanges,
       };
 
-      // The whole read-modify-write is one commit: the state draft, the
-      // round view it addresses, and the pending-view-change flag become
-      // committed only while this call's permit stays active.
+      // The whole read-modify-write is one commit: the blocks, the reclaim
+      // credit and the pending-view-change flag become committed only while
+      // this call's permit stays active and the write succeeds.
       const outcome = await runtime.commit(permit, async (state) => {
         // The history the model addressed is the round view published by
         // the last transform (frozen snapshot + numbered fold) — read it
@@ -405,6 +405,12 @@ export function createCompressTool(
         // level keeps counting tokens the compressed view has dropped.
         creditReclaim(state, reclaimed);
 
+        // The view differs next round (new fold blocks) — flag the view
+        // change so the next transform folds the new blocks and its release
+        // phase flushes pending marks.  The flag rides on this draft, so it
+        // commits and fails with the blocks it belongs to.
+        state.pendingViewChange = true;
+
         return {
           ids: createdBlockIds(state, result.created),
           blockIds,
@@ -419,12 +425,6 @@ export function createCompressTool(
           "本次压缩未生效：会话已停止或本次调用已取消，会话状态未改动。",
         );
       }
-
-      // The view differs next round (new fold blocks) — flag the view
-      // change so the next transform folds the new blocks and its release
-      // phase flushes pending marks.  Only a committed call flags it: a
-      // permit that lapsed after the commit writes nothing.
-      runtime.setPendingViewChange(permit);
 
       log.info({
         hook: "compress-tool",

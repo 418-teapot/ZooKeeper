@@ -16,7 +16,8 @@
  * gate (tool hooks + primary_tools).
  */
 import assert from "node:assert/strict";
-import { rmSync } from "node:fs";
+import { mkdirSync, rmSync } from "node:fs";
+import { join } from "node:path";
 import { after, afterEach, beforeEach, describe, it } from "node:test";
 import { registerProfileToolsInConfig } from "../compose-opencode.js";
 import { parseContextConfig } from "../core/config-parse.js";
@@ -271,6 +272,44 @@ function firstBlock(): Block {
 }
 
 // ---------------------------------------------------------------------------
+// Commit boundary — blocks and view change are one result
+// ---------------------------------------------------------------------------
+
+describe("compress tool execute — one commit for state and view change", () => {
+  it("commits neither the blocks nor the view change when the write fails", async () => {
+    const messages = makeMessages();
+    const { host, notifyCalls } = fakeHost(messages);
+    const tool = createCompressTool(host, PARSED_CONFIG, runtime);
+    // Block the atomic write: the temp path becomes a directory.
+    const blocked = join(storeDir, `.${TEST_SESSION_ID}.json.tmp`);
+    mkdirSync(blocked);
+
+    try {
+      await assert.rejects(
+        () =>
+          tool.execute(
+            { ranges: [makeRange(1, 9)] },
+            mockToolContext,
+            hostContext,
+          ),
+        "an unwritten compression is never reported as applied",
+      );
+    } finally {
+      rmSync(blocked, { recursive: true, force: true });
+    }
+
+    const state = sessionState();
+    assert.equal(state.blocks.size, 0, "no block reached the session state");
+    assert.equal(
+      state.pendingViewChange,
+      undefined,
+      "the view change did not outlive the failed commit",
+    );
+    assert.deepEqual(notifyCalls, [], "no notification for a failed commit");
+  });
+});
+
+// ---------------------------------------------------------------------------
 // History source — the single snapshot published by the transform
 // ---------------------------------------------------------------------------
 
@@ -288,7 +327,7 @@ function publishViewOf(messages: HostMessage[]): void {
     items,
     (ordinal) => snapshot.messages[ordinal].hidden,
   );
-  runtime.publishRoundView(permit, { projection: snapshot, numbered });
+  runtime.publishRoundView(TEST_SESSION_ID, { projection: snapshot, numbered });
 }
 
 /**
@@ -319,7 +358,7 @@ function sourceHost(options: { history?: HostMessage[]; calls?: number[] }): {
 }
 
 describe("compress tool execute — permit lapses after the commit", () => {
-  it("commits the block but flags no view change", async () => {
+  it("keeps the committed block and its view change", async () => {
     publishViewOf(makeMessages());
     const { host, notifyCalls } = sourceHost({});
     const controller = new AbortController();
@@ -344,11 +383,13 @@ describe("compress tool execute — permit lapses after the commit", () => {
     assert.equal(stateOf().blocks.size, 1);
     assert.ok(result.includes("已压缩"));
     assert.equal(notifyCalls.length, 1);
-    // The lapsed call leaves no runtime-only record behind.
+    // The view-change flag committed with the blocks: the commit is the
+    // point of no return, so a permit that lapsed afterwards changes
+    // nothing.
     assert.equal(
-      runtime.consumePendingViewChange(permitFor(TEST_SESSION_ID)),
-      false,
-      "the lapsed call flags no view change",
+      sessionState().pendingViewChange,
+      true,
+      "the committed call keeps its view change",
     );
   });
 });
@@ -375,7 +416,7 @@ describe("compress tool execute — history source", () => {
       "the cached round view must not re-read the host",
     );
     assert.equal(stateOf().blocks.size, 1);
-    assert.equal(runtime.consumePendingViewChange(permit), true);
+    assert.equal(sessionState().pendingViewChange, true);
     assert.equal(notifyCalls.length, 1);
     assert.ok(result.includes("已压缩"));
   });
@@ -423,8 +464,8 @@ describe("compress tool execute — history source", () => {
       "state untouched — nothing was compressed",
     );
     assert.equal(
-      runtime.consumePendingViewChange(permit),
-      false,
+      sessionState().pendingViewChange,
+      undefined,
       "no view change armed by a refused call",
     );
     assert.deepEqual(notifyCalls, [], "no notification for a refused call");
@@ -459,12 +500,13 @@ describe("compress tool execute — happy path", () => {
     assert.equal(block.title, "执行命令主题");
     assert.equal(block.end - block.start, 9, "range [1, 10) covers 9 ordinals");
 
-    // (2) Pending view change flagged (transient, consumed by the hook).
-    assert.equal(runtime.consumePendingViewChange(permit), true);
+    // (2) Pending view change flagged in the same commit (transient,
+    // cleared by the next release phase).
+    assert.equal(sessionState().pendingViewChange, true);
     assert.equal(
-      runtime.consumePendingViewChange(permit),
-      false,
-      "flag is consumed and cleared",
+      sessionState().pendingViewChange,
+      true,
+      "the flag is committed state, not a one-shot read",
     );
 
     // (2b) The reclaim is booked against the water level, so the pressure
@@ -552,7 +594,7 @@ describe("compress tool execute — happy path", () => {
       (state.blocks.get(2)?.end ?? 0) - (state.blocks.get(2)?.start ?? 0),
       4,
     );
-    assert.equal(runtime.consumePendingViewChange(permit), true);
+    assert.equal(state.pendingViewChange, true);
 
     // (2) Persisted exactly once (both blocks on disk).
     const persisted = store.load(TEST_SESSION_ID);

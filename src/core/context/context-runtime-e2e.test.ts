@@ -21,6 +21,7 @@ import {
   contextSessionResources,
   createSessionResourceCatalog,
 } from "../session/resources.js";
+import { PRUNED_TOOL_OUTPUT_REPLACEMENT } from "./message-parts.js";
 import { contextPruningTransformHandler } from "./pipeline.js";
 import { type ContextRuntime, createContextRuntime } from "./runtime.js";
 import { markKey } from "./state.js";
@@ -167,7 +168,7 @@ describe("one session, overlapping entries", () => {
     seedPendingMark(runtime, sessionID, 1);
     // The published view is the address space the tool resolves its refs
     // in; publish the same transcript both entries operate on.
-    runtime.publishRoundView(permitFor(sessionID), {
+    runtime.publishRoundView(sessionID, {
       projection: adapter.history(messages),
       numbered: [
         { n: 1, item: { type: "original", start: 0, end: 1 } },
@@ -274,7 +275,7 @@ describe("cancellation mid-round", () => {
 });
 
 describe("cancellation after the commit", () => {
-  it("keeps the committed round but publishes and posts nothing", async () => {
+  it("publishes and returns the committed round", async () => {
     const { runtime, store } = sandboxRuntime();
     const sessionID = "committed-then-cancelled";
     const messages = transcript(sessionID);
@@ -304,16 +305,27 @@ describe("cancellation after the commit", () => {
       (payload) => toasts.push(payload),
     );
 
-    // The round committed.
+    // The round committed, so the commit's results belong to it: the tools
+    // receive its address space, the caller its rendered conversation, and
+    // the user the queued notice.
     assert.equal(
       store.load(sessionID).marks.get(markKey(1, 0))?.effective,
       true,
     );
-    // ... but the lapsed call publishes no view, posts no notice or toast,
-    // and hands the caller its own conversation back.
-    assert.equal(runtime.roundView(sessionID), undefined);
-    assert.deepEqual(notices, []);
-    assert.deepEqual(toasts, []);
-    assert.equal(result, messages);
+    assert.ok(runtime.roundView(sessionID), "the committed view is published");
+    assert.equal(notices.length, 1, "the committed release is announced");
+    assert.deepEqual(toasts, [], "no nudge ran in this round");
+    const rendered = result as Array<{ parts: Array<{ text?: string }> }>;
+    assert.equal(
+      rendered.length,
+      3,
+      "the committed view is handed back to the caller",
+    );
+    assert.ok(
+      String(rendered[1].parts[0]?.text).includes(
+        PRUNED_TOOL_OUTPUT_REPLACEMENT,
+      ),
+      "the returned conversation carries the committed release",
+    );
   });
 });

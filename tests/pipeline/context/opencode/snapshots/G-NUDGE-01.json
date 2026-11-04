@@ -84,7 +84,7 @@
           "role": "user",
           "toolParts": [],
           "sentinelId": "zoo-nudge",
-          "text": "<internal-reminder>\n**CONTEXT GROWING — 150000 (75% of 200000 window)**\n\nCompressible window: m2–m2 (~4 tokens), both refs inclusive.\nPick your own contiguous sub-range inside — compressing everything is optional.\n`compress` refs are inclusive — both endpoints are compressed.\n\nAt your next natural pause, compress a closed range with the `compress` tool. Timing is your call.\n\nRange selection and segmentation: load the `compress-usage` skill.\n\nUNCOMPRESSED HISTORY = GROWING CONTEXT = SHRINKING HEADROOM.\n</internal-reminder>"
+          "text": "<internal-reminder>\n**CONTEXT GROWING — 150000 (75% of 200000 window)**\n\nCompressible window: m2–m2 (~2 tokens), both refs inclusive.\nPick your own contiguous sub-range inside — compressing everything is optional.\n`compress` refs are inclusive — both endpoints are compressed.\n\nAt your next natural pause, compress a closed range with the `compress` tool. Timing is your call.\n\nRange selection and segmentation: load the `compress-usage` skill.\n\nUNCOMPRESSED HISTORY = GROWING CONTEXT = SHRINKING HEADROOM.\n</internal-reminder>"
         }
       ],
       "toolResult": null,
@@ -216,7 +216,7 @@
           "role": "user",
           "toolParts": [],
           "sentinelId": "zoo-nudge",
-          "text": "<internal-reminder>\n**CONTEXT GROWING — 135000 (68% of 200000 window)**\n\nCompressible window: m2–m2 (~4 tokens), both refs inclusive.\nPick your own contiguous sub-range inside — compressing everything is optional.\n`compress` refs are inclusive — both endpoints are compressed.\n\nAt your next natural pause, compress a closed range with the `compress` tool. Timing is your call.\n\nRange selection and segmentation: load the `compress-usage` skill.\n\nUNCOMPRESSED HISTORY = GROWING CONTEXT = SHRINKING HEADROOM.\n</internal-reminder>"
+          "text": "<internal-reminder>\n**CONTEXT GROWING — 135000 (68% of 200000 window)**\n\nCompressible window: m2–m2 (~2 tokens), both refs inclusive.\nPick your own contiguous sub-range inside — compressing everything is optional.\n`compress` refs are inclusive — both endpoints are compressed.\n\nAt your next natural pause, compress a closed range with the `compress` tool. Timing is your call.\n\nRange selection and segmentation: load the `compress-usage` skill.\n\nUNCOMPRESSED HISTORY = GROWING CONTEXT = SHRINKING HEADROOM.\n</internal-reminder>"
         }
       ],
       "toolResult": null,
@@ -264,7 +264,7 @@
           "role": "user",
           "toolParts": [],
           "sentinelId": "zoo-nudge",
-          "text": "<internal-reminder>\n**CONTEXT LIMIT — 165000 (83% of 200000 window)**\n\nCompressible window: m2–m2 (~4 tokens), both refs inclusive.\nPick your own contiguous sub-range inside — compressing everything is optional.\n`compress` refs are inclusive — both endpoints are compressed.\n\nFinish your current atomic step, then call the `compress` tool IMMEDIATELY.\nDO NOT start new exploration. DO NOT delegate new tasks. Compress first.\n\nRange selection and segmentation: load the `compress-usage` skill.\n\nFULL CONTEXT = TERMINATED SESSION = LOST WORK.\n</internal-reminder>"
+          "text": "<internal-reminder>\n**CONTEXT LIMIT — 165000 (83% of 200000 window)**\n\nCompressible window: m2–m2 (~2 tokens), both refs inclusive.\nPick your own contiguous sub-range inside — compressing everything is optional.\n`compress` refs are inclusive — both endpoints are compressed.\n\nFinish your current atomic step, then call the `compress` tool IMMEDIATELY.\nDO NOT start new exploration. DO NOT delegate new tasks. Compress first.\n\nRange selection and segmentation: load the `compress-usage` skill.\n\nFULL CONTEXT = TERMINATED SESSION = LOST WORK.\n</internal-reminder>"
         }
       ],
       "toolResult": null,

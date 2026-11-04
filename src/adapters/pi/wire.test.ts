@@ -37,7 +37,6 @@ import {
 } from "../../core/subagent/registry.js";
 import { createTodoStore } from "../../core/todo/store.js";
 import type { ToolContribution } from "../../core/unit.js";
-import { permitFor } from "../../testkits/context-runtime.js";
 import {
   COLORS_RAW,
   fakePiToolHost,
@@ -978,7 +977,7 @@ describe("buildPiHandlers — registerCommand wiring", () => {
 
     // pi offers no host history read, so /dcp reports over the round view
     // published by the context transform — the projection the model holds.
-    runtime.publishRoundView(permitFor("sess-dcp"), {
+    runtime.publishRoundView("sess-dcp", {
       projection: project(
         [
           {
@@ -2173,7 +2172,7 @@ describe("buildPiHandlers — session_start is not a stop", () => {
     // Only a session stop releases the runtime records, so a resume must
     // leave the session's records untouched — the next pruning round
     // republishes the view anyway.
-    runtime.publishRoundView(permitFor("sess-rv"), {
+    runtime.publishRoundView("sess-rv", {
       projection: project(
         [
           {

@@ -10,7 +10,7 @@
  * manual-trigger flags) are dispatched here.
  *
  * A round clones its message view (fixtures are module-level singletons
- * and the transform rewrites its input in place), runs the optional
+ * and the lane splices the round's view back into it), runs the optional
  * action — translating the id-keyed fixture inputs (call ids,
  * anchor message ids) to the core's ordinal-keyed collections — then
  * runs `contextPruningTransformHandler` over the shared session state,
@@ -164,7 +164,9 @@ async function runAction<M>(
         return { result: null, error: null };
       }
       case "set-pending-view-change": {
-        host.runtime.setPendingViewChange(permitFor(sessionID));
+        await host.runtime.commit(permitFor(sessionID), (draft) => {
+          draft.pendingViewChange = true;
+        });
         return { result: null, error: null };
       }
       default: {
@@ -205,7 +207,7 @@ async function runRound<M>(
     ...(round.config ?? {}),
   };
   // Drive a pristine copy: the fixture arrays are shared module-level
-  // values and the transform rewrites its input in place.
+  // values and the lanes splice the round's view back into them.
   const messages = structuredClone(round.messages);
   const { result, error } = await runAction(
     round.action,

@@ -240,8 +240,8 @@ export async function handleDcpCommand(
  *    in the active mode profile's tools and the compress section must
  *    carry both token thresholds; otherwise it refuses with a notice.
  * 2. Sets `state.pendingManualTrigger = true` on the shared state
- *    (in-memory only, never persisted — same discipline as
- *    `pendingViewChange`; loss on restart is benign).
+ *    (in-memory only, never persisted — it rides the committed state and
+ *    is dropped with its cache entry; loss on restart is benign).
  * 3. Sends a single ignored notification telling the user the trigger
  *    will fire on the next turn.
  *
