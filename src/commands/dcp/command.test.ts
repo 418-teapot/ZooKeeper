@@ -7,20 +7,22 @@
  * mocked as the host-agnostic `ToolHost` port (`fetchHistory` returns
  * lens `HostMessage[]`, `notify` records calls) and fixtures are built
  * with the core lens testkit — the handler never touches v1 shapes.
- * State is exercised through the new host-agnostic core: the shared
- * session-state manager (`getContextStateManager`) and its store.
+ * State is exercised through the host-agnostic core: a plugin instance's
+ * context runtime and its store.
  */
 import assert from "node:assert/strict";
-import { afterEach, describe, it } from "node:test";
+import { rmSync } from "node:fs";
+import { after, afterEach, beforeEach, describe, it } from "node:test";
+import type { ContextPruningConfig } from "../../core/config-types.js";
 import { type HostMessage, project } from "../../core/context/lens.js";
 import { PRUNED_TOOL_OUTPUT_REPLACEMENT } from "../../core/context/message-parts.js";
-import { publishRoundView } from "../../core/context/round-view.js";
 import {
-  _resetContextStateManagerForTesting,
-  getContextStateManager,
-  getRuntimeFlaggedState,
+  type ContextRuntime,
+  createContextRuntime,
+  type RuntimeFlaggedState,
 } from "../../core/context/runtime.js";
 import { markKey } from "../../core/context/state.js";
+import { createStateStore } from "../../core/context/store.js";
 import type { ToolHost } from "../../core/ports/tool-host.js";
 import {
   makeAssistantMsg,
@@ -28,6 +30,8 @@ import {
   makeToolMsg,
   projectMessages,
 } from "../../testkits/context.js";
+import { permitFor } from "../../testkits/context-runtime.js";
+import { makeTmpDir } from "../../testkits/tmp.js";
 import { _resetForTesting } from "../../utils/logger.js";
 import { handleDcpCommand } from "./command.js";
 
@@ -36,16 +40,59 @@ import { handleDcpCommand } from "./command.js";
 // ---------------------------------------------------------------------------
 
 /** Session IDs that persist to disk during tests (need file cleanup). */
-const PERSIST_TEST_SESSION_IDS = ["sess-report-round-view"];
+const PERSIST_TEST_SESSION_IDS = [
+  "sess-report-round-view",
+  "sess-marks-report",
+  "sess-marks-roundview",
+  "sess-compress-test",
+  "sess-compress-disabled",
+  "sess-compress-absent",
+];
+
+/** Sandbox store directory of this suite. */
+const storeDir = makeTmpDir("zoo-dcp-command");
+const store = createStateStore(storeDir);
+/** The plugin instance under test. */
+let runtime: ContextRuntime = createContextRuntime(store);
+
+beforeEach(() => {
+  runtime = createContextRuntime(store);
+});
 
 afterEach(() => {
+  for (const sid of PERSIST_TEST_SESSION_IDS) store.delete(sid);
   _resetForTesting();
-  const manager = getContextStateManager();
-  for (const sid of PERSIST_TEST_SESSION_IDS) {
-    manager.store.delete(sid);
-  }
-  _resetContextStateManagerForTesting();
 });
+
+after(() => {
+  rmSync(storeDir, { recursive: true, force: true });
+});
+
+/** The committed state of a session. */
+function stateOf(sessionID: string): RuntimeFlaggedState {
+  const state = runtime.read(permitFor(sessionID), (draft) => draft);
+  if (state === undefined) throw new Error(`no committed state: ${sessionID}`);
+  return state;
+}
+
+/** Drive the command handler under a permit for its session. */
+function dcp(
+  toolHost: ToolHost | null | undefined,
+  sessionID: string,
+  args: string,
+  contextConfig: ContextPruningConfig,
+  hasCompressTool = false,
+): Promise<void> {
+  return handleDcpCommand(
+    runtime,
+    permitFor(sessionID),
+    toolHost,
+    sessionID,
+    args,
+    contextConfig,
+    hasCompressTool,
+  );
+}
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -102,7 +149,7 @@ describe("/dcp context subcommand", () => {
     ];
     const { toolHost, notifyCalls } = mockToolHost(view);
 
-    await handleDcpCommand(toolHost, "sess-1", "context", {});
+    await dcp(toolHost, "sess-1", "context", {});
 
     assert.equal(notifyCalls.length, 1);
     assert.equal(notifyCalls[0].sessionID, "sess-1");
@@ -114,7 +161,7 @@ describe("/dcp context subcommand", () => {
     const view: HostMessage[] = [makeMsg("user", ["Hi"])];
     const { toolHost, notifyCalls } = mockToolHost(view);
 
-    await handleDcpCommand(toolHost, "sess-2", "", {});
+    await dcp(toolHost, "sess-2", "", {});
 
     assert.equal(notifyCalls.length, 1);
     assertNotifyContains(notifyCalls, "上下文报告");
@@ -130,7 +177,7 @@ describe("/dcp context subcommand", () => {
     ];
     const { toolHost, notifyCalls } = mockToolHost(view);
 
-    await handleDcpCommand(toolHost, "sess-3", "context", {});
+    await dcp(toolHost, "sess-3", "context", {});
 
     assertNotifyContains(notifyCalls, "26.7%");
   });
@@ -145,7 +192,7 @@ describe("/dcp context subcommand", () => {
     ];
     const { toolHost, notifyCalls } = mockToolHost(view);
 
-    await handleDcpCommand(toolHost, "sess-4", "context", {});
+    await dcp(toolHost, "sess-4", "context", {});
 
     // Compact report: summary lines only, no category breakdown.
     assert.ok(
@@ -177,8 +224,7 @@ describe("effective prune marks over storage", () => {
   const SID = "sess-marks-report";
 
   afterEach(() => {
-    getContextStateManager().store.delete(SID);
-    _resetContextStateManagerForTesting();
+    store.delete(SID);
   });
 
   it("counts a pruned tool output as input plus placeholder", async () => {
@@ -188,9 +234,9 @@ describe("effective prune marks over storage", () => {
       makeToolMsg("bash", "echo hello world", output),
     ];
 
-    // Seed the shared manager with an effective mark at the tool-output
+    // Seed the runtime with an effective mark at the tool-output
     // region (ordinal 1, region index 1).
-    const state = getContextStateManager().get(SID);
+    const state = stateOf(SID);
     state.marks.set(markKey(1, 1), {
       anchorOrdinal: 1,
       regionIndex: 1,
@@ -201,7 +247,7 @@ describe("effective prune marks over storage", () => {
     });
 
     const { toolHost, notifyCalls } = mockToolHost(view);
-    await handleDcpCommand(toolHost, SID, "context", {});
+    await dcp(toolHost, SID, "context", {});
 
     assert.equal(notifyCalls.length, 1);
     // Raw total = exact 600 + tail (input 4 + output 100) = 704.
@@ -219,7 +265,7 @@ describe("effective prune marks over storage", () => {
       makeAssistantMsg({ text: "Hi", usage: { input: 500, output: 100 } }),
       makeToolMsg("bash", "echo hello world", PRUNED_TOOL_OUTPUT_REPLACEMENT),
     ];
-    const state = getContextStateManager().get(sid);
+    const state = stateOf(sid);
     state.marks.set(markKey(1, 1), {
       anchorOrdinal: 1,
       regionIndex: 1,
@@ -228,7 +274,7 @@ describe("effective prune marks over storage", () => {
       effective: true,
       markedAt: 1,
     });
-    publishRoundView(sid, {
+    runtime.publishRoundView(permitFor(sid), {
       projection: projectMessages(view),
       numbered: [],
     });
@@ -241,13 +287,118 @@ describe("effective prune marks over storage", () => {
       },
     };
     try {
-      await handleDcpCommand(toolHost, sid, "context", {});
+      await dcp(toolHost, sid, "context", {});
       assert.equal(notices.length, 1);
       // 600 + (input 4 + placeholder 20) = 624 — the placeholder is
       // counted once, never twice.
       assert.match(notices[0], /~624 tokens/);
     } finally {
-      getContextStateManager().store.delete(sid);
+      store.delete(sid);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Lapsed permit
+// ---------------------------------------------------------------------------
+
+describe("lapsed permit", () => {
+  /** An already-aborted controller: every permit over it is inactive. */
+  function lapsed(): AbortController {
+    const controller = new AbortController();
+    controller.abort();
+    return controller;
+  }
+
+  it("reads no history and notifies nothing", async () => {
+    const controller = lapsed();
+    let fetches = 0;
+    const notices: string[] = [];
+    const toolHost: ToolHost = {
+      resolveSessionId: () => undefined,
+      fetchHistory: async () => {
+        fetches += 1;
+        return projectMessages([makeMsg("user", ["Hi"])]);
+      },
+      notify: async (_sessionID, text) => {
+        notices.push(text);
+      },
+    };
+
+    for (const args of ["context", "", "foobar"]) {
+      await handleDcpCommand(
+        runtime,
+        permitFor("sess-lapsed", controller.signal),
+        toolHost,
+        "sess-lapsed",
+        args,
+        {},
+      );
+    }
+
+    assert.equal(fetches, 0, "no host history read");
+    assert.deepEqual(notices, [], "no host notification");
+  });
+
+  it("arms no compress trigger and notifies nothing", async () => {
+    const controller = lapsed();
+    const sessionID = "sess-compress-lapsed";
+    const notices: string[] = [];
+    const toolHost: ToolHost = {
+      resolveSessionId: () => undefined,
+      notify: async (_sessionID, text) => {
+        notices.push(text);
+      },
+    };
+    try {
+      await handleDcpCommand(
+        runtime,
+        permitFor(sessionID, controller.signal),
+        toolHost,
+        sessionID,
+        "compress",
+        { compress: { thresholdTokens: 1, protectedTokens: 1 } },
+        true,
+      );
+      assert.deepEqual(notices, [], "no host notification");
+      assert.equal(stateOf(sessionID).pendingManualTrigger, undefined);
+    } finally {
+      store.delete(sessionID);
+    }
+  });
+
+  it("notifies nothing when the permit lapses at the commit", async () => {
+    const controller = new AbortController();
+    const sessionID = "sess-compress-commit-lapsed";
+    const notices: string[] = [];
+    const toolHost: ToolHost = {
+      resolveSessionId: () => undefined,
+      notify: async (_sessionID, text) => {
+        notices.push(text);
+      },
+    };
+    // The commit point is where the session stop lands.
+    const lapsedRuntime: ContextRuntime = {
+      ...runtime,
+      commit: (permit, change) => {
+        controller.abort();
+        return runtime.commit(permit, change);
+      },
+    };
+    try {
+      await handleDcpCommand(
+        lapsedRuntime,
+        permitFor(sessionID, controller.signal),
+        toolHost,
+        sessionID,
+        "compress",
+        { compress: { thresholdTokens: 1, protectedTokens: 1 } },
+        true,
+      );
+      assert.deepEqual(notices, [], "no host notification");
+      assert.equal(stateOf(sessionID).pendingManualTrigger, undefined);
+    } finally {
+      store.delete(sessionID);
     }
   });
 });
@@ -261,7 +412,7 @@ describe("unknown subcommand", () => {
     const view: HostMessage[] = [makeMsg("user", ["Hi"])];
     const { toolHost, notifyCalls } = mockToolHost(view);
 
-    await handleDcpCommand(toolHost, "sess-5", "foobar", {});
+    await dcp(toolHost, "sess-5", "foobar", {});
 
     assert.equal(notifyCalls.length, 1);
     assertNotifyContains(notifyCalls, "用法");
@@ -283,7 +434,7 @@ describe("empty messages", () => {
   it("handles empty array gracefully", async () => {
     const { toolHost, notifyCalls } = mockToolHost([]);
 
-    await handleDcpCommand(toolHost, "sess-6", "context", {});
+    await dcp(toolHost, "sess-6", "context", {});
 
     assert.equal(notifyCalls.length, 1);
     assertNotifyContains(notifyCalls, "0 tokens");
@@ -297,15 +448,12 @@ describe("empty messages", () => {
 
 describe("missing host APIs", () => {
   it("throws when toolHost is null", async () => {
-    await assert.rejects(
-      () => handleDcpCommand(null, "sess-7", "context", {}),
-      /无法获取/,
-    );
+    await assert.rejects(() => dcp(null, "sess-7", "context", {}), /无法获取/);
   });
 
   it("throws when toolHost is undefined", async () => {
     await assert.rejects(
-      () => handleDcpCommand(undefined, "sess-8", "context", {}),
+      () => dcp(undefined, "sess-8", "context", {}),
       /无法获取/,
     );
   });
@@ -313,7 +461,7 @@ describe("missing host APIs", () => {
   it("throws when fetchHistory is unavailable", async () => {
     const toolHost = {} as ToolHost; // no fetchHistory at all
     await assert.rejects(
-      () => handleDcpCommand(toolHost, "sess-9", "context", {}),
+      () => dcp(toolHost, "sess-9", "context", {}),
       /无法获取/,
     );
   });
@@ -329,7 +477,7 @@ describe("missing host APIs", () => {
         notices.push(text);
       },
     };
-    publishRoundView("sess-report-round-view", {
+    runtime.publishRoundView(permitFor("sess-report-round-view"), {
       projection: projectMessages([
         makeMsg("user", ["问题"]),
         makeAssistantMsg({
@@ -339,7 +487,7 @@ describe("missing host APIs", () => {
       numbered: [],
     });
 
-    await handleDcpCommand(toolHost, "sess-report-round-view", "context", {});
+    await dcp(toolHost, "sess-report-round-view", "context", {});
 
     assert.equal(notices.length, 1);
     assert.match(notices[0], /上下文报告/);
@@ -354,7 +502,7 @@ describe("missing host APIs", () => {
       notify: async () => {},
     };
     await assert.rejects(
-      () => handleDcpCommand(toolHost, "sess-10", "context", {}),
+      () => dcp(toolHost, "sess-10", "context", {}),
       /rate limit exceeded/,
     );
   });
@@ -378,13 +526,11 @@ describe("/dcp compress subcommand", () => {
   const SESSION_ID = "sess-compress-test";
 
   afterEach(() => {
-    const manager = getContextStateManager();
-    manager.store.delete(SESSION_ID);
-    _resetContextStateManagerForTesting();
+    store.delete(SESSION_ID);
   });
 
   /** Gate-open config — compress section strictly parsed. */
-  const compressConfig: Parameters<typeof handleDcpCommand>[3] = {
+  const compressConfig: Parameters<typeof dcp>[3] = {
     dedup: {},
     purgeErrors: {},
     protectedMessages: 2,
@@ -395,7 +541,7 @@ describe("/dcp compress subcommand", () => {
     const { toolHost, notifyCalls } = mockToolHost([]);
 
     // Valid compress section, but the tool is NOT in the profile tools.
-    await handleDcpCommand(
+    await dcp(
       toolHost,
       "sess-compress-disabled",
       "compress",
@@ -413,7 +559,7 @@ describe("/dcp compress subcommand", () => {
     );
 
     // State should be empty (no flag, no writes).
-    const state = getRuntimeFlaggedState("sess-compress-disabled");
+    const state = stateOf("sess-compress-disabled");
     assert.equal(state.blocks.size, 0);
     assert.equal(state.pendingManualTrigger, undefined);
   });
@@ -422,7 +568,7 @@ describe("/dcp compress subcommand", () => {
     const { toolHost, notifyCalls } = mockToolHost([]);
 
     // Tool registered in the profile, but the compress section is absent.
-    await handleDcpCommand(
+    await dcp(
       toolHost,
       "sess-compress-absent",
       "compress",
@@ -439,7 +585,7 @@ describe("/dcp compress subcommand", () => {
     );
 
     // State should be empty (no flag, no writes).
-    const state = getRuntimeFlaggedState("sess-compress-absent");
+    const state = stateOf("sess-compress-absent");
     assert.equal(state.blocks.size, 0);
     assert.equal(state.pendingManualTrigger, undefined);
   });
@@ -458,13 +604,7 @@ describe("/dcp compress subcommand", () => {
       },
     };
 
-    await handleDcpCommand(
-      toolHost,
-      SESSION_ID,
-      "compress",
-      compressConfig,
-      true,
-    );
+    await dcp(toolHost, SESSION_ID, "compress", compressConfig, true);
 
     // Notification tells the user about the next-turn trigger.
     assert.ok(
@@ -474,7 +614,7 @@ describe("/dcp compress subcommand", () => {
 
     // One-shot in-memory flag set; no blocks; the flag is never
     // persisted (the state file stays absent).
-    const state = getRuntimeFlaggedState(SESSION_ID);
+    const state = stateOf(SESSION_ID);
     assert.equal(state.pendingManualTrigger, true, "one-shot flag set");
     assert.equal(state.blocks.size, 0, "no blocks created");
   });
@@ -486,22 +626,10 @@ describe("/dcp compress subcommand", () => {
       notify: async () => {},
     };
 
-    await handleDcpCommand(
-      toolHost,
-      SESSION_ID,
-      "compress",
-      compressConfig,
-      true,
-    );
-    await handleDcpCommand(
-      toolHost,
-      SESSION_ID,
-      "compress",
-      compressConfig,
-      true,
-    );
+    await dcp(toolHost, SESSION_ID, "compress", compressConfig, true);
+    await dcp(toolHost, SESSION_ID, "compress", compressConfig, true);
 
-    const state = getRuntimeFlaggedState(SESSION_ID);
+    const state = stateOf(SESSION_ID);
     assert.equal(state.pendingManualTrigger, true, "flag stays armed");
     assert.equal(state.blocks.size, 0);
   });

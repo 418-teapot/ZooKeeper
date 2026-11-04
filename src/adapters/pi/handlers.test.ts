@@ -13,16 +13,18 @@ import fs from "node:fs";
 import { afterEach, describe, it } from "node:test";
 import { initTheme } from "@earendil-works/pi-coding-agent";
 import { BEAVER_PROMPT } from "../../agents/beaver.js";
+import type { ComposedResult } from "../../core/compose.js";
+import { createContextRuntime } from "../../core/context/runtime.js";
+import {
+  defineSessionService,
+  type WorkPermit,
+} from "../../core/lifecycle/index.js";
 import {
   DIRECT_WORK_NUDGE,
   JSON_ERROR_REMINDER_MARKER,
   VERIFY_REMINDER,
 } from "../../core/prompts.js";
-import {
-  getPrimary,
-  runWithIdentity,
-  setPrimary,
-} from "../../core/subagent/identity.js";
+import { sessionAgentRegistry } from "../../core/session/agent.js";
 import { startRun, updateRun } from "../../core/subagent/registry.js";
 import {
   joinedText,
@@ -35,10 +37,27 @@ import {
   SESSION_CTX,
 } from "../../testkits/pi-wiring.js";
 import { _getBufferForTesting, _resetForTesting } from "../../utils/logger.js";
-import { hasPiSdkSession } from "./sdk-lifecycle.js";
+import { createPiEventHandlers, type PiEventHandlerDeps } from "./handlers.js";
+import { createPiLifecycleWiring } from "./lifecycle-wiring.js";
+import {
+  createPiSessionContexts,
+  type PiSessionContexts,
+} from "./session-contexts.js";
 import { buildPiContributions, buildPiHandlers } from "./wire.js";
 
 afterEach(resetPiTestState);
+
+/** The session id `SESSION_CTX` names, for binding its identity. */
+const SESSION_ID = "sess-1";
+
+/**
+ * Bind one session to an agent.
+ *
+ * Identity is per session: a test states which agent drives which session.
+ */
+function bindAgent(sessionID: string, name: string): void {
+  sessionAgentRegistry.bind(sessionID, name);
+}
 
 // The official transcript message components render through the coding-agent
 // module-level theme singleton; the built-in dark theme ships with the
@@ -106,7 +125,7 @@ describe("session_tree — todo cache invalidation", () => {
     // Tree navigation drops the cache; the widget refresh then re-reads the
     // transcript eagerly, so the next tool call is served from the restored
     // cache instead of scanning again.
-    handlers.sessionTree(undefined, ctx);
+    await handlers.sessionTree(undefined, ctx);
     await new Promise((resolve) => setTimeout(resolve, 0));
     assert.equal(
       scans.count,
@@ -124,9 +143,9 @@ describe("session_tree — todo cache invalidation", () => {
   it("is a no-op without a session id in the event context", async () => {
     const api = mockApi();
     const handlers = await buildPiHandlers(TODO_ZOO, api as any, MODES_RAW);
-    assert.doesNotThrow(() => handlers.sessionTree());
-    assert.doesNotThrow(() => handlers.sessionTree(undefined, {}));
-    assert.doesNotThrow(() =>
+    await assert.doesNotReject(handlers.sessionTree());
+    await assert.doesNotReject(handlers.sessionTree(undefined, {}));
+    await assert.doesNotReject(
       handlers.sessionTree(undefined, {
         sessionManager: { getSessionId: () => "" },
       }),
@@ -137,8 +156,8 @@ describe("session_tree — todo cache invalidation", () => {
     // Without a real pi API the entry point owns no todo store (the tool
     // never registers, fail-closed): the handler must not crash over it.
     const handlers = await buildPiHandlers(POLY_ZOO, undefined, MODES_RAW);
-    assert.doesNotThrow(() => handlers.sessionTree());
-    assert.doesNotThrow(() =>
+    await assert.doesNotReject(handlers.sessionTree());
+    await assert.doesNotReject(
       handlers.sessionTree(undefined, {
         sessionManager: { getSessionId: () => "sess-tree" },
       }),
@@ -287,7 +306,7 @@ describe("todo view — widget cache refresh triggers", () => {
     await flush();
     const afterStart = scans.count;
 
-    handlers.sessionTree(undefined, ctx);
+    await handlers.sessionTree(undefined, ctx);
     await flush();
     assert.equal(
       scans.count,
@@ -299,7 +318,10 @@ describe("todo view — widget cache refresh triggers", () => {
   it("keeps each session's widget and todo column on that session", async () => {
     const api = mockApi();
     const handlers = await buildPiHandlers(TODO_ZOO, api as any, MODES_RAW);
-    if (getPrimary() === undefined) setPrimary("dolphin");
+    // Each widget needs its own session's primary: the fleet line is
+    // primary-driven, and a session without one renders nothing.
+    bindAgent("sess-widget-a", "dolphin");
+    bindAgent("sess-widget-b", "dolphin");
     const a = todoWidgetCtx("sess-widget-a");
     const b = todoWidgetCtx("sess-widget-b");
     await handlers.sessionStart({ type: "session_start" }, a.ctx);
@@ -376,7 +398,7 @@ describe("todo view — widget cache refresh triggers", () => {
     // empty, so the widget's todo column resolves to no phases.  All three
     // refresh triggers must remain silent no-ops.
     const handlers = await buildPiHandlers(POLY_ZOO, undefined, MODES_RAW);
-    assert.doesNotThrow(() => handlers.sessionTree());
+    await assert.doesNotReject(handlers.sessionTree());
     await assert.doesNotReject(() =>
       handlers.sessionStart(undefined, undefined),
     );
@@ -402,10 +424,14 @@ describe("todo view — widget cache refresh triggers", () => {
 describe("buildPiHandlers — prompt injection + skill discovery", () => {
   it("poly full → default primary prompt prepended, all 11 skill dirs discovered", async () => {
     const handlers = await buildPiHandlers(POLY_ZOO, undefined, MODES_RAW);
-    const result = await handlers.beforeAgentStart({
-      messageType: "user",
-      systemPrompt: "base",
-    });
+    const result = await handlers.beforeAgentStart(
+      {
+        messageType: "user",
+        systemPrompt: "base",
+      },
+      SESSION_CTX,
+    );
+    assert.ok(result);
     assert.ok(result.systemPrompt.startsWith("<Role>"));
     assert.ok(result.systemPrompt.endsWith("base"));
 
@@ -413,7 +439,8 @@ describe("buildPiHandlers — prompt injection + skill discovery", () => {
     // its orchestrator prompt is the prepended one.
     assert.ok(result.systemPrompt.includes("对最终交付负责"));
 
-    const resources = await handlers.resourcesDiscover();
+    const resources = await handlers.resourcesDiscover(undefined, SESSION_CTX);
+    assert.ok(resources);
     assert.equal(resources.skillPaths.length, 11);
     for (const path of resources.skillPaths) {
       assert.ok(fs.existsSync(path), `${path} must exist`);
@@ -426,35 +453,44 @@ describe("buildPiHandlers — prompt injection + skill discovery", () => {
 
   it("null profile → prompt untouched, no skill paths", async () => {
     const handlers = await buildPiHandlers({});
-    const result = await handlers.beforeAgentStart({
-      messageType: "user",
-      systemPrompt: "base",
-    });
+    const result = await handlers.beforeAgentStart(
+      {
+        messageType: "user",
+        systemPrompt: "base",
+      },
+      SESSION_CTX,
+    );
+    assert.ok(result);
     assert.equal(result.systemPrompt, "base");
 
-    const resources = await handlers.resourcesDiscover();
+    const resources = await handlers.resourcesDiscover(undefined, SESSION_CTX);
+    assert.ok(resources);
     assert.deepEqual(resources.skillPaths, []);
   });
 
   it("profile without the orchestrator → prompt untouched; no skill paths", async () => {
-    // A stale module-level primary from another test must never inject: the
-    // profile omits the orchestrator, so the selection is invalid and
-    // nothing composes.  Seed a sentinel name outside the profile so the
+    // The profile omits the orchestrator, so the selection is invalid and
+    // nothing composes.  Bind a sentinel name outside the profile so the
     // assertion is order-independent.
-    setPrimary("ghost");
+    bindAgent(SESSION_ID, "ghost");
     const zoo = {
       mode: {
         poly: { ...POLY_PROFILE, agents: ["mola"], skills: ["git-commit"] },
       },
     };
     const handlers = await buildPiHandlers(zoo, undefined, MODES_RAW);
-    const result = await handlers.beforeAgentStart({
-      messageType: "user",
-      systemPrompt: "base",
-    });
+    const result = await handlers.beforeAgentStart(
+      {
+        messageType: "user",
+        systemPrompt: "base",
+      },
+      SESSION_CTX,
+    );
+    assert.ok(result);
     assert.equal(result.systemPrompt, "base");
 
-    const resources = await handlers.resourcesDiscover();
+    const resources = await handlers.resourcesDiscover(undefined, SESSION_CTX);
+    assert.ok(resources);
     assert.deepEqual(resources.skillPaths, []);
   });
 });
@@ -505,11 +541,12 @@ describe("buildPiHandlers — resourcesDiscover skill filtering", () => {
       undefined,
       MOLA_SKILLS_RAW,
     );
-    // Composition seeds the default primary from the poly agents array
-    // (dolphin), but here only mola declares skill rules — so a switch to
+    // The session resolves dolphin (the poly profile's orchestrator) by
+    // default, but only mola declares skill rules — so a session bound to
     // mola filters by his ruleset.
-    setPrimary("mola");
-    const resources = await handlers.resourcesDiscover();
+    bindAgent(SESSION_ID, "mola");
+    const resources = await handlers.resourcesDiscover(undefined, SESSION_CTX);
+    assert.ok(resources);
     const names = resources.skillPaths.map((p) => p.split("/").pop());
     assert.deepEqual(
       names.sort(),
@@ -524,9 +561,9 @@ describe("buildPiHandlers — resourcesDiscover skill filtering", () => {
       undefined,
       DOLPHIN_SKILLS_RAW,
     );
-    // Dolphin is the default primary from the poly agents array.
-    assert.equal(getPrimary(), "dolphin");
-    const resources = await handlers.resourcesDiscover();
+    // The session resolves dolphin, the poly profile's orchestrator.
+    const resources = await handlers.resourcesDiscover(undefined, SESSION_CTX);
+    assert.ok(resources);
     const names = resources.skillPaths.map((p) => p.split("/").pop() ?? "");
     assert.equal(names.length, 7, "4 of the 11 profile skills are denied");
     assert.ok(!names.some((n) => n.startsWith("beaver-")));
@@ -540,18 +577,19 @@ describe("buildPiHandlers — resourcesDiscover skill filtering", () => {
     // A sentinel primary with no `permission.skill` rules means no
     // filtering applies, so the handler contributes exactly as before the
     // filtering change.
-    setPrimary("ghost");
+    bindAgent(SESSION_ID, "ghost");
     const handlers = await buildPiHandlers(POLY_ZOO, undefined, MODES_RAW);
-    const resources = await handlers.resourcesDiscover();
+    const resources = await handlers.resourcesDiscover(undefined, SESSION_CTX);
+    assert.ok(resources);
     assert.equal(resources.skillPaths.length, 11);
   });
 
   it("primary without a skill rules entry → unfiltered (machinery-off)", async () => {
-    // The primary (dolphin) is set but has no `permission.skill` rules in
-    // the raw config → no filtering applies, matching default-allow.
+    // The session resolves dolphin, which has no `permission.skill` rules
+    // in the raw config → no filtering applies, matching default-allow.
     const handlers = await buildPiHandlers(POLY_ZOO, undefined, MODES_RAW);
-    assert.equal(getPrimary(), "dolphin");
-    const resources = await handlers.resourcesDiscover();
+    const resources = await handlers.resourcesDiscover(undefined, SESSION_CTX);
+    assert.ok(resources);
     assert.equal(resources.skillPaths.length, 11);
   });
 
@@ -562,8 +600,7 @@ describe("buildPiHandlers — resourcesDiscover skill filtering", () => {
       undefined,
       DOLPHIN_SKILLS_RAW,
     );
-    setPrimary("dolphin");
-    await handlers.resourcesDiscover();
+    await handlers.resourcesDiscover(undefined, SESSION_CTX);
     const filtered = _getBufferForTesting().filter(
       (entry) => entry.event === "skills_filtered",
     );
@@ -577,7 +614,7 @@ describe("buildPiHandlers — resourcesDiscover skill filtering", () => {
   it("emits no filtering event when no filtering applies", async () => {
     _resetForTesting();
     const handlers = await buildPiHandlers(POLY_ZOO, undefined, MODES_RAW);
-    await handlers.resourcesDiscover();
+    await handlers.resourcesDiscover(undefined, SESSION_CTX);
     const filtered = _getBufferForTesting().filter(
       (entry) => entry.event === "skills_filtered",
     );
@@ -590,17 +627,19 @@ describe("buildPiHandlers — resourcesDiscover skill filtering", () => {
 // ---------------------------------------------------------------------------
 
 describe("buildPiHandlers — identity-dispatch prompt injection", () => {
-  it("default primary (first in profile order) prompt is prepended", async () => {
-    // buildPiContributions seeds the identity state with the default
-    // primary (dolphin, first in the poly agents array); outside any
-    // sub-session scope resolveIdentity falls back to that primary.
+  it("default primary prompt is prepended", async () => {
+    // The main runtime resolves the orchestrator the selection resolved
+    // (dolphin) for a session no other source answers.
     const handlers = await buildPiHandlers(POLY_ZOO, undefined, MODES_RAW);
-    assert.equal(getPrimary(), "dolphin");
 
-    const result = await handlers.beforeAgentStart({
-      messageType: "user",
-      systemPrompt: "base",
-    });
+    const result = await handlers.beforeAgentStart(
+      {
+        messageType: "user",
+        systemPrompt: "base",
+      },
+      SESSION_CTX,
+    );
+    assert.ok(result);
     assert.ok(result.systemPrompt.startsWith("<Role>"));
     assert.ok(
       result.systemPrompt.includes("对最终交付负责"),
@@ -617,64 +656,76 @@ describe("buildPiHandlers — identity-dispatch prompt injection", () => {
       "- 职责匹配只决定可以委派给谁，不决定一定委派或不委派；**不得**因为下一步动作更方便，或因为存在匹配的 agent，就跳过完整交付成本判断；";
 
     const handlers = await buildPiHandlers(POLY_ZOO, undefined, MODES_RAW);
-    assert.equal(getPrimary(), "dolphin");
 
     const gpt = await handlers.beforeAgentStart(
       { messageType: "user", systemPrompt: "base" },
-      { model: { id: "openai/gpt-5.5" } },
+      {
+        sessionManager: { getSessionId: () => "sess-1" },
+        model: { id: "openai/gpt-5.5" },
+      },
     );
+    assert.ok(gpt);
     assert.ok(gpt.systemPrompt.includes(GPT), "gpt model uses the gpt line");
     assert.ok(!gpt.systemPrompt.includes(BASE));
 
-    const unknown = await handlers.beforeAgentStart({
-      messageType: "user",
-      systemPrompt: "base",
-    });
+    const unknown = await handlers.beforeAgentStart(
+      {
+        messageType: "user",
+        systemPrompt: "base",
+      },
+      SESSION_CTX,
+    );
+    assert.ok(unknown);
     assert.ok(unknown.systemPrompt.includes(BASE), "no model falls back");
     assert.ok(!unknown.systemPrompt.includes(GPT));
   });
 
-  it("setPrimary to the other configured primary switches the injected prompt", async () => {
-    // Composition seeds the default primary (dolphin).  A runtime switch
-    // (setPrimary after build) must be reflected by the next
+  it("a session bound to the other primary gets that prompt", async () => {
+    // The session resolves dolphin by default; a binding written after
+    // composition (what a switch does) must be reflected by the next
     // before_agent_start: the second primary (mola) prompt is injected.
     const handlers = await buildPiHandlers(POLY_ZOO, undefined, MODES_RAW);
-    setPrimary("mola");
-    const result = await handlers.beforeAgentStart({
-      messageType: "user",
-      systemPrompt: "base",
-    });
+    bindAgent(SESSION_ID, "mola");
+    const result = await handlers.beforeAgentStart(
+      {
+        messageType: "user",
+        systemPrompt: "base",
+      },
+      SESSION_CTX,
+    );
+    assert.ok(result);
     assert.ok(result.systemPrompt.startsWith("<Role>"));
     assert.ok(
       result.systemPrompt.includes("你是 mola，一个方案规划 agent"),
-      "mola prompt must be prepended after setPrimary",
+      "mola prompt must be prepended for the bound session",
     );
     assert.ok(result.systemPrompt.endsWith("base"));
   });
 
-  it("inside runWithIdentity the subagent's prompt is prepended", async () => {
-    const handlers = await buildPiHandlers(POLY_ZOO, undefined, MODES_RAW);
-    let injected = "";
-    await runWithIdentity({ kind: "subagent", name: "beaver" }, async () => {
-      const result = await handlers.beforeAgentStart({
-        messageType: "user",
-        systemPrompt: "base",
-      });
-      injected = result.systemPrompt;
+  it("a sub-session runtime injects its fixed agent's prompt", async () => {
+    // The inline factory a delegation loads fixes the agent, so every
+    // session of that runtime is that delegation — no ambient scope.
+    const handlers = await buildPiHandlers(POLY_ZOO, undefined, MODES_RAW, {
+      agent: "beaver",
     });
-    assert.equal(injected, `${BEAVER_PROMPT}\n\nbase`);
+    const result = await handlers.beforeAgentStart(
+      { messageType: "user", systemPrompt: "base" },
+      { sessionManager: { getSessionId: () => "sess-child" } },
+    );
+    assert.ok(result);
+    assert.equal(result.systemPrompt, `${BEAVER_PROMPT}\n\nbase`);
   });
 
-  it("subagent resolves by the same name lookup when not the default primary", async () => {
-    const handlers = await buildPiHandlers(POLY_ZOO, undefined, MODES_RAW);
-    let injected = "";
-    await runWithIdentity({ kind: "subagent", name: "lynx" }, async () => {
-      const result = await handlers.beforeAgentStart({
-        messageType: "user",
-        systemPrompt: "base",
-      });
-      injected = result.systemPrompt;
+  it("a sub-session runtime injects a non-orchestrator agent's prompt", async () => {
+    const handlers = await buildPiHandlers(POLY_ZOO, undefined, MODES_RAW, {
+      agent: "lynx",
     });
+    const result = await handlers.beforeAgentStart(
+      { messageType: "user", systemPrompt: "base" },
+      { sessionManager: { getSessionId: () => "sess-child" } },
+    );
+    assert.ok(result);
+    const injected = result.systemPrompt;
     assert.ok(injected.startsWith("<Role>"));
     assert.ok(
       injected.includes("你是 lynx"),
@@ -684,10 +735,10 @@ describe("buildPiHandlers — identity-dispatch prompt injection", () => {
   });
 
   it("invalid profile → zero injection; resolveAgent stays unresolved", async () => {
-    // Pre-seed a primary that is not in the profile: an invalid profile
-    // must fail closed (no setPrimary call, nothing composed) even when a
-    // stale module-level primary exists.
-    setPrimary("ghost");
+    // Bind a primary that is not in the profile: an invalid profile must
+    // fail closed (nothing composed, no orchestrator) even when a session
+    // binding exists.
+    bindAgent(SESSION_ID, "ghost");
     const zoo = {
       mode: {
         poly: {
@@ -715,12 +766,16 @@ describe("buildPiHandlers — identity-dispatch prompt injection", () => {
     const handlers = await buildPiHandlers(zoo, undefined, {
       agent: { beaver: { mode: "subagent" } },
     });
-    // resolveIdentity falls back to the stale sentinel, which is not in
-    // the profile — zero injection.
-    const promptResult = await handlers.beforeAgentStart({
-      messageType: "user",
-      systemPrompt: "base",
-    });
+    // The session resolves the bound sentinel, which is not in the
+    // profile — zero injection.
+    const promptResult = await handlers.beforeAgentStart(
+      {
+        messageType: "user",
+        systemPrompt: "base",
+      },
+      SESSION_CTX,
+    );
+    assert.ok(promptResult);
     assert.equal(promptResult.systemPrompt, "base");
 
     // No orchestrator resolves, so the direct-work nudge gate never
@@ -1033,7 +1088,7 @@ describe("buildPiHandlers — tool_call delegation gate", () => {
 
   it("blocks a refused delegation and passes the rest through", async () => {
     const handlers = await buildPiHandlers(POLY_ZOO, undefined, MODES_RAW);
-    setPrimary("beaver");
+    bindAgent(SESSION_ID, "beaver");
 
     // A non-subagent tool passes through untouched.
     assert.equal(
@@ -1108,11 +1163,6 @@ describe("lifecycle scope", () => {
 
     assert.equal(state.widgets, 1, "the first turn seeds the session widget");
     assert.equal(state.binds, 1, "the first turn binds the listener");
-    assert.equal(
-      hasPiSdkSession("sess-first-turn"),
-      true,
-      "the ensured session is associated with this extension",
-    );
   });
 
   it("re-registers on a repeated start without stacking a listener", async () => {
@@ -1151,7 +1201,6 @@ describe("lifecycle scope", () => {
     );
 
     assert.deepEqual(state, { widgets: 0, binds: 0 });
-    assert.equal(hasPiSdkSession(""), false);
   });
 
   it("session_shutdown releases the session resources and stops further writes", async () => {
@@ -1170,7 +1219,6 @@ describe("lifecycle scope", () => {
     );
 
     assert.equal(state.unsubscribes, 1, "the listener is released");
-    assert.equal(hasPiSdkSession("sess-shutdown"), false);
 
     // A late event during teardown must not write to the stopped scope.
     await handlers.beforeAgentStart(
@@ -1181,21 +1229,31 @@ describe("lifecycle scope", () => {
     assert.equal(state.binds - state.unsubscribes, 0, "no new listener");
   });
 
-  it("a tool execution bridge ensures the session", async () => {
+  it("a tool execution bridge admits the call for the event's session", async () => {
     const api = mockApi();
     const handlers = await buildPiHandlers(TODO_ZOO, api as any, MODES_RAW);
     assert.ok(handlers, "handlers are wired");
     const todo = api.tools.find((tool: any) => tool.name === "todo") as any;
+    const ctx = { sessionManager: { getSessionId: () => "sess-tool-first" } };
 
     await todo.execute(
       "call-first",
       { op: "init", tasks: ["bridge"] },
       undefined,
       undefined,
-      { sessionManager: { getSessionId: () => "sess-tool-first" } },
+      ctx,
+    );
+    const view = await todo.execute(
+      "call-second",
+      { op: "view" },
+      undefined,
+      undefined,
+      ctx,
     );
 
-    assert.equal(hasPiSdkSession("sess-tool-first"), true);
+    // Both calls ran through the bridge under the same session scope, so the
+    // second reads back the plan the first wrote.
+    assert.ok(joinedText(view).includes("Overall: 0/1 done, 1 open."));
   });
 
   it("publishes the tool event's context before ensuring the session", async () => {
@@ -1347,17 +1405,400 @@ describe("lifecycle scope", () => {
     );
   });
 
-  it("a command execution bridge ensures the session", async () => {
+  it("a command execution bridge admits the call for the event's session", async () => {
     const api = mockApi();
     await buildPiHandlers(POLY_ZOO, api as any, MODES_RAW);
     const dcp = api.commands.find((command) => command.name === "dcp");
     assert.ok(dcp && typeof dcp.handler === "function");
+    const before = api.appendedEntries.length;
 
     await (dcp.handler as (args: string, ctx: unknown) => Promise<void>)("", {
       sessionManager: { getSessionId: () => "sess-command-first" },
       ui: { notify: () => {} },
     });
 
-    assert.equal(hasPiSdkSession("sess-command-first"), true);
+    // The admitted command body ran: with no context report available it
+    // posts its failure notice into the session chat.
+    assert.equal(api.appendedEntries.length - before, 1);
+    assert.equal(api.appendedEntries.at(-1)?.customType, "zoo-notice");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Event admission (runSession)
+// ---------------------------------------------------------------------------
+
+describe("buildPiHandlers — event admission", () => {
+  /** An empty composition: the admitted business paths need no contribution. */
+  const EMPTY_COMPOSED: ComposedResult = {
+    agents: [],
+    skills: [],
+    afterExec: [],
+    transform: [],
+    textComplete: [],
+    toolDefinition: [],
+    onSettled: [],
+    tools: {},
+    commands: {},
+    gate: null,
+    gateNeedsCaller: false,
+    report: {
+      selected: [],
+      skipped: [],
+      unknown: [],
+      invalid: null,
+      unmaterialised: [],
+      hostFact: null,
+    },
+  };
+
+  /** The session id an event context names. */
+  function idOf(ctx: unknown): string | undefined {
+    return (
+      ctx as { sessionManager?: { getSessionId(): string } } | undefined
+    )?.sessionManager?.getSessionId();
+  }
+
+  /** A pi event context whose session resolves to `sessionID`. */
+  function ctxOf(sessionID: string) {
+    return { sessionManager: { getSessionId: () => sessionID } };
+  }
+
+  /**
+   * Build the handlers over a real lifecycle wiring and recording business
+   * callbacks, so a handler's admission is observable without the composed
+   * profile.
+   */
+  function harness(
+    options: { composed?: ComposedResult; holdCaller?: Promise<void> } = {},
+  ) {
+    const log: string[] = [];
+    const bound: string[] = [];
+    const invalidated: string[] = [];
+    const permits: WorkPermit[] = [];
+    const wiring = createPiLifecycleWiring({
+      extensionServices: [],
+      sessionServices: [
+        defineSessionService({
+          name: "worker",
+          deps: [],
+          create: ({ sessionID }) => ({ sessionID }),
+          dispose: (service, { reason }) => {
+            log.push(`dispose:${service.sessionID}:${reason}`);
+          },
+        }),
+      ],
+      getSessionID: (ctx) => idOf(ctx),
+    });
+    const sessionContexts: PiSessionContexts = createPiSessionContexts();
+    const bind = sessionContexts.bind.bind(sessionContexts);
+    sessionContexts.bind = (sessionID, ctx) => {
+      if (sessionID === undefined) return;
+      bound.push(sessionID);
+      log.push(`bind:${sessionID}`);
+      bind(sessionID, ctx);
+    };
+    const deps: PiEventHandlerDeps = {
+      sessionContexts,
+      contextRuntime: createContextRuntime(),
+      composed: options.composed ?? EMPTY_COMPOSED,
+      engine: undefined,
+      skillPermissions: {},
+      getProfileSkills: () => [],
+      collectSkillPaths: () => [],
+      applyPrimaryToolTrim: () => log.push("trim"),
+      registerFleetWidget: (sessionID) => log.push(`widget:${sessionID}`),
+      refreshFleetWidget: (sessionID) => log.push(`refresh:${sessionID}`),
+      refreshTodoView: (sessionID) => log.push(`todo:${sessionID}`),
+      seedTodoView: (sessionID) => log.push(`seed:${sessionID}`),
+      drainPendingSwitchOps: () => log.push("drain"),
+      invalidateTodo: (sessionId) => invalidated.push(sessionId),
+      resolveAgent: () => undefined,
+      resolveCallerAgent: async () => {
+        await options.holdCaller;
+        return undefined;
+      },
+      runSession: (ctx, work, signal) =>
+        wiring.runSession(
+          ctx,
+          (permit) => {
+            permits.push(permit);
+            return work(permit);
+          },
+          signal,
+        ),
+      startSession: (event, ctx) => {
+        log.push("start");
+        return wiring.startSession(event, ctx);
+      },
+      stopExtension: (event) => {
+        log.push("stop");
+        return wiring.stopExtension(event);
+      },
+    };
+    return {
+      log,
+      bound,
+      invalidated,
+      permits,
+      handlers: createPiEventHandlers(deps),
+    };
+  }
+
+  /** Let an admitted call reach its work. */
+  async function tick(): Promise<void> {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+
+  it("admits the work for the session its own event context names", async () => {
+    const h = harness();
+
+    const first = await h.handlers.beforeAgentStart(
+      { messageType: "user", systemPrompt: "base" },
+      ctxOf("s1"),
+    );
+    const second = await h.handlers.beforeAgentStart(
+      { messageType: "user", systemPrompt: "base" },
+      ctxOf("s2"),
+    );
+
+    assert.deepEqual(first, { systemPrompt: "base" });
+    assert.deepEqual(second, { systemPrompt: "base" });
+    // Each call binds its own context: no event falls back to whichever
+    // session was handled last.
+    assert.deepEqual(
+      h.permits.map((permit) => permit.sessionID),
+      ["s1", "s2"],
+    );
+    assert.deepEqual(h.bound, ["s1", "s2"]);
+  });
+
+  it("passes the event's own session id to the context transform", async () => {
+    const seen: Array<string | undefined> = [];
+    const h = harness({
+      composed: {
+        ...EMPTY_COMPOSED,
+        transform: [
+          {
+            name: "probe",
+            handle: (_output, sessionID) => {
+              seen.push(sessionID);
+            },
+          },
+        ],
+      },
+    });
+
+    await h.handlers.contextHandler(
+      { type: "context", messages: [] },
+      ctxOf("s1"),
+    );
+    await h.handlers.contextHandler(
+      { type: "context", messages: [] },
+      ctxOf("s2"),
+    );
+
+    // The transform addresses the session the event was admitted for, so a
+    // second session's context transform never reads the first one's state.
+    assert.deepEqual(seen, ["s1", "s2"]);
+  });
+
+  it("routes every session surface to the session of its own event", async () => {
+    const h = harness();
+
+    await h.handlers.sessionStart(
+      { type: "session_start", reason: "startup" },
+      ctxOf("s1"),
+    );
+    await h.handlers.sessionStart(
+      { type: "session_start", reason: "resume" },
+      ctxOf("s2"),
+    );
+
+    // Interleaved sessions never share a surface: each bind, widget write
+    // and todo refresh carries the id of the event that caused it.
+    assert.deepEqual(h.log, [
+      "start",
+      "bind:s1",
+      "trim",
+      "widget:s1",
+      "todo:s1",
+      "refresh:s1",
+      "start",
+      "bind:s2",
+      "trim",
+      "widget:s2",
+      "todo:s2",
+      "refresh:s2",
+    ]);
+  });
+
+  it("refreshes the todo column of the session its tool result belongs to", async () => {
+    const h = harness();
+    const result = {
+      type: "tool_result" as const,
+      toolName: "todo",
+      toolCallId: "call-1",
+      content: [],
+      isError: false,
+    };
+
+    await h.handlers.toolResult(result, ctxOf("s1"));
+    await h.handlers.toolResult(result, ctxOf("s2"));
+
+    assert.deepEqual(h.log, ["bind:s1", "todo:s1", "bind:s2", "todo:s2"]);
+  });
+
+  it("runs no business and binds nothing without a session id", async () => {
+    const h = harness();
+
+    for (const ctx of [undefined, {}, ctxOf(""), ctxOf("   ")]) {
+      assert.equal(
+        await h.handlers.beforeAgentStart(
+          { messageType: "user", systemPrompt: "base" },
+          ctx,
+        ),
+        undefined,
+      );
+      assert.equal(
+        await h.handlers.resourcesDiscover(undefined, ctx),
+        undefined,
+      );
+      await h.handlers.sessionTree(undefined, ctx);
+      assert.equal(
+        await h.handlers.toolResult(
+          {
+            type: "tool_result",
+            toolName: "todo",
+            toolCallId: "call-1",
+            content: [],
+            isError: false,
+          },
+          ctx as never,
+        ),
+        undefined,
+      );
+    }
+
+    assert.deepEqual(h.bound, []);
+    assert.deepEqual(h.invalidated, []);
+    assert.deepEqual(h.log, []);
+  });
+
+  it("runs nothing once the extension stopped", async () => {
+    const h = harness();
+    await h.handlers.beforeAgentStart(
+      { messageType: "user", systemPrompt: "base" },
+      ctxOf("s1"),
+    );
+    await h.handlers.sessionShutdown(
+      { type: "session_shutdown", reason: "quit" },
+      ctxOf("s1"),
+    );
+    const admitted = [...h.log];
+
+    assert.equal(
+      await h.handlers.beforeAgentStart(
+        { messageType: "user", systemPrompt: "base" },
+        ctxOf("s1"),
+      ),
+      undefined,
+    );
+    await h.handlers.sessionTree(undefined, ctxOf("s1"));
+
+    assert.deepEqual(h.log, admitted);
+    assert.deepEqual(h.invalidated, []);
+  });
+
+  it("runs the start notice first and the session business after it", async () => {
+    const h = harness();
+
+    await h.handlers.sessionStart(
+      { type: "session_start", reason: "startup" },
+      ctxOf("s1"),
+    );
+
+    assert.deepEqual(h.log, [
+      "start",
+      "bind:s1",
+      "trim",
+      "widget:s1",
+      "todo:s1",
+      "refresh:s1",
+    ]);
+  });
+
+  it("runs the start notice even when the business is refused", async () => {
+    const h = harness();
+
+    await h.handlers.sessionStart(
+      { type: "session_start", reason: "startup" },
+      undefined,
+    );
+
+    // The control path keeps its own entry: no business follows it, and
+    // nothing is bound.
+    assert.deepEqual(h.log, ["start"]);
+    assert.deepEqual(h.bound, []);
+  });
+
+  it("stops on shutdown even when the business is refused", async () => {
+    const h = harness();
+    await h.handlers.beforeAgentStart(
+      { messageType: "user", systemPrompt: "base" },
+      ctxOf("s1"),
+    );
+
+    await h.handlers.sessionShutdown(
+      { type: "session_shutdown", reason: "quit" },
+      undefined,
+    );
+
+    assert.ok(h.log.includes("dispose:s1:quit"), h.log.join(","));
+  });
+
+  it("revokes a running event's permit at shutdown and waits for it", async () => {
+    let release: (() => void) | undefined;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const h = harness({
+      composed: {
+        ...EMPTY_COMPOSED,
+        gate: () => null,
+        gateNeedsCaller: true,
+      },
+      holdCaller: held,
+    });
+
+    const running = h.handlers.toolCall(
+      {
+        type: "tool_call",
+        toolName: "subagent",
+        toolCallId: "call-1",
+        input: { agent: "lynx", prompt: "t" },
+      },
+      ctxOf("s1"),
+    );
+    await tick();
+    const permit = h.permits.at(-1);
+    assert.ok(permit);
+    assert.equal(permit.isActive(), true);
+
+    const stopping = h.handlers.sessionShutdown(
+      { type: "session_shutdown", reason: "quit" },
+      ctxOf("s1"),
+    );
+    await tick();
+
+    // The permit is revoked at once, and the scope is not disposed while
+    // the admitted work still runs.
+    assert.equal(permit.signal.aborted, true);
+    assert.ok(!h.log.includes("dispose:s1:quit"));
+
+    release?.();
+    await stopping;
+    assert.equal(await running, undefined);
+    assert.ok(h.log.includes("dispose:s1:quit"));
   });
 });

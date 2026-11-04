@@ -12,9 +12,16 @@
  * and classifies the outcome from the final assistant message's
  * `stopReason`.  Termination
  * is wired end to end: the parent
- * abort signal aborts the sub-session, and `dispose()` always runs in
- * `finally`.  Any SDK-level failure collapses into an `error` result — a
- * run never rejects and never throws, per the driver contract.
+ * abort signal aborts the sub-session, the sub-session's extension scope is
+ * stopped and then `dispose()` runs, both always in `finally`.  Any SDK-level
+ * failure collapses into an `error` result — a run never rejects and never
+ * throws, per the driver contract.
+ *
+ * pi emits no `session_shutdown` for a sub-session, so the driver closes the
+ * extension scope itself: the injected child factory hands back the close
+ * handle of the runtime it builds, and the driver awaits it before the SDK
+ * session is disposed.  The handle belongs to the run that created it, so no
+ * process-level table routes a teardown by session id.
  *
  * The driver also maintains the run's context length incrementally: it
  * reads each assistant `message_end`'s usage as it appends the fact and
@@ -32,6 +39,9 @@
  * @module
  */
 
+import { realpathSync } from "node:fs";
+import { resolve } from "node:path";
+import type { CleanupReport } from "../../core/lifecycle/index.js";
 import {
   filterAllowedSkills,
   type SkillPermissionMap,
@@ -55,7 +65,7 @@ import {
   toolStartFact,
   userMessageFact,
 } from "./run-facts.js";
-import { stopPiSdkSession } from "./sdk-lifecycle.js";
+import type { ExtensionAPI } from "./types.js";
 
 /**
  * Duck-type of the pi `AgentSession` surface the driver uses.
@@ -177,14 +187,122 @@ export interface PiCreateSessionOptions {
 /**
  * Builds the resource loader a sub-session is created with.
  *
- * `skillPaths` are the filtered absolute ZooKeeper skill directories; `cwd`
- * is the sub-session working directory.  The result is passed to the
- * session factory as `PiCreateSessionOptions.resourceLoader`.
+ * The result is passed to the session factory as
+ * `PiCreateSessionOptions.resourceLoader`.
  */
 export type PiResourceLoaderFactory = (
-  skillPaths: string[],
-  cwd: string,
+  options: PiResourceLoaderOptions,
 ) => Promise<unknown>;
+
+/**
+ * Stops the sub-session's extension scope and reports its cleanup outcome.
+ *
+ * The close handle is produced by the runtime the child factory built, so it
+ * names one run's scope and never another's.
+ */
+export type PiSessionClose = () => Promise<CleanupReport>;
+
+/** One inline extension factory pi loads into a sub-session runtime. */
+export type PiExtensionFactory = (pi: ExtensionAPI) => void | Promise<void>;
+
+/** Inputs of one sub-session resource loader. */
+export interface PiResourceLoaderOptions {
+  /** The sub-session working directory. */
+  cwd: string;
+  /** The filtered absolute ZooKeeper skill directories. */
+  skillPaths: string[];
+  /**
+   * The ZooKeeper inline extension the sub-session loads instead of the
+   * extension file.  Absent when the host supplies no child factory.
+   */
+  extensionFactory?: PiExtensionFactory;
+  /**
+   * The host's extension file entry to leave out of the sub-session.  Absent
+   * when the host names no entry (nothing is filtered).
+   */
+  excludeExtensionPath?: string;
+}
+
+/**
+ * One settings snapshot, as the sub-session settings manager reports it.
+ *
+ * Only the extension entry list matters here; every other setting is
+ * carried through untouched.
+ */
+export interface PiSettingsSnapshot {
+  extensions?: string[];
+  [field: string]: unknown;
+}
+
+/** The settings reads the sub-session loader wraps. */
+export interface PiSettingsManagerLike {
+  getSettings(): PiSettingsSnapshot;
+  getGlobalSettings(): PiSettingsSnapshot;
+  getProjectSettings(): PiSettingsSnapshot;
+  reload(): Promise<void>;
+}
+
+/**
+ * Resolve a path to its canonical form, keeping the raw path when it does
+ * not exist.
+ */
+function canonical(path: string): string {
+  try {
+    return realpathSync(path);
+  } catch {
+    return resolve(path);
+  }
+}
+
+/**
+ * Leave the host's own extension file out of a settings snapshot.
+ *
+ * The sub-session loads ZooKeeper through the inline factory, so letting the
+ * entry file load as well would register every surface twice.  Every other
+ * entry of the snapshot stays, and so does every non-extension field.  Paths
+ * are compared in canonical form, so a symlinked entry matches its target.
+ *
+ * @param snapshot - One settings snapshot (global, project or merged).
+ * @param entryPath - The host's extension file entry.
+ * @returns A copy of the snapshot without that one entry.
+ */
+export function filterExtensionEntry<T extends PiSettingsSnapshot>(
+  snapshot: T,
+  entryPath: string,
+): T {
+  if (snapshot.extensions === undefined) return snapshot;
+  const entry = canonical(entryPath);
+  return {
+    ...snapshot,
+    extensions: snapshot.extensions.filter((item) => canonical(item) !== entry),
+  };
+}
+
+/**
+ * Filter the extension entry out of every snapshot a settings manager reads.
+ *
+ * The resource loader resolves extension paths inside its own reload, so the
+ * filter must apply to the settings the loader reads: filtering the loaded
+ * set afterwards would let the entry file's factory run first.  Only the
+ * three snapshot reads are replaced, so the manager keeps its own reload,
+ * trust state and writes.
+ *
+ * @param manager - The sub-session's private settings manager.
+ * @param entryPath - The host's extension file entry.
+ * @returns The same manager, with filtered snapshot reads.
+ */
+export function withoutExtensionEntry<T extends PiSettingsManagerLike>(
+  manager: T,
+  entryPath: string,
+): T {
+  const read = (snapshot: PiSettingsSnapshot): PiSettingsSnapshot =>
+    filterExtensionEntry(snapshot, entryPath);
+  const { getSettings, getGlobalSettings, getProjectSettings } = manager;
+  manager.getSettings = () => read(getSettings.call(manager));
+  manager.getGlobalSettings = () => read(getGlobalSettings.call(manager));
+  manager.getProjectSettings = () => read(getProjectSettings.call(manager));
+  return manager;
+}
 
 /** Creates the sub-session (injected in tests; defaults to the pi SDK). */
 export type PiSessionFactory = (
@@ -221,8 +339,13 @@ interface PiSdkLike {
   DefaultResourceLoader: new (options: {
     cwd: string;
     agentDir: string;
+    settingsManager?: PiSettingsManagerLike;
     additionalSkillPaths?: string[];
+    extensionFactories?: Array<{ name: string; factory: PiExtensionFactory }>;
   }) => { reload(): Promise<void> };
+  SettingsManager: {
+    create(cwd: string, agentDir: string): PiSettingsManagerLike;
+  };
   getAgentDir(): string;
   SessionManager: {
     create(
@@ -507,9 +630,28 @@ export interface PiSubagentDriverOptions {
   /**
    * Build the resource loader carrying the resolved skill paths.  Defaults
    * to a pi SDK `DefaultResourceLoader` (reloaded before use) with the
-   * paths as `additionalSkillPaths`.
+   * paths as `additionalSkillPaths`, the inline ZooKeeper extension as its
+   * only inline factory, and the host's entry file filtered out.
    */
   createResourceLoader?: PiResourceLoaderFactory;
+  /**
+   * Path of the host's extension file entry.  The sub-session loader leaves
+   * it out because the child loads ZooKeeper from the inline factory.
+   */
+  entryPath?: string;
+  /**
+   * Create the inline ZooKeeper extension of one sub-session run.  The
+   * factory is handed to the sub-session's resource loader; when the child
+   * runtime builds its handlers it reports the close handle of that scope
+   * through `onClose`.  The delegated agent is passed along, so the child
+   * runtime resolves every session of its own to that agent instead of
+   * inferring one.  Absent when the host supplies no inline extension: the
+   * run then has no scope to close and stays harmless.
+   */
+  createChildExtension?: (
+    onClose: (close: PiSessionClose) => void,
+    agent: string,
+  ) => PiExtensionFactory;
 }
 
 /**
@@ -568,25 +710,46 @@ async function defaultResolveModel(
  * supplied, so a caller-provided loader must be reloaded here before the
  * session reads it.  `getAgentDir()` mirrors the SDK's own default agent
  * directory, keeping the sub-session's discovery scope (global / project
- * skills, extensions, settings) identical to a default session's.
+ * skills, extensions, settings) identical to a default session's.  The
+ * inline factory loads ZooKeeper itself, so the host's entry file is left
+ * out of the settings a private settings manager hands the loader: the file
+ * is never resolved nor loaded, while no other extension is touched.
  *
- * @param skillPaths - The filtered absolute skill directories to add.
- * @param cwd - The sub-session working directory.
+ * @param options - The loader inputs.
  * @returns A promise of the reloaded resource loader.
  */
 async function defaultCreateResourceLoader(
-  skillPaths: string[],
-  cwd: string,
+  options: PiResourceLoaderOptions,
 ): Promise<unknown> {
   const sdk = await loadSdk();
+  const { extensionFactory, excludeExtensionPath } = options;
+  const agentDir = sdk.getAgentDir();
+  // The loader's own manager would read the host's settings as they are, so
+  // the filter needs a private manager of this loader's own.  Nothing is
+  // written, and the host's session keeps its own manager untouched.
+  const settingsManager =
+    excludeExtensionPath === undefined
+      ? undefined
+      : withoutExtensionEntry(
+          sdk.SettingsManager.create(options.cwd, agentDir),
+          excludeExtensionPath,
+        );
   const loader = new sdk.DefaultResourceLoader({
-    cwd,
-    agentDir: sdk.getAgentDir(),
-    additionalSkillPaths: skillPaths,
+    cwd: options.cwd,
+    agentDir,
+    ...(settingsManager === undefined ? {} : { settingsManager }),
+    additionalSkillPaths: options.skillPaths,
+    extensionFactories:
+      extensionFactory === undefined
+        ? []
+        : [{ name: "zookeeper", factory: extensionFactory }],
   });
   await loader.reload();
   return loader;
 }
+
+/** Pseudo service name reported when the close handle itself throws. */
+const CLOSE_SERVICE = "pi-subagent-close";
 
 /**
  * Create the pi subagent driver.
@@ -617,6 +780,7 @@ export function createPiSubagentDriver(
     options.createResourceLoader ?? defaultCreateResourceLoader;
   const collectSkillPaths = options.collectSkillPaths;
   const getProfileSkills = options.getProfileSkills;
+  const createChildExtension = options.createChildExtension;
   // Resolve the skill directories a subagent may discover: the profile
   // skills filtered by the SUBAGENT's own permission rules (the same
   // `filterAllowedSkills` evaluation `resources_discover` applies for the
@@ -662,6 +826,13 @@ export function createPiSubagentDriver(
       let contextLen: number | undefined;
       let session: PiAgentSession | undefined;
       let unsubscribe: (() => void) | undefined;
+      // The close handle of the sub-session's extension scope, reported by
+      // the child factory this run creates.  Undefined when the host
+      // supplies no inline extension or the child built no wiring.
+      let closeScope: PiSessionClose | undefined;
+      const extensionFactory = createChildExtension?.((close) => {
+        closeScope = close;
+      }, request.agent);
       let aborted = false;
       const onAbort = (): void => {
         aborted = true;
@@ -773,13 +944,20 @@ export function createPiSubagentDriver(
         }
         modelId = modelIdOf(request.model);
         // Build the resource loader carrying the subagent's filtered ZooKeeper
-        // skill directories.  Only when at least one directory survives do we
-        // pass a loader; otherwise the SDK builds its own default (the same
-        // machinery-off behaviour a host without skill config has).
+        // skill directories and its inline ZooKeeper extension.  Only when the
+        // run has neither does the SDK build its own default loader (the
+        // machinery-off behaviour a host without skill and inline config has).
         const skillPaths = resolveSkillPaths(request.agent);
         const resourceLoader =
-          skillPaths.length > 0
-            ? await createResourceLoader(skillPaths, cwd)
+          skillPaths.length > 0 || extensionFactory !== undefined
+            ? await createResourceLoader({
+                cwd,
+                skillPaths,
+                ...(extensionFactory !== undefined ? { extensionFactory } : {}),
+                ...(options.entryPath !== undefined
+                  ? { excludeExtensionPath: options.entryPath }
+                  : {}),
+              })
             : undefined;
         const { session: created } = await createSession({
           cwd,
@@ -846,15 +1024,34 @@ export function createPiSubagentDriver(
         // that might still be reading the log.  The empty list is the
         // stream's end-of-stream marker, not a fact.
         runLog?.setPartial([]);
-        // Stop the sub-session's lifecycle scope EXPLICITLY before the SDK
+        // Stop the sub-session's extension scope EXPLICITLY before the SDK
         // session is disposed: pi emits no `session_shutdown` for a
-        // sub-session, so the extension instance that ensured this session
-        // would otherwise leak its resources.  A session no extension
-        // discovered (creation failed, pre-aborted, SDK error) is a no-op.
-        if (sessionId !== "") {
-          // Cleanup failures are logged and reported by the bridge; the
-          // driver stays result-based and never fails the run for them.
-          await stopPiSdkSession(sessionId);
+        // sub-session, so the runtime the child built would otherwise leak
+        // its resources.  The handle belongs to this run.  Cleanup failures
+        // are logged per item and never fail the run; a throwing handle is
+        // logged too and must not prevent the dispose below.
+        if (closeScope !== undefined) {
+          try {
+            const report = await closeScope();
+            for (const failure of report.errors) {
+              log.warn({
+                hook: "lifecycle",
+                event: "cleanup_failed",
+                sessionId,
+                scope: failure.scope,
+                service: failure.service,
+                error: String(failure.error),
+              });
+            }
+          } catch (error) {
+            log.warn({
+              hook: "lifecycle",
+              event: "cleanup_failed",
+              sessionId,
+              service: CLOSE_SERVICE,
+              error: String(error),
+            });
+          }
         }
         session?.dispose();
       }

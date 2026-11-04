@@ -22,6 +22,7 @@
  */
 
 import type { DelegationJudgeContribution } from "./gate.js";
+import type { WorkPermit } from "./lifecycle/index.js";
 import type { SettledContribution } from "./loop/settle.js";
 import type { Capabilities } from "./ports/index.js";
 import type { PromptVariantPair } from "./prompt-variant.js";
@@ -150,12 +151,29 @@ export interface AfterExecContribution {
  * One named `experimental.chat.messages.transform` handler.
  *
  * Transform handlers run in registration order, each isolating its own
- * errors.
+ * errors.  The handler receives the session its host admitted the event
+ * for, so a transform that reads session-owned state addresses that
+ * session instead of inferring one from the messages.
  */
 export interface TransformContribution {
   /** Handler label used for logging. */
   name: string;
-  handle(output: TransformOutput): void | Promise<void>;
+  /**
+   * Transform the output in place.
+   *
+   * @param output - The messages transform output.
+   * @param sessionID - The session the host admitted this event for, or
+   *   undefined when the host could not name one.
+   * @param permit - The permit the host admitted this event under, or
+   *   undefined when the host holds no permit (a pure test call).  A
+   *   handler that reads session records writes them only under an active
+   *   permit.
+   */
+  handle(
+    output: TransformOutput,
+    sessionID?: string,
+    permit?: WorkPermit,
+  ): void | Promise<void>;
 }
 
 /** Input shape of the text-finalization hook. */
@@ -252,6 +270,12 @@ export interface ToolContribution {
        * object (OpenCode) never see it.
        */
       details?: unknown;
+      /**
+       * The permit the host admitted this call under, or omitted when the
+       * host holds none.  A tool that reads or writes session records uses
+       * it for every `ContextRuntime` operation.
+       */
+      permit?: WorkPermit;
     },
   ): Promise<string>;
   /**
@@ -303,7 +327,22 @@ export interface CommandContribution {
   /** Command name (registry key, e.g. `"go"`). */
   name: string;
   description: string;
-  handle(input: CommandInput): Promise<void>;
+  /**
+   * Whether the command replaces the current host session: a plan handoff
+   * or a primary switch closes the session it belongs to.  A host admits
+   * such a command as a control operation that its own stop does not wait
+   * for; every other command runs as ordinary session work.
+   */
+  replacesSession?: boolean;
+  /**
+   * Handle the command.
+   *
+   * @param input - The command name, session, and raw arguments.
+   * @param permit - The permit the host admitted the command under, or
+   *   undefined when the host holds none.  A handler that reads or writes
+   *   session records writes them only under an active permit.
+   */
+  handle(input: CommandInput, permit?: WorkPermit): Promise<void>;
 }
 
 /** An agent prompt-injection contribution. */

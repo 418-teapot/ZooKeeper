@@ -45,7 +45,8 @@ export interface HandoffTarget {
    *   agent identity for the new session.
    * @returns The created session (may carry an empty id on hosts whose
    *   TUI binds the replacement session without an id).  Its `agent` is
-   *   the context's executor, so every later step reads one value.
+   *   the context's executor and its `parentage` the context's parent
+   *   session, so every later step reads one value.
    */
   create(ctx: HandoffContext): Promise<HandoffSession>;
   /**
@@ -97,12 +98,17 @@ export interface HandoffContext {
  *
  * `agent` is the executor the create context carried, so install and
  * deliver operate on the same identity the session was created with.
+ * `parentage` is the session the handoff replaces: both steps read it
+ * from here, so two overlapping handoffs never address each other's
+ * parent session.
  */
 export interface HandoffSession {
   /** The created session id (may be empty on hosts that bind it in TUI). */
   id: string;
   /** The executor agent identity of the created session. */
   agent: string;
+  /** The parent session the handoff replaces. */
+  parentage: string;
 }
 
 // ---------------------------------------------------------------------------

@@ -10,7 +10,13 @@
 import assert from "node:assert/strict";
 import { rmSync } from "node:fs";
 import { afterEach, beforeEach, describe, it } from "node:test";
+import { createContextRuntime } from "../../core/context/runtime.js";
 import type { Decision } from "../../core/loop/settle.js";
+import { sessionAgentResource } from "../../core/session/agent.js";
+import {
+  contextSessionResources,
+  createSessionResourceCatalog,
+} from "../../core/session/resources.js";
 import { makeTmpDir } from "../../testkits/tmp.js";
 import { _resetForTesting, initLogger } from "../../utils/logger.js";
 import { buildInfraHooks } from "./infra-hooks.js";
@@ -62,10 +68,19 @@ function makeHooks(
   orchestrator: string | undefined,
 ) {
   const wakes: Array<{ agent?: string; parts: unknown[] }> = [];
-  const declarations = createOpenCodeHostServices({ onSettled: [WAKE] });
+  const contextRuntime = createContextRuntime();
+  const sessionCatalog = createSessionResourceCatalog([
+    ...contextSessionResources(contextRuntime),
+    sessionAgentResource,
+  ]);
+  const declarations = createOpenCodeHostServices({
+    onSettled: [WAKE],
+    sessionCatalog,
+  });
   const wiring = createOpenCodeLifecycleWiring({
     extensionServices: declarations.extension,
     sessionServices: declarations.session,
+    sessionCatalog,
   });
   const hooks = buildInfraHooks({
     client: {
@@ -80,6 +95,7 @@ function makeHooks(
     resolveAgent: (sessionID) => agents[sessionID],
     promptVariants: [],
     orchestrator,
+    contextRuntime,
     sessions: {
       sessionState: async (sessionID) =>
         sessionScopeState(await wiring.ensureSession(sessionID)),

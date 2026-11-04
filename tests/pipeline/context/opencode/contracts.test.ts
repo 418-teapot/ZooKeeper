@@ -55,52 +55,64 @@ afterAll(() => {
 
 describe("mark producers (opencode)", () => {
   test("the dedup gate opens at the context floor and applies its mark one turn later", async () => {
-    await expectDedupGateTwoTurnEffect(G_MS_01, createV1PipelineHost());
+    await expectDedupGateTwoTurnEffect(G_MS_01, createV1PipelineHost(SANDBOX));
   });
 
   test("an error-input mark applies on the next turn and never marks a completed call", async () => {
-    await expectPurgeErrorsTwoTurnEffect(G_MS_02, createV1PipelineHost());
+    await expectPurgeErrorsTwoTurnEffect(
+      G_MS_02,
+      createV1PipelineHost(SANDBOX),
+    );
   });
 });
 
 describe("mark release timing (opencode)", () => {
   test("a batch flushes at the release threshold, and a below-threshold batch only through the view-change bypass", async () => {
-    await expectBatchReleaseLifecycle(G_MS_04, createV1PipelineHost());
+    await expectBatchReleaseLifecycle(G_MS_04, createV1PipelineHost(SANDBOX));
   });
 });
 
 describe("nudge watermark (opencode)", () => {
   test("the reminder fires once per growth interval and stays silent when frozen, ratcheted down, or gated off", async () => {
-    await expectNudgeWatermark(G_NUDGE_01, createV1PipelineHost());
+    await expectNudgeWatermark(G_NUDGE_01, createV1PipelineHost(SANDBOX));
   });
 });
 
 describe("block lifecycle (opencode)", () => {
   test("a block that stops validating unfurls its messages", async () => {
-    await expectStaleBlockUnfolds(G_FOLD_02, createV1PipelineHost());
+    await expectStaleBlockUnfolds(G_FOLD_02, createV1PipelineHost(SANDBOX));
   });
 
   test("a view change detected mid-turn releases marks only on the next turn", async () => {
-    await expectViewChangeReleasesNextTurn(G_FOLD_03, createV1PipelineHost());
+    await expectViewChangeReleasesNextTurn(
+      G_FOLD_03,
+      createV1PipelineHost(SANDBOX),
+    );
   });
 
   test("a rejected compress batch creates no block", async () => {
-    await expectRangeRejectionsCreateNoBlock(G_COMP_02, createV1PipelineHost());
+    await expectRangeRejectionsCreateNoBlock(
+      G_COMP_02,
+      createV1PipelineHost(SANDBOX),
+    );
   });
 
   test("a disjoint compress batch lands one block per range", async () => {
     await expectDisjointBatchLandsOneBlockPerRange(
       G_COMP_02,
-      createV1PipelineHost(),
+      createV1PipelineHost(SANDBOX),
     );
   });
 
   test("the decompress fill gate skips, rejects, then allows the same restore", async () => {
-    await expectDecompressFillGate(G_DEC_02, createV1PipelineHost());
+    await expectDecompressFillGate(G_DEC_02, createV1PipelineHost(SANDBOX));
   });
 
   test("a block record survives a simulated crash and keeps folding", async () => {
-    await expectBlockSurvivesRestart(G_PERSIST_01, createV1PipelineHost());
+    await expectBlockSurvivesRestart(
+      G_PERSIST_01,
+      createV1PipelineHost(SANDBOX),
+    );
   });
 });
 
@@ -108,7 +120,7 @@ describe("tool rejections (opencode)", () => {
   test("every rejected tool call reports a loud error and leaves the view unchanged", async () => {
     await expectRejectedToolCallsPreserveView(
       G_TOOL_01,
-      createV1PipelineHost(),
+      createV1PipelineHost(SANDBOX),
     );
   });
 });
@@ -117,14 +129,14 @@ describe("reclaim accounting (opencode)", () => {
   test("the /dcp context report counts the effective mark and the pending batch", async () => {
     await expectReportExposesMarkAccounting(
       G_REPORT_01,
-      createV1PipelineHost(),
+      createV1PipelineHost(SANDBOX),
     );
   });
 });
 
 describe("mark persistence across a restart (opencode)", () => {
   test("a pending mark written before the crash is released after it", async () => {
-    await expectPendingMarkSurvivesRestart(createV1PipelineHost(), {
+    await expectPendingMarkSurvivesRestart(createV1PipelineHost(SANDBOX), {
       id: "CONTRACT-MARK-RESTART",
       sessionID: MARK_RESTART_SID,
       callID: "c1",

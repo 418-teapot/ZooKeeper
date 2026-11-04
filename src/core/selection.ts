@@ -34,7 +34,6 @@
  */
 
 import type { AgentModeMap, ModeProfile } from "./config-types.js";
-import { derivePrimaries } from "./subagent/identity.js";
 import type { CapabilityKey, UnitDescriptor, UnitKind } from "./unit.js";
 
 // ---------------------------------------------------------------------------
@@ -277,6 +276,30 @@ export interface Selection extends SelectionFacts {
   readonly status: SelectionStatus;
   /** What the planner selected, skipped, and could not resolve. */
   readonly report: SelectionReport;
+}
+
+// ---------------------------------------------------------------------------
+// Primary derivation
+// ---------------------------------------------------------------------------
+
+/**
+ * Derive the ordered set of primary agent names for a profile.
+ *
+ * Keeps the names the modes map marks as primaries, in the given order, so
+ * a consumer that cares about it (the switch commands) sees the
+ * configured order.  Agents missing from the modes map are never
+ * primaries, and an empty result is valid (the caller fails closed).  Which
+ * primary is the orchestrator is decided by the planner, never by position.
+ *
+ * @param agents - The agent-name array in declaration order.
+ * @param modes - Per-agent role map (`"primary"` or `"subagent"`).
+ * @returns The ordered primary names, possibly empty.
+ */
+export function derivePrimaries(
+  agents: string[],
+  modes: Record<string, "primary" | "subagent">,
+): string[] {
+  return agents.filter((name) => modes[name] === "primary");
 }
 
 // ---------------------------------------------------------------------------

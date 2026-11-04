@@ -20,7 +20,7 @@ import { handleDcpCommand } from "./command.js";
  */
 export const unit = defineCommand({
   name: "dcp",
-  needs: ["contextConfig"],
+  needs: ["contextConfig", "contextRuntime"],
   wants: ["toolHost"],
   uses: ["tools"],
   create(caps, uses) {
@@ -30,9 +30,11 @@ export const unit = defineCommand({
         {
           name: "dcp",
           description: "显示上下文用量与缓存命中率",
-          handle: async (input) => {
+          handle: async (input, permit) => {
             try {
               await handleDcpCommand(
+                caps.contextRuntime,
+                permit,
                 caps.toolHost,
                 input.sessionID,
                 input.arguments,

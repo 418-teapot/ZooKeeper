@@ -14,7 +14,6 @@
 import { afterAll, beforeEach, describe, expect, test } from "bun:test";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { getContextStateManager } from "../../../../src/core/context/runtime.js";
 import { runScenario } from "../runner-core.js";
 import { createPipelineSandbox } from "../sandbox.js";
 import { resetPipelineState } from "../teardown.js";
@@ -98,13 +97,12 @@ afterAll(() => {
 
 describe("runner restart round-trip", () => {
   test("a simulated crash preserves the on-disk state so the next round reloads it", async () => {
-    await runScenario(SCENARIO, createV1PipelineHost());
+    await runScenario(SCENARIO, createV1PipelineHost(SANDBOX));
 
-    const manager = getContextStateManager();
     // The persisted file must live in the suite's own sandbox, never in a
     // shared storage directory.
-    expect(manager.store.dir).toBe(join(SANDBOX.root, "storage"));
-    const filePath = join(manager.store.dir, `${TEST_SID}.json`);
+    expect(SANDBOX.runtime.store.dir).toBe(join(SANDBOX.root, "storage"));
+    const filePath = join(SANDBOX.runtime.store.dir, `${TEST_SID}.json`);
 
     // The transform in round 3 always persists the (post-transform)
     // state to disk, so the file exists regardless of whether the

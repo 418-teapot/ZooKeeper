@@ -15,24 +15,24 @@
  *   lines are never marked, and the lines a retired block left visible
  *   still are.
  *
- * Runs go through the real transform handler over the shared session
- * state manager; session files are cleaned up in teardown.
+ * Runs go through the real transform handler over a plugin instance's
+ * context runtime; session files are cleaned up in teardown.
  */
 import assert from "node:assert/strict";
-import { afterEach, describe, it } from "node:test";
+import { rmSync } from "node:fs";
+import { after, afterEach, beforeEach, describe, it } from "node:test";
 import { createPiAdapter } from "../../adapters/pi/adapter.js";
 import type { PiAgentMessage } from "../../adapters/pi/types.js";
-import {
-  _resetForTesting as _resetModelLimitsForTesting,
-  setModelLimit,
-} from "../../core/context/model-limits.js";
 import { contextPruningTransformHandler } from "../../core/context/pipeline.js";
 import {
-  _resetContextStateManagerForTesting,
-  getContextStateManager,
+  type ContextRuntime,
+  createContextRuntime,
+  type RuntimeFlaggedState,
 } from "../../core/context/runtime.js";
 import { computeSpanHash } from "../../core/context/spanhash.js";
 import { markKey } from "../../core/context/state.js";
+import { createStateStore } from "../../core/context/store.js";
+import { permitFor } from "../../testkits/context-runtime.js";
 import {
   assistantMessage,
   textPart,
@@ -40,6 +40,7 @@ import {
   toolResultMessage,
   userMessage,
 } from "../../testkits/pi-messages.js";
+import { makeTmpDir } from "../../testkits/tmp.js";
 import { _getBufferForTesting, _resetForTesting } from "../../utils/logger.js";
 
 // ---------------------------------------------------------------------------
@@ -49,8 +50,8 @@ import { _getBufferForTesting, _resetForTesting } from "../../utils/logger.js";
 /** Session IDs used by tests in this file (for persisted-file cleanup). */
 const TEST_SESSION_IDS = ["sess-pipeline-boundary", "sess-pipeline-coverage"];
 
-/** Projection-only adapter; the hash seeding needs no session id. */
-const adapter = createPiAdapter(() => undefined);
+/** Projection-only adapter used to seed block span hashes. */
+const adapter = createPiAdapter();
 
 /** Model limit used to open the producer context gates. */
 const MODEL_LIMIT = 1_000_000;
@@ -58,15 +59,31 @@ const MODEL_LIMIT = 1_000_000;
 /** Long tool output so dedup reclaims tokens. */
 const LONG_OUTPUT = "x".repeat(2000);
 
-afterEach(() => {
-  const manager = getContextStateManager();
-  for (const sid of TEST_SESSION_IDS) {
-    manager.store.delete(sid);
-  }
-  _resetContextStateManagerForTesting();
-  _resetForTesting();
-  _resetModelLimitsForTesting();
+/** Sandbox store directory of this suite. */
+const storeDir = makeTmpDir("zoo-pipeline-boundary");
+const store = createStateStore(storeDir);
+/** The plugin instance under test. */
+let runtime: ContextRuntime = createContextRuntime(store);
+
+beforeEach(() => {
+  runtime = createContextRuntime(store);
 });
+
+afterEach(() => {
+  for (const sid of TEST_SESSION_IDS) store.delete(sid);
+  _resetForTesting();
+});
+
+after(() => {
+  rmSync(storeDir, { recursive: true, force: true });
+});
+
+/** The committed state of a session. */
+function stateOf(sessionID: string): RuntimeFlaggedState {
+  const state = runtime.read(permitFor(sessionID), (draft) => draft);
+  if (state === undefined) throw new Error(`no committed state: ${sessionID}`);
+  return state;
+}
 
 /**
  * A four-message transcript whose middle unit spans ordinals 1 and 2:
@@ -89,7 +106,7 @@ function seedBlocks(
   intervals: Array<[number, number]>,
 ): void {
   const projection = adapter.history(transcript);
-  const state = getContextStateManager().get(sessionID);
+  const state = stateOf(sessionID);
   intervals.forEach(([start, end], index) => {
     state.blocks.set(index + 1, {
       start,
@@ -105,6 +122,22 @@ function seedBlocks(
   });
 }
 
+/** Run one pruning round under a permit for the session. */
+function runRound(
+  handlerAdapter: ReturnType<typeof createPiAdapter>,
+  sessionID: string,
+  messages: PiAgentMessage[],
+  config: { dedup: object; purgeErrors: object; [key: string]: unknown },
+): Promise<unknown> {
+  return contextPruningTransformHandler(
+    runtime,
+    permitFor(sessionID),
+    handlerAdapter,
+    messages,
+    config,
+  );
+}
+
 /** The producers stay closed: gated-out config never marks. */
 const NO_PRODUCERS = { dedup: {}, purgeErrors: {} };
 
@@ -113,17 +146,17 @@ const NO_PRODUCERS = { dedup: {}, purgeErrors: {} };
 // ---------------------------------------------------------------------------
 
 describe("pipeline boundary expiry", () => {
-  it("retires a block whose endpoint falls inside a unit", () => {
+  it("retires a block whose endpoint falls inside a unit", async () => {
     const sessionID = TEST_SESSION_IDS[0];
-    const pi = createPiAdapter(() => sessionID);
+    const pi = createPiAdapter();
     const transcript = boundaryTurn();
     seedBlocks(sessionID, transcript, [[0, 2]]);
     const before = _getBufferForTesting().length;
 
-    contextPruningTransformHandler(pi, boundaryTurn(), NO_PRODUCERS);
+    await runRound(pi, sessionID, boundaryTurn(), NO_PRODUCERS);
 
     assert.equal(
-      getContextStateManager().get(sessionID).blocks.get(1)?.status,
+      stateOf(sessionID).blocks.get(1)?.status,
       "stale",
       "the unaddressable block is retired",
     );
@@ -143,14 +176,14 @@ describe("pipeline boundary expiry", () => {
     assert.ok(!("currentHash" in entry), "no current hash on a boundary log");
   });
 
-  it("never re-ages the retired block in a later round", () => {
+  it("never re-ages the retired block in a later round", async () => {
     const sessionID = TEST_SESSION_IDS[0];
-    const pi = createPiAdapter(() => sessionID);
+    const pi = createPiAdapter();
     seedBlocks(sessionID, boundaryTurn(), [[0, 2]]);
-    contextPruningTransformHandler(pi, boundaryTurn(), NO_PRODUCERS);
+    await runRound(pi, sessionID, boundaryTurn(), NO_PRODUCERS);
     const before = _getBufferForTesting().length;
 
-    contextPruningTransformHandler(pi, boundaryTurn(), NO_PRODUCERS);
+    await runRound(pi, sessionID, boundaryTurn(), NO_PRODUCERS);
 
     const entries = _getBufferForTesting()
       .slice(before)
@@ -194,10 +227,10 @@ function dedupTurn(): PiAgentMessage[] {
 }
 
 describe("producer coverage from the folded view", () => {
-  it("marks only lines the fold left visible", () => {
+  it("marks only lines the fold left visible", async () => {
     const sessionID = TEST_SESSION_IDS[1];
-    const pi = createPiAdapter(() => sessionID);
-    setModelLimit(sessionID, MODEL_LIMIT, "test-model");
+    const pi = createPiAdapter();
+    runtime.setModelLimit(permitFor(sessionID), MODEL_LIMIT, "test-model");
     const transcript = dedupTurn();
 
     // [0, 3) spans two units and renders; [5, 7) starts inside the
@@ -208,14 +241,14 @@ describe("producer coverage from the folded view", () => {
       [5, 7],
     ]);
 
-    contextPruningTransformHandler(pi, dedupTurn(), {
+    await runRound(pi, sessionID, dedupTurn(), {
       protectedMessages: 0,
       compress: { protectedTokens: 0, thresholdTokens: 0 },
       dedup: { minMessages: 20, thresholdContext: 100000 },
       purgeErrors: {},
     });
 
-    const state = getContextStateManager().get(sessionID);
+    const state = stateOf(sessionID);
     assert.equal(state.blocks.get(1)?.status, "active", "block 1 renders");
     assert.equal(state.blocks.get(2)?.status, "stale", "block 2 was retired");
     assert.equal(

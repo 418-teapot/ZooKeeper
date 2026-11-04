@@ -26,10 +26,13 @@
  * 4. Drives the core batch pipeline (resolve → validate → apply).  Every
  *    range is validated against the same snapshot; any invalid range
  *    rejects the whole call, leaving the state untouched.
- * 5. Books the reclaimed tokens as the nudge's reclaim credit, flags the
- *    pending view change, and persists the session state ONCE through the
- *    shared state manager.
- * 6. Posts a single ignored chat notification through the host.
+ * 5. Books the reclaimed tokens as the nudge's reclaim credit inside one
+ *    `runtime.commit(permit, ...)`, which persists the session state once
+ *    and only while the call's permit stays active.  The pending view change
+ *    is flagged after that commit succeeded.
+ * 6. Posts a single ignored chat notification through the host, after the
+ *    commit succeeded.  A missing or lapsed permit changes nothing and
+ *    reports the call as not applied.
  *
  * Every rejection is thrown as a tool error whose text is written in the
  * model's address space: per-range failures are aggregated (all of them,
@@ -53,11 +56,7 @@ import { formatTokens } from "../core/context/context-report.js";
 import { fold } from "../core/context/fold.js";
 import type { Projection } from "../core/context/lens.js";
 import { creditReclaim } from "../core/context/nudge.js";
-import { getRoundView } from "../core/context/round-view.js";
-import {
-  getContextStateManager,
-  setPendingViewChange,
-} from "../core/context/runtime.js";
+import type { ContextRuntime } from "../core/context/runtime.js";
 import type { Block, SessionState } from "../core/context/state.js";
 import { type NumberedItem, numberView } from "../core/context/view-refs.js";
 import type { ToolHost } from "../core/ports/tool-host.js";
@@ -256,15 +255,22 @@ function buildCompressToolMetadata(
 export function createCompressTool(
   host: ToolHost,
   contextConfig: ContextPruningConfig,
+  runtime: ContextRuntime,
 ): ToolDefinition {
   return {
     ...buildCompressToolMetadata(contextConfig),
-    async execute(args, toolCtx) {
+    async execute(args, toolCtx, hostCtx) {
       const sessionID = host.resolveSessionId(toolCtx);
       if (sessionID === undefined) {
         throw new Error(
           "无法压缩：工具上下文缺少 sessionID，会话状态无法定位。" +
             "这是宿主接线问题，重试本工具无法解决，需重启宿主或由用户处理。",
+        );
+      }
+      const permit = hostCtx?.permit;
+      if (permit === undefined || !permit.isActive()) {
+        throw new Error(
+          "本次压缩未生效：本次调用没有有效的会话工作凭证，会话可能已停止或已取消，会话状态未改动。",
         );
       }
       const { ranges } = validateCompressArgs(args);
@@ -298,49 +304,6 @@ export function createCompressTool(
         );
       }
 
-      // The history the model addressed is the round view published by
-      // the last transform (frozen snapshot + numbered fold) — read it
-      // back verbatim, never refolded.  Only a call made before any
-      // transform ran (no round view) may fall back to a host history
-      // read, and only for hosts that wire one (a host whose read path
-      // is not provably the same source as the transform's projection
-      // must leave `fetchHistory` unwired — then the call fails closed
-      // with guidance instead of addressing a foreign ordinal space).
-      const manager = getContextStateManager();
-      const state = manager.get(sessionID);
-      const cached = getRoundView(sessionID);
-      let snapshot: Projection;
-      let numbered: NumberedItem[];
-      if (cached !== undefined) {
-        snapshot = cached.projection;
-        numbered = cached.numbered;
-      } else if (host.fetchHistory !== undefined) {
-        snapshot = await host.fetchHistory(sessionID);
-        const { items } = fold(snapshot, state);
-        numbered = numberView(
-          items,
-          (ordinal) => snapshot.messages[ordinal].hidden,
-        );
-      } else {
-        log.warn({
-          hook: "compress-tool",
-          event: "no_round_view",
-          sessionId: sessionID,
-          reason: "no published round view and no host history fallback",
-        });
-        // Not a retryable model error: the line numbers the model holds
-        // cannot be resolved at all this round, and the same call made
-        // again in this round fails identically.  Reported as a tool
-        // failure so the host surfaces it as such — never a success-shaped
-        // string that reads like a completed compression.
-        throw new Error(
-          "无法压缩：尚未取得当轮上下文视图（上下文变换本轮还未运行），" +
-            "当前宿主也不提供同源的历史回退——行号无法定位到模型看到的视图。" +
-            "本轮内重试结果相同，请等下一轮上下文变换运行后再压缩；" +
-            "若每轮都如此，属于宿主配置问题，请告知用户处理。",
-        );
-      }
-
       // Compression options straight from the parsed config — no
       // fallbacks, config.toml is the single source of truth.
       const options: CompressOptions = {
@@ -349,69 +312,136 @@ export function createCompressTool(
         thresholdTokens: compressCfg.thresholdTokens,
         maxRanges: compressCfg.maxRanges,
       };
-      // Core batch pipeline: the whole-call error (max_ranges overflow)
-      // and the per-range failures both mean NOTHING was applied — the
-      // core's per-range texts are written relative to the failing range,
-      // so the range index is labelled exactly once here and every failure
-      // of the call is reported together.
-      const result = compressRanges(snapshot, numbered, state, options, ranges);
 
-      if (result.error !== undefined) {
-        throw new Error(`本次压缩未生效（会话状态未改动）：${result.error}`);
-      }
-      if (result.failed.length > 0) {
-        const detail = result.failed
-          .map(
-            (failure) =>
-              `- 第 ${failure.index} 个范围（${failure.range.fromRef} → ${failure.range.toRef}）：${failure.error}`,
-          )
-          .join("\n");
+      // The whole read-modify-write is one commit: the state draft, the
+      // round view it addresses, and the pending-view-change flag become
+      // committed only while this call's permit stays active.
+      const outcome = await runtime.commit(permit, async (state) => {
+        // The history the model addressed is the round view published by
+        // the last transform (frozen snapshot + numbered fold) — read it
+        // back verbatim, never refolded.  Only a call made before any
+        // transform ran (no round view) may fall back to a host history
+        // read, and only for hosts that wire one (a host whose read path
+        // is not provably the same source as the transform's projection
+        // must leave `fetchHistory` unwired — then the call fails closed
+        // with guidance instead of addressing a foreign ordinal space).
+        const cached = runtime.roundView(sessionID);
+        let snapshot: Projection;
+        let numbered: NumberedItem[];
+        if (cached !== undefined) {
+          snapshot = cached.projection;
+          numbered = cached.numbered;
+        } else if (host.fetchHistory !== undefined) {
+          snapshot = await host.fetchHistory(sessionID);
+          const { items } = fold(snapshot, state);
+          numbered = numberView(
+            items,
+            (ordinal) => snapshot.messages[ordinal].hidden,
+          );
+        } else {
+          log.warn({
+            hook: "compress-tool",
+            event: "no_round_view",
+            sessionId: sessionID,
+            reason: "no published round view and no host history fallback",
+          });
+          // Not a retryable model error: the line numbers the model holds
+          // cannot be resolved at all this round, and the same call made
+          // again in this round fails identically.  Reported as a tool
+          // failure so the host surfaces it as such — never a
+          // success-shaped string that reads like a completed compression.
+          throw new Error(
+            "无法压缩：尚未取得当轮上下文视图（上下文变换本轮还未运行），" +
+              "当前宿主也不提供同源的历史回退——行号无法定位到模型看到的视图。" +
+              "本轮内重试结果相同，请等下一轮上下文变换运行后再压缩；" +
+              "若每轮都如此，属于宿主配置问题，请告知用户处理。",
+          );
+        }
+
+        // Core batch pipeline: the whole-call error (max_ranges overflow)
+        // and the per-range failures both mean NOTHING was applied — the
+        // core's per-range texts are written relative to the failing
+        // range, so the range index is labelled exactly once here and
+        // every failure of the call is reported together.
+        const result = compressRanges(
+          snapshot,
+          numbered,
+          state,
+          options,
+          ranges,
+        );
+
+        if (result.error !== undefined) {
+          throw new Error(`本次压缩未生效（会话状态未改动）：${result.error}`);
+        }
+        if (result.failed.length > 0) {
+          const detail = result.failed
+            .map(
+              (failure) =>
+                `- 第 ${failure.index} 个范围（${failure.range.fromRef} → ${failure.range.toRef}）：${failure.error}`,
+            )
+            .join("\n");
+          throw new Error(
+            `本次压缩未生效：${result.failed.length}/${ranges.length} 个范围校验失败，` +
+              `会话状态未改动。请按下列提示修正后重新提交：\n${detail}`,
+          );
+        }
+
+        const blockIds = createdBlockIds(state, result.created)
+          .map((id) => `b${id}`)
+          .join("、");
+        const msgCount = result.created.reduce(
+          (sum, block) => sum + (block.end - block.start),
+          0,
+        );
+        const reclaimed = result.created.reduce(
+          (sum, block) => sum + (block.compressedTokens - block.summaryTokens),
+          0,
+        );
+
+        // The same figure is booked as the nudge's reclaim credit: the API
+        // measurement the pressure level is read from comes from the call
+        // that preceded this compression, so without the booking the water
+        // level keeps counting tokens the compressed view has dropped.
+        creditReclaim(state, reclaimed);
+
+        return {
+          ids: createdBlockIds(state, result.created),
+          blockIds,
+          msgCount,
+          reclaimed,
+          created: result.created,
+        };
+      });
+
+      if (outcome === undefined) {
         throw new Error(
-          `本次压缩未生效：${result.failed.length}/${ranges.length} 个范围校验失败，` +
-            `会话状态未改动。请按下列提示修正后重新提交：\n${detail}`,
+          "本次压缩未生效：会话已停止或本次调用已取消，会话状态未改动。",
         );
       }
 
-      const blockIds = createdBlockIds(state, result.created)
-        .map((id) => `b${id}`)
-        .join("、");
-      const msgCount = result.created.reduce(
-        (s, b) => s + (b.end - b.start),
-        0,
-      );
-      const reclaimed = result.created.reduce(
-        (s, b) => s + (b.compressedTokens - b.summaryTokens),
-        0,
-      );
-
       // The view differs next round (new fold blocks) — flag the view
-      // change and persist ONCE so the next transform folds the new
-      // blocks and its release phase flushes pending marks.
-      //
-      // The same figure is booked as the nudge's reclaim credit: the API
-      // measurement the pressure level is read from comes from the call
-      // that preceded this compression, so without the booking the water
-      // level keeps counting tokens the compressed view has dropped.
-      creditReclaim(state, reclaimed);
-      setPendingViewChange(sessionID);
-      manager.save(sessionID);
+      // change so the next transform folds the new blocks and its release
+      // phase flushes pending marks.  Only a committed call flags it: a
+      // permit that lapsed after the commit writes nothing.
+      runtime.setPendingViewChange(permit);
 
       log.info({
         hook: "compress-tool",
         event: "compress_created",
         sessionId: sessionID,
-        blockIds: createdBlockIds(state, result.created),
-        rangeCount: result.created.length,
-        messageCount: msgCount,
-        reclaimedTokens: reclaimed,
-        titles: result.created.map((b) => b.title),
+        blockIds: outcome.ids,
+        rangeCount: outcome.created.length,
+        messageCount: outcome.msgCount,
+        reclaimedTokens: outcome.reclaimed,
+        titles: outcome.created.map((b) => b.title),
       });
 
       // Ignored chat notification (best-effort — compression already done).
       const notifyMsg =
-        result.created.length === 1
-          ? `上下文压缩：已压缩 ${msgCount} 条消息为压缩块 ${blockIds}：${result.created[0].title}，约回收 ${formatTokens(reclaimed)} tokens`
-          : `上下文压缩：已压缩 ${result.created.length} 个范围，共 ${msgCount} 条消息（${blockIds}），约回收 ${formatTokens(reclaimed)} tokens`;
+        outcome.created.length === 1
+          ? `上下文压缩：已压缩 ${outcome.msgCount} 条消息为压缩块 ${outcome.blockIds}：${outcome.created[0].title}，约回收 ${formatTokens(outcome.reclaimed)} tokens`
+          : `上下文压缩：已压缩 ${outcome.created.length} 个范围，共 ${outcome.msgCount} 条消息（${outcome.blockIds}），约回收 ${formatTokens(outcome.reclaimed)} tokens`;
       try {
         await host.notify(sessionID, notifyMsg);
       } catch (err) {
@@ -437,8 +467,12 @@ export function createCompressTool(
  */
 export const unit = defineTool({
   name: "compress",
-  needs: ["toolHost", "contextConfig"],
+  needs: ["toolHost", "contextConfig", "contextRuntime"],
   create(caps) {
-    return createCompressTool(caps.toolHost, caps.contextConfig);
+    return createCompressTool(
+      caps.toolHost,
+      caps.contextConfig,
+      caps.contextRuntime,
+    );
   },
 });

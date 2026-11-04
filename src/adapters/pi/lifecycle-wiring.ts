@@ -11,23 +11,25 @@
  *    service map is typed by the declarations, and nothing session-scoped is
  *    reachable through it.
  *  - `ensureSession` creates (or reuses) a session scope for the id the
- *    current event carries.  Every pi handler and tool/command bridge calls
- *    it before touching session resources, so a session whose first
- *    observation is a tool call still gets its scope — without a start
- *    notice, which only pi's own `session_start` may produce.
+ *    current event carries.  The start entry uses it to prepare a scope;
+ *    business work goes through `runSession` instead.
+ *  - `runSession` admits one unit of call-scoped work under a `WorkPermit`
+ *    for the session the event of that call names.  The permit's signal
+ *    follows the session, the extension, and the caller's own
+ *    cancellation, and a stop waits for admitted work before disposing.
+ *  - `runControl` admits a control operation the same way, but no stop
+ *    waits for it: it is the call that replaces the session it belongs
+ *    to, so waiting would deadlock the stop it performs.
  *  - `startSession` forwards a real `session_start` to the mapping, which
  *    notifies the kernel with pi's own reason string unmodified.
  *  - `stopExtension` maps `session_shutdown` through the same mapping and
  *    reports the cleanup outcome; the extension scope is terminal, so a
  *    later ensure cannot recreate anything.
  *
- * Every ensured session is also associated with this wiring instance in the
- * SDK bridge.  pi can run more than one extension runtime in a process (a
- * sub-session loads its own), so the association is what keeps a driver's
- * explicit teardown attached to the right owner: stopping the session the
- * driver disposes stops that owner's extension — every nested session and
- * extension service included — and leaves a replacement owner untouched
- * (see `sdk-lifecycle.ts`).
+ * pi runs one wiring instance per extension runtime, and a sub-session loads
+ * its own.  The composition root therefore hands that runtime's close handle
+ * to the driver that created it (see `wire.ts`), so a teardown always stops
+ * the scope of the runtime it belongs to.
  *
  * @module
  */
@@ -44,15 +46,12 @@ import {
   type ExtensionScope,
   type LifecycleKernel,
   type ServiceMap,
+  type WorkPermit,
 } from "../../core/lifecycle/index.js";
 import {
   createPiLifecycleMapping,
   type PiLifecycleOutcome,
 } from "./lifecycle.js";
-import {
-  associatePiSdkSession,
-  releasePiSdkSessions,
-} from "./sdk-lifecycle.js";
 
 /**
  * Stop reason used when pi's shutdown payload carries no usable reason.
@@ -61,6 +60,14 @@ import {
  * the wiring stops with the event's own name instead of skipping.
  */
 export const PI_SHUTDOWN_REASON = "session_shutdown";
+
+/**
+ * Stop reason the subagent driver uses when it closes a sub-session's scope.
+ *
+ * pi emits no `session_shutdown` for an SDK-created session, so the driver
+ * stops that runtime's extension itself and records this cause.
+ */
+export const SDK_STOP_REASON = "sdk.session.dispose";
 
 /** Options for {@link createPiLifecycleWiring}. */
 export interface PiLifecycleWiringOptions<
@@ -99,6 +106,31 @@ export class PiLifecycleStoppedError extends Error {
 }
 
 /**
+ * One session's admission surface.
+ *
+ * A call is admitted only for a live session; the work runs under the
+ * issued permit, and its result reaches the caller unchanged.
+ */
+export interface PiSessionWorkRunner {
+  /**
+   * Admit one unit of work for the session `ctx` names.
+   *
+   * The session id is read from this call's own context, never from a
+   * context another event published.
+   *
+   * @param ctx - The event context of this call.
+   * @param work - The admitted work, receiving its permit.
+   * @param signal - The caller's own cancellation, if any.
+   * @returns The work's value, or `undefined` when the call is refused.
+   */
+  runSession<T>(
+    ctx: unknown,
+    work: (permit: WorkPermit) => T | Promise<T>,
+    signal?: AbortSignal,
+  ): Promise<T | undefined>;
+}
+
+/**
  * The host-facing lifecycle operations of one pi extension instance.
  *
  * The extension parameter makes {@link PiLifecycleWiring.activateExtension}
@@ -110,7 +142,25 @@ export class PiLifecycleStoppedError extends Error {
 export interface PiLifecycleWiring<
   Extension extends
     readonly AnyExtensionServiceDefinition[] = readonly AnyExtensionServiceDefinition[],
-> {
+> extends PiSessionWorkRunner {
+  /**
+   * Admit one control operation for the session `ctx` names.
+   *
+   * A host command that replaces its own session is a control operation:
+   * pi tears that session down inside the replacement, so the stop must not
+   * wait for the command to return.  Admission, permit revocation and the
+   * context publishing are the same as `runSession`.
+   *
+   * @param ctx - The event context of this call.
+   * @param work - The admitted work, receiving its permit.
+   * @param signal - The caller's own cancellation, if any.
+   * @returns The work's value, or `undefined` when the call is refused.
+   */
+  runControl<T>(
+    ctx: unknown,
+    work: (permit: WorkPermit) => T | Promise<T>,
+    signal?: AbortSignal,
+  ): Promise<T | undefined>;
   /**
    * Activate the extension scope.
    *
@@ -164,15 +214,21 @@ export function createPiLifecycleWiring<
     session: options.sessionServices,
   });
   const mapping = createPiLifecycleMapping(kernel);
-  // This extension instance's identity in the SDK bridge.  A replacement
-  // instance registers its own token, so an old scope can never release or
-  // stop the new one.
-  const owner = {};
 
-  /** Read the session id the current event carries. */
+  /**
+   * Read the session id one event carries.
+   *
+   * pi invalidates a captured context on session replacement / reload, and
+   * reading through the stale one throws.  Such a context names no session,
+   * so the call is refused instead of breaking the host.
+   */
   function readSessionID(ctx?: unknown): string | undefined {
-    const id = options.getSessionID?.(ctx);
-    return typeof id === "string" && id.trim() !== "" ? id : undefined;
+    try {
+      const id = options.getSessionID?.(ctx);
+      return typeof id === "string" && id.trim() !== "" ? id : undefined;
+    } catch {
+      return undefined;
+    }
   }
 
   async function activateExtension(): Promise<
@@ -186,18 +242,35 @@ export function createPiLifecycleWiring<
   async function ensureSession(ctx?: unknown): Promise<boolean> {
     const sessionID = readSessionID(ctx);
     if (sessionID === undefined) return false;
-    const scope = await kernel.ensureSession(sessionID);
-    if (scope === null) return false;
-    // Associate the ensured session with this extension so the SDK driver's
-    // explicit teardown stops exactly this owner's scope.
-    associatePiSdkSession(scope.sessionID, owner, async (reason) => {
-      const report = await kernel.stopExtension(reason);
-      // The owner is terminal from here on: drop its remaining
-      // associations so a later SDK dispose cannot reach a stopped scope.
-      releasePiSdkSessions(owner);
-      return report;
-    });
-    return true;
+    return (await kernel.ensureSession(sessionID)) !== null;
+  }
+
+  async function runSession<T>(
+    ctx: unknown,
+    work: (permit: WorkPermit) => T | Promise<T>,
+    signal?: AbortSignal,
+  ): Promise<T | undefined> {
+    const sessionID = readSessionID(ctx);
+    if (sessionID === undefined) return undefined;
+    return kernel.runSession<T>(
+      sessionID,
+      (_scope, permit) => work(permit),
+      signal,
+    );
+  }
+
+  async function runControl<T>(
+    ctx: unknown,
+    work: (permit: WorkPermit) => T | Promise<T>,
+    signal?: AbortSignal,
+  ): Promise<T | undefined> {
+    const sessionID = readSessionID(ctx);
+    if (sessionID === undefined) return undefined;
+    return kernel.runControl<T>(
+      sessionID,
+      (_scope, permit) => work(permit),
+      signal,
+    );
   }
 
   async function startSession(
@@ -207,17 +280,12 @@ export function createPiLifecycleWiring<
     const payload = event as { reason?: unknown } | undefined;
     if (typeof payload?.reason === "string") {
       // pi's own reason string is forwarded unmodified.  The context handed
-      // to the mapping is built from the id this wiring resolved (the event
-      // context or the shared holder), so both paths name the same session.
+      // to the mapping is built from the id this wiring resolved, so the
+      // notification and the scope name the same session.
       const sessionID = readSessionID(ctx);
-      const outcome = await mapping.sessionStart(payload as SessionStartEvent, {
+      return await mapping.sessionStart(payload as SessionStartEvent, {
         sessionManager: { getSessionId: () => sessionID },
       });
-      // The mapping creates the scope directly, bypassing `ensureSession`, so
-      // the association is made here: the SDK driver may dispose the session
-      // before any other event ensures it.
-      await ensureSession(ctx);
-      return outcome;
     }
     // No usable reason: this is not a start notice, so only the scope is
     // ensured (the caller's widget / todo wiring needs it) and no start is
@@ -235,11 +303,15 @@ export function createPiLifecycleWiring<
         : // A payload pi cannot attribute still must not leak resources, so
           // the stop runs with the host-level reason instead of skipping.
           await kernel.stopExtension(PI_SHUTDOWN_REASON);
-    // The extension and its nested sessions are gone; drop this instance's
-    // associations so a later SDK stop cannot reach a stopped scope.
-    releasePiSdkSessions(owner);
     return report;
   }
 
-  return { activateExtension, ensureSession, startSession, stopExtension };
+  return {
+    activateExtension,
+    ensureSession,
+    runSession,
+    runControl,
+    startSession,
+    stopExtension,
+  };
 }

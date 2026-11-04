@@ -12,7 +12,6 @@ import assert from "node:assert/strict";
 import { afterEach, describe, it } from "node:test";
 import {
   type AnyExtensionServiceDefinition,
-  type CleanupReport,
   defineExtensionService,
   defineSessionService,
 } from "../../core/lifecycle/index.js";
@@ -22,15 +21,8 @@ import {
   PI_SHUTDOWN_REASON,
   type PiLifecycleWiring,
 } from "./lifecycle-wiring.js";
-import {
-  hasPiSdkSession,
-  resetPiSdkLifecycleBridge,
-  SDK_STOP_REASON,
-  stopPiSdkSession,
-} from "./sdk-lifecycle.js";
 
 afterEach(() => {
-  resetPiSdkLifecycleBridge();
   _resetForTesting();
 });
 
@@ -254,132 +246,105 @@ describe("pi lifecycle wiring", () => {
     assert.deepEqual(log, afterStop);
   });
 
-  it("associates ensured sessions with the SDK bridge", async () => {
+  it("runs admitted work under the permit of the session the event names", async () => {
     const log: string[] = [];
     const wiring = buildWiring(log);
-    await wiring.ensureSession({ id: "s1" });
-    assert.equal(hasPiSdkSession("s1"), true);
+    const seen: string[] = [];
 
-    // The driver's explicit teardown reaches the scope this extension owns.
-    const report = await stopPiSdkSession("s1");
-    assert.deepEqual(report, { errors: [] });
-    assert.deepEqual(log, ["create:s1", `dispose:s1:${SDK_STOP_REASON}`]);
-    assert.equal(hasPiSdkSession("s1"), false);
+    const value = await wiring.runSession({ id: "s1" }, (permit) => {
+      seen.push(`${permit.sessionID}:${permit.isActive()}`);
+      return "done";
+    });
+
+    assert.equal(value, "done");
+    assert.deepEqual(seen, ["s1:true"]);
+    assert.deepEqual(log, ["create:s1"]);
   });
 
-  it("associates the scope a real start created with the SDK bridge", async () => {
+  it("runs nothing when the event carries no session id", async () => {
     const log: string[] = [];
-    const extension = defineExtensionService({
-      name: "ext",
-      deps: [],
-      create: () => {
-        log.push("create:ext");
-        return {};
-      },
-      dispose: (_service, { reason }) => {
-        log.push(`dispose:ext:${reason}`);
-      },
-    });
-    const wiring = buildWiring(log, { extensionServices: [extension] });
+    const wiring = buildWiring(log);
+    let ran = 0;
 
-    // The only event this extension ever sees is the real start: nothing
-    // ensures the session afterwards, so the start itself must leave the
-    // association behind.
-    const outcome = await wiring.startSession(
-      { type: "session_start", reason: "startup" },
+    for (const ctx of [undefined, {}, { id: "" }, { id: "   " }]) {
+      const value = await wiring.runSession(ctx, () => {
+        ran += 1;
+        return 1;
+      });
+      assert.equal(value, undefined);
+    }
+
+    assert.equal(ran, 0);
+    assert.deepEqual(log, []);
+  });
+
+  it("runs nothing when the caller already cancelled", async () => {
+    const log: string[] = [];
+    const wiring = buildWiring(log);
+    const caller = new AbortController();
+    caller.abort();
+    let ran = 0;
+
+    const value = await wiring.runSession(
       { id: "s1" },
+      () => {
+        ran += 1;
+        return 1;
+      },
+      caller.signal,
     );
-    assert.deepEqual(outcome, { action: "start", started: true });
 
-    const report = await stopPiSdkSession("s1");
-
-    assert.deepEqual(report, { errors: [] });
-    assert.deepEqual(log, [
-      "create:ext",
-      "create:s1",
-      "start:s1:startup",
-      `dispose:s1:${SDK_STOP_REASON}`,
-      `dispose:ext:${SDK_STOP_REASON}`,
-    ]);
-    assert.equal(hasPiSdkSession("s1"), false);
+    assert.equal(value, undefined);
+    assert.equal(ran, 0);
+    assert.deepEqual(log, []);
   });
 
-  it("stops the owning extension and its nested sessions on an SDK dispose", async () => {
+  it("revokes a running permit at shutdown and waits for the work", async () => {
     const log: string[] = [];
-    const extension = defineExtensionService({
-      name: "ext",
-      deps: [],
-      create: () => {
-        log.push("create:ext");
-        return {};
-      },
-      dispose: (_service, { reason }) => {
-        log.push(`dispose:ext:${reason}`);
-      },
+    const wiring = buildWiring(log);
+    let release: (() => void) | undefined;
+    let aborted = false;
+    const running = wiring.runSession({ id: "s1" }, async (permit) => {
+      await new Promise<void>((resolve) => {
+        release = resolve;
+        permit.signal.addEventListener("abort", () => {
+          aborted = true;
+        });
+      });
     });
-    const wiring = buildWiring(log, { extensionServices: [extension] });
-    await wiring.ensureSession({ id: "s1" });
-    await wiring.ensureSession({ id: "s2" });
+    await new Promise((resolve) => setTimeout(resolve, 0));
 
-    // The SDK driver disposes one session; the scope it belongs to is the
-    // extension that ensured it, so every nested session and the extension
-    // services stop with it — and pi's own shutdown reason is never faked.
-    const report = await stopPiSdkSession("s1");
+    const stopping = wiring.stopExtension({
+      type: "session_shutdown",
+      reason: "quit",
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
 
-    assert.deepEqual(report, { errors: [] });
-    assert.deepEqual(log, [
-      "create:ext",
-      "create:s1",
-      "create:s2",
-      `dispose:s1:${SDK_STOP_REASON}`,
-      `dispose:s2:${SDK_STOP_REASON}`,
-      `dispose:ext:${SDK_STOP_REASON}`,
-    ]);
+    // The permit is revoked at once, and the scope is not disposed while
+    // the admitted work still runs.
+    assert.equal(aborted, true);
+    assert.deepEqual(log, ["create:s1"]);
+
+    release?.();
+    await stopping;
+    await running;
+    assert.deepEqual(log, ["create:s1", "dispose:s1:quit"]);
   });
 
-  it("stops only the extension of the association that is current", async () => {
-    const firstLog: string[] = [];
-    const secondLog: string[] = [];
-    const first = buildWiring(firstLog);
-    const second = buildWiring(secondLog);
-
-    // A replacement extension instance takes the same session id over.
-    await first.ensureSession({ id: "s1" });
-    await second.ensureSession({ id: "s1" });
-
-    await stopPiSdkSession("s1");
-
-    assert.deepEqual(firstLog, ["create:s1"], "the stale owner stays live");
-    assert.deepEqual(secondLog, ["create:s1", `dispose:s1:${SDK_STOP_REASON}`]);
-  });
-
-  it("drops the owner's other associations once its extension stopped", async () => {
+  it("admits nothing once the extension stopped", async () => {
     const log: string[] = [];
     const wiring = buildWiring(log);
-    await wiring.ensureSession({ id: "s1" });
-    await wiring.ensureSession({ id: "s2" });
-
-    await stopPiSdkSession("s1");
-
-    // The extension is terminal, so its remaining associations are gone: a
-    // later SDK dispose cannot reach a stopped scope.
-    assert.equal(hasPiSdkSession("s2"), false);
-    const report = await stopPiSdkSession("s2");
-    assert.deepEqual(report, { errors: [] });
-    assert.equal(log.filter((entry) => entry.startsWith("dispose:")).length, 2);
-  });
-
-  it("releases its associations when the extension stops", async () => {
-    const log: string[] = [];
-    const wiring = buildWiring(log);
-    await wiring.ensureSession({ id: "s1" });
-
+    await wiring.runSession({ id: "s1" }, () => 1);
     await wiring.stopExtension({ type: "session_shutdown", reason: "quit" });
+    let ran = 0;
 
-    assert.equal(hasPiSdkSession("s1"), false);
-    // Nothing is left to stop through the SDK bridge.
-    const report: CleanupReport = await stopPiSdkSession("s1");
-    assert.deepEqual(report, { errors: [] });
+    const value = await wiring.runSession({ id: "s1" }, () => {
+      ran += 1;
+      return 1;
+    });
+
+    assert.equal(value, undefined);
+    assert.equal(ran, 0);
     assert.deepEqual(log, ["create:s1", "dispose:s1:quit"]);
   });
 });

@@ -16,6 +16,7 @@ import type {
   ContextPruningConfig,
   ModeProfile,
 } from "../core/config-types.js";
+import { createContextRuntime } from "../core/context/runtime.js";
 import type { Capabilities } from "../core/ports/index.js";
 import type { ToolContribution } from "../core/unit.js";
 import { buildPlugin } from "../opencode.js";
@@ -128,6 +129,8 @@ export function composeToolHooks(
     contextConfig,
     directory: "",
     resolveAgent,
+    // The tool units read the instance's context records too.
+    contextRuntime: createContextRuntime(),
     toolHost: createV1ToolHost(client, resolveAgent),
   };
   const profile: ModeProfile = {

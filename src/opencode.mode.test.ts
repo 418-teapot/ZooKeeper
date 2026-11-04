@@ -16,7 +16,6 @@ import {
   normalizeToolName,
   registerProfileToolsInConfig,
 } from "./compose-opencode.js";
-import { _resetContextStateManagerForTesting } from "./core/context/runtime.js";
 import { sessionAgentRegistry } from "./core/session/agent.js";
 import type { AgentUnitDescriptor } from "./core/unit.js";
 import { DIRECT_WORK_NUDGE } from "./hooks/direct-work-nudge";
@@ -195,7 +194,6 @@ function transformMessages(): Array<Record<string, any>> {
 afterEach(() => {
   _resetForTesting();
   sessionAgentRegistry.clear();
-  _resetContextStateManagerForTesting();
   delete process.env.ZOO_MODE_FILE;
 });
 
@@ -847,6 +845,25 @@ describe("tools gated by the profile tools list", () => {
     assert.ok(plugin.tool.compress, "known tool still registers");
     assert.equal(plugin.tool["future-tool"], undefined);
   });
+
+  it("admits a registered tool through its session and refuses it after dispose", async () => {
+    const plugin = await pluginWithTools(["decompress"]);
+    const toolCtx = { sessionID: "s1", abort: new AbortController().signal };
+
+    await assert.rejects(
+      () => plugin.tool.decompress.execute(null, toolCtx),
+      /参数/,
+      "a live session reaches the tool body",
+    );
+
+    await plugin.dispose();
+
+    assert.equal(
+      await plugin.tool.decompress.execute(null, toolCtx),
+      "",
+      "a disposed plugin admits no tool call",
+    );
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -1417,6 +1434,21 @@ describe("experimental.chat.system.transform — model prompt variant", () => {
     );
     assert.ok(output.system[0].includes(BASE));
     assert.ok(!output.system[0].includes(GPT));
+  });
+
+  it("swaps the wording when the transform names no session", async () => {
+    const plugin = await makePlugin();
+    const output = { system: [`<Contract>\n${BASE}\n</Contract>`] };
+
+    await plugin["experimental.chat.system.transform"](
+      {
+        model: { id: "openai/gpt-5.5", limit: { context: 1000, output: 100 } },
+      },
+      output,
+    );
+
+    assert.ok(output.system[0].includes(GPT));
+    assert.ok(!output.system[0].includes(BASE));
   });
 
   it("leaves entries without the variant lines untouched", async () => {

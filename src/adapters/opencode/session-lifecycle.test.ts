@@ -14,13 +14,12 @@
 import assert from "node:assert/strict";
 import { afterEach, describe, it } from "node:test";
 import {
-  clearModelLimit,
-  getModelLimit,
-  setModelLimit,
-} from "../../core/context/model-limits.js";
-import { _resetContextStateManagerForTesting } from "../../core/context/runtime.js";
+  type ContextRuntime,
+  createContextRuntime,
+} from "../../core/context/runtime.js";
 import { sessionAgentRegistry } from "../../core/session/agent.js";
 import { buildPlugin } from "../../opencode.js";
+import { permitFor } from "../../testkits/context-runtime.js";
 import { _resetForTesting } from "../../utils/logger.js";
 
 /** The agent-role table config.toml declares: dolphin is the orchestrator. */
@@ -67,8 +66,13 @@ type PromptCall = {
  * @param maxWakes - The `[zoo.continuation].max_wakes` allowance.
  * @returns The plugin, the recorded wakes, and the plugin input.
  */
-async function buildTestPlugin(maxWakes = 3) {
+async function buildTestPlugin(maxWakes = 3): Promise<{
+  plugin: Record<string, any>;
+  calls: PromptCall[];
+  runtime: ContextRuntime;
+}> {
   const calls: PromptCall[] = [];
+  const runtime = createContextRuntime();
   const client = {
     config: { get: async () => ({ data: RAW_AGENTS }) },
     session: {
@@ -87,8 +91,9 @@ async function buildTestPlugin(maxWakes = 3) {
       continuation: { max_wakes: maxWakes },
     },
     RAW_AGENTS,
+    { contextRuntime: runtime },
   )) as Record<string, any>;
-  return { plugin, calls };
+  return { plugin, calls, runtime };
 }
 
 /** Bind one session to the orchestrator, as `message.updated` does. */
@@ -126,10 +131,8 @@ async function deleted(
 
 afterEach(() => {
   _resetForTesting();
-  _resetContextStateManagerForTesting();
   for (const sessionID of ["s1", "s2", "ghost"]) {
     sessionAgentRegistry.delete(sessionID);
-    clearModelLimit(sessionID);
   }
 });
 
@@ -234,15 +237,15 @@ describe("session lifetime — deletion", () => {
   });
 
   it("cleans the process-level records of a session it never observed", async () => {
-    const { plugin } = await buildTestPlugin();
+    const { plugin, runtime } = await buildTestPlugin();
     // Records written by an earlier plugin instance in this process.
     sessionAgentRegistry.bind("ghost", "dolphin");
-    setModelLimit("ghost", 1000, "model");
+    runtime.setModelLimit(permitFor("ghost"), 1000, "model");
 
     await deleted(plugin, "ghost");
 
     assert.equal(sessionAgentRegistry.resolve("ghost"), undefined);
-    assert.equal(getModelLimit("ghost"), undefined);
+    assert.equal(runtime.modelLimit("ghost"), undefined);
   });
 });
 
@@ -277,15 +280,15 @@ describe("session lifetime — plugin dispose", () => {
   });
 
   it("keeps the persisted context of a disposed session", async () => {
-    const { plugin } = await buildTestPlugin();
+    const { plugin, runtime } = await buildTestPlugin();
     await bindAgent(plugin, "s1");
     // The plugin's own instance captured the model limit; a dispose drops
     // that runtime record while the session itself lives on.
-    setModelLimit("s1", 1000, "model");
+    runtime.setModelLimit(permitFor("s1"), 1000, "model");
 
     await plugin.dispose();
 
-    assert.equal(getModelLimit("s1"), undefined);
+    assert.equal(runtime.modelLimit("s1"), undefined);
     assert.equal(sessionAgentRegistry.resolve("s1"), "dolphin");
   });
 
@@ -302,7 +305,7 @@ describe("session lifetime — plugin dispose", () => {
 
 describe("session lifetime — system transform", () => {
   it("captures the model limit of a live session", async () => {
-    const { plugin } = await buildTestPlugin();
+    const { plugin, runtime } = await buildTestPlugin();
 
     await plugin["experimental.chat.system.transform"](
       {
@@ -312,7 +315,7 @@ describe("session lifetime — system transform", () => {
       { system: [] },
     );
 
-    assert.deepEqual(getModelLimit("s1"), {
+    assert.deepEqual(runtime.modelLimit("s1"), {
       context: 1000,
       modelId: "model",
     });

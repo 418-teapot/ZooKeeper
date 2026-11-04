@@ -57,7 +57,11 @@ function recordingTarget(): {
   const target: HandoffTarget = {
     create: async (ctx) => {
       createAgents.push(ctx.agent);
-      return { id: "ses-exec", agent: ctx.agent };
+      return {
+        id: "ses-exec",
+        agent: ctx.agent,
+        parentage: ctx.parentage,
+      };
     },
     installAgent: (session) => {
       installAgents.push(session.agent);
@@ -97,6 +101,18 @@ describe("/go unit — role-less selection", () => {
 // ---------------------------------------------------------------------------
 
 describe("/go unit — executor passthrough", () => {
+  it("marks /go as replacing the session", () => {
+    // A control operation on the host, not ordinary session work: the
+    // handoff closes the session it runs in.
+    const { target } = recordingTarget();
+    const contributions = unit.create(
+      caps(target, "/workspace"),
+      facts({ orchestrator: EXECUTOR }),
+    );
+
+    assert.equal(contributions.commands[0].replacesSession, true);
+  });
+
   it("contributes /go and hands the resolved orchestrator to the handoff", async () => {
     const { target, createAgents, installAgents, deliverAgents } =
       recordingTarget();

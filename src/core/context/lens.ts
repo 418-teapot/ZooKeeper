@@ -274,8 +274,6 @@ export interface HostAdapter<THostConversation> {
     conversation: THostConversation,
     plan: RenderEntry[],
   ): THostConversation;
-  /** Extract the session identifier from the first message, if any. */
-  sessionId(conversation: THostConversation): string | undefined;
   /**
    * Append a synthetic user text message to the conversation.
    *

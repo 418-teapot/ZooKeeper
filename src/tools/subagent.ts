@@ -25,9 +25,10 @@
  * file, so the tool definition here is the plain, policy-free shape.
  *
  * Each execution:
- * 1. Resolves the CALLER identity through the identity core
- *    (`resolveIdentity` — the active primary outside a sub-session scope, a
- *    bound subagent identity inside one).
+ * 1. Resolves the CALLER agent from the session the call names: the tool
+ *    host maps the tool context to a session id, and the shared
+ *    `resolveCallerAgent` port answers that session's agent.  No ambient
+ *    identity is read.
  * 2. Fails closed on the TARGET role: only agents declared
  *    `mode = "subagent"` in the parsed config are valid delegation
  *    targets.  A missing modes map, a target absent from it, or a target
@@ -66,7 +67,6 @@ import type {
   SubagentDriver,
   SubagentResult,
 } from "../core/subagent/driver.js";
-import { resolveIdentity } from "../core/subagent/identity.js";
 import type { UpdateRunPatch } from "../core/subagent/registry.js";
 import { finishRun, startRun, updateRun } from "../core/subagent/registry.js";
 import { runSubagent } from "../core/subagent/run.js";
@@ -207,7 +207,8 @@ function formatSubagentResult(result: SubagentResult): string {
  *
  * @param driver - The host driver that executes the subagent.
  * @param caps - The capability surfaces the tool needs: `toolHost` for the
- *   parent session id, `subagentBaseline` for the capability baseline,
+ *   parent session id, `resolveCallerAgent` for that session's caller
+ *   agent, `subagentBaseline` for the capability baseline,
  *   `agentModes` for the declared subagent role of the target,
  *   `agentPermissions` for the target's tool-level denies, and
  *   `subagentRenderer` for the optional pi TUI card renderer.
@@ -215,24 +216,25 @@ function formatSubagentResult(result: SubagentResult): string {
  */
 export function createSubagentTool(
   driver: SubagentDriver,
-  caps: Partial<
-    Pick<
-      Capabilities,
-      | "toolHost"
-      | "subagentBaseline"
-      | "agentModes"
-      | "agentPermissions"
-      | "subagentRenderer"
-      | "subagentModels"
-      | "onSubagentRunChange"
-    >
-  >,
+  caps: Pick<Capabilities, "resolveCallerAgent"> &
+    Partial<
+      Pick<
+        Capabilities,
+        | "toolHost"
+        | "subagentBaseline"
+        | "agentModes"
+        | "agentPermissions"
+        | "subagentRenderer"
+        | "subagentModels"
+        | "onSubagentRunChange"
+      >
+    >,
 ): ToolDefinition {
   const renderer = caps.subagentRenderer;
-  // Nudge the host's fleet widget after every registry mutation (the pi
-  // entry point wires this to the widget's refresh).
-  const notifyRunChange = (): void => {
-    caps.onSubagentRunChange?.();
+  // Nudge the parent session's fleet widget after every registry mutation
+  // (the pi entry point wires this to that session's widget refresh).
+  const notifyRunChange = (parentSession: string): void => {
+    caps.onSubagentRunChange?.(parentSession);
   };
   return {
     description:
@@ -263,14 +265,18 @@ export function createSubagentTool(
     async execute(args, toolCtx, hostCtx) {
       const input = validateSubagentArgs(args);
 
-      // 1. Resolve the CALLER identity: the active primary outside a
-      // sub-session scope, a bound subagent identity inside one.  An
-      // unresolvable caller fails closed with an explanatory text.
-      const identity = resolveIdentity();
-      if (!identity) {
+      // 1. Resolve the CALLER agent from the session this call names.  An
+      // unnamed session or an unresolved agent fails closed with an
+      // explanatory text.  The session id is the run's parent session and
+      // every log line's attribution, so it is resolved exactly once.
+      const sessionID = caps.toolHost?.resolveSessionId(toolCtx);
+      const caller =
+        sessionID === undefined
+          ? undefined
+          : await caps.resolveCallerAgent(sessionID);
+      if (caller === undefined || sessionID === undefined) {
         return "无法确定调用者身份：未配置主 agent，无法委派子 agent。";
       }
-      const caller = identity.name;
 
       // 2. Target-role guard — only agents declared `mode = "subagent"`
       // in the parsed config are valid delegation targets.  A missing
@@ -280,7 +286,6 @@ export function createSubagentTool(
       // set comes from the parsed config only — no hardcoded agent list.
       const targetMode = caps.agentModes?.[input.agent];
       if (targetMode !== "subagent") {
-        const sessionID = caps.toolHost?.resolveSessionId(toolCtx) ?? "";
         log.warn({
           hook: "subagent-tool",
           event: "target_role_blocked",
@@ -301,17 +306,11 @@ export function createSubagentTool(
         deniedTools,
       });
 
-      // 4. Parent session id (for session lineage) and the abort signal.
-      // The signal is taken from the host-forwarded execution context
-      // (the pi bridge forwards the real tool signal there) when present,
-      // falling back to the tool context's own `abort` field; otherwise a
-      // fresh never-aborting signal is used (the driver owns the real
-      // termination wiring).
-      const sessionID = caps.toolHost?.resolveSessionId(toolCtx);
-      const parentSession =
-        typeof sessionID === "string" && sessionID.length > 0
-          ? sessionID
-          : undefined;
+      // 4. The abort signal.  It is taken from the host-forwarded execution
+      // context (the pi bridge forwards the real tool signal there) when
+      // present, falling back to the tool context's own `abort` field;
+      // otherwise a fresh never-aborting signal is used (the driver owns
+      // the real termination wiring).
       const hostSignal = hostCtx?.signal;
       const toolCtxSignal = (toolCtx as { abort?: unknown } | undefined)?.abort;
       const signal =
@@ -332,7 +331,6 @@ export function createSubagentTool(
       //    fallback.
       const configuredModel = caps.subagentModels?.[input.agent];
       if (typeof configuredModel !== "string" || configuredModel.length === 0) {
-        const sessionID = caps.toolHost?.resolveSessionId(toolCtx) ?? "";
         log.warn({
           hook: "subagent-tool",
           event: "model_missing",
@@ -355,17 +353,13 @@ export function createSubagentTool(
       // non-ASCII arrow).
       const runId =
         hostCtx?.callId ?? `${caller}-${input.agent}-${++syntheticRunSeq}`;
-      const runStarted =
-        typeof parentSession === "string" && parentSession.length > 0;
-      const run = runStarted
-        ? startRun({
-            id: runId,
-            agent: input.agent,
-            parentSession,
-            label: input.description,
-          })
-        : undefined;
-      if (runStarted) notifyRunChange();
+      const run = startRun({
+        id: runId,
+        agent: input.agent,
+        parentSession: sessionID,
+        label: input.description,
+      });
+      notifyRunChange(sessionID);
 
       // 7. Drive the delegation through the orchestration core.  The run's
       // progress reports are patched onto the registry run (see the
@@ -377,7 +371,7 @@ export function createSubagentTool(
           agent: input.agent,
           prompt: input.prompt,
           tools,
-          parentSession,
+          parentSession: sessionID,
           // Strict mode: the agents.json model is always present (the
           // missing-entry guard above never lets the run reach the driver
           // without one).
@@ -385,7 +379,7 @@ export function createSubagentTool(
         },
         {
           signal,
-          ...(run !== undefined ? { log: run.log } : {}),
+          log: run.log,
           onProgress: (progress) => {
             // Patch the running run's progress fields — the current tool
             // (including the driver's explicit "tool finished" clear), the
@@ -399,32 +393,30 @@ export function createSubagentTool(
             // run, while the driver has already read each usage figure as it
             // appended the fact.  Fields an absent report omits are left
             // untouched.
-            if (runStarted && run !== undefined) {
-              const patch: UpdateRunPatch = {};
-              if (progress.currentTool !== undefined) {
-                patch.currentTool = progress.currentTool;
-              }
-              if (
-                progress.tokens !== undefined &&
-                progress.tokens !== run.tokens
-              ) {
-                patch.tokens = progress.tokens;
-              }
-              if (progress.model !== undefined) patch.model = progress.model;
-              if (progress.childSession !== undefined) {
-                patch.childSession = progress.childSession;
-              }
-              if (progress.sessionPath !== undefined) {
-                // The sub-session file exists from the first progress
-                // report (the driver carries its path once the session
-                // manager is created), so the running run holds it for
-                // enter-inspect mid-run — not only on the terminal finish.
-                patch.sessionPath = progress.sessionPath;
-              }
-              if (Object.keys(patch).length > 0) {
-                updateRun(runId, patch);
-                notifyRunChange();
-              }
+            const patch: UpdateRunPatch = {};
+            if (progress.currentTool !== undefined) {
+              patch.currentTool = progress.currentTool;
+            }
+            if (
+              progress.tokens !== undefined &&
+              progress.tokens !== run.tokens
+            ) {
+              patch.tokens = progress.tokens;
+            }
+            if (progress.model !== undefined) patch.model = progress.model;
+            if (progress.childSession !== undefined) {
+              patch.childSession = progress.childSession;
+            }
+            if (progress.sessionPath !== undefined) {
+              // The sub-session file exists from the first progress report
+              // (the driver carries its path once the session manager is
+              // created), so the running run holds it for enter-inspect
+              // mid-run — not only on the terminal finish.
+              patch.sessionPath = progress.sessionPath;
+            }
+            if (Object.keys(patch).length > 0) {
+              updateRun(runId, patch);
+              notifyRunChange(sessionID);
             }
 
             // Repaint the host's live card on every report.  pi re-invokes
@@ -444,7 +436,7 @@ export function createSubagentTool(
                 log.warn({
                   hook: "subagent-tool",
                   event: "progress_update_failed",
-                  sessionId: parentSession,
+                  sessionId: sessionID,
                   error: message,
                 });
               }
@@ -457,23 +449,21 @@ export function createSubagentTool(
       //    The session path (when any) was already patched onto the run via
       //    `updateRun` on the first progress report, so finish only sets
       //    the terminal status and outcome fields.
-      if (runStarted) {
-        finishRun(runId, {
-          status:
-            result.kind === "ok"
-              ? "done"
-              : result.kind === "error"
-                ? "error"
-                : "aborted",
-          ...(result.kind === "error" ? { error: result.errorMessage } : {}),
-        });
-        notifyRunChange();
-      }
+      finishRun(runId, {
+        status:
+          result.kind === "ok"
+            ? "done"
+            : result.kind === "error"
+              ? "error"
+              : "aborted",
+        ...(result.kind === "error" ? { error: result.errorMessage } : {}),
+      });
+      notifyRunChange(sessionID);
 
       log.info({
         hook: "subagent-tool",
         event: "subagent_done",
-        sessionId: parentSession,
+        sessionId: sessionID,
         agent: input.agent,
         description: input.description,
         kind: result.kind,
@@ -495,7 +485,7 @@ export function createSubagentTool(
  */
 export const unit = defineTool({
   name: "subagent",
-  needs: ["subagentDriver"],
+  needs: ["subagentDriver", "resolveCallerAgent"],
   wants: [
     "toolHost",
     "subagentBaseline",

@@ -25,7 +25,8 @@
  * @module
  */
 
-import { setModelLimit } from "../../core/context/model-limits.js";
+import type { ContextRuntime } from "../../core/context/runtime.js";
+import type { WorkPermit } from "../../core/lifecycle/index.js";
 import {
   applyModelVariant,
   type PromptVariantPair,
@@ -81,6 +82,8 @@ export interface InfraHookDeps {
   orchestrator?: string;
   /** The lifecycle wiring of this plugin instance. */
   sessions: InfraSessionLifecycle;
+  /** The plugin instance's context records. */
+  contextRuntime: ContextRuntime;
 }
 
 /**
@@ -96,7 +99,7 @@ export interface InfraHookDeps {
  * @returns The `event` and `experimental.chat.system.transform` hooks.
  */
 export function buildInfraHooks(deps: InfraHookDeps) {
-  const { client, resolveAgent, orchestrator, sessions } = deps;
+  const { client, resolveAgent, orchestrator, sessions, contextRuntime } = deps;
 
   return {
     async event(input: {
@@ -245,17 +248,19 @@ export function buildInfraHooks(deps: InfraHookDeps) {
         model: { id: string; limit: { context: number; output: number } };
       },
       output: { system: string[] },
+      permit?: WorkPermit,
     ) {
       // Capture the active model's context window per session so the
       // pruning nudge phase can resolve percentage thresholds against
       // the real limit.  The session must be live first: capturing a limit
       // for a deleted session would recreate the record the deletion
-      // released.
+      // released.  The capture itself runs only under the event's permit,
+      // so it never outlives the session admission.
       if (input.model?.limit?.context !== undefined) {
         const session = await sessions.sessionState(input.sessionID);
-        if (session !== null) {
-          setModelLimit(
-            session.sessionID,
+        if (session !== null && permit !== undefined) {
+          contextRuntime.setModelLimit(
+            permit,
             input.model.limit.context,
             input.model.id,
           );

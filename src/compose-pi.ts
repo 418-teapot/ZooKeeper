@@ -68,7 +68,8 @@ import type {
 } from "./adapters/pi/types.js";
 import type { ComposedResult } from "./core/compose.js";
 import { runIsolated, runIsolatedSync } from "./core/compose.js";
-import { setModelLimit } from "./core/context/model-limits.js";
+import type { ContextRuntime } from "./core/context/runtime.js";
+import type { WorkPermit } from "./core/lifecycle/index.js";
 import {
   collectToolDefinitionChanges,
   createToolDefinitionView,
@@ -240,14 +241,22 @@ export async function applyToolDefinitionContributions(
  * Capture the active model's context window when pi exposes one.
  *
  * pi's `ExtensionContext.model.contextWindow` is the host-native source
- * of the context limit.  The value is stored per session so the pruning
- * nudge phase can resolve percentage thresholds against the real window.
- * Missing or non-finite values are ignored.
+ * of the context limit.  The value is captured through the plugin
+ * instance's runtime so the pruning nudge phase can resolve percentage
+ * thresholds against the real window.  Missing or non-finite values are
+ * ignored, and so is a call without a permit: the capture never outlives
+ * the session admission.
  *
- * @param sessionId - The session identifier.
+ * @param runtime - The plugin instance's context records.
+ * @param permit - The permit the context event was admitted under.
  * @param model - Duck-typed pi model object from the handler context.
  */
-function capturePiModelLimit(sessionId: string, model: unknown): void {
+function capturePiModelLimit(
+  runtime: ContextRuntime,
+  permit: WorkPermit | undefined,
+  model: unknown,
+): void {
+  if (permit === undefined) return;
   if (!model || typeof model !== "object") return;
   const ctxModel = model as { id?: unknown; contextWindow?: unknown };
   const contextWindow = ctxModel.contextWindow;
@@ -255,7 +264,7 @@ function capturePiModelLimit(sessionId: string, model: unknown): void {
     return;
   }
   const modelId = typeof ctxModel.id === "string" ? ctxModel.id : "unknown";
-  setModelLimit(sessionId, contextWindow, modelId);
+  runtime.setModelLimit(permit, contextWindow, modelId);
 }
 
 // ---------------------------------------------------------------------------
@@ -391,22 +400,34 @@ export function buildPiToolResultHandler(
  * the real limit, then returns the modified message list as pi's
  * `ContextEventResult` so pi replaces the turn's LLM context.
  *
+ * The session id and permit are the caller's: the entry paths admit the
+ * event first and pass the permit's session id and the permit itself, so
+ * the transform addresses that session's context instead of inferring one
+ * from the event context, and never writes a record outside the admission.
+ * A caller that supplies no id (pure tests) falls back to the event
+ * context's own id.
+ *
  * @param transform - The composed messages-transform contributions.
+ * @param runtime - The plugin instance's context records.
  * @returns The `context` event handler.
  */
 export function buildPiContextHandler(
   transform: ComposedResult["transform"],
+  runtime: ContextRuntime,
 ): (
   event: PiContextEvent,
   ctx: PiContextHandlerContext,
+  sessionID?: string,
+  permit?: WorkPermit,
 ) => Promise<PiContextResult | undefined> {
-  return async (event, ctx) => {
-    const sessionID = ctx?.sessionManager?.getSessionId() ?? "";
+  return async (event, ctx, explicitSessionID, permit) => {
+    const sessionID =
+      explicitSessionID ?? ctx?.sessionManager?.getSessionId() ?? "";
     const model =
       ctx && typeof ctx === "object"
         ? (ctx as Record<string, unknown>).model
         : undefined;
-    capturePiModelLimit(sessionID, model);
+    capturePiModelLimit(runtime, permit, model);
 
     const output: TransformOutput = {
       messages: event.messages,
@@ -414,7 +435,7 @@ export function buildPiContextHandler(
 
     await runIsolated(
       transform,
-      (contribution) => contribution.handle(output),
+      (contribution) => contribution.handle(output, sessionID, permit),
       { sessionID },
     );
 
@@ -510,8 +531,18 @@ export interface PiCommandRegistration {
   name: string;
   /** Command description surfaced by pi's command list. */
   description: string;
-  /** The `(args, ctx)` handler pi invokes for the command. */
-  handler(args: string, ctx: PiCommandContext): Promise<void>;
+  /**
+   * Whether the command replaces the current pi session, carrying the
+   * contribution's own {@link CommandContribution.replacesSession} claim.
+   * The entry point admits such a command as a control operation.
+   */
+  replacesSession: boolean;
+  /** The `(args, ctx, permit)` handler pi invokes for the command. */
+  handler(
+    args: string,
+    ctx: PiCommandContext,
+    permit?: WorkPermit,
+  ): Promise<void>;
 }
 
 /**
@@ -521,36 +552,29 @@ export interface PiCommandRegistration {
  * The handler resolves the session id from pi's command context
  * (`ctx.sessionManager.getSessionId()`) and forwards the raw arguments
  * string into the host-agnostic `CommandInput`, mirroring the OpenCode
- * adapter's command routing.  An optional `refresh` callback receives
- * the pi context so the entry point can update its shared context
- * holder before the command body runs (the command tool host reads the
- * holder for history / notifications).
+ * adapter's command routing.  Binding the command context to the session
+ * contexts is the wiring layer's job, inside the permit.
  *
  * @param commands - The composed command contributions, keyed by name.
- * @param refresh - Optional callback receiving the raw pi command context.
- * @param beforeHandle - Optional asynchronous hook run after `refresh` and
- *   before the command body: the entry point ensures the session scope here
- *   so a command that is the session's first observation still has its
- *   resources.
  * @returns The pi command registrations (empty for an empty slot).
  */
 export function buildPiCommandRegistrationPlan(
   commands: ComposedResult["commands"],
-  refresh?: (ctx: PiCommandContext) => void,
-  beforeHandle?: (ctx: PiCommandContext) => Promise<void>,
 ): PiCommandRegistration[] {
   return Object.values(commands).map((contribution) => ({
     name: contribution.name,
     description: contribution.description,
-    handler: async (args, ctx) => {
-      refresh?.(ctx);
-      await beforeHandle?.(ctx);
+    replacesSession: contribution.replacesSession === true,
+    handler: async (args, ctx, permit) => {
       const sessionID = ctx?.sessionManager?.getSessionId() ?? "";
-      await contribution.handle({
-        command: contribution.name,
-        sessionID,
-        arguments: args,
-      });
+      await contribution.handle(
+        {
+          command: contribution.name,
+          sessionID,
+          arguments: args,
+        },
+        permit,
+      );
     },
   }));
 }

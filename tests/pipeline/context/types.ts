@@ -28,6 +28,7 @@
 
 import type { ContextPruningConfig } from "../../../src/core/config-types.js";
 import type { CompressRangeInput } from "../../../src/core/context/compress.js";
+import type { ContextRuntime } from "../../../src/core/context/runtime.js";
 import type { SessionState } from "../../../src/core/context/state.js";
 
 /**
@@ -215,6 +216,13 @@ export interface ScenarioCapture {
  * projection.
  */
 export interface PipelineHost<M> {
+  /** The plugin instance's context records this lane drives. */
+  readonly runtime: ContextRuntime;
+  /**
+   * Simulate a process restart: drop the in-memory cache while the store
+   * keeps its files.
+   */
+  restart(): void;
   /**
    * Run the context-pruning transform over a message view, appending
    * notification texts to the accumulator.
@@ -223,12 +231,14 @@ export interface PipelineHost<M> {
    * (`buildPiContextHandler`) is asynchronous, so the runner awaits the
    * call before capturing the view.
    *
+   * @param sessionID - The scenario session id.
    * @param messages - The round's view (mutated in place).
    * @param config - The merged (scenario + round) transform config.
    * @param hasCompressTool - Whether the compress tool is available.
    * @param notify - Notification-text accumulator (mutated).
    */
   runTransform(
+    sessionID: string,
     messages: M[],
     config: ContextPruningConfig,
     hasCompressTool: boolean,

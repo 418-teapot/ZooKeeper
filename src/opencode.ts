@@ -34,12 +34,15 @@
  * per-session state the always-on hooks drive, so `session.created` is a
  * real start notice, `session.deleted` stops exactly that session, and the
  * host's `dispose` stops every remaining session and then the extension.
- * Every assembled hook that names a session ensures it first, so a hook
- * call that is the host's first word about a session still gets its scope
- * — and a session the host deleted is never rebuilt.  The hooks naming no
- * session (`config`, and `event`, which ensures exactly the paths it
- * drives) stay unwrapped: the configuration stage never enters the
- * session lifecycle.
+ * Every assembled hook that names a session enters through that session's
+ * work permit, so a hook call that is the host's first word about a session
+ * still gets its scope, a session the host deleted never runs another
+ * hook, and a stop waits for running work before disposing the scope.  The
+ * registered tools take the same path and receive the permit's signal as
+ * their abort.  The hooks naming no session (`config` and `tool.definition`)
+ * stay unwrapped: the configuration stage never enters the session
+ * lifecycle.  The `event` hook sends a session creation and a deletion
+ * straight to the lifecycle and admits only its per-session work.
  *
  * @module
  */
@@ -50,7 +53,7 @@ import { createOpenCodeHandoffTarget } from "./adapters/opencode/handoff-target.
 import { buildInfraHooks } from "./adapters/opencode/infra-hooks.js";
 import {
   createOpenCodeLifecycleWiring,
-  withEnsuredSessions,
+  withSessionWork,
 } from "./adapters/opencode/lifecycle-wiring.js";
 import { createOpenCodeMessageInjector } from "./adapters/opencode/message-injector.js";
 import {
@@ -70,10 +73,21 @@ import { capabilityBindings } from "./core/bindings.js";
 import { configCapabilities, parseCommonConfig } from "./core/capabilities.js";
 import { assemble } from "./core/compose.js";
 import { initPluginLogger } from "./core/config-parse.js";
+import {
+  type ContextRuntime,
+  createContextRuntime,
+} from "./core/context/runtime.js";
 import { ORCHESTRATOR_AGENT_NAME } from "./core/orchestrator.js";
 import type { Capabilities } from "./core/ports/index.js";
 import { filterDisjointVariants } from "./core/prompt-variant.js";
-import { sessionAgentRegistry } from "./core/session/agent.js";
+import {
+  sessionAgentRegistry,
+  sessionAgentResource,
+} from "./core/session/agent.js";
+import {
+  contextSessionResources,
+  createSessionResourceCatalog,
+} from "./core/session/resources.js";
 import { REGISTRY } from "./registry.js";
 import { log } from "./utils/logger.js";
 
@@ -111,6 +125,8 @@ export async function buildPlugin(
   overrides?: {
     /** Test seam: `zdebug` runner for the auto-debug strategy. */
     zdebugExec?: Partial<Capabilities>["zdebugExec"];
+    /** Test seam: the instance's context runtime to inspect in place. */
+    contextRuntime?: ContextRuntime;
   },
 ) {
   const common = parseCommonConfig(zooConfig, rawConfig);
@@ -140,11 +156,21 @@ export async function buildPlugin(
   // the OpenCode SDK exposes no other session-access method.
   const resolveCallerAgent = (sessionID: string): Promise<string | undefined> =>
     resolveSessionAgent(sessionID, client, resolveAgent);
+  // The context records of this plugin instance: one runtime per instance,
+  // so two instances in one process never share session state, a captured
+  // model limit, a published round view, or a pending-view-change flag.
+  const contextRuntime = overrides?.contextRuntime ?? createContextRuntime();
+  const sessionCatalog = createSessionResourceCatalog([
+    ...contextSessionResources(contextRuntime),
+    sessionAgentResource,
+  ]);
+
   // The selection-independent capability values.  Also handed to the
   // adapter, which reads the limits for its init log and the caller resolver
   // for the delegation gate (both are host facts, not selection facts).
   const values: Partial<Capabilities> = {
     ...configCapabilities(common),
+    contextRuntime,
     // OpenCode serves the todo read from its SDK client; the assembly is
     // the single place that binds the backend (pi binds its state store).
     todoSource: todoSourceFromClient(client),
@@ -211,10 +237,12 @@ export async function buildPlugin(
   // an extension service of the same instance.
   const hostServices = createOpenCodeHostServices({
     onSettled: composed.onSettled,
+    sessionCatalog,
   });
   const lifecycle = createOpenCodeLifecycleWiring({
     extensionServices: hostServices.extension,
     sessionServices: hostServices.session,
+    sessionCatalog,
   });
   // Every hook addresses one session's state, never a whole scope: this is
   // the surface the always-on event hook drives.
@@ -232,17 +260,18 @@ export async function buildPlugin(
       promptVariants,
       orchestrator: selection.orchestrator,
       sessions,
+      contextRuntime,
     }),
     // Selection-driven registrations (from the adapter).
     ...selectionHooks,
   };
 
   return {
-    // Every assembled hook that names a session ensures it first: a tool
-    // call, a command or a transform can be the host's first word about a
-    // session, and a session the host deleted is never rebuilt.  `config`
-    // and `event` name no session and stay unwrapped.
-    ...withEnsuredSessions(hooks, sessions.sessionState),
+    // Every call that names a session enters through its session's permit:
+    // a hook runs only for a live session, a tool call receives the permit's
+    // signal, and a stop waits for both before disposing the scope.  `config`
+    // and `tool.definition` name no session and stay unwrapped.
+    ...withSessionWork(hooks, lifecycle),
     // The host disposes the plugin: stop every remaining session and then
     // the extension, logging each cleanup failure instead of dropping it.
     async dispose() {

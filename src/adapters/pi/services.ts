@@ -10,28 +10,28 @@
  *
  *  - extension-scope services are created once when the entry point
  *    activates the extension (before composition) and stopped by every path
- *    that stops it: the live context, the adapter built on it, the tool
- *    host built on it, the todo catalog, the profile catalog, the tool
+ *    that stops it: the session contexts, the adapter, the tool host built
+ *    on the contexts, the todo catalog, the profile catalog, the tool
  *    baselines, the fleet surface, the switch surface, the composed
  *    profile and the loop engine built from it;
  *  - session-scope services are created lazily, once per session, and
- *    release their own resources: the session's entry in the live context,
- *    its todo store, its own fleet (widget, todo column, host writes), and
- *    its loop state (the engine's reminder budget and awaiting lock).
+ *    release their own resources: the session's entry in the session
+ *    contexts, its todo store, its own fleet (widget, todo column, host
+ *    writes), and its loop state (the engine's reminder budget and
+ *    awaiting lock).
  *    The `sessionResources` service carries no state of its own: it applies
- *    the process-level session records' declarations
- *    (`core/session/resources.ts`) to the stopping scope, so a pi
- *    `session_shutdown` releases their runtime state while the persisted
+ *    this instance's record declarations (`core/session/resources.ts`,
+ *    built from the instance's `ContextRuntime`) to the stopping scope, so a
+ *    pi `session_shutdown` releases their runtime state while the persisted
  *    context and the agent bindings stay for the next runtime.
  *
  * A factory receives only the services it declares, so the dependency
- * direction is visible in the declarations: the adapter and the tool host
- * depend on the live context (context holder → adapter → tool host), the
- * fleet facade depends on the live context, the switch surface depends on
- * the live context, the baselines and the fleet facade, and the session
- * services depend on the extension services they register with.  Nothing
- * here reaches a service locator, and the composition never receives a
- * session-scoped object: it receives these extension-scope ports.
+ * direction is visible in the declarations: the tool host depends on the
+ * session contexts, the switch surface depends on the session contexts,
+ * the baselines and the fleet facade, and the session services depend on
+ * the extension services they register with.  Nothing here reaches a
+ * service locator, and the composition never receives a session-scoped
+ * object: it receives these extension-scope ports.
  *
  * The switch handoff store stays process-level on purpose (see
  * `switch-host.ts`): a switch spans two factory executions, so its pending
@@ -42,6 +42,7 @@
 
 import type { ComposedResult } from "../../core/compose.js";
 import type { AgentModeMap, ModeProfile } from "../../core/config-types.js";
+import type { ContextRuntime } from "../../core/context/runtime.js";
 import {
   defineExtensionService,
   defineSessionService,
@@ -53,8 +54,10 @@ import {
 } from "../../core/loop/index.js";
 import type { AgentPermissionMap } from "../../core/permissions/deny-tools.js";
 import type { SwitchHost } from "../../core/ports/switch.js";
-import { sessionResourcesService } from "../../core/session/resources.js";
-import { getPrimary } from "../../core/subagent/identity.js";
+import {
+  defineSessionResourcesService,
+  type SessionResourceCatalog,
+} from "../../core/session/resources.js";
 import type { SubagentRun } from "../../core/subagent/registry.js";
 import type { FetchCandidates } from "../../core/todo/store.js";
 import type { ValidationLimits } from "../../core/validate.js";
@@ -65,8 +68,10 @@ import {
   createPiFleetSessionRegistry,
   type PiFleetSession,
 } from "./fleet-session.js";
-import type { PiCommandCtx } from "./handoff-target.js";
-import { createPiLiveContext, type PiLiveContext } from "./live-context.js";
+import {
+  createPiSessionContexts,
+  type PiSessionContexts,
+} from "./session-contexts.js";
 import type { PiHistoryEntry } from "./subagent-scan.js";
 import {
   createPiSwitchHost,
@@ -74,11 +79,7 @@ import {
 } from "./switch-host.js";
 import { scanTodoSnapshots } from "./todo-scan.js";
 import { createPiTodoSessions } from "./todo-sessions.js";
-import {
-  createPiToolHost,
-  type PiAppendEntry,
-  type PiToolHostContext,
-} from "./tool-host.js";
+import { createPiToolHost, type PiAppendEntry } from "./tool-host.js";
 import type { ExtensionAPI } from "./types.js";
 
 /**
@@ -197,23 +198,20 @@ export function createPiProfileCatalog(): PiProfileCatalog {
  *
  * The fleet itself is per session (see `fleet-session.ts`): each session
  * scope owns its widget, its todo column and its host writes.  This facade
- * is what the entry point's nudges address, and it names sessions only by
- * id — an explicit id, or the session the current event names when the
- * caller omits one.  No session object is reachable from here, so a caller
- * can never hold one session's fleet.
+ * is what the entry point's nudges address, and every call names its
+ * session explicitly — no session object is reachable from here, so a
+ * caller can never hold one session's fleet.  An absent or unknown id
+ * writes nothing.
  */
 export interface PiFleetFacade {
   /** Re-render one session's widget (registry / primary change nudge). */
-  refresh(sessionID?: string): void;
+  refresh(sessionID: string | undefined): void;
   /** Re-read one session's todo state and re-render its widget. */
-  refreshTodoView(sessionID?: string): void;
+  refreshTodoView(sessionID: string | undefined): void;
   /** Seed one session's todo column once (the `before_agent_start` fallback). */
-  seedTodoView(sessionID?: string): void;
-  /**
-   * Register one session's widget on that session's host writes.  An absent
-   * or unknown id writes nothing.
-   */
-  register(sessionID?: string): void;
+  seedTodoView(sessionID: string | undefined): void;
+  /** Register one session's widget on that session's host writes. */
+  register(sessionID: string | undefined): void;
 }
 
 /**
@@ -256,6 +254,10 @@ export interface PiServiceHost {
    * settle strategies is a service of the same graph, created after it.
    */
   composeProfile(ports: PiCompositionPorts): PiContributions;
+  /** The context records of this extension instance. */
+  readonly contextRuntime: ContextRuntime;
+  /** The session records of this extension instance. */
+  readonly sessionCatalog: SessionResourceCatalog;
   /**
    * Test seam: the per-(session, strategy) reminder-budget store to
    * observe and seed.  Defaults to a fresh store when omitted.
@@ -273,11 +275,11 @@ export interface PiServiceHost {
 
 /** The extension-scope services the composed profile reads. */
 export interface PiCompositionPorts {
-  /** The extension-scope live context. */
-  readonly liveContext: PiLiveContext;
-  /** The host adapter built on the live context. */
+  /** The extension-scope session contexts. */
+  readonly sessionContexts: PiSessionContexts;
+  /** The host adapter (it names no session of its own). */
   readonly adapter: ReturnType<typeof createPiAdapter>;
-  /** The tool host built on the live context. */
+  /** The tool host built on the session contexts. */
   readonly toolHost: ReturnType<typeof createPiToolHost>;
   /** The todo catalog restoring each session's plan. */
   readonly todo: ReturnType<typeof createPiTodoSessions>;
@@ -303,19 +305,33 @@ export interface PiContributions {
   readonly agentModes: AgentModeMap;
   /** The per-agent tool-deny rules of the profile. */
   readonly agentPermissions: AgentPermissionMap;
-  /** The caller resolver the delegation gate reads. */
-  readonly resolveCallerAgent: () => Promise<string | undefined>;
+  /**
+   * The session → agent resolver of this runtime.
+   *
+   * Event handlers read it synchronously with the session the event names;
+   * the answer comes from explicit sources only (see
+   * `buildPiResolveAgent`).
+   */
+  readonly resolveAgent: (sessionID: string) => string | undefined;
+  /** The caller resolver the delegation gate reads (same resolver). */
+  readonly resolveCallerAgent: (
+    sessionID: string,
+  ) => Promise<string | undefined>;
+  /** The context records of this extension instance. */
+  readonly contextRuntime: ContextRuntime;
 }
 
 /** The todo transcript scan of pi's live session manager. */
-function createTodoCandidates(liveContext: PiLiveContext): FetchCandidates {
+function createTodoCandidates(
+  sessionContexts: PiSessionContexts,
+): FetchCandidates {
   return async (sessionId) => {
-    // Resolve the context of the session the CALLER named.  Reading the
-    // latest published context instead would scan another session's
-    // transcript whenever two sessions interleave, and a session this host
-    // never observed has no transcript at all — fail closed (empty) rather
-    // than borrowing one.
-    const sessionManager = liveContext.forSession(sessionId)?.sessionManager;
+    // Resolve the context of the session the CALLER named.  Reading another
+    // session's context would scan its transcript whenever two sessions
+    // interleave, and a session this host never observed has no transcript
+    // at all — fail closed (empty) rather than borrowing one.
+    const sessionManager =
+      sessionContexts.forSession(sessionId)?.sessionManager;
     if (sessionManager?.getBranch === undefined) return [];
     try {
       // `getBranch` (not `buildContextEntries`): the raw entries of the
@@ -339,25 +355,20 @@ function createTodoCandidates(liveContext: PiLiveContext): FetchCandidates {
 }
 
 /**
- * Build the fleet facade over the live context.
+ * Build the fleet facade.
  *
- * Routing is by session id only: the caller may name the session, otherwise
- * the session the current event names is used.  An id no session scope bound
- * writes nothing — the facade never falls back to another session's fleet.
+ * Routing is by session id only, and the id is always the caller's: an id
+ * no session scope bound writes nothing, so the facade never falls back to
+ * another session's fleet.
  */
-function createPiFleetSurface(deps: {
-  readonly liveContext: PiLiveContext;
-}): PiFleetSurface {
+function createPiFleetSurface(): PiFleetSurface {
   const sessions = createPiFleetSessionRegistry();
-  /** The session a call addresses: explicit id, or the current event's. */
-  const route = (sessionID: string | undefined): string | undefined =>
-    sessionID ?? deps.liveContext.sessionId();
 
   return {
-    refresh: (sessionID) => sessions.refresh(route(sessionID)),
-    refreshTodoView: (sessionID) => sessions.refreshTodoView(route(sessionID)),
-    seedTodoView: (sessionID) => sessions.seedTodoView(route(sessionID)),
-    register: (sessionID) => sessions.register(route(sessionID)),
+    refresh: (sessionID) => sessions.refresh(sessionID),
+    refreshTodoView: (sessionID) => sessions.refreshTodoView(sessionID),
+    seedTodoView: (sessionID) => sessions.seedTodoView(sessionID),
+    register: (sessionID) => sessions.register(sessionID),
     attach: (session) => sessions.bind(session),
     detach: (session) => sessions.release(session),
   };
@@ -367,7 +378,7 @@ function createPiFleetSurface(deps: {
 function createPiSwitchSurface(
   host: PiServiceHost,
   deps: {
-    readonly liveContext: PiLiveContext;
+    readonly sessionContexts: PiSessionContexts;
     readonly toolBaselines: PiToolBaselines;
     readonly fleet: PiFleetFacade;
   },
@@ -380,10 +391,10 @@ function createPiSwitchSurface(
   const controller: PiSwitchHostController = createPiSwitchHost({
     getBaselineTools: () => deps.toolBaselines.primary(),
     setActiveTools: (names) => host.piApi?.setActiveTools?.(names),
-    refreshFleetWidget: () => deps.fleet.refresh(),
-    getUi: () => deps.liveContext.current()?.ui,
-    getCommandCtx: () => deps.liveContext.current() as PiCommandCtx | undefined,
-    setContext: (ctx) => deps.liveContext.publish(ctx),
+    refreshFleetWidget: (sessionID) => deps.fleet.refresh(sessionID),
+    getCommandCtx: (sessionID) =>
+      deps.sessionContexts.commandForSession(sessionID),
+    setContext: (sessionID, ctx) => deps.sessionContexts.bind(sessionID, ctx),
   });
   return {
     host: controller.host,
@@ -404,42 +415,37 @@ function createPiSwitchSurface(
  * @returns The extension and session declarations, in creation order.
  */
 export function createPiHostServices(host: PiServiceHost) {
-  const liveContext = defineExtensionService({
-    name: "liveContext",
+  const sessionContexts = defineExtensionService({
+    name: "sessionContexts",
     deps: [],
-    create: () => createPiLiveContext(),
-    // A stopped extension has no live context: readers fail closed instead
-    // of writing to a surface pi already replaced.
-    dispose: (context) => context.release(),
+    create: () => createPiSessionContexts(),
+    // A stopped extension has no session contexts: readers fail closed
+    // instead of writing to a surface pi already replaced.
+    dispose: (contexts) => contexts.release(),
   });
 
   const adapter = defineExtensionService({
     name: "adapter",
-    deps: [liveContext],
-    create: ({ deps }) => createPiAdapter(() => deps.liveContext.sessionId()),
+    deps: [],
+    // The pi adapter names no session of its own: the entry paths pass the
+    // session id to the transform.
+    create: () => createPiAdapter(),
   });
 
   const toolHost = defineExtensionService({
     name: "toolHost",
-    deps: [liveContext],
+    deps: [sessionContexts],
     create: ({ deps }) =>
-      createPiToolHost(
-        // The holder the tool host reads is a view over the live context, so
-        // the pointer keeps exactly one owner.
-        {
-          get current(): PiToolHostContext | undefined {
-            return deps.liveContext.current();
-          },
-        },
-        host.appendEntry,
-      ),
+      // The toast port resolves the ui of the session it serves; the session
+      // contexts are its one owner.
+      createPiToolHost(deps.sessionContexts, host.appendEntry),
   });
 
   const todo = defineExtensionService({
     name: "todo",
-    deps: [liveContext],
+    deps: [sessionContexts],
     create: ({ deps }) =>
-      createPiTodoSessions(createTodoCandidates(deps.liveContext)),
+      createPiTodoSessions(createTodoCandidates(deps.sessionContexts)),
     // Sessions stop before their extension, so their stores are already
     // released; this drops any leftover registration.
     dispose: (sessions) => sessions.release(),
@@ -461,13 +467,13 @@ export function createPiHostServices(host: PiServiceHost) {
 
   const fleet = defineExtensionService({
     name: "fleet",
-    deps: [liveContext],
-    create: ({ deps }) => createPiFleetSurface(deps),
+    deps: [],
+    create: () => createPiFleetSurface(),
   });
 
   const switchHost = defineExtensionService({
     name: "switchHost",
-    deps: [liveContext, toolBaselines, fleet],
+    deps: [sessionContexts, toolBaselines, fleet],
     create: ({ deps }) => createPiSwitchSurface(host, deps),
   });
 
@@ -477,7 +483,7 @@ export function createPiHostServices(host: PiServiceHost) {
   const composition = defineExtensionService({
     name: "composition",
     deps: [
-      liveContext,
+      sessionContexts,
       adapter,
       toolHost,
       todo,
@@ -513,14 +519,14 @@ export function createPiHostServices(host: PiServiceHost) {
     },
   });
 
-  // The session's entry in the live context.  Declared FIRST so it is
+  // The session's entry in the session contexts.  Declared FIRST so it is
   // disposed LAST: the session's todo store and fleet read the context
-  // indexed for this session, so it must outlive both of them.
+  // bound for this session, so it must outlive both of them.
   const sessionContext = defineSessionService({
     name: "sessionContext",
-    deps: [liveContext],
+    deps: [sessionContexts],
     create: ({ deps, sessionID }) => ({
-      release: () => deps.liveContext.releaseSession(sessionID),
+      release: () => deps.sessionContexts.releaseSession(sessionID),
     }),
     dispose: (owner) => owner.release(),
   });
@@ -534,31 +540,34 @@ export function createPiHostServices(host: PiServiceHost) {
 
   // The session's own fleet: its widget, its todo column and its host
   // writes.  It depends on this session's todo store (never the
-  // extension-wide catalog), reads this session's `ui` out of the live
-  // context, and is released with the session — a sibling session's widget
+  // extension-wide catalog), reads this session's `ui` out of the session
+  // contexts, and is released with the session — a sibling session's widget
   // is untouched.
   const fleetSession = defineSessionService({
     name: "fleetSession",
-    deps: [fleet, liveContext, todoStore],
+    deps: [fleet, sessionContexts, todoStore, composition],
     create: ({ deps, sessionID }) => {
       const session = createPiFleetSession({
         sessionID,
-        getPrimary: () => getPrimary(),
+        // The session's own primary: the shared resolver answers for the
+        // session this fleet belongs to, never for a sibling's.
+        getPrimary: () => deps.composition.resolveAgent(sessionID),
         colorizeAgent: host.colorizeAgent,
         // Fail-closed: without a pi API instance there is no host to write
         // to, so the fleet stays inert.
         getUi: () =>
           host.piApi === undefined
             ? undefined
-            : deps.liveContext.forSession(sessionID)?.ui,
+            : deps.sessionContexts.forSession(sessionID)?.ui,
         getEditorText: () =>
-          deps.liveContext.forSession(sessionID)?.ui?.getEditorText?.() ?? "",
+          deps.sessionContexts.forSession(sessionID)?.ui?.getEditorText?.() ??
+          "",
         titleForRun: host.titleForRun,
         borderColorizeForRun: host.borderColorizeForRun,
         // Read this session's `ui.custom` overlay opener fresh on each enter
         // (pi exposes it on every event context's `ui`).
         getOpenOverlay: () => {
-          const ui = deps.liveContext.forSession(sessionID)?.ui;
+          const ui = deps.sessionContexts.forSession(sessionID)?.ui;
           if (ui?.custom === undefined) return undefined;
           return ui.custom.bind(ui);
         },
@@ -589,7 +598,7 @@ export function createPiHostServices(host: PiServiceHost) {
 
   return {
     extension: [
-      liveContext,
+      sessionContexts,
       adapter,
       toolHost,
       todo,
@@ -605,7 +614,7 @@ export function createPiHostServices(host: PiServiceHost) {
       todoStore,
       fleetSession,
       loopSession,
-      sessionResourcesService,
+      defineSessionResourcesService(host.sessionCatalog),
     ] as const,
   };
 }

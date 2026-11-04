@@ -4,14 +4,17 @@
  * Boundary: the factory's returned host surface and its drain hook,
  * observed through injected deps.  The switch command unit itself
  * (`src/commands/switch/switch.ts`) and the entry-point wiring are covered
- * elsewhere; here the host's own responsibilities are asserted — routing a
- * `zoo` write to the fleet widget, passing other widgets to the live ui,
- * deferring the post-replacement tool trim across the factory re-run, and
- * clearing stale queued operations.
+ * elsewhere; here the host's own responsibilities are asserted — resolving
+ * the command context of the session being replaced, binding the fresh
+ * context under the new session id, routing a `zoo` write to that session's
+ * fleet widget, passing other widgets to the fresh ui, deferring the
+ * post-replacement tool trim across the factory re-run, and clearing stale
+ * queued operations.
  */
 import assert from "node:assert/strict";
 import { afterEach, describe, it } from "node:test";
 import type { SwitchNewSessionOps } from "../../core/ports/switch.js";
+import { sessionAgentRegistry } from "../../core/session/agent.js";
 import type { PiCommandCtx } from "./handoff-target.js";
 import {
   _resetPendingSwitchOpsForTesting,
@@ -23,75 +26,88 @@ import {
 /** A deps stub recording every side effect the host can produce. */
 function makeDeps(over: Partial<PiSwitchHostDeps> = {}): {
   deps: PiSwitchHostDeps;
-  widgets: Array<[string, unknown]>;
+  refreshes: string[];
   applied: string[][];
-  contexts: unknown[];
-  refreshes: () => number;
+  bound: Array<[string, unknown]>;
 } {
-  const widgets: Array<[string, unknown]> = [];
+  const refreshes: string[] = [];
   const applied: string[][] = [];
-  const contexts: unknown[] = [];
-  let refreshes = 0;
+  const bound: Array<[string, unknown]> = [];
   const deps: PiSwitchHostDeps = {
     getBaselineTools: () => ["edit", "bash"],
     setActiveTools: (names) => applied.push(names),
-    refreshFleetWidget: () => {
-      refreshes += 1;
-    },
-    getUi: () => ({
-      setWidget: (key, content) => widgets.push([key, content]),
-    }),
+    refreshFleetWidget: (sessionID) => refreshes.push(sessionID),
     getCommandCtx: () => undefined,
-    setContext: (ctx) => contexts.push(ctx),
+    setContext: (sessionID, ctx) => bound.push([sessionID, ctx]),
     ...over,
   };
-  return {
-    deps,
-    widgets,
-    applied,
-    contexts,
-    refreshes: () => refreshes,
-  };
+  return { deps, refreshes, applied, bound };
 }
 
 /** A command ctx whose newSession runs withSession against a fresh ui. */
 function replacingCtx(
   freshWidgets: Array<[string, unknown]> = [],
-): PiCommandCtx {
+  cancelled = false,
+): {
+  cmdCtx: PiCommandCtx;
+  fresh: () => unknown;
+} {
+  let fresh: unknown;
   return {
-    newSession: async (options) => {
-      await options?.withSession?.({
-        sendUserMessage: async () => {},
-        ui: {
-          setWidget: (key, content) => freshWidgets.push([key, content]),
-        },
-        sessionManager: { getSessionId: () => "sess-new" },
-      });
-      return { cancelled: false };
+    cmdCtx: {
+      newSession: async (options) => {
+        fresh = {
+          sendUserMessage: async () => {},
+          ui: {
+            setWidget: (key: string, content: unknown) =>
+              freshWidgets.push([key, content]),
+          },
+          sessionManager: { getSessionId: () => "sess-new" },
+        };
+        await options?.withSession?.(fresh as never);
+        return { cancelled };
+      },
     },
+    fresh: () => fresh,
   };
 }
 
 afterEach(() => {
   _resetPendingSwitchOpsForTesting();
+  sessionAgentRegistry.clear();
 });
 
-describe("createPiSwitchHost — widget routing", () => {
-  it("routes a zoo write to the fleet widget and other keys to the live ui", () => {
+describe("createPiSwitchHost — session addressing", () => {
+  it("resolves the command context of the session being replaced", async () => {
+    const asked: string[] = [];
+    const replacement = replacingCtx();
+    const h = makeDeps({
+      getCommandCtx: (sessionID) => {
+        asked.push(sessionID);
+        return replacement.cmdCtx;
+      },
+    });
+    const { host } = createPiSwitchHost(h.deps, createSwitchOpsStore());
+
+    await host.newSession({ parentSession: "sess-old" });
+
+    assert.deepEqual(asked, ["sess-old"]);
+  });
+
+  it("fails closed when the replaced session has no command context", async () => {
     const h = makeDeps();
     const { host } = createPiSwitchHost(h.deps, createSwitchOpsStore());
 
-    host.setWidget("zoo", ["dolphin"]);
-    assert.equal(h.refreshes(), 1, "zoo is a primary-changed nudge");
-    assert.deepEqual(h.widgets, [], "zoo never reaches ui.setWidget");
-
-    host.setWidget("other", ["x"]);
-    assert.deepEqual(h.widgets, [["other", ["x"]]]);
+    await assert.rejects(
+      () => host.newSession({ parentSession: "sess-old" }),
+      /newSession/,
+    );
   });
 
   it("passes the baseline and active-tool calls through to deps", () => {
     const h = makeDeps();
     const { host } = createPiSwitchHost(h.deps, createSwitchOpsStore());
+
     assert.deepEqual(host.getBaselineTools(), ["edit", "bash"]);
     host.setActiveTools(["edit"]);
     assert.deepEqual(h.applied, [["edit"]]);
@@ -99,15 +115,42 @@ describe("createPiSwitchHost — widget routing", () => {
 });
 
 describe("createPiSwitchHost — session replacement", () => {
-  it("throws when the live command context exposes no newSession", async () => {
-    const h = makeDeps();
+  it("binds the fresh context under the new session id", async () => {
+    const replacement = replacingCtx();
+    const h = makeDeps({ getCommandCtx: () => replacement.cmdCtx });
     const { host } = createPiSwitchHost(h.deps, createSwitchOpsStore());
-    await assert.rejects(() => host.newSession({}), /newSession/);
+
+    await host.newSession({ parentSession: "sess-old" });
+
+    assert.deepEqual(h.bound, [["sess-new", replacement.fresh()]]);
+  });
+
+  it("routes the replacement's zoo write to the new session's fleet", async () => {
+    const freshWidgets: Array<[string, unknown]> = [];
+    const replacement = replacingCtx(freshWidgets);
+    const h = makeDeps({ getCommandCtx: () => replacement.cmdCtx });
+    const { host } = createPiSwitchHost(h.deps, createSwitchOpsStore());
+
+    await host.newSession({
+      parentSession: "sess-old",
+      withSession: (ops: SwitchNewSessionOps) => {
+        ops.setWidget("zoo", ["dolphin"]);
+        ops.setWidget("other", ["x"]);
+      },
+    });
+
+    assert.deepEqual(h.refreshes, ["sess-new"], "zoo is a primary nudge");
+    assert.deepEqual(
+      freshWidgets,
+      [["other", ["x"]]],
+      "zoo never reaches ui.setWidget",
+    );
   });
 
   it("defers the tool trim to the replacement's fresh host", async () => {
     const store = createSwitchOpsStore();
-    const oldHost = makeDeps({ getCommandCtx: () => replacingCtx() });
+    const replacement = replacingCtx();
+    const oldHost = makeDeps({ getCommandCtx: () => replacement.cmdCtx });
     const { host } = createPiSwitchHost(oldHost.deps, store);
 
     await host.newSession({
@@ -118,10 +161,10 @@ describe("createPiSwitchHost — session replacement", () => {
       },
     });
 
-    // The old holder was refreshed with the fresh session's context.
-    assert.equal(oldHost.contexts.length, 1);
-    // The zoo write nudged the widget, never the fresh ui.
-    assert.equal(oldHost.refreshes(), 1);
+    // The old host was told the fresh session's context.
+    assert.equal(oldHost.bound.length, 1);
+    // The zoo write nudged the fresh session's widget, never the fresh ui.
+    assert.deepEqual(oldHost.refreshes, ["sess-new"]);
     // Nothing applied yet: the trim waits for the new session's host.
     assert.deepEqual(oldHost.applied, []);
 
@@ -137,10 +180,11 @@ describe("createPiSwitchHost — session replacement", () => {
   it("clears stale queued operations before a replacement", async () => {
     const store = createSwitchOpsStore();
     store.stash({ activeTools: ["stale"] });
-    const h = makeDeps({ getCommandCtx: () => replacingCtx() });
+    const replacement = replacingCtx();
+    const h = makeDeps({ getCommandCtx: () => replacement.cmdCtx });
     const { host } = createPiSwitchHost(h.deps, store);
 
-    await host.newSession({});
+    await host.newSession({ parentSession: "sess-old" });
 
     const freshHost = makeDeps();
     createPiSwitchHost(freshHost.deps, store).drainPendingOps();
@@ -152,13 +196,37 @@ describe("createPiSwitchHost — session replacement", () => {
     createPiSwitchHost(h.deps, createSwitchOpsStore()).drainPendingOps();
     assert.deepEqual(h.applied, []);
   });
+
+  it("a cancelled replacement revokes only its pending primary", async () => {
+    sessionAgentRegistry.bind("sess-old", "dolphin");
+    const store = createSwitchOpsStore();
+    const replacement = replacingCtx([], true);
+    const h = makeDeps({ getCommandCtx: () => replacement.cmdCtx });
+    const { host } = createPiSwitchHost(h.deps, store);
+
+    await host.newSession({
+      parentSession: "sess-old",
+      withSession: (ops: SwitchNewSessionOps) => ops.setActiveTools(["lynx"]),
+    });
+
+    // No session was created, so its target must not survive the next
+    // switch.
+    assert.equal(store.pendingPrimary(), undefined);
+    // The queued trim is not the target: the session that drains it still
+    // applies it.
+    const freshHost = makeDeps();
+    createPiSwitchHost(freshHost.deps, store).drainPendingOps();
+    assert.deepEqual(freshHost.applied, [["lynx"]]);
+  });
 });
 
 describe("createPiSwitchHost — process handoff slot", () => {
   it("shares the pending trim across factory instances via the default slot", async () => {
-    const oldHost = makeDeps({ getCommandCtx: () => replacingCtx() });
+    const replacement = replacingCtx();
+    const oldHost = makeDeps({ getCommandCtx: () => replacement.cmdCtx });
     const old = createPiSwitchHost(oldHost.deps);
     await old.host.newSession({
+      parentSession: "sess-old",
       withSession: (ops: SwitchNewSessionOps) => ops.setActiveTools(["lynx"]),
     });
 
@@ -168,9 +236,11 @@ describe("createPiSwitchHost — process handoff slot", () => {
   });
 
   it("the reset hook clears the process handoff slot", async () => {
-    const oldHost = makeDeps({ getCommandCtx: () => replacingCtx() });
+    const replacement = replacingCtx();
+    const oldHost = makeDeps({ getCommandCtx: () => replacement.cmdCtx });
     const old = createPiSwitchHost(oldHost.deps);
     await old.host.newSession({
+      parentSession: "sess-old",
       withSession: (ops: SwitchNewSessionOps) => ops.setActiveTools(["lynx"]),
     });
 

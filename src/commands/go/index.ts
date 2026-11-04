@@ -47,6 +47,7 @@ export const unit = defineCommand({
         {
           name: "go",
           description: "Approve plan and handoff to execution",
+          replacesSession: true,
           handle: async (input) => {
             try {
               await executeHandoff({

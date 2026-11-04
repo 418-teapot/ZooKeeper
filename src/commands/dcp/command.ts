@@ -12,13 +12,14 @@
  * notification lives in `src/commands/notify.ts` and is shared with
  * the `/go` command unit.
  *
- * State comes from the host-agnostic context core: the shared
- * process-wide session-state manager (`getContextStateManager`)
- * supplies the session state, and the fold/measure/release layers
- * drive the report.  Pruned tool calls are recognized by their
- * placeholder text, and storage-borne originals are overlaid with the
- * state's effective marks (`materializeEffectiveMarks`) so the report
- * counts the model-visible `input + placeholder`.
+ * State comes from the plugin instance's context runtime: the command
+ * reads the session state and the published round view through the same
+ * runtime the hook and the tools use, and the fold/measure/release layers
+ * drive the report.  Pruned tool calls are recognized by their placeholder
+ * text, and storage-borne originals are overlaid with the state's effective
+ * marks (`materializeEffectiveMarks`) so the report counts the
+ * model-visible `input + placeholder`.  A missing or lapsed permit reads no
+ * history, sends no notification and changes no state.
  *
  * @module
  */
@@ -37,12 +38,8 @@ import {
   pendingTokens,
   reclaimedTokens,
 } from "../../core/context/release.js";
-import { getRoundView } from "../../core/context/round-view.js";
-import {
-  getContextStateManager,
-  getRuntimeFlaggedState,
-} from "../../core/context/runtime.js";
-import type { SessionState } from "../../core/context/state.js";
+import type { ContextRuntime } from "../../core/context/runtime.js";
+import type { WorkPermit } from "../../core/lifecycle/index.js";
 import type { ToolHost } from "../../core/ports/tool-host.js";
 import { log } from "../../utils/logger.js";
 
@@ -65,18 +62,20 @@ import { log } from "../../utils/logger.js";
  *    channel can offer.
  *
  * @param toolHost - Host tool services (optional history read / notify).
+ * @param runtime - The plugin instance's context records.
  * @param sessionID - The current session identifier.
  * @returns The projection snapshot to report over.
  * @throws Error when neither source is available.
  */
 async function readReportHistory(
   toolHost: ToolHost | null | undefined,
+  runtime: ContextRuntime,
   sessionID: string,
 ): Promise<Projection> {
   if (toolHost?.fetchHistory) {
     return toolHost.fetchHistory(sessionID);
   }
-  const roundView = getRoundView(sessionID);
+  const roundView = runtime.roundView(sessionID);
   if (roundView !== undefined) {
     return roundView.projection;
   }
@@ -95,6 +94,9 @@ async function readReportHistory(
  *   `compress` tool.
  * - Any other argument → shows a short help listing available subcommands.
  *
+ * @param runtime - The plugin instance's context records.
+ * @param permit - The permit the host admitted the command under, or
+ *   `undefined` when it holds none.
  * @param toolHost - Host tool services (fetchHistory / notify).
  * @param sessionID - The current session identifier.
  * @param args - The raw arguments string after `/dcp`.
@@ -106,17 +108,25 @@ async function readReportHistory(
  * @throws Error when the history API is unavailable.
  */
 export async function handleDcpCommand(
+  runtime: ContextRuntime,
+  permit: WorkPermit | undefined,
   toolHost: ToolHost | null | undefined,
   sessionID: string,
   args: string,
   contextConfig: ContextPruningConfig,
   hasCompressTool = false,
 ): Promise<void> {
+  // A missing or lapsed permit means the session stopped or the call was
+  // cancelled: do nothing at all, before any host read or notification.
+  if (permit === undefined || !permit.isActive()) return;
+
   const trimmed = args.trim();
 
   // ── Compress subcommand ──────────────────────────────────────────
   if (trimmed === "compress") {
     await handleCompressSubcommand(
+      runtime,
+      permit,
       toolHost,
       sessionID,
       contextConfig,
@@ -144,60 +154,59 @@ export async function handleDcpCommand(
   // (host read when the host provably shares the transform's source,
   // otherwise the published round view); its failures propagate
   // verbatim.
-  const snapshot = await readReportHistory(toolHost, sessionID);
+  const snapshot = await readReportHistory(toolHost, runtime, sessionID);
   const view = snapshot.messages;
 
-  // ── Read state from the shared manager ────────────────────────────
-  // The process-wide manager (shared with the hook and the tools) holds
-  // the live in-memory state, so the tool category excludes pruned tools
-  // and the unified "回收" stat line reflects the current in-process
-  // cumulative values (avoids the one-turn lag of reading from disk when
-  // the batch pipeline modifies state between transforms).
-  const manager = getContextStateManager();
-  let state: SessionState | undefined;
-  let totalEff = 0;
-  let curPendingCount = 0;
-  let curPendingTokens = 0;
+  // ── Read state from the runtime ──────────────────────────────────
+  // The runtime (shared with the hook and the tools) holds the live
+  // in-memory state, so the tool category excludes pruned tools and the
+  // unified "回收" stat line reflects the current in-process cumulative
+  // values (avoids the one-turn lag of reading from disk when the batch
+  // pipeline modifies state between transforms).  The read runs under the
+  // command's permit and changes nothing.
+  let computed:
+    | {
+        report: ReturnType<typeof computeContextReportLens>;
+        formatted: string;
+      }
+    | undefined;
   try {
-    state = manager.get(sessionID);
-    totalEff = reclaimedTokens(state);
-    curPendingCount = pendingCount(state);
-    curPendingTokens = pendingTokens(state);
-  } catch {
-    // Defensive: I/O failure is non-fatal — tools fully counted.
-    state = undefined;
-  }
-
-  // ── Compute dual-scope message counts (folded view vs storage) ──────
-  let foldedCount: number | undefined;
-  let storageCount: number | undefined;
-  try {
-    if (state) {
+    computed = runtime.read(permit, (state) => {
+      // Dual-scope message counts: the folded view versus storage.
       const { items } = fold(snapshot, state);
       const counts = countFoldedMessages(items, view);
-      foldedCount = counts.foldedMessageCount;
-      storageCount = counts.storageMessageCount;
-    }
+      // OpenCode's `fetchHistory` returns the stored original text, so
+      // overlay the state's effective marks before reporting: a pruned
+      // tool output then counts as `input + placeholder`, what the model
+      // sees, instead of the stored original.
+      const report = computeContextReportLens(
+        materializeEffectiveMarks(view, state),
+      );
+      return {
+        report,
+        formatted: formatContextReport(report, {
+          prunedTokens: reclaimedTokens(state),
+          pendingCount: pendingCount(state),
+          pendingTokens: pendingTokens(state),
+          state,
+          foldedMessageCount: counts.foldedMessageCount,
+          storageMessageCount: counts.storageMessageCount,
+        }),
+      };
+    });
   } catch {
-    // Defensive: error is non-fatal, fall back to single-count line.
+    // Defensive: an unreadable store must not fail the command.
+    computed = undefined;
+  }
+  if (computed === undefined) {
+    await toolHost?.notify(
+      sessionID,
+      "上下文报告未生成：会话已停止或本次调用已取消，会话状态未改动。",
+    );
+    return;
   }
 
-  // OpenCode's `fetchHistory` returns the stored original text, so
-  // overlay the shared state's effective marks before reporting: a
-  // pruned tool output then counts as `input + placeholder`, what the
-  // model sees, instead of the stored original.  A host without state
-  // reports the transcript as-is.
-  const reportMessages = state ? materializeEffectiveMarks(view, state) : view;
-  const report = computeContextReportLens(reportMessages);
-  const formatted = formatContextReport(report, {
-    prunedTokens: totalEff,
-    pendingCount: curPendingCount,
-    pendingTokens: curPendingTokens,
-    state,
-    foldedMessageCount: foldedCount,
-    storageMessageCount: storageCount,
-  });
-
+  const { report, formatted } = computed;
   log.info({
     hook: "context-command",
     event: "report_computed",
@@ -240,6 +249,9 @@ export async function handleDcpCommand(
  * context-pruning transform's manual-compress injection, which appends
  * a synthetic user command on the next turn.
  *
+ * @param runtime - The plugin instance's context records.
+ * @param permit - The permit the host admitted the command under, or
+ *   `undefined` when it holds none.
  * @param toolHost - Host tool services (notify).
  * @param sessionID - The current session identifier.
  * @param contextConfig - The parsed context pruning config (needed for
@@ -249,6 +261,8 @@ export async function handleDcpCommand(
  * @throws Error on API failures or invalid config.
  */
 async function handleCompressSubcommand(
+  runtime: ContextRuntime,
+  permit: WorkPermit,
   toolHost: ToolHost | null | undefined,
   sessionID: string,
   contextConfig: ContextPruningConfig,
@@ -273,10 +287,16 @@ async function handleCompressSubcommand(
   }
 
   // ── Arm the one-shot manual trigger ─────────────────────────────
-  // In-memory only: never persisted, never fetched.  The next transform
-  // consumes the flag and injects the synthetic user command.
-  const state = getRuntimeFlaggedState(sessionID);
-  state.pendingManualTrigger = true;
+  // In-memory only: never persisted, never fetched.  The flag becomes
+  // committed — and the user is told so — only while the command's permit
+  // stays active.  The next transform consumes the flag and injects the
+  // synthetic user command.
+  const armed = await runtime.commit(permit, (state) => {
+    state.pendingManualTrigger = true;
+    return true;
+  });
+  // A lapsed permit committed nothing: report nothing either.
+  if (armed === undefined) return;
 
   log.info({
     hook: "context-command",

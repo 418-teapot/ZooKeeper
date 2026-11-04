@@ -6,7 +6,7 @@
  * inside it.  Services are declarative — each declaration names the
  * services it needs at construction, and its factory receives only that
  * slice plus the scope's `AbortSignal`.  There is no service locator, no
- * process dispose, and no turn/call handling here.
+ * process dispose, and no host event handling here.
  *
  * Creation and stopping are serialised per scope.  Concurrent `ensure`
  * calls share one creation, a session stopped while its factory is still
@@ -21,6 +21,16 @@
  * diagnostics and an explicit mode that decides whether it also deletes
  * what belongs to the session.
  *
+ * `runSession` admits one unit of call-scoped work.  It lazily creates
+ * the session, issues one `WorkPermit`, and releases it when the work
+ * returns.  A stop revokes every permit synchronously, so admitted work
+ * learns at once that it may no longer run, and the stop waits for those
+ * calls to return before disposing the scope.  `runControl` admits the
+ * same way but is never waited on: it is the call that stops the session
+ * it belongs to, so waiting would deadlock the stop it performs.  Only a
+ * replacement control operation (an agent switch, a plan handoff) may use
+ * it; ordinary business work goes through `runSession`.
+ *
  * @module
  */
 
@@ -34,10 +44,12 @@ import {
   type LifecycleDeclarations,
   LifecycleDefinitionError,
   type LifecycleKernel,
+  type ServiceMap,
   type SessionDisposeContext,
   type SessionScope,
   type SessionStartContext,
   type SessionStopMode,
+  type WorkPermit,
 } from "./types.js";
 
 /** Context a disposer receives: session stops add the explicit mode. */
@@ -62,6 +74,11 @@ interface CreatedService {
   readonly service: unknown;
 }
 
+/** One admitted unit of session work. */
+interface WorkSlot {
+  active: boolean;
+}
+
 /** Per-session internal state. */
 interface SessionRecord {
   readonly sessionID: string;
@@ -73,6 +90,9 @@ interface SessionRecord {
   stopPromise: Promise<CleanupReport> | null;
   pending: Promise<void>;
   startTail: Promise<void>;
+  readonly work: Set<WorkSlot>;
+  workIdle: Promise<void> | null;
+  releaseWorkIdle: (() => void) | null;
   handle: ErasedSessionScope | null;
   error: unknown;
 }
@@ -90,6 +110,11 @@ function normalizeSessionID(
 ): string | null {
   if (typeof sessionID !== "string") return null;
   return sessionID.trim() === "" ? null : sessionID;
+}
+
+/** An already cancelled call never reaches the callback. */
+function isCancelled(signal: AbortSignal | undefined): boolean {
+  return signal?.aborted === true;
 }
 
 /**
@@ -461,12 +486,128 @@ export function createLifecycleKernel<
       stopPromise: null,
       pending: Promise.resolve(),
       startTail: Promise.resolve(),
+      work: new Set(),
+      workIdle: null,
+      releaseWorkIdle: null,
       handle: null,
       error: null,
     };
     sessions.set(sessionID, record);
     record.pending = startSession(record);
     return settleSession(record);
+  }
+
+  /**
+   * Admit one call, issuing a permit only while the session still accepts
+   * work.
+   *
+   * `waitsForStop` decides whether a session or extension stop waits for
+   * the call to return: session work is waited on, a control operation
+   * (the call that stops the session it belongs to) is not.
+   */
+  async function admitCall<T>(
+    rawSessionID: string | null | undefined,
+    work: (
+      scope: SessionScope<ServiceMap<Session>>,
+      permit: WorkPermit,
+    ) => T | Promise<T>,
+    callerSignal: AbortSignal | undefined,
+    waitsForStop: boolean,
+  ): Promise<T | undefined> {
+    const sessionID = normalizeSessionID(rawSessionID);
+    if (sessionID === null || isCancelled(callerSignal)) return undefined;
+
+    const scope = await ensureSession(sessionID);
+    if (scope === null) return undefined;
+
+    const record = sessions.get(sessionID);
+    if (record === undefined) return undefined;
+    // Issue the permit in the same synchronous segment as the final
+    // checks: a stop cannot slip between the check and the registration.
+    if (
+      record.stopRequested ||
+      record.state !== "ready" ||
+      stoppedSessions.has(sessionID) ||
+      !extensionAcceptsNewWork() ||
+      isCancelled(callerSignal)
+    ) {
+      return undefined;
+    }
+
+    const slot: WorkSlot = { active: true };
+    if (waitsForStop) record.work.add(slot);
+    // The permit follows the session, the extension and the caller: its
+    // signal aborts when any of them stops.
+    const sources: AbortSignal[] = [record.controller.signal];
+    if (extensionController !== null) sources.push(extensionController.signal);
+    if (callerSignal !== undefined) sources.push(callerSignal);
+    const signal = sources.length === 1 ? sources[0] : AbortSignal.any(sources);
+    const permit: WorkPermit = {
+      sessionID,
+      signal,
+      isActive: () => slot.active && !signal.aborted,
+    };
+
+    try {
+      return await work(
+        scope as unknown as SessionScope<ServiceMap<Session>>,
+        permit,
+      );
+    } finally {
+      slot.active = false;
+      record.work.delete(slot);
+      notifyWorkIdle(record);
+    }
+  }
+
+  /**
+   * Run one unit of session work, issuing a permit only while the session
+   * still accepts work.
+   */
+  function runSession<T>(
+    rawSessionID: string | null | undefined,
+    work: (
+      scope: SessionScope<ServiceMap<Session>>,
+      permit: WorkPermit,
+    ) => T | Promise<T>,
+    callerSignal?: AbortSignal,
+  ): Promise<T | undefined> {
+    return admitCall(rawSessionID, work, callerSignal, true);
+  }
+
+  /**
+   * Run one control operation for a session, issuing the same permit as
+   * session work without letting a stop wait for it.
+   */
+  function runControl<T>(
+    rawSessionID: string | null | undefined,
+    work: (
+      scope: SessionScope<ServiceMap<Session>>,
+      permit: WorkPermit,
+    ) => T | Promise<T>,
+    callerSignal?: AbortSignal,
+  ): Promise<T | undefined> {
+    return admitCall(rawSessionID, work, callerSignal, false);
+  }
+
+  /** Resolve a stop that is waiting for admitted work to finish. */
+  function notifyWorkIdle(record: SessionRecord): void {
+    if (record.work.size > 0) return;
+    const release = record.releaseWorkIdle;
+    record.workIdle = null;
+    record.releaseWorkIdle = null;
+    release?.();
+  }
+
+  /** Wait for the work admitted before a stop to release its permits. */
+  function waitForWork(record: SessionRecord): Promise<void> {
+    if (record.work.size === 0) return Promise.resolve();
+    if (record.workIdle === null) {
+      record.workIdle = new Promise<void>((resolve) => {
+        record.releaseWorkIdle = resolve;
+      });
+    }
+    return record.workIdle;
   }
 
   /**
@@ -558,12 +699,15 @@ export function createLifecycleKernel<
     if (record.stopPromise !== null) return record.stopPromise;
 
     record.stopRequested = true;
+    // Abort before the first await: every permit derived from the scope
+    // signal turns inactive at once and no new work can be admitted.
+    record.controller.abort();
     record.stopPromise = (async () => {
       await record.pending;
       // Wait for a notice that had already begun before disposing.
       await record.startTail;
+      await waitForWork(record);
       const errors: CleanupFailure[] = [];
-      record.controller.abort();
       if (record.state === "ready") {
         await disposeCreated(
           record.created,
@@ -599,13 +743,18 @@ export function createLifecycleKernel<
     }
 
     extensionState = "stopping";
+    // Start every session stop before the first await so each permit is
+    // revoked at once, then collect the reports in stop order.
+    const sessionStops = [...sessions.keys()].map((sessionID) =>
+      // An extension stop never ends a session: its resources are
+      // released, not deleted.
+      stopSession(sessionID, reason, "release-runtime"),
+    );
     extensionStopPromise = (async () => {
       const errors: CleanupFailure[] = [];
 
-      for (const sessionID of [...sessions.keys()]) {
-        // An extension stop never ends a session: its resources are
-        // released, not deleted.
-        const report = await stopSession(sessionID, reason, "release-runtime");
+      for (const stop of sessionStops) {
+        const report = await stop;
         errors.push(...report.errors);
       }
 
@@ -641,6 +790,8 @@ export function createLifecycleKernel<
   return {
     ensureExtension,
     ensureSession,
+    runSession,
+    runControl,
     notifySessionStart,
     stopSession,
     stopExtension,

@@ -26,8 +26,10 @@ import {
   type Block,
   type SessionState,
 } from "../../../../src/core/context/state.js";
+import { permitFor } from "../../../../src/testkits/context-runtime.js";
 import { createCompressTool } from "../../../../src/tools/compress.js";
 import { createDecompressTool } from "../../../../src/tools/decompress.js";
+import type { PipelineSandbox } from "../sandbox.js";
 import type {
   CompressionPlan,
   PipelineHost,
@@ -194,6 +196,7 @@ function landPlan(
  * @returns `{ result, error }` — at most one is non-null.
  */
 async function runTool(
+  sandbox: PipelineSandbox,
   action: ToolRoundAction,
   sessionID: string,
   config: ContextPruningConfig,
@@ -201,15 +204,18 @@ async function runTool(
   notifications: string[],
 ): Promise<{ result: string | null; error: string | null }> {
   const client = makeClient(messages, notifications);
+  const hostCtx = { permit: permitFor(sessionID) };
   switch (action.kind) {
     case "compress-tool": {
       const tool = createCompressTool(
         createV1ToolHost(client, () => undefined),
         config,
+        sandbox.runtime,
       );
       const result = await tool.execute(
         { ranges: action.ranges },
         { sessionID },
+        hostCtx,
       );
       return { result, error: null };
     }
@@ -217,10 +223,12 @@ async function runTool(
       const tool = createDecompressTool(
         createV1ToolHost(client, () => undefined),
         config,
+        sandbox.runtime,
       );
       const result = await tool.execute(
         { blockId: action.blockId },
         { sessionID },
+        hostCtx,
       );
       return { result, error: null };
     }
@@ -228,10 +236,12 @@ async function runTool(
       const tool = createCompressTool(
         createV1ToolHost(client, () => undefined),
         config,
+        sandbox.runtime,
       );
       const result = await tool.execute(
         action.args,
         action.toolCtx ?? { sessionID },
+        hostCtx,
       );
       return { result, error: null };
     }
@@ -239,10 +249,12 @@ async function runTool(
       const tool = createDecompressTool(
         createV1ToolHost(client, () => undefined),
         config,
+        sandbox.runtime,
       );
       const result = await tool.execute(
         action.args,
         action.toolCtx ?? { sessionID },
+        hostCtx,
       );
       return { result, error: null };
     }
@@ -257,21 +269,33 @@ async function runTool(
  *
  * @returns The opencode host implementation.
  */
-export function createV1PipelineHost(): PipelineHost<ContextMessageEntry> {
+export function createV1PipelineHost(
+  sandbox: PipelineSandbox,
+): PipelineHost<ContextMessageEntry> {
+  const adapter = createV1Adapter();
   return {
-    runTransform(messages, config, hasCompressTool, notify) {
-      contextPruningTransformHandler(
-        createV1Adapter(),
+    get runtime() {
+      return sandbox.runtime;
+    },
+    restart: () => sandbox.restart(),
+    async runTransform(sessionID, messages, config, hasCompressTool, notify) {
+      await contextPruningTransformHandler(
+        sandbox.runtime,
+        permitFor(sessionID),
+        adapter,
         messages,
         config,
         notify,
         hasCompressTool,
       );
     },
-    runTool,
+    runTool: (action, sessionID, config, messages, notifications) =>
+      runTool(sandbox, action, sessionID, config, messages, notifications),
     async handleDcp(sessionID, args, config, messages, notifications) {
       const client = makeClient(messages, notifications);
       await handleDcpCommand(
+        sandbox.runtime,
+        permitFor(sessionID),
         createV1ToolHost(client, () => undefined),
         sessionID,
         args,

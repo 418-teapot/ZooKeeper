@@ -9,7 +9,11 @@
  * every SDK exception into an `error` result (no throw escapes).
  */
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { afterEach, describe, it } from "node:test";
+import type { CleanupReport } from "../../core/lifecycle/index.js";
 import type {
   SkillPermissionMap,
   SkillPermissionRule,
@@ -27,24 +31,24 @@ import type {
 import { createRunLog } from "../../core/subagent/run-log.js";
 import { deriveCounters } from "../../core/subagent/view.js";
 import {
+  _getBufferForTesting,
   _resetForTesting as _resetLoggerForTesting,
   initLogger,
 } from "../../utils/logger.js";
 import {
-  associatePiSdkSession,
-  hasPiSdkSession,
-  resetPiSdkLifecycleBridge,
-  SDK_STOP_REASON,
-} from "./sdk-lifecycle.js";
-import {
   createPiSubagentDriver,
+  filterExtensionEntry,
   type PiAgentSession,
   type PiCreateSessionOptions,
   type PiModelRuntimeLike,
   type PiResolvedModel,
+  type PiResourceLoaderOptions,
   type PiSessionEvent,
   type PiSessionManager,
+  type PiSettingsManagerLike,
+  type PiSettingsSnapshot,
   type PiSubagentDriverOptions,
+  withoutExtensionEntry,
 } from "./subagent.js";
 
 afterEach(() => {
@@ -166,6 +170,25 @@ function mockSession(): {
     setPromptBehavior(b) {
       promptBehavior = b;
     },
+  };
+}
+
+/**
+ * A duck-typed settings manager over fixed snapshots.
+ *
+ * `reload()` keeps the snapshots, so the test observes the reads a real
+ * reload leaves unchanged.
+ */
+function fakeSettingsManager(snapshots: {
+  merged: PiSettingsSnapshot;
+  global: PiSettingsSnapshot;
+  project: PiSettingsSnapshot;
+}): PiSettingsManagerLike {
+  return {
+    getSettings: () => snapshots.merged,
+    getGlobalSettings: () => snapshots.global,
+    getProjectSettings: () => snapshots.project,
+    reload: async () => {},
   };
 }
 
@@ -1508,7 +1531,7 @@ describe("pi subagent driver — subagent skill discovery", () => {
   ) {
     const s = mockSession();
     const factoryCalls: Array<PiCreateSessionOptions> = [];
-    const loaderCalls: Array<{ paths: string[]; cwd: string }> = [];
+    const loaderCalls: PiResourceLoaderOptions[] = [];
     const driver = createPiSubagentDriver({
       createSession: async (opts) => {
         factoryCalls.push(opts);
@@ -1523,9 +1546,9 @@ describe("pi subagent driver — subagent skill discovery", () => {
             }
           : undefined,
       ...skill,
-      createResourceLoader: async (paths, cwd) => {
-        loaderCalls.push({ paths, cwd });
-        return { paths, cwd };
+      createResourceLoader: async (options) => {
+        loaderCalls.push(options);
+        return options;
       },
     });
     return { driver, s, factoryCalls, loaderCalls };
@@ -1560,11 +1583,11 @@ describe("pi subagent driver — subagent skill discovery", () => {
     assert.equal(result.kind, "ok");
     assert.equal(h.loaderCalls.length, 1);
     assert.deepEqual(h.loaderCalls[0], {
-      paths: ["/skills/wiki-query"],
+      skillPaths: ["/skills/wiki-query"],
       cwd: process.cwd(),
     });
     assert.deepEqual(h.factoryCalls[0].resourceLoader, {
-      paths: ["/skills/wiki-query"],
+      skillPaths: ["/skills/wiki-query"],
       cwd: process.cwd(),
     });
   });
@@ -1578,7 +1601,7 @@ describe("pi subagent driver — subagent skill discovery", () => {
       collectSkillPaths: (names) => names.map((n) => `/skills/${n}`),
     });
     await run(h);
-    assert.deepEqual(h.loaderCalls[0].paths, ["/skills/wiki-query"]);
+    assert.deepEqual(h.loaderCalls[0].skillPaths, ["/skills/wiki-query"]);
   });
 
   it("applies the rules of the target subagent, not another agent's", async () => {
@@ -1595,7 +1618,7 @@ describe("pi subagent driver — subagent skill discovery", () => {
       collectSkillPaths: (names) => names.map((n) => `/skills/${n}`),
     });
     await run(beaver, "beaver");
-    assert.deepEqual(beaver.loaderCalls[0].paths, ["/skills/wiki-query"]);
+    assert.deepEqual(beaver.loaderCalls[0].skillPaths, ["/skills/wiki-query"]);
 
     const kiwi = skillHarness({
       skillPermissions,
@@ -1603,7 +1626,7 @@ describe("pi subagent driver — subagent skill discovery", () => {
       collectSkillPaths: (names) => names.map((n) => `/skills/${n}`),
     });
     await run(kiwi, "kiwi");
-    assert.deepEqual(kiwi.loaderCalls[0].paths, [
+    assert.deepEqual(kiwi.loaderCalls[0].skillPaths, [
       "/skills/wiki-query",
       "/skills/grill",
       "/skills/beaver-tdd",
@@ -1618,7 +1641,7 @@ describe("pi subagent driver — subagent skill discovery", () => {
       collectSkillPaths: (names) => names.map((n) => `/skills/${n}`),
     });
     await run(h);
-    assert.deepEqual(h.loaderCalls[0].paths, ["/skills/wiki-query"]);
+    assert.deepEqual(h.loaderCalls[0].skillPaths, ["/skills/wiki-query"]);
 
     profile = ["grill"];
     h.s.setPromptBehavior({ kind: "resolves", emitOnPrompt: okEvents() });
@@ -1626,7 +1649,7 @@ describe("pi subagent driver — subagent skill discovery", () => {
       { agent: "beaver", prompt: "t", tools: [], model: "p/m" },
       { signal: new AbortController().signal },
     );
-    assert.deepEqual(h.loaderCalls[1].paths, ["/skills/grill"]);
+    assert.deepEqual(h.loaderCalls[1].skillPaths, ["/skills/grill"]);
   });
 
   it("omits the resource loader when no skill survives the filter", async () => {
@@ -1675,75 +1698,299 @@ describe("pi subagent driver — subagent skill discovery", () => {
 });
 
 // ---------------------------------------------------------------------------
-// SDK lifecycle bridge
+// Child extension identity
 // ---------------------------------------------------------------------------
 
-describe("pi subagent driver — lifecycle bridge", () => {
-  afterEach(resetPiSdkLifecycleBridge);
+describe("pi subagent driver — child extension identity", () => {
+  it("hands the delegated agent to the child extension factory", async () => {
+    // The child runtime is built for exactly one delegation, so the agent
+    // the request names is the identity its factory fixes — nested
+    // delegations pass their own agent the same way.
+    const agents: string[] = [];
+    const s = mockSession();
+    s.setPromptBehavior({ kind: "resolves", emitOnPrompt: okEvents() });
+    const driver = createPiSubagentDriver({
+      createSession: async () => ({ session: s.session }),
+      createSessionManager: async () => mockSessionManager("child-ident"),
+      resolveModel: async () => ({
+        model: { provider: "p", id: "m" },
+        modelRuntime: { getModel: () => ({ provider: "p", id: "m" }) },
+      }),
+      createChildExtension: (_onClose, agent) => {
+        agents.push(agent);
+        return async () => {};
+      },
+      createResourceLoader: async (options) => {
+        await options.extensionFactory?.(undefined as never);
+        return { inline: true };
+      },
+    });
 
-  it("stops the sub-session's lifecycle scope before disposing it", async () => {
-    const h = harness();
-    h.s.setPromptBehavior({ kind: "resolves", emitOnPrompt: okEvents() });
+    await driver.run(
+      { agent: "lynx", prompt: "do it", tools: [], model: "p/m" },
+      { signal: new AbortController().signal },
+    );
+
+    assert.deepEqual(agents, ["lynx"]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Sub-session cleanup
+// ---------------------------------------------------------------------------
+
+describe("pi subagent driver — sub-session cleanup", () => {
+  /**
+   * Build a driver whose inline child extension hands one close per run.
+   *
+   * The fake loader runs the factory of its own run, so each run's close
+   * reaches the driver the way the real child runtime does.
+   */
+  function cleanupHarness(
+    makeClose: (
+      run: number,
+      s: ReturnType<typeof mockSession>,
+    ) => () => Promise<CleanupReport> = () => async () => ({ errors: [] }),
+  ) {
+    const s = mockSession();
+    const loaderCalls: PiResourceLoaderOptions[] = [];
+    const managerIds = ["child-1", "child-2", "child-3"];
+    let runIndex = 0;
+    let managerIndex = 0;
+    const driver = createPiSubagentDriver({
+      createSession: async () => ({ session: s.session }),
+      createSessionManager: async () => {
+        const id = managerIds[managerIndex++] ?? "child-n";
+        return mockSessionManager(id);
+      },
+      resolveModel: async (model) =>
+        model === "p/m"
+          ? {
+              model: { provider: "p", id: "m" },
+              modelRuntime: { getModel: () => ({ provider: "p", id: "m" }) },
+            }
+          : undefined,
+      entryPath: "/zoo/src/pi.ts",
+      createChildExtension: (onClose) => {
+        const close = makeClose(runIndex++, s);
+        return async () => {
+          onClose(close);
+        };
+      },
+      createResourceLoader: async (options) => {
+        loaderCalls.push(options);
+        await options.extensionFactory?.(undefined as never);
+        return { inline: true };
+      },
+    });
+    return { driver, s, loaderCalls };
+  }
+
+  /** Run one subagent through the harness. */
+  function run(
+    h: ReturnType<typeof cleanupHarness>,
+    signal: AbortSignal = new AbortController().signal,
+  ): Promise<SubagentResult> {
+    return h.driver.run(
+      { agent: "beaver", prompt: "do it", tools: [], model: "p/m" },
+      { signal },
+    );
+  }
+
+  it("stops the child's extension scope before disposing the session", async () => {
     const order: string[] = [];
-    associatePiSdkSession("child-session", {}, async (reason) => {
-      // The SDK session is still owned by the extension at this point.
-      order.push(`stop:${reason}:disposed=${h.s.disposed}`);
+    const h = cleanupHarness((_run, s) => async () => {
+      order.push(`close:disposed=${s.disposed}`);
       return { errors: [] };
     });
-
-    const result = await h.driver.run(
-      { agent: "beaver", prompt: "do it", tools: [], model: "p/m" },
-      { signal: new AbortController().signal },
-    );
-
-    assert.equal(result.kind, "ok");
-    assert.deepEqual(order, [`stop:${SDK_STOP_REASON}:disposed=0`]);
-    assert.equal(h.s.disposed, 1);
-    assert.equal(hasPiSdkSession("child-session"), false);
-  });
-
-  it("keeps a session no extension discovered a no-op", async () => {
-    const h = harness();
     h.s.setPromptBehavior({ kind: "resolves", emitOnPrompt: okEvents() });
 
-    const result = await h.driver.run(
+    const result = await run(h);
+
+    assert.equal(result.kind, "ok");
+    assert.deepEqual(order, ["close:disposed=0"]);
+    assert.equal(h.s.disposed, 1);
+  });
+
+  it("logs every error of the close report", async () => {
+    const h = cleanupHarness(() => async () => ({
+      errors: [
+        {
+          scope: "session",
+          sessionID: "child-1",
+          service: "worker",
+          error: new Error("worker failed"),
+        },
+        {
+          scope: "extension",
+          service: "fleet",
+          error: new Error("fleet failed"),
+        },
+      ],
+    }));
+    h.s.setPromptBehavior({ kind: "resolves", emitOnPrompt: okEvents() });
+
+    const result = await run(h);
+
+    assert.equal(result.kind, "ok");
+    const failures = _getBufferForTesting().filter(
+      (entry) => entry.event === "cleanup_failed",
+    );
+    assert.equal(failures.length, 2);
+    assert.deepEqual(
+      failures.map((entry) => entry.service),
+      ["worker", "fleet"],
+    );
+    assert.deepEqual(
+      failures.map((entry) => entry.sessionId),
+      ["child-1", "child-1"],
+    );
+    // Cleanup failures never fail the run.
+    assert.equal(h.s.disposed, 1);
+  });
+
+  it("disposes the session even when the close throws", async () => {
+    const h = cleanupHarness(() => async () => {
+      throw new Error("close exploded");
+    });
+    h.s.setPromptBehavior({ kind: "resolves", emitOnPrompt: okEvents() });
+
+    const result = await run(h);
+
+    assert.equal(result.kind, "ok");
+    assert.equal(h.s.disposed, 1);
+    const failures = _getBufferForTesting().filter(
+      (entry) => entry.event === "cleanup_failed",
+    );
+    assert.equal(failures.length, 1);
+    assert.equal(failures[0].sessionId, "child-1");
+    assert.match(String(failures[0].error), /close exploded/);
+  });
+
+  it("runs without a child extension (no close to call)", async () => {
+    // A driver whose host supplies no inline extension has no close handle:
+    // the cleanup step is a no-op and the session is still disposed.
+    const s = mockSession();
+    const driver = createPiSubagentDriver({
+      createSession: async () => ({ session: s.session }),
+      createSessionManager: async () => mockSessionManager(),
+      resolveModel: async (model) =>
+        model === "p/m"
+          ? {
+              model: { provider: "p", id: "m" },
+              modelRuntime: { getModel: () => ({ provider: "p", id: "m" }) },
+            }
+          : undefined,
+    });
+    s.setPromptBehavior({ kind: "resolves", emitOnPrompt: okEvents() });
+
+    const result = await driver.run(
       { agent: "beaver", prompt: "do it", tools: [], model: "p/m" },
       { signal: new AbortController().signal },
     );
 
     assert.equal(result.kind, "ok");
-    assert.equal(h.s.disposed, 1);
-    assert.equal(hasPiSdkSession("child-session"), false);
+    assert.equal(s.disposed, 1);
   });
 
-  it("stops the scope on the pre-aborted path", async () => {
-    const h = harness();
-    h.s.setPromptBehavior({ kind: "resolves" });
-    const calls: string[] = [];
-    associatePiSdkSession("child-session", {}, async (reason) => {
-      calls.push(reason);
+  it("gives every run its own close", async () => {
+    const closed: number[] = [];
+    const h = cleanupHarness((runIndex) => async () => {
+      closed.push(runIndex);
       return { errors: [] };
     });
+    h.s.setPromptBehavior({ kind: "resolves", emitOnPrompt: okEvents() });
+
+    await run(h);
+    await run(h);
+
+    // Neither run reuses the other's handle, and neither is stopped twice.
+    assert.deepEqual(closed, [0, 1]);
+  });
+
+  it("routes concurrent sub-sessions to their own close", async () => {
+    // Two runs overlap: each must stop the scope of the runtime it created,
+    // never the other run's.
+    const events: string[] = [];
+    const sessions: Array<ReturnType<typeof mockSession>> = [];
+    let runIndex = 0;
+    const driver = createPiSubagentDriver({
+      createSession: async () => {
+        const s = mockSession();
+        s.setPromptBehavior({
+          kind: "hang",
+          emitOnPrompt: okEvents(`run-${runIndex}`),
+        });
+        sessions.push(s);
+        return { session: s.session };
+      },
+      createSessionManager: async () =>
+        mockSessionManager(`child-${sessions.length}`),
+      resolveModel: async () => ({
+        model: { provider: "p", id: "m" },
+        modelRuntime: { getModel: () => undefined },
+      }),
+      createChildExtension: (onClose) => {
+        const run = runIndex++;
+        return async () => {
+          onClose(async () => {
+            events.push(`close:${run}`);
+            return { errors: [] };
+          });
+        };
+      },
+      createResourceLoader: async (options) => {
+        await options.extensionFactory?.(undefined as never);
+        return { inline: true };
+      },
+    });
+    const signal = new AbortController().signal;
+    const start = (): Promise<SubagentResult> =>
+      driver.run(
+        { agent: "beaver", prompt: "do it", tools: [], model: "p/m" },
+        { signal },
+      );
+
+    const first = start();
+    const second = start();
+    // Both runs are in flight before either completes.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.equal(sessions.length, 2);
+    sessions[0].session.abort();
+    sessions[1].session.abort();
+    const results = await Promise.all([first, second]);
+
+    assert.deepEqual(
+      results.map((result) => result.kind),
+      ["ok", "ok"],
+    );
+    assert.deepEqual([...events].sort(), ["close:0", "close:1"]);
+    assert.deepEqual(
+      sessions.map((s) => s.disposed),
+      [1, 1],
+    );
+  });
+
+  it("stops the child's scope on the pre-aborted path", async () => {
+    let closes = 0;
+    const h = cleanupHarness(() => async () => {
+      closes += 1;
+      return { errors: [] };
+    });
+    h.s.setPromptBehavior({ kind: "resolves" });
     const controller = new AbortController();
     controller.abort();
 
-    const result = await h.driver.run(
-      { agent: "beaver", prompt: "do it", tools: [], model: "p/m" },
-      { signal: controller.signal },
-    );
+    const result = await run(h, controller.signal);
 
     assert.equal(result.kind, "aborted");
-    assert.deepEqual(calls, [SDK_STOP_REASON]);
+    assert.equal(closes, 1);
     assert.equal(h.s.disposed, 1);
   });
 
-  it("stops the scope when the run errors", async () => {
+  it("stops the child's scope when session creation fails", async () => {
+    let closes = 0;
     const s = mockSession();
-    const calls: string[] = [];
-    associatePiSdkSession("child-session", {}, async (reason) => {
-      calls.push(reason);
-      return { errors: [] };
-    });
     const driver = createPiSubagentDriver({
       createSession: async () => {
         throw new Error("sdk exploded");
@@ -1753,6 +2000,18 @@ describe("pi subagent driver — lifecycle bridge", () => {
         model: { provider: "p", id: "m" },
         modelRuntime: { getModel: () => undefined },
       }),
+      createChildExtension: (onClose) => {
+        return async () => {
+          onClose(async () => {
+            closes += 1;
+            return { errors: [] };
+          });
+        };
+      },
+      createResourceLoader: async (options) => {
+        await options.extensionFactory?.(undefined as never);
+        return { inline: true };
+      },
     });
 
     const result = await driver.run(
@@ -1761,8 +2020,223 @@ describe("pi subagent driver — lifecycle bridge", () => {
     );
 
     assert.equal(result.kind, "error");
-    assert.deepEqual(calls, [SDK_STOP_REASON]);
+    assert.equal(closes, 1);
     assert.equal(s.disposed, 0);
-    assert.equal(hasPiSdkSession("child-session"), false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Inline extension loader
+// ---------------------------------------------------------------------------
+
+describe("pi subagent driver — inline extension loader", () => {
+  it("builds the loader for the inline extension even with no skill", async () => {
+    const loaderCalls: PiResourceLoaderOptions[] = [];
+    const s = mockSession();
+    const driver = createPiSubagentDriver({
+      createSession: async () => ({ session: s.session }),
+      createSessionManager: async () => mockSessionManager(),
+      resolveModel: async () => ({
+        model: { provider: "p", id: "m" },
+        modelRuntime: { getModel: () => undefined },
+      }),
+      entryPath: "/zoo/src/pi.ts",
+      createChildExtension: () => () => {},
+      createResourceLoader: async (options) => {
+        loaderCalls.push(options);
+        return { inline: true };
+      },
+    });
+    s.setPromptBehavior({ kind: "resolves", emitOnPrompt: okEvents() });
+
+    await driver.run(
+      { agent: "beaver", prompt: "do it", tools: [], model: "p/m" },
+      { signal: new AbortController().signal },
+    );
+
+    assert.equal(loaderCalls.length, 1, "the loader is built without skills");
+    assert.deepEqual(loaderCalls[0].skillPaths, []);
+    assert.equal(loaderCalls[0].cwd, process.cwd());
+    assert.equal(loaderCalls[0].excludeExtensionPath, "/zoo/src/pi.ts");
+    assert.equal(typeof loaderCalls[0].extensionFactory, "function");
+  });
+
+  it("drops only the entry from a snapshot and keeps every other field", () => {
+    const entry = "/zoo/src/pi.ts";
+    const snapshot = {
+      defaultTools: ["bash"],
+      extensions: [entry, "/e2e/probe-entry.ts", "-builtin:mcp"],
+    };
+
+    const filtered = filterExtensionEntry(snapshot, entry);
+
+    assert.deepEqual(filtered.extensions, [
+      "/e2e/probe-entry.ts",
+      "-builtin:mcp",
+    ]);
+    assert.deepEqual(filtered.defaultTools, ["bash"]);
+    // The snapshot is only read: the input keeps its entry.
+    assert.deepEqual(snapshot.extensions, [
+      entry,
+      "/e2e/probe-entry.ts",
+      "-builtin:mcp",
+    ]);
+  });
+
+  it("leaves a snapshot without extensions unchanged", () => {
+    const snapshot = { defaultTools: ["bash"] };
+
+    assert.deepEqual(
+      filterExtensionEntry(snapshot, "/zoo/src/pi.ts"),
+      snapshot,
+    );
+  });
+
+  it("matches the entry through a symlinked path", () => {
+    // pi resolves the settings entry, so the stored and the real path of
+    // one file can differ.  The comparison follows symlinks on both sides.
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "zoo-entry-"));
+    try {
+      const real = path.join(root, "pi.ts");
+      fs.writeFileSync(real, "export default (): void => {};\n");
+      const link = path.join(root, "link.ts");
+      fs.symlinkSync(real, link);
+      const other = path.join(root, "other.ts");
+      const snapshot = { extensions: [link, other] };
+
+      const filtered = filterExtensionEntry(snapshot, real);
+
+      assert.deepEqual(filtered.extensions, [other]);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("filters the global and project snapshots independently", () => {
+    const entry = "/zoo/src/pi.ts";
+    const snapshots = {
+      merged: { extensions: [entry, "/global/other.ts", "/project/other.ts"] },
+      global: { extensions: [entry, "/global/other.ts"] },
+      project: { extensions: [entry, "/project/other.ts"] },
+    };
+    const manager = fakeSettingsManager(snapshots);
+
+    withoutExtensionEntry(manager, entry);
+
+    assert.deepEqual(manager.getGlobalSettings().extensions, [
+      "/global/other.ts",
+    ]);
+    assert.deepEqual(manager.getProjectSettings().extensions, [
+      "/project/other.ts",
+    ]);
+    assert.deepEqual(manager.getSettings().extensions, [
+      "/global/other.ts",
+      "/project/other.ts",
+    ]);
+  });
+
+  it("keeps filtering after the manager reloads its snapshots", async () => {
+    const entry = "/zoo/src/pi.ts";
+    const manager = fakeSettingsManager({
+      merged: { extensions: [entry] },
+      global: { extensions: [entry] },
+      project: { extensions: [entry] },
+    });
+    withoutExtensionEntry(manager, entry);
+
+    await manager.reload();
+
+    assert.deepEqual(manager.getGlobalSettings().extensions, []);
+    assert.deepEqual(manager.getProjectSettings().extensions, []);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Default child loader (real pi SDK)
+// ---------------------------------------------------------------------------
+
+describe("pi subagent driver — default child loader", () => {
+  it("excludes the host entry before its factory runs", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "zoo-child-loader-"));
+    const agentDir = path.join(root, "agent");
+    fs.mkdirSync(agentDir, { recursive: true });
+    const markers = path.join(root, "markers.txt");
+    // One extension file per role: a marker line proves the factory ran.
+    const extensionFile = (name: string): string => {
+      const file = path.join(root, name);
+      fs.writeFileSync(
+        file,
+        `import { appendFileSync } from "node:fs";\n` +
+          `export default function () {\n` +
+          `  appendFileSync(${JSON.stringify(markers)}, ${JSON.stringify(name)} + "\\n");\n` +
+          `}\n`,
+      );
+      return file;
+    };
+    const entry = extensionFile("zoo-entry.js");
+    const other = extensionFile("probe-entry.js");
+    fs.writeFileSync(
+      path.join(agentDir, "settings.json"),
+      `${JSON.stringify({ defaultTools: [], extensions: [entry, other] })}\n`,
+    );
+    const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
+    process.env.PI_CODING_AGENT_DIR = agentDir;
+    try {
+      const s = mockSession();
+      const loaders: unknown[] = [];
+      const driver = createPiSubagentDriver({
+        createSession: async (options) => {
+          loaders.push(options.resourceLoader);
+          return { session: s.session };
+        },
+        createSessionManager: async () => mockSessionManager(),
+        resolveModel: async () => ({
+          model: { provider: "p", id: "m" },
+          modelRuntime: { getModel: () => undefined },
+        }),
+        entryPath: entry,
+        createChildExtension: () => async () => {},
+      });
+      s.setPromptBehavior({ kind: "resolves", emitOnPrompt: okEvents() });
+
+      const result = await driver.run(
+        { agent: "beaver", prompt: "do it", tools: [], model: "p/m" },
+        { signal: new AbortController().signal },
+      );
+
+      assert.equal(result.kind, "ok");
+      assert.equal(loaders.length, 1, "the run built its own loader");
+      const loader = loaders[0] as {
+        getExtensions(): {
+          extensions: Array<{ path: string }>;
+          errors: Array<{ path: string; error: string }>;
+        };
+      };
+      const loaded = loader.getExtensions();
+      const paths = loaded.extensions.map((extension) => extension.path);
+      assert.deepEqual(loaded.errors, []);
+      assert.ok(
+        paths.includes(other),
+        `the other extension loads: ${JSON.stringify(paths)}`,
+      );
+      assert.ok(
+        paths.includes("<inline:zookeeper>"),
+        `the inline factory loads: ${JSON.stringify(paths)}`,
+      );
+      assert.ok(
+        !paths.includes(entry),
+        `the host entry stays out: ${JSON.stringify(paths)}`,
+      );
+      // The entry factory never ran: the settings it reads were filtered
+      // before the loader resolved any extension path.
+      assert.equal(fs.readFileSync(markers, "utf8"), "probe-entry.js\n");
+    } finally {
+      if (previousAgentDir === undefined) {
+        delete process.env.PI_CODING_AGENT_DIR;
+      } else {
+        process.env.PI_CODING_AGENT_DIR = previousAgentDir;
+      }
+      fs.rmSync(root, { recursive: true, force: true });
+    }
   });
 });

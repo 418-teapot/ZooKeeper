@@ -19,15 +19,17 @@
  *   that the view is unchanged.  Zero state change, zero view impact, no
  *   notification.
  *
- * The host tool services and the parsed context-pruning config are
- * captured by the factory closure.  The history the restore gate
- * measures is the round view published by the context transform (the
- * same address space the model sees), with the host's history read only
- * as a fallback on hosts that guarantee it is the same source.  Loud
- * Chinese guidance errors from the core propagate to the model unchanged
- * — including the not-found error that lists the currently available
- * block numbers — the model self-corrects by re-picking a valid block id
- * or freeing context first.
+ * The host tool services, the parsed context-pruning config and the plugin
+ * instance's context runtime are captured by the factory closure.  Every
+ * state operation runs under the call's permit: the recall path reads, the
+ * restore path reads and writes inside one `runtime.commit`, and a missing
+ * or lapsed permit changes nothing.  The history the restore gate measures
+ * is the round view published by the context transform (the same address
+ * space the model sees), with the host's history read only as a fallback on
+ * hosts that guarantee it is the same source.  Loud Chinese guidance errors
+ * from the core propagate to the model unchanged — including the not-found
+ * error that lists the currently available block numbers — the model
+ * self-corrects by re-picking a valid block id or freeing context first.
  *
  * @module
  */
@@ -41,12 +43,7 @@ import {
   resolveTarget,
 } from "../core/context/decompress.js";
 import { measureMessages } from "../core/context/measure.js";
-import { getModelLimit } from "../core/context/model-limits.js";
-import { getRoundView } from "../core/context/round-view.js";
-import {
-  getContextStateManager,
-  setPendingViewChange,
-} from "../core/context/runtime.js";
+import type { ContextRuntime } from "../core/context/runtime.js";
 import type { ToolHost } from "../core/ports/tool-host.js";
 import {
   defineTool,
@@ -141,15 +138,22 @@ function buildDecompressToolMetadata(
 export function createDecompressTool(
   host: ToolHost,
   contextConfig: ContextPruningConfig,
+  runtime: ContextRuntime,
 ): ToolDefinition {
   return {
     ...buildDecompressToolMetadata(contextConfig),
-    async execute(args, toolCtx) {
+    async execute(args, toolCtx, hostCtx) {
       const sessionID = host.resolveSessionId(toolCtx);
       if (sessionID === undefined) {
         throw new Error(
           "无法解压：工具上下文缺少 sessionID，会话状态无法定位。" +
             "这是宿主接线问题，重试本工具无法解决，需重启宿主或由用户处理。",
+        );
+      }
+      const permit = hostCtx?.permit;
+      if (permit === undefined || !permit.isActive()) {
+        throw new Error(
+          "本次解压未生效：本次调用没有有效的会话工作凭证，会话可能已停止或已取消，会话状态未改动。",
         );
       }
       const input = validateDecompressArgs(args);
@@ -168,82 +172,109 @@ export function createDecompressTool(
         );
       }
 
-      const manager = getContextStateManager();
-      const state = manager.get(sessionID);
-      const target = resolveTarget(state, input.blockId);
-
       // ── Recall path: read-only, idempotent, zero view impact ─────
       // No notification — nothing changed in the view.  A stale block
       // takes this path too: its summary survives, its original span
       // does not, and `recallOutput` says so.
-      if (target.kind === "recall") {
+      const recall = runtime.read(permit, (state) => {
+        const target = resolveTarget(state, input.blockId);
+        return target.kind === "recall"
+          ? {
+              text: recallOutput(target.block, target.blockId),
+              blockId: target.blockId,
+              status: target.block.status,
+            }
+          : null;
+      });
+      if (recall === undefined) {
+        throw new Error(
+          "本次解压未生效：会话已停止或本次调用已取消，会话状态未改动。",
+        );
+      }
+      if (recall !== null) {
         log.info({
           hook: "decompress-tool",
           event: "decompress_recalled",
           sessionId: sessionID,
-          blockId: target.blockId,
+          blockId: recall.blockId,
           kind: "recall",
-          status: target.block.status,
+          status: recall.status,
         });
-        return recallOutput(target.block, target.blockId);
+        return recall.text;
       }
 
       // ── Restore path ─────────────────────────────────────────────
-      // Same source rule as the compress tool: the round view published
-      // by the transform is the history this tool measures and restores
-      // against; the host read is only a fallback for rounds that ran
-      // without a published view (and only on hosts that wire it).
-      const cached = getRoundView(sessionID);
-      const history =
-        cached !== undefined
-          ? cached.projection
-          : await host.fetchHistory?.(sessionID);
-      if (history === undefined) {
+      // The read and the write are one commit: the block status and the
+      // pending-view-change flag become committed only while the permit
+      // stays active.  Same source rule as the compress tool: the round
+      // view published by the transform is the history this tool measures
+      // and restores against; the host read is only a fallback for rounds
+      // that ran without a published view (and only on hosts that wire
+      // it).
+      const outcome = await runtime.commit(permit, async (state) => {
+        const target = resolveTarget(state, input.blockId);
+        if (target.kind !== "restore") {
+          throw new Error(
+            "本次解压未生效：块状态在本次调用中已改变，会话状态未改动。",
+          );
+        }
+        const cached = runtime.roundView(sessionID);
+        const history =
+          cached !== undefined
+            ? cached.projection
+            : await host.fetchHistory?.(sessionID);
+        if (history === undefined) {
+          throw new Error(
+            "无法解压：尚未取得当轮上下文视图（上下文变换本轮还未运行），" +
+              "且当前宿主不提供同源的历史回退，无法评估恢复后的上下文水位。" +
+              "本轮内重试结果相同，请等下一轮上下文变换运行后再恢复；" +
+              "若每轮都如此，属于宿主配置问题，请告知用户处理。",
+          );
+        }
+        const view = history.messages;
+        const currentPromptTokens = measureMessages(view).total;
+        const contextLimit = runtime.modelLimit(sessionID)?.context;
+
+        // Gate: undefined context limit skips the gate by design.
+        const gate = evaluateGate(
+          currentPromptTokens,
+          target.block,
+          target.blockId,
+          contextLimit,
+          decompressCfg.maxFillPercent,
+        );
+        if (!gate.allowed) {
+          // State untouched — the block stays active and nothing is saved.
+          throw new Error(gate.reason);
+        }
+
+        const restored = applyDecompress(state, target.blockId, view);
+        return { restored, delta: restored.restoredTokens };
+      });
+      if (outcome === undefined) {
         throw new Error(
-          "无法解压：尚未取得当轮上下文视图（上下文变换本轮还未运行），" +
-            "且当前宿主不提供同源的历史回退，无法评估恢复后的上下文水位。" +
-            "本轮内重试结果相同，请等下一轮上下文变换运行后再恢复；" +
-            "若每轮都如此，属于宿主配置问题，请告知用户处理。",
+          "本次解压未生效：会话已停止或本次调用已取消，会话状态未改动。",
         );
       }
-      const view = history.messages;
-      const currentPromptTokens = measureMessages(view).total;
-      const contextLimit = getModelLimit(sessionID)?.context;
 
-      // Gate: undefined context limit skips the gate by design.
-      const gate = evaluateGate(
-        currentPromptTokens,
-        target.block,
-        target.blockId,
-        contextLimit,
-        decompressCfg.maxFillPercent,
-      );
-      if (!gate.allowed) {
-        // State untouched — the block stays active and nothing is saved.
-        throw new Error(gate.reason);
-      }
-
-      const restored = applyDecompress(state, target.blockId, view);
-      const delta = restored.restoredTokens;
-
-      // Mark the view change and persist so the next transform stops
-      // folding the block (mirrors the compress tool).
-      setPendingViewChange(sessionID);
-      manager.save(sessionID);
+      // Mark the view change so the next transform stops folding the block
+      // (mirrors the compress tool).  Only a committed call flags it: a
+      // permit that lapsed after the commit writes nothing.
+      runtime.setPendingViewChange(permit);
 
       log.info({
         hook: "decompress-tool",
         event: "decompress_restored",
         sessionId: sessionID,
-        blockId: restored.blockId,
+        blockId: outcome.restored.blockId,
         kind: "restore",
-        messageCount: restored.messageCount,
-        deltaTokens: delta,
+        messageCount: outcome.restored.messageCount,
+        deltaTokens: outcome.delta,
       });
 
       // Ignored chat notification (best-effort — the status change is
-      // already applied).  Same shape as the compress tool.
-      const notifyMsg = `上下文解压：已恢复压缩块 b${restored.blockId} 的 ${restored.messageCount} 条原始消息，约回胀 ${formatTokens(delta)} tokens，下一轮上下文生效——本轮请勿引用其原文。`;
+      // already committed).  Same shape as the compress tool.
+      const notifyMsg = `上下文解压：已恢复压缩块 b${outcome.restored.blockId} 的 ${outcome.restored.messageCount} 条原始消息，约回胀 ${formatTokens(outcome.delta)} tokens，下一轮上下文生效——本轮请勿引用其原文。`;
       try {
         await host.notify(sessionID, notifyMsg);
       } catch (err) {
@@ -269,8 +300,12 @@ export function createDecompressTool(
  */
 export const unit = defineTool({
   name: "decompress",
-  needs: ["toolHost", "contextConfig"],
+  needs: ["toolHost", "contextConfig", "contextRuntime"],
   create(caps) {
-    return createDecompressTool(caps.toolHost, caps.contextConfig);
+    return createDecompressTool(
+      caps.toolHost,
+      caps.contextConfig,
+      caps.contextRuntime,
+    );
   },
 });

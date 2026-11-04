@@ -5,7 +5,8 @@
  * `src/core/config-types.ts`.  The host-agnostic pipeline core lives in
  * `src/core/context/` (state, producers, fold, release, nudge) and is
  * driven through the host adapter injected via `Capabilities.adapter`.
- * The shared session maps live in `src/core/context/runtime.ts`, and the
+ * The plugin instance's session records live in
+ * `src/core/context/runtime.ts` (injected as `contextRuntime`), and the
  * records a stop drops are declared in `src/core/session/resources.ts`.
  *
  * @module
@@ -23,8 +24,8 @@ export { contextPruningTransformHandler, handleContextPruning };
  * Context-pruning hook unit descriptor.
  *
  * Contributes the messages-transform pruning handler; the unit declares
- * `adapter` and `contextConfig` as needs, so composition skips it when
- * the host wires no adapter.  The unit is otherwise enabled
+ * `adapter`, `contextConfig` and `contextRuntime` as needs, so composition
+ * skips it when the host wires no adapter or no runtime.  The unit is otherwise enabled
  * unconditionally: the whole pipeline runs on every host and session
  * kind (the first-user message stays protected by `validateRange`
  * unconditionally, independent of config; the release notification
@@ -40,22 +41,24 @@ export { contextPruningTransformHandler, handleContextPruning };
  */
 export const unit = defineHook({
   name: "context-pruning",
-  needs: ["adapter", "contextConfig"],
+  needs: ["adapter", "contextConfig", "contextRuntime"],
   wants: ["toolHost"],
   uses: ["tools"],
   create(caps, uses) {
-    const adapter = caps.adapter;
     return {
       transform: [
         {
           name: "contextPruning",
-          handle: async (output) => {
-            handleContextPruning(
+          handle: async (output, _sessionID, permit) => {
+            if (permit === undefined) return;
+            await handleContextPruning(
+              caps.contextRuntime,
+              permit,
               output,
               caps.contextConfig,
               caps.toolHost,
               uses.tools.includes("compress"),
-              adapter,
+              caps.adapter,
             );
           },
         },

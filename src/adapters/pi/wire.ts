@@ -6,10 +6,11 @@
  * (`buildPiResolveAgent`), the profile skill-directory lookup
  * (`collectSkillPaths`), and the registration boundary itself
  * (`buildPiHandlers`) — the host services the lifecycle kernel creates (see
- * `services.ts`: the live context, the adapter and tool host built on it,
- * the todo and profile catalogs, the tool baselines, the fleet surface and
- * the switch surface), the composed contributions, the loop engine, and
- * pi's `registerTool` / `registerCommand` / `registerEntryRenderer` calls.
+ * `services.ts`: the session contexts, the adapter, the tool host built on
+ * the contexts, the todo and profile catalogs, the tool baselines, the
+ * fleet surface and the switch surface), the composed contributions, the
+ * loop engine, and pi's `registerTool` / `registerCommand` /
+ * `registerEntryRenderer` calls.
  *
  * The entry point activates the extension scope BEFORE composing, so the
  * composition receives extension-scope ports the kernel owns.  Session
@@ -38,6 +39,7 @@ import {
   buildPiCommandRegistrationPlan,
   type HtmlConverterLoader,
   loadPiHtmlConverter,
+  registerPiHandlers,
 } from "../../compose-pi.js";
 import { capabilityBindings } from "../../core/bindings.js";
 import {
@@ -47,22 +49,30 @@ import {
 import { assemble } from "../../core/compose.js";
 import { parseAgentColors, parseAskConfig } from "../../core/config-parse.js";
 import type { HostAdapter } from "../../core/context/lens.js";
+import {
+  type ContextRuntime,
+  createContextRuntime,
+} from "../../core/context/runtime.js";
+import type { CleanupReport, WorkPermit } from "../../core/lifecycle/index.js";
 import { ORCHESTRATOR_AGENT_NAME } from "../../core/orchestrator.js";
 import { parseSkillPermissions } from "../../core/permissions/skill-permissions.js";
 import type { Capabilities } from "../../core/ports/index.js";
 import type { SwitchHost } from "../../core/ports/switch.js";
 import type { ToolHost } from "../../core/ports/tool-host.js";
-import { sessionAgentRegistry } from "../../core/session/agent.js";
+import {
+  sessionAgentRegistry,
+  sessionAgentResource,
+} from "../../core/session/agent.js";
+import {
+  contextSessionResources,
+  createSessionResourceCatalog,
+} from "../../core/session/resources.js";
 import { scanSkillDirectories } from "../../core/skills.js";
 import type { SubagentDriver } from "../../core/subagent/driver.js";
-import {
-  getPrimary,
-  resolveIdentity,
-  setPrimary,
-} from "../../core/subagent/identity.js";
 import type { SubagentRun } from "../../core/subagent/registry.js";
 import { findByChildSession } from "../../core/subagent/registry.js";
 import { todoSourceFromStore } from "../../core/todo/source.js";
+import type { ToolContribution } from "../../core/unit.js";
 import { REGISTRY } from "../../registry.js";
 import { log } from "../../utils/logger.js";
 import { createPiAdapter } from "./adapter.js";
@@ -71,18 +81,29 @@ import { presentAskForm } from "./ask-form.js";
 import { createPiEventHandlers } from "./handlers.js";
 import { createPiHandoffTarget, type PiCommandCtx } from "./handoff-target.js";
 import type { PiLifecycleContext } from "./lifecycle.js";
-import { createPiLifecycleWiring } from "./lifecycle-wiring.js";
-import type { PiLiveContext } from "./live-context.js";
+import {
+  createPiLifecycleWiring,
+  type PiSessionWorkRunner,
+  SDK_STOP_REASON,
+} from "./lifecycle-wiring.js";
 import { createPiMessageInjector } from "./message-injector.js";
 import { createPiHostServices, type PiContributions } from "./services.js";
 import { createPiSubagentDriver } from "./subagent.js";
+import {
+  createPiHandoffIdentity,
+  pendingSwitchPrimary,
+} from "./switch-host.js";
 import { mergeTerminalToolDetails, truecolorWrap } from "./terminal-details.js";
 import {
   buildSubagentCardRenderer,
   buildTodoCardRenderer,
 } from "./tui/index.js";
 import { buildPiNoticeEntryRenderer } from "./tui/notice.js";
-import type { ExtensionAPI, PiEventHandlers } from "./types.js";
+import type {
+  ExtensionAPI,
+  PiCommandContext,
+  PiEventHandlers,
+} from "./types.js";
 
 // realpathSync follows the symlink to the real module location, so the
 // computed skill paths resolve into the project directory even when the
@@ -94,83 +115,82 @@ const __dirname = dirname(realpathSync(fileURLToPath(import.meta.url)));
 // ---------------------------------------------------------------------------
 
 /**
+ * The explicit facts the pi identity resolver reads.
+ *
+ * Every fact names a session-owning scope the host knows directly.  None of
+ * them is ambient: the resolver never infers an identity from whichever
+ * event happened to run last, so two sessions that interleave cannot
+ * exchange identities.
+ */
+export interface PiAgentSources {
+  /**
+   * The agent this runtime's factory fixed, or `undefined` in a main
+   * runtime.  A sub-session runtime is built for exactly one delegation, so
+   * its fixed agent answers every session of that runtime — including
+   * events that precede the run's first progress report.
+   */
+  fixedAgent?: string;
+  /**
+   * The replacement target a pending switch queued, or `undefined` when no
+   * replacement awaits its first turn.  Read lazily: the replacement
+   * session's bind-time events run before any later drain clears it.
+   */
+  pendingPrimary?: () => string | undefined;
+  /**
+   * The orchestrator the selection resolved, or `undefined` when it
+   * resolved none.  Read lazily: the resolver is built before the planner
+   * runs.  This is the main-session answer.
+   */
+  orchestrator: () => string | undefined;
+}
+
+/**
  * Build the session → agent resolver for the pi host.
  *
- * Resolution order for a session with no existing binding:
- *  (a) reverse lookup in the subagent run registry — a session that is
- *      some run's `childSession` is driven by that run's delegated
- *      agent; the run table covers live and terminal runs (and runs
- *      rebuilt from persisted history), so this is the authoritative
- *      source for subagent sessions;
- *  (b) the async-local identity — a `resolveIdentity()` binding of
- *      kind `subagent` names the delegated agent driving the current
- *      async chain (covers child-session events that precede the run's
- *      first progress report, which is when (a) starts matching);
- *  (c) otherwise the session is the pi root session (pi has a single
- *      root session and every child-session event runs inside the
- *      `runWithIdentity` scope) — it resolves to the orchestrator the
- *      selection resolved.
+ * The answer comes from explicit sources only, in this order:
+ *  (a) the shared session agent registry — an existing binding wins;
+ *  (b) the fixed agent of this runtime (a sub-session runtime built for one
+ *      delegation) — the answering source for a sub-session's own events;
+ *  (c) reverse lookup by session id in the subagent run registry — a
+ *      session recorded as some run's `childSession` is driven by that
+ *      run's delegated agent;
+ *  (d) the pending replacement target of a switch that has not completed
+ *      its first turn yet;
+ *  (e) the orchestrator the selection resolved — the main-session answer.
  *
- * Binding policy: every answer — (a), (b), and (c) alike — is bound
- * into the shared session agent registry so later lookups hit the
- * binding in O(1).  The (a) memo can never go stale (a childSession
- * belongs to exactly one run and a run's `agent` is fixed at
- * creation); the (b) memo is the AsyncLocalStorage answer's only
- * durable record
- * (the scope does not outlive the event callback that observed it).
- * The (c) root-session binding trades growth for speed: pi offers no
- * session-deletion event to evict bindings, so they accumulate for
- * the process lifetime — but the accumulation is bounded to one root
- * entry plus one per child session, the same order as the run table
- * (itself never pruned), and without the binding every main-session
- * tool event would re-run the (a) reverse scan, guaranteed to miss.
- * A root session with no configured orchestrator (null, invalid or
- * role-agnostic profile) and no identity resolves to `undefined` —
- * fail-closed, still without a binding: without an orchestrator the
- * direct-work nudge's gate never matches and the dedup-release
- * notification stays silent.
+ * Every answer except an absent orchestrator is bound into the shared
+ * registry, so later lookups hit it in O(1).  A memo never goes stale: a
+ * childSession belongs to exactly one run, a run's `agent` is fixed at
+ * creation, a runtime's fixed agent outlives the runtime, and a pending
+ * replacement target is published by the switch that created the session.
+ * With no source answering, the session resolves to `undefined`
+ * (fail-closed, unbound).
  *
- * @param orchestrator - The orchestrator the selection resolved, or
- *   `undefined` when the selection resolved none.
+ * @param sources - The explicit identity facts of this runtime.
  * @returns The resolver handed to `Capabilities.resolveAgent`.
  */
 export function buildPiResolveAgent(
-  orchestrator: string | undefined,
+  sources: PiAgentSources,
 ): (sessionID: string) => string | undefined {
   return (sessionID: string): string | undefined => {
     const known = sessionAgentRegistry.resolve(sessionID);
     if (known !== undefined) return known;
+    const fixed = sources.fixedAgent;
+    if (fixed !== undefined) {
+      sessionAgentRegistry.bind(sessionID, fixed);
+      return fixed;
+    }
     const run = findByChildSession(sessionID);
     if (run !== undefined) {
-      // Memoize the (a) answer so later lookups hit the registry in
-      // O(1) instead of repeating the linear reverse scan.  Safe to
-      // bind: every run records a unique `childSession` and its
-      // `agent` is fixed at creation, so the memo can never go stale.
       sessionAgentRegistry.bind(sessionID, run.agent);
       return run.agent;
     }
-    const identity = resolveIdentity();
-    if (identity?.kind === "subagent") {
-      // Memoize the (b) answer: the AsyncLocalStorage scope does not
-      // outlive the event callback that queried it, so without the
-      // binding every later lookup would fall through to the
-      // root-session default.
-      // The name is safe to bind — `identity.name` and the `agent`
-      // the same delegation later records in the run table are both
-      // the request's agent (`core/subagent/run.ts` binds
-      // `request.agent`; `tools/subagent.ts` starts the run with the
-      // same value), so this memo never diverges from the (a)
-      // reverse lookup.
-      sessionAgentRegistry.bind(sessionID, identity.name);
-      return identity.name;
+    const pending = sources.pendingPrimary?.();
+    if (pending !== undefined) {
+      sessionAgentRegistry.bind(sessionID, pending);
+      return pending;
     }
-    // (c): the pi root session.  Bound like every other answer — pi
-    // has no eviction event, but the accumulation is bounded (one
-    // root entry per process, the same order as the never-pruned run
-    // table) and skipping the bind would make every main-session tool
-    // event repeat the guaranteed-missing (a) scan.  No orchestrator
-    // at all (null, invalid or role-agnostic profile) → fail-closed,
-    // unbound.
+    const orchestrator = sources.orchestrator();
     if (orchestrator === undefined) return undefined;
     sessionAgentRegistry.bind(sessionID, orchestrator);
     return orchestrator;
@@ -195,10 +215,9 @@ export function buildPiResolveAgent(
  * This host also declares the product's orchestrator role
  * (`ORCHESTRATOR_AGENT_NAME`) to the planner: a profile that cannot
  * provide it as a primary is invalid and loads nothing.  When the
- * selection resolves an orchestrator the identity state is initialised
- * with it via `setPrimary`, so a `before_agent_start` event outside any
- * sub-session scope resolves that agent; an unresolved role leaves the
- * identity machinery off (fail-closed).
+ * selection resolves an orchestrator, the shared session resolver reports
+ * it for a session no other explicit source answers; an unresolved role
+ * leaves every unbound session unresolved (fail-closed).
  *
  * Exported for unit testing — `zookeeperPi` wires this with the config
  * loaded from disk.
@@ -212,10 +231,24 @@ export function buildPiResolveAgent(
 export function buildPiContributions(
   zooConfig: any,
   hostDeps?: {
+    /**
+     * The context records of this extension instance.  The entry point
+     * passes the instance's own runtime; a composition built without one
+     * (a unit test) gets a private one, so two compositions never share
+     * session state.
+     */
+    contextRuntime?: ContextRuntime;
     adapter?: HostAdapter<unknown>;
     toolHost?: ToolHost;
     switchHost?: SwitchHost;
-    getCommandCtx?: () => PiCommandCtx | null | undefined;
+    /** The command context of one session, or undefined when it has none. */
+    getCommandCtx?: (sessionID: string) => PiCommandCtx | null | undefined;
+    /**
+     * The agent this runtime's factory fixed (a sub-session runtime), or
+     * absent in a main runtime.  Every session of a sub-session runtime is
+     * the delegation it was built for.
+     */
+    fixedAgent?: string;
     /**
      * Host user-message injector for the `/debug` command (only supplied
      * by the real pi entry point).  Undefined without it — `/debug`
@@ -260,11 +293,11 @@ export function buildPiContributions(
     subagentBaseline?: () => string[] | undefined;
     /**
      * Called after every subagent run-registry mutation so the entry point
-     * can nudge its fleet widget to re-render (the widget reads the
-     * process-level registry directly on render).  Undefined on hosts
-     * without a fleet widget.
+     * can nudge the parent session's fleet widget to re-render (the widget
+     * reads the process-level registry directly on render).  Undefined on
+     * hosts without a fleet widget.
      */
-    onSubagentRunChange?: () => void;
+    onSubagentRunChange?: (sessionID: string) => void;
     /**
      * Test seam: workspace root the auto-debug strategy scans for Cases.
      * Defaults to the process working directory on the real host.
@@ -303,12 +336,24 @@ export function buildPiContributions(
   // here (pi host) — the ask tool is not registered on OpenCode.
   const askConfig = parseAskConfig(zooConfig);
 
-  // The caller resolver.  The delegation gate resolves the CALLER through
-  // the identity core (the same source the subagent tool uses): pi's
-  // identity is bound per async chain, not per session id, so neither the
-  // port's session argument nor the selection is needed here.
-  const resolveCallerAgent = async (): Promise<string | undefined> =>
-    resolveIdentity()?.name;
+  // The orchestrator the planner resolves, read lazily by the session
+  // resolver: the resolver is built before the planning pass runs.
+  let selectedOrchestrator: string | undefined;
+  // The one session → agent resolver of this runtime.  Event handlers, the
+  // subagent tool's caller resolution and the primary trim all read it, so
+  // every surface answers a session the same way.
+  const resolveAgent = buildPiResolveAgent({
+    ...(hostDeps?.fixedAgent === undefined
+      ? {}
+      : { fixedAgent: hostDeps.fixedAgent }),
+    pendingPrimary: pendingSwitchPrimary,
+    orchestrator: () => selectedOrchestrator,
+  });
+  // The caller resolver the delegation gate and the subagent tool read: the
+  // same session resolver, attributed by the session id the call names.
+  const resolveCallerAgent = async (
+    sessionID: string,
+  ): Promise<string | undefined> => resolveAgent(sessionID);
 
   // Probe the native HTML→Markdown converter BEFORE the selection pass,
   // and only for an active profile: a `null` profile selects nothing, so
@@ -320,6 +365,10 @@ export function buildPiContributions(
   // fetch failure.
   const htmlConverter =
     modeProfile === null ? null : (hostDeps?.loadHtmlConverter?.() ?? null);
+
+  // The context records of this composition: one runtime per plugin
+  // instance, so two instances never share state.
+  const contextRuntime = hostDeps?.contextRuntime ?? createContextRuntime();
 
   const bindings = capabilityBindings({
     values: {
@@ -387,31 +436,32 @@ export function buildPiContributions(
       // marking producers (dedup / purge-errors) have no
       // user-visible notification on pi.
       zdebugExec: hostDeps?.zdebugExec,
+      contextRuntime,
       directory: hostDeps?.directory ?? process.cwd(),
       resolveCallerAgent,
       toolHost: hostDeps?.toolHost,
       // The `/debug` startup injector: sends a model-visible user message
       // into the current session.  Only the real pi entry point supplies it.
       messageInjector: hostDeps?.messageInjector,
-      // Native pi host adapter: the entry point shares a mutable context
-      // holder so the session id provider always reads the latest pi event
-      // context.  When no adapter is supplied (unit tests that only inspect
-      // the composed shape) a default no-op provider is used.
-      adapter: hostDeps?.adapter ?? createPiAdapter(() => undefined),
-      // The `/go` handoff target.  `getCommandCtx` reads the mutable pi
-      // live context, published by the command handler before the handoff
-      // target runs.  Built from host facts only — the
-      // executor agent travels with each handoff call, so the target is
-      // the same for every selection.
+      // Native pi host adapter.  The pi adapter names no session of its
+      // own: the entry paths pass the session id to the transform.  A
+      // unit test that only inspects the composed shape gets the same
+      // adapter.
+      adapter: hostDeps?.adapter ?? createPiAdapter(),
+      // The `/go` handoff target.  `getCommandCtx` resolves the command
+      // context of the parentage session the command handler bound when it
+      // was admitted.  Built from host facts only — the executor agent
+      // travels with each handoff call, so the target is the same for
+      // every selection.
       handoffTarget: createPiHandoffTarget({
-        getCommandCtx: hostDeps?.getCommandCtx ?? (() => undefined),
+        getCommandCtx: (sessionID) => hostDeps?.getCommandCtx?.(sessionID),
+        identity: createPiHandoffIdentity(),
       }),
     },
     selected: {
-      // The shared session → agent resolver.  Event handlers read it
-      // synchronously; the root-session fallback is the orchestrator the
-      // selection resolved.
-      resolveAgent: (selection) => buildPiResolveAgent(selection.orchestrator),
+      // The shared session → agent resolver, built above so the entry
+      // point can expose the same function.
+      resolveAgent: () => resolveAgent,
     },
   });
   const { selection, composed } = assemble({
@@ -424,20 +474,10 @@ export function buildPiContributions(
     orchestrator: ORCHESTRATOR_AGENT_NAME,
   });
 
-  // Seed the identity machinery with the orchestrator the selection
-  // resolved.  An unresolved role leaves the identity state untouched
-  // (fail-closed — no `setPrimary` call), so `before_agent_start` stays
-  // silent.
-  // The seed only applies when NO primary is set yet: the extension
-  // factory re-runs on every pi session replacement (`newSession`), so
-  // an unconditional re-seed here would clobber a primary the switch
-  // just set before calling `newSession` (Bug B).  Seeding only the
-  // initial unset state keeps the switch's target primary intact for the
-  // replacement session's bind-time handlers.
-  const orchestrator = selection.orchestrator;
-  if (orchestrator !== undefined && getPrimary() === undefined) {
-    setPrimary(orchestrator);
-  }
+  // Publish the resolved orchestrator to the shared resolver.  An
+  // unresolved role stays `undefined`, so an unbound session fails closed
+  // instead of borrowing another agent's prompt.
+  selectedOrchestrator = selection.orchestrator;
 
   return {
     profile: modeProfile,
@@ -445,7 +485,9 @@ export function buildPiContributions(
     limits,
     agentModes,
     agentPermissions,
+    resolveAgent,
     resolveCallerAgent,
+    contextRuntime,
   };
 }
 
@@ -476,10 +518,151 @@ export function collectSkillPaths(profileSkills: string[]): string[] {
 // Handler wiring
 // ---------------------------------------------------------------------------
 
+/** The result shape pi's tool bridge returns to the host. */
+export interface PiToolBridgeResult {
+  /** The tool's model-facing content parts. */
+  content: { type: "text"; text: string }[];
+  /** The persisted structured payload. */
+  details: Record<string, unknown>;
+}
+
+/**
+ * Build pi's `execute` bridge for one composed tool.
+ *
+ * Every call is admitted for the session its own tool context names: the
+ * whole execution runs under the issued permit, so a call that arrives
+ * without a session, after the session stopped, or with a cancelled caller
+ * runs no tool at all.  The permit's signal replaces pi's native one in the
+ * forwarded host context, so the tool stops when the session or the
+ * extension stops, and the permit itself is forwarded for tools that need
+ * to inspect it.  The context reaches the session contexts only after
+ * admission, under the permit's session id.
+ *
+ * @param tool - The composed tool contribution.
+ * @param run - The lifecycle admission surface.
+ * @param publish - Binds a tool call's context under its session id.
+ * @returns The bridge pi registers for the tool.
+ */
+export function buildPiToolExecute(
+  tool: ToolContribution,
+  run: PiSessionWorkRunner,
+  publish: (sessionID: string, ctx: unknown) => void,
+): (
+  toolCallId: unknown,
+  params: unknown,
+  signal: unknown,
+  onUpdate: unknown,
+  ctx: unknown,
+) => Promise<PiToolBridgeResult> {
+  return async (toolCallId, params, signal, onUpdate, ctx) => {
+    // pi's native signal is this call's caller cancellation; it revokes
+    // this call's permit only, never another call's.
+    const caller = signal instanceof AbortSignal ? signal : undefined;
+    const result = await run.runSession(
+      ctx,
+      async (permit) => {
+        // A tool call may be the first event that observes the session
+        // (flows without a `session_start`), and every session-scoped
+        // reader — the todo transcript scan, the session's fleet ui —
+        // resolves the context by session id.
+        publish(permit.sessionID, ctx);
+        // Forward the native execution surface to the contribution: the
+        // tool-call `callId` (the run's registry id for the fleet widget),
+        // the `onUpdate` repaint-signal callback, and the permit whose
+        // signal replaces pi's native one.  `onUpdate` is a content-free
+        // repaint trigger for live tool cards — pi re-renders on any
+        // partial result, so a tool such as subagent sends an empty partial
+        // rather than streaming text.  The sub-session model is NOT
+        // forwarded — strict mode reads the agents.json configured model
+        // only (never the parent session's model).  compress / decompress
+        // ignore the hostCtx and keep working unchanged.
+        //
+        // `details` is a write-back slot: a contribution that needs to hand
+        // renderers a structured payload (the ask tool's per-question
+        // results) assigns it here, and the bridge merges a plain object
+        // into the host result's details AFTER execute resolves — merged
+        // INTO (never replacing) the bridge's own details, so the run's
+        // session path survives.
+        const hostCtx: {
+          signal?: AbortSignal;
+          callId?: string;
+          onUpdate?: unknown;
+          details?: unknown;
+          permit?: WorkPermit;
+        } = {
+          ...(typeof toolCallId === "string" && toolCallId.length > 0
+            ? { callId: toolCallId }
+            : {}),
+          signal: permit.signal,
+          ...(onUpdate !== undefined ? { onUpdate } : {}),
+          permit,
+        };
+        const text = await tool.execute(params, ctx, hostCtx);
+        return {
+          content: [{ type: "text" as const, text }],
+          details: mergeTerminalToolDetails(toolCallId, hostCtx.details),
+        };
+      },
+      caller,
+    );
+    // A refused call never runs the tool: it reports an empty result in the
+    // host's own shape.
+    return result ?? { content: [], details: {} };
+  };
+}
+
+/**
+ * Build the inline extension factory ZooKeeper's sub-sessions load.
+ *
+ * The factory captures the config snapshot of the composition root that
+ * built it — it never reads config.toml again — so a sub-session composes
+ * the same profile as its parent.  It builds a full handler set for the
+ * child runtime, which means a nested sub-session creates its own inline
+ * factory in turn.  `onClose` receives the close handle of the lifecycle
+ * wiring the factory created, so the driver that owns the run can stop that
+ * scope before it disposes the SDK session.
+ *
+ * @param zooConfig - The `zoo` section of the captured config snapshot.
+ * @param rawConfig - The whole captured config root.
+ * @param options - The delegated agent, the host's extension file entry and
+ *   the close reporter.
+ * @returns The factory pi loads into the sub-session runtime.
+ */
+export function buildPiSubagentExtension(
+  zooConfig: any,
+  rawConfig: any,
+  options: {
+    /**
+     * The agent this sub-session runtime is built for.  Every session of
+     * the runtime is that delegation, so it answers identity directly.
+     */
+    agent: string;
+    /** The host's extension file entry, left out of the sub-session. */
+    entryPath?: string;
+    /** Receives the close handle of the wiring the factory creates. */
+    onClose?: (close: () => Promise<CleanupReport>) => void;
+  },
+): (pi: ExtensionAPI) => Promise<void> {
+  return async (childPi: ExtensionAPI): Promise<void> => {
+    registerPiHandlers(
+      childPi,
+      await buildPiHandlers(zooConfig, childPi, rawConfig, {
+        agent: options.agent,
+        ...(options.entryPath !== undefined
+          ? { entryPath: options.entryPath }
+          : {}),
+        ...(options.onClose !== undefined
+          ? { onLifecycle: options.onClose }
+          : {}),
+      }),
+    );
+  };
+}
+
 /**
  * Build the pi handlers and register the profile's pi surfaces.
  *
- * Activates the host services (live context, adapter, tool host, todo
+ * Activates the host services (session contexts, adapter, tool host, todo
  * catalog, profile catalog, tool baselines, fleet surface, switch surface)
  * through the lifecycle kernel, which also composes the profile against
  * those extension-scope ports and builds the loop engine when the profile
@@ -501,9 +684,11 @@ export function collectSkillPaths(profileSkills: string[]): string[] {
  *   and no tool, command, or renderer is registered.
  * @param rawConfig - The whole parsed config root (carries the top-level
  *   `agent` table).
- * @param overrides - Optional host-dependency overrides.  Only used by
- *   tests: a bridge test injects a fake subagent driver so the registered
- *   tool executes without loading the real pi SDK.
+ * @param overrides - Optional host options.  The entry path and the
+ *   lifecycle reporter are what a sub-session needs from its composition
+ *   root; the remaining fields are test seams (a bridge test injects a fake
+ *   subagent driver so the registered tool executes without loading the
+ *   real pi SDK).
  * @returns A promise of the fourteen handlers plus the registration gates.
  */
 export async function buildPiHandlers(
@@ -513,6 +698,11 @@ export async function buildPiHandlers(
   overrides?: {
     /** Subagent driver used in place of the real pi SDK driver. */
     subagentDriver?: SubagentDriver;
+    /**
+     * The agent this runtime is built for.  Set by the inline factory a
+     * sub-session loads; absent in the main runtime.
+     */
+    agent?: string;
     /**
      * Test seam: the per-(session, strategy) reminder-budget store to
      * observe and seed.  Defaults to a fresh store when omitted.
@@ -525,6 +715,20 @@ export async function buildPiHandlers(
     directory?: string;
     /** Test seam: `zdebug` runner for the auto-debug strategy. */
     zdebugExec?: Partial<Capabilities>["zdebugExec"];
+    /**
+     * Path of this host's extension file entry.  The sub-session resource
+     * loader leaves it out, because the child loads ZooKeeper from the
+     * inline factory instead.
+     */
+    entryPath?: string;
+    /**
+     * Receives the close handle of this handler instance's lifecycle wiring.
+     * The subagent driver passes its per-run reporter here, so it can stop
+     * the child's extension scope before disposing the SDK session.
+     */
+    onLifecycle?: (close: () => Promise<CleanupReport>) => void;
+    /** Test seam: the instance's context runtime to inspect in place. */
+    contextRuntime?: ContextRuntime;
   },
 ): Promise<PiEventHandlers> {
   // The single pi tool host routes every in-session chat notification
@@ -584,14 +788,27 @@ export async function buildPiHandlers(
     return (text) => truecolorWrap(hex, text);
   };
 
+  // The context records of this extension instance: one runtime per
+  // instance, so two instances in one process never share session state, a
+  // captured model limit, a published round view, or a
+  // pending-view-change flag.  The catalog puts the context records and the
+  // explicit session records on the session scope's stop path.
+  const contextRuntime = overrides?.contextRuntime ?? createContextRuntime();
+  const sessionCatalog = createSessionResourceCatalog([
+    ...contextSessionResources(contextRuntime),
+    sessionAgentResource,
+  ]);
+
   // The host service declarations.  Every state owner the composition
-  // touches — the live context, the adapter and tool host built on it, the
-  // todo catalog, the profile catalog, the tool baselines, the fleet
-  // surface and the switch surface — is a lifecycle service, so the kernel
-  // creates (and stops) them.  The composition itself is a service over
+  // touches — the session contexts, the adapter, the tool host built on
+  // the contexts, the todo catalog, the profile catalog, the tool
+  // baselines, the fleet surface and the switch surface — is a lifecycle
+  // service, so the kernel creates (and stops) them.  The composition itself is a service over
   // those ports, and the loop engine a service over the composition, so no
   // service here receives a session-scoped store.
   const declarations = createPiHostServices({
+    contextRuntime,
+    sessionCatalog,
     piApi,
     appendEntry,
     colorizeAgent,
@@ -601,19 +818,25 @@ export async function buildPiHandlers(
       buildPiContributions(
         zooConfig,
         {
+          contextRuntime,
           adapter: ports.adapter,
           toolHost: ports.toolHost,
           switchHost: ports.switchHost.host,
+          // The agent this runtime is fixed to (a sub-session runtime), so
+          // the session resolver answers it without any ambient state.
+          ...(overrides?.agent === undefined
+            ? {}
+            : { fixedAgent: overrides.agent }),
           // Test seams: workspace root and `zdebug` runner for the
           // auto-debug strategy.  Both default to the real host behaviour
           // when omitted.
           directory: overrides?.directory,
           zdebugExec: overrides?.zdebugExec,
-          // The `/go` handoff target reads the latest pi command context
-          // through this supplier: the command handler publishes its
-          // context immediately before the handler body runs.
-          getCommandCtx: () =>
-            ports.liveContext.current() as PiCommandCtx | undefined,
+          // The `/go` handoff target reads the command context of the
+          // session it replaces: the command bridge bound that context when
+          // its session admitted the command.
+          getCommandCtx: (sessionID) =>
+            ports.sessionContexts.commandForSession(sessionID),
           // The `/debug` startup injector sends a model-visible user message
           // through pi's `sendUserMessage`.  Only the real pi API instance
           // provides it; test-only compositions stay without one.
@@ -636,6 +859,16 @@ export async function buildPiHandlers(
                   skillPermissions,
                   getProfileSkills: () => ports.profileCatalog.get(),
                   collectSkillPaths,
+                  // The child loads ZooKeeper through the inline factory
+                  // captured from this composition root, and its own run
+                  // reports back the close handle of that runtime.
+                  entryPath: overrides?.entryPath,
+                  createChildExtension: (onClose, agent) =>
+                    buildPiSubagentExtension(zooConfig, rawConfig, {
+                      agent,
+                      entryPath: overrides?.entryPath,
+                      onClose,
+                    }),
                 })
               : undefined),
           // The pi subagent transcript-card renderer — turns the tool's
@@ -673,9 +906,10 @@ export async function buildPiHandlers(
             piApi === undefined
               ? undefined
               : () => ports.toolBaselines.subagent(),
-          // Registry-write notification → the fleet widget re-renders with
-          // the latest registry state (start / update / finish all nudge it).
-          onSubagentRunChange: () => ports.fleet.refresh(),
+          // Registry-write notification → the parent session's fleet widget
+          // re-renders with the latest registry state (start / update /
+          // finish all nudge it).
+          onSubagentRunChange: (sessionID) => ports.fleet.refresh(sessionID),
           // Native HTML→Markdown converter for the fetch tool.  Wired here
           // (the real pi entry point); the wrapper warns once when the addon
           // is unavailable, the assembly then declares no `htmlConverter`
@@ -697,25 +931,33 @@ export async function buildPiHandlers(
       : { loopStore: overrides.remindersUsed }),
   });
 
-  // The session id an event context names; the live context is the fallback
-  // for entry points that carry no context.  `live` is filled by the
-  // activation below, which runs before any event can be handled.
-  let live: PiLiveContext | undefined;
-  const resolveSessionID = (ctx?: unknown): string | undefined =>
-    (ctx as PiLifecycleContext | undefined)?.sessionManager?.getSessionId?.() ??
-    live?.sessionId();
+  // The session id one event context names.  Each call resolves its own
+  // context: no entry point falls back to a context another event
+  // published.
+  const resolveSessionID = (ctx: unknown): string | undefined =>
+    (ctx as PiLifecycleContext | undefined)?.sessionManager?.getSessionId?.();
 
   // The lifecycle wiring of this extension instance: the extension
-  // activation, session ensure, the real start notice, and the extension
-  // stop pi's `session_shutdown` drives.  Handlers and the tool / command
-  // bridges below route through it before touching session resources.
+  // activation, session admission, the real start notice, and the
+  // extension stop pi's `session_shutdown` drives.  Handlers and the tool /
+  // command bridges below route their work through it.
   const lifecycle = createPiLifecycleWiring({
     extensionServices: declarations.extension,
     sessionServices: declarations.session,
-    // pi keeps the live session id on the event context's session manager;
-    // the live context is the fallback when an event carries no context.
+    // pi keeps the live session id on the event context's session manager.
     getSessionID: resolveSessionID,
   });
+
+  // A host that owns this runtime (the subagent driver of a parent session)
+  // receives the close handle now, while the wiring exists: pi never sends
+  // `session_shutdown` for an SDK-created session, so that host stops this
+  // scope itself, before it disposes the session.
+  overrides?.onLifecycle?.(() =>
+    lifecycle.stopExtension({
+      type: "session_shutdown",
+      reason: SDK_STOP_REASON,
+    }),
+  );
 
   // Activate the extension scope BEFORE anything else: the profile is
   // composed over services the kernel created, not over objects this
@@ -723,7 +965,7 @@ export async function buildPiHandlers(
   // session scopes are created when an event first names one.
   const extension = await lifecycle.activateExtension();
   const {
-    liveContext,
+    sessionContexts,
     todo,
     profileCatalog,
     toolBaselines,
@@ -732,13 +974,17 @@ export async function buildPiHandlers(
     composition,
     loop,
   } = extension.services;
-  live = liveContext;
 
   // The composed profile and the loop engine over its settle strategies
   // are services of this extension scope: the composition reads the
   // extension-scope ports, and the engine is created after it.
-  const { composed, limits, agentPermissions, resolveCallerAgent } =
-    composition;
+  const {
+    composed,
+    limits,
+    agentPermissions,
+    resolveAgent,
+    resolveCallerAgent,
+  } = composition;
 
   // Loop-engine wiring.  The composed strategies judge a stopped turn; each
   // declares its own wake allowance (`maxWakes`) and reads its own config,
@@ -748,24 +994,20 @@ export async function buildPiHandlers(
   // are released by that session's scope.
   const engine = loop.engine;
 
-  // Apply the active primary's tool-level denies to the current session's
-  // active tool set.
+  // Apply one session's primary tool-level denies to the active tool set.
   //
   // pi has no host-level per-agent permission enforcement (unlike
   // OpenCode), so the extension trims pi's process-wide registered tool
   // face per session.  The trim is computed from the SHARED untrimmed
-  // baseline (`toolBaselines.primary`) minus the current primary's
-  // tool-level denies, so it is idempotent and denies never accumulate
-  // across repeated calls or primary switches.  Subagent sessions are
-  // skipped: their tool face is already restricted by the driver's
-  // capability allowlist, and the process-wide primary is not their
-  // identity.  Fails closed: no primary, no denies, or no baseline all
-  // leave the active set untouched (an empty filter would wipe every
-  // tool).
-  const applyPrimaryToolTrim = (): void => {
-    const identity = resolveIdentity();
-    if (identity !== undefined && identity.kind !== "primary") return;
-    const primary = identity?.name ?? getPrimary();
+  // baseline (`toolBaselines.primary`) minus the session's primary denies,
+  // so it is idempotent and denies never accumulate across repeated calls
+  // or primary switches.  A sub-session runtime is skipped: the driver
+  // already restricts its tool face by the capability allowlist.  Fails
+  // closed: no primary, no denies, or no baseline all leave the active set
+  // untouched (an empty filter would wipe every tool).
+  const applyPrimaryToolTrim = (sessionID: string): void => {
+    if (overrides?.agent !== undefined) return;
+    const primary = resolveAgent(sessionID);
     if (primary === undefined) return;
     const denied = agentPermissions[primary] ?? [];
     if (denied.length === 0) return;
@@ -804,8 +1046,8 @@ export async function buildPiHandlers(
   //
   // Fails closed: no session id, no scope for that session, no active
   // primary, or no `ui` surface all no-op silently.
-  const registerFleetWidget = (ctx?: unknown): void => {
-    fleet.register(resolveSessionID(ctx));
+  const registerFleetWidget = (sessionID: string | undefined): void => {
+    fleet.register(sessionID);
   };
 
   // Startup anchor: mirror the OpenCode host's `plugin_init` event so a
@@ -874,85 +1116,39 @@ export async function buildPiHandlers(
           properties: args,
           ...(required.length > 0 ? { required } : {}),
         } as unknown as object,
-        execute: async (
-          toolCallId: unknown,
-          params: unknown,
-          signal: unknown,
-          onUpdate: unknown,
-          ctx: unknown,
-        ) => {
-          // Publish the tool event's context FIRST: a tool call may be the
-          // first event that observes the session (flows without a
-          // `session_start`), and every session-scoped reader — the todo
-          // transcript scan, the session's fleet ui — resolves the context
-          // by session id.  Ensuring the scope before publishing would let
-          // the first session-facing read see no context at all.
-          liveContext.publish(ctx);
-          // Then ensure the session scope, before the contribution touches
-          // session resources.  No session id, nothing created.
-          await lifecycle.ensureSession(ctx);
-          // Forward the native execution surface to the contribution: the
-          // abort `signal`, the tool-call `callId` (the run's registry id
-          // for the fleet widget), and the `onUpdate` repaint-signal
-          // callback, passed through the third hostCtx argument.  `onUpdate`
-          // is a content-free repaint trigger for live tool cards — pi
-          // re-renders on any partial result, so a tool such as subagent
-          // sends an empty partial rather than streaming text.  The
-          // sub-session model is NOT forwarded — strict mode reads the
-          // agents.json configured model only (never the parent session's
-          // model).  compress / decompress ignore the hostCtx and keep
-          // working unchanged.
-          //
-          // `details` is a write-back slot: a contribution that needs to
-          // hand renderers a structured payload (the ask tool's
-          // per-question results) assigns it here, and the bridge merges a
-          // plain object into the host result's details AFTER execute
-          // resolves — merged INTO (never replacing) the bridge's own
-          // details, so the run's session path survives.
-          const hostCtx: {
-            signal?: AbortSignal;
-            callId?: string;
-            onUpdate?: unknown;
-            details?: unknown;
-          } = {
-            ...(typeof toolCallId === "string" && toolCallId.length > 0
-              ? { callId: toolCallId }
-              : {}),
-            ...(signal instanceof AbortSignal ? { signal } : {}),
-            ...(onUpdate !== undefined ? { onUpdate } : {}),
-          };
-          const text = await tool.execute(params, ctx, hostCtx);
-          return {
-            content: [{ type: "text", text }],
-            details: mergeTerminalToolDetails(toolCallId, hostCtx.details),
-          };
-        },
+        execute: buildPiToolExecute(tool, lifecycle, (sessionID, ctx) =>
+          sessionContexts.bind(sessionID, ctx),
+        ),
       } as unknown as Parameters<ExtensionAPI["registerTool"]>[0]);
     }
   }
 
   // Register profile commands with pi when an API instance is supplied.
-  // The handler publishes pi's command context on the live context so the
-  // unified tool host can resolve the session / history.
+  // Each handler is admitted for the session its own command context names:
+  // a command that arrives without a session or after the session stopped
+  // runs nothing.  A command the contribution marks as replacing (`/go` and
+  // the `/<agent>` switches) is admitted as a CONTROL operation, because pi
+  // tears its session down inside the replacement call and a stop waiting
+  // for that call would never return.  Every other command is ordinary
+  // session work, so a stop cancels it and waits for it to return.  The
+  // context reaches the session contexts only after admission either way.
   if (piApi?.registerCommand) {
-    const plan = buildPiCommandRegistrationPlan(
-      composed.commands,
-      (ctx) => {
-        liveContext.publish(ctx);
-      },
-      // The command execution bridge: ensure the session scope of the
-      // command's OWN context before the command body touches session
-      // resources.  Reading the context from the argument keeps the
-      // session resolution on the command that is running instead of on
-      // whichever event published last.
-      async (ctx) => {
-        await lifecycle.ensureSession(ctx);
-      },
-    );
+    const plan = buildPiCommandRegistrationPlan(composed.commands);
     for (const registration of plan) {
       piApi.registerCommand(registration.name, {
         description: registration.description,
-        handler: registration.handler,
+        handler: (args: string, ctx: unknown) => {
+          const work = (permit: WorkPermit) => {
+            // The command context is the session's own: the handoff target
+            // and the switch host resolve it from the command entry by the
+            // permit's session id.
+            sessionContexts.bindCommand(permit.sessionID, ctx as PiCommandCtx);
+            return registration.handler(args, ctx as PiCommandContext, permit);
+          };
+          return registration.replacesSession
+            ? lifecycle.runControl(ctx, work)
+            : lifecycle.runSession(ctx, work);
+        },
       });
     }
   }
@@ -975,8 +1171,8 @@ export async function buildPiHandlers(
   // The fourteen handlers close over the wiring surfaces assembled above;
   // their bodies live in `handlers.ts`.
   return createPiEventHandlers({
-    liveContext,
-    getSessionId: () => liveContext.sessionId(),
+    sessionContexts,
+    contextRuntime,
     composed,
     engine,
     skillPermissions,
@@ -984,16 +1180,18 @@ export async function buildPiHandlers(
     collectSkillPaths,
     applyPrimaryToolTrim,
     registerFleetWidget,
-    refreshFleetWidget: () => fleet.refresh(),
-    refreshTodoView: fleet.refreshTodoView,
-    seedTodoView: fleet.seedTodoView,
+    refreshFleetWidget: (sessionID) => fleet.refresh(sessionID),
+    refreshTodoView: (sessionID) => fleet.refreshTodoView(sessionID),
+    seedTodoView: (sessionID) => fleet.seedTodoView(sessionID),
     // The switch surface's pending post-replacement operations ride the
     // explicit process-level handoff store, because a switch spans two
     // factory executions — see `adapters/pi/switch-host.ts`.
     drainPendingSwitchOps: () => switchHost.drainPendingOps(),
     invalidateTodo: (sessionId) => todo.invalidate(sessionId),
+    resolveAgent,
     resolveCallerAgent,
-    ensureSession: (ctx) => lifecycle.ensureSession(ctx),
+    ...(overrides?.agent === undefined ? {} : { fixedAgent: overrides.agent }),
+    runSession: (ctx, work, signal) => lifecycle.runSession(ctx, work, signal),
     startSession: (event, ctx) => lifecycle.startSession(event, ctx),
     stopExtension: (event) => lifecycle.stopExtension(event),
   });

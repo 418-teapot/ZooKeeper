@@ -9,12 +9,10 @@
  * pi lens mapping, plan landing with span hashing over the pi transcript,
  * and the pi view projection.
  *
- * Session binding: pi `AgentMessage`s carry no session id — the pi
- * adapter's `sessionId` comes from a provider — and a pi session is
- * single-session (the session is the orchestrator).  The host is
- * therefore constructed with the scenario's session id, and the
- * `runTransform` seam (which receives no session id) resolves it from
- * the host.  One host instance serves exactly one scenario's session.
+ * Session binding: pi `AgentMessage`s carry no session id and the pi
+ * adapter names none, so every seam takes the scenario's session id
+ * explicitly — `runTransform` and `runTool` receive it from the runner,
+ * and the session contexts bind it per call.
  *
  * Purity: the pi adapter is strictly pure — the transform returns a
  * fresh replacement array and never mutates the input message objects.
@@ -35,17 +33,15 @@
 
 import { createPiAdapter } from "../../../../src/adapters/pi/adapter.js";
 import { history } from "../../../../src/adapters/pi/history.js";
-import {
-  createPiToolHost,
-  type PiContextHolder,
-} from "../../../../src/adapters/pi/tool-host.js";
+import type { PiSessionContexts } from "../../../../src/adapters/pi/session-contexts.js";
+import { createPiSessionContexts } from "../../../../src/adapters/pi/session-contexts.js";
+import { createPiToolHost } from "../../../../src/adapters/pi/tool-host.js";
 import type { PiAgentMessage } from "../../../../src/adapters/pi/types.js";
 import { buildPiContextHandler } from "../../../../src/compose-pi.js";
 import type {
   ContextPruningConfig,
   ModeProfile,
 } from "../../../../src/core/config-types.js";
-import { getModelLimit } from "../../../../src/core/context/model-limits.js";
 import { computeSpanHash } from "../../../../src/core/context/spanhash.js";
 import {
   allocateBlockId,
@@ -57,8 +53,10 @@ import type { ToolHost } from "../../../../src/core/ports/tool-host.js";
 import type { TransformContribution } from "../../../../src/core/unit.js";
 import { REGISTRY } from "../../../../src/registry.js";
 import { composeForTest } from "../../../../src/testkits/compose.js";
+import { permitFor } from "../../../../src/testkits/context-runtime.js";
 import { createCompressTool } from "../../../../src/tools/compress.js";
 import { createDecompressTool } from "../../../../src/tools/decompress.js";
+import type { PipelineSandbox } from "../sandbox.js";
 import type {
   CompressionPlan,
   PipelineHost,
@@ -79,14 +77,13 @@ import { captureView } from "./capture.js";
  * `deps.toolHost` so the release notification posts through the same
  * `zoo-notice` appendEntry port production pi uses.
  *
- * @param sessionID - The scenario session id (the adapter's provider).
  * @param config - The merged (scenario + round) transform config.
  * @param hasCompressTool - Whether the compress tool is available.
  * @param toolHost - The round's pi tool host (release notification port).
  * @returns The composed transform contributions.
  */
 function composePruningTransform(
-  sessionID: string,
+  sandbox: PipelineSandbox,
   config: ContextPruningConfig,
   hasCompressTool: boolean,
   toolHost: ToolHost,
@@ -104,7 +101,8 @@ function composePruningTransform(
     contextConfig: config,
     directory: process.cwd(),
     resolveAgent: () => undefined,
-    adapter: createPiAdapter(() => sessionID),
+    adapter: createPiAdapter(),
+    contextRuntime: sandbox.runtime,
     toolHost,
   };
   const composed = composeForTest(profile, REGISTRY, deps);
@@ -137,18 +135,21 @@ function composePruningTransform(
  *   transform's release notification through the tool host).
  */
 async function runTransformFor(
+  sandbox: PipelineSandbox,
   sessionID: string,
   messages: PiAgentMessage[],
   config: ContextPruningConfig,
   hasCompressTool: boolean,
   notify: (text: string) => void,
 ): Promise<void> {
-  const holder = makePiSession(sessionID, messages);
-  const host = createPiToolHost(holder, makeAppendEntry(notify));
+  const contexts = makePiSession(sessionID, messages);
+  const host = createPiToolHost(contexts, makeAppendEntry(notify));
   const handler = buildPiContextHandler(
-    composePruningTransform(sessionID, config, hasCompressTool, host),
+    composePruningTransform(sandbox, config, hasCompressTool, host),
+    sandbox.runtime,
   );
-  const modelLimit = getModelLimit(sessionID);
+  const permit = permitFor(sessionID);
+  const modelLimit = sandbox.runtime.modelLimit(sessionID);
   const result = await handler(
     { type: "context", messages },
     {
@@ -162,6 +163,8 @@ async function runTransformFor(
           }
         : {}),
     },
+    permit.sessionID,
+    permit,
   );
   const pruned = result?.messages;
   if (pruned !== undefined && pruned !== messages) {
@@ -170,31 +173,32 @@ async function runTransformFor(
 }
 
 /**
- * Build a stubbed pi session for the tool host.
+ * Build the session contexts of a stubbed pi session for the tool host.
  *
- * `buildContextEntries` serves the round's message array (the tool path
- * fetches from "storage"); notifications flow through the production
- * `appendEntry` channel — the tool host posts `zoo-notice` entries whose
- * `data.content` text is captured into the list (the same channel the
- * TUI renders).
+ * The scenario's session is bound under its own id, because every reader of
+ * a context names its session.  `buildContextEntries` serves the round's
+ * message array (the tool path fetches from "storage"); notifications flow
+ * through the production `appendEntry` channel — the tool host posts
+ * `zoo-notice` entries whose `data.content` text is captured into the list
+ * (the same channel the TUI renders).
  *
  * @param sessionID - The scenario session id.
  * @param messages - The view the session serves.
- * @returns A context holder the pi tool host reads.
+ * @returns The contexts the pi tool host reads.
  */
 function makePiSession(
   sessionID: string,
   messages: PiAgentMessage[],
-): PiContextHolder {
-  return {
-    current: {
-      sessionManager: {
-        getSessionId: () => sessionID,
-        buildContextEntries: () =>
-          messages.map((message) => ({ type: "message", message })),
-      },
+): PiSessionContexts {
+  const contexts = createPiSessionContexts();
+  contexts.bind(sessionID, {
+    sessionManager: {
+      getSessionId: () => sessionID,
+      buildContextEntries: () =>
+        messages.map((message) => ({ type: "message", message })),
     },
-  };
+  });
+  return contexts;
 }
 
 /**
@@ -232,37 +236,55 @@ function makeAppendEntry(
  * @returns `{ result, error }` — at most one is non-null.
  */
 async function runTool(
+  sandbox: PipelineSandbox,
   action: ToolRoundAction,
   sessionID: string,
   config: ContextPruningConfig,
   messages: PiAgentMessage[],
   notifications: string[],
 ): Promise<{ result: string | null; error: string | null }> {
-  const holder = makePiSession(sessionID, messages);
+  const contexts = makePiSession(sessionID, messages);
   const host = createPiToolHost(
-    holder,
+    contexts,
     makeAppendEntry((text) => notifications.push(text)),
   );
   const toolCtx = { sessionManager: { getSessionId: () => sessionID } };
+  const hostCtx = { permit: permitFor(sessionID) };
   switch (action.kind) {
     case "compress-tool": {
-      const tool = createCompressTool(host, config);
-      const result = await tool.execute({ ranges: action.ranges }, toolCtx);
+      const tool = createCompressTool(host, config, sandbox.runtime);
+      const result = await tool.execute(
+        { ranges: action.ranges },
+        toolCtx,
+        hostCtx,
+      );
       return { result, error: null };
     }
     case "decompress-tool": {
-      const tool = createDecompressTool(host, config);
-      const result = await tool.execute({ blockId: action.blockId }, toolCtx);
+      const tool = createDecompressTool(host, config, sandbox.runtime);
+      const result = await tool.execute(
+        { blockId: action.blockId },
+        toolCtx,
+        hostCtx,
+      );
       return { result, error: null };
     }
     case "compress-tool-raw": {
-      const tool = createCompressTool(host, config);
-      const result = await tool.execute(action.args, action.toolCtx ?? toolCtx);
+      const tool = createCompressTool(host, config, sandbox.runtime);
+      const result = await tool.execute(
+        action.args,
+        action.toolCtx ?? toolCtx,
+        hostCtx,
+      );
       return { result, error: null };
     }
     case "decompress-tool-raw": {
-      const tool = createDecompressTool(host, config);
-      const result = await tool.execute(action.args, action.toolCtx ?? toolCtx);
+      const tool = createDecompressTool(host, config, sandbox.runtime);
+      const result = await tool.execute(
+        action.args,
+        action.toolCtx ?? toolCtx,
+        hostCtx,
+      );
       return { result, error: null };
     }
   }
@@ -399,19 +421,31 @@ function landPlan(
 /**
  * Build the pi lane's host seam.
  *
- * The host is bound to one session id (pi messages carry none; see the
- * module docstring), so each scenario gets its own instance.
+ * The returned object is stateless — every seam receives the session id
+ * from the runner — so one instance serves all scenarios.
  *
- * @param sessionID - The scenario's session id.
+ * @param sandbox - The pipeline sandbox (runtime and its store).
  * @returns The pi host implementation.
  */
 export function createPiPipelineHost(
-  sessionID: string,
+  sandbox: PipelineSandbox,
 ): PipelineHost<PiAgentMessage> {
   return {
-    runTransform: (messages, config, hasCompressTool, notify) =>
-      runTransformFor(sessionID, messages, config, hasCompressTool, notify),
-    runTool,
+    get runtime() {
+      return sandbox.runtime;
+    },
+    restart: () => sandbox.restart(),
+    runTransform: (sessionID, messages, config, hasCompressTool, notify) =>
+      runTransformFor(
+        sandbox,
+        sessionID,
+        messages,
+        config,
+        hasCompressTool,
+        notify,
+      ),
+    runTool: (action, toolSessionID, config, messages, notifications) =>
+      runTool(sandbox, action, toolSessionID, config, messages, notifications),
     handleDcp,
     resolveMarkTarget,
     landPlan,

@@ -15,25 +15,36 @@
  * persisted context of the sessions it stops because those sessions still
  * exist on the host side.  The two stops also differ by mode: the deletion
  * stops with `delete-session`, the dispose with `release-runtime`.
+ *
+ * `withSessionWork` gets the same kind of assertions: every hook, tool and
+ * per-session event enters through its session's permit, a call without a
+ * live session runs nothing, and a stop cancels and awaits the work it
+ * admits.  A session lifetime event bypasses that admission, because the
+ * deletion of a stopped session still has to run.
  */
 import assert from "node:assert/strict";
 import { rmSync } from "node:fs";
 import { afterEach, beforeEach, describe, it } from "node:test";
 import {
-  clearModelLimit,
-  getModelLimit,
-  setModelLimit,
-} from "../../core/context/model-limits.js";
-import {
-  _resetContextStateManagerForTesting,
-  getContextStateManager,
+  type ContextRuntime,
+  createContextRuntime,
 } from "../../core/context/runtime.js";
-import { createStateStore } from "../../core/context/store.js";
+import { createStateStore, type StateStore } from "../../core/context/store.js";
 import {
   defineExtensionService,
   defineSessionService,
+  type WorkPermit,
 } from "../../core/lifecycle/index.js";
-import { sessionAgentRegistry } from "../../core/session/agent.js";
+import {
+  sessionAgentRegistry,
+  sessionAgentResource,
+} from "../../core/session/agent.js";
+import {
+  contextSessionResources,
+  createSessionResourceCatalog,
+  type SessionResourceCatalog,
+} from "../../core/session/resources.js";
+import { permitFor } from "../../testkits/context-runtime.js";
 import { makeTmpDir } from "../../testkits/tmp.js";
 import {
   _getBufferForTesting,
@@ -42,7 +53,7 @@ import {
 } from "../../utils/logger.js";
 import {
   createOpenCodeLifecycleWiring,
-  withEnsuredSessions,
+  withSessionWork,
 } from "./lifecycle-wiring.js";
 import { createOpenCodeHostServices } from "./services.js";
 
@@ -51,18 +62,35 @@ let _loggerDir: string;
 /** Scratch store directories the current test created. */
 const _storeDirs: string[] = [];
 
+/** The plugin instance under test. */
+let store: StateStore;
+let runtime: ContextRuntime;
+let sessionCatalog: SessionResourceCatalog;
+
+/** Create a fresh instance runtime over a new scratch store. */
+function installSandbox(): StateStore {
+  const dir = makeTmpDir("zoo-opencode-wiring-store");
+  _storeDirs.push(dir);
+  store = createStateStore(dir);
+  runtime = createContextRuntime(store);
+  sessionCatalog = createSessionResourceCatalog([
+    ...contextSessionResources(runtime),
+    sessionAgentResource,
+  ]);
+  return store;
+}
+
 beforeEach(() => {
   _resetForTesting();
   _loggerDir = makeTmpDir("zoo-opencode-wiring");
   initLogger("opencode", { logDir: _loggerDir });
+  installSandbox();
 });
 
 afterEach(() => {
   _resetForTesting();
-  _resetContextStateManagerForTesting();
   for (const sessionID of ["s1", "s2", "ghost"]) {
     sessionAgentRegistry.delete(sessionID);
-    clearModelLimit(sessionID);
   }
   for (const dir of _storeDirs.splice(0)) {
     rmSync(dir, { recursive: true, force: true });
@@ -75,35 +103,34 @@ afterEach(() => {
 });
 
 /**
- * Bind the shared manager to a scratch store and record its deletions.
+ * Create an instance runtime over a scratch store and record deletions.
  *
  * @returns The store, its directory, and the session ids it deleted.
  */
 function sandboxStore() {
-  const dir = makeTmpDir("zoo-opencode-wiring-store");
-  _storeDirs.push(dir);
-  const store = createStateStore(dir);
-  _resetContextStateManagerForTesting(store);
+  const sandbox = installSandbox();
   const deletes: string[] = [];
-  const originalDelete = store.delete;
-  store.delete = (sessionID: string) => {
+  const originalDelete = sandbox.delete;
+  sandbox.delete = (sessionID: string) => {
     deletes.push(sessionID);
     originalDelete(sessionID);
   };
-  return { store, dir, deletes };
+  return { store: sandbox, dir: "", deletes };
 }
 
 /** Stage one cached compression for a session, as the transform would. */
-function stageBlock(sessionID: string): void {
-  getContextStateManager().get(sessionID).blocks.set(1, {
-    start: 0,
-    end: 3,
-    summary: "kept",
-    spanHash: "ffff0000",
-    status: "active",
-    compressedTokens: 100,
-    summaryTokens: 20,
-    createdAt: 1000,
+async function stageBlock(sessionID: string): Promise<void> {
+  await runtime.commit(permitFor(sessionID), (state) => {
+    state.blocks.set(1, {
+      start: 0,
+      end: 3,
+      summary: "kept",
+      spanHash: "ffff0000",
+      status: "active",
+      compressedTokens: 100,
+      summaryTokens: 20,
+      createdAt: 1000,
+    });
   });
 }
 
@@ -114,10 +141,14 @@ function sessionEvent(type: string, id?: string) {
 
 /** Wiring over the real OpenCode declarations. */
 function buildWiring() {
-  const declarations = createOpenCodeHostServices({ onSettled: [] });
+  const declarations = createOpenCodeHostServices({
+    onSettled: [],
+    sessionCatalog,
+  });
   return createOpenCodeLifecycleWiring({
     extensionServices: declarations.extension,
     sessionServices: declarations.session,
+    sessionCatalog,
   });
 }
 
@@ -150,6 +181,7 @@ function buildRecordingWiring(options: { failSession?: boolean } = {}) {
   const wiring = createOpenCodeLifecycleWiring({
     extensionServices: [extension] as const,
     sessionServices: [session] as const,
+    sessionCatalog,
   });
   return { wiring, log };
 }
@@ -257,12 +289,12 @@ describe("OpenCode lifecycle wiring — host session events", () => {
     const wiring = buildWiring();
     await wiring.ensureSession("s1");
     sessionAgentRegistry.bind("s1", "dolphin");
-    setModelLimit("s1", 1000, "model");
+    runtime.setModelLimit(permitFor("s1"), 1000, "model");
 
     await wiring.handleEvent(sessionEvent("session.deleted", "s1"));
 
     assert.equal(sessionAgentRegistry.resolve("s1"), undefined);
-    assert.equal(getModelLimit("s1"), undefined);
+    assert.equal(runtime.modelLimit("s1"), undefined);
   });
 
   it("keeps the fallback cleanup for a deleted session it never owned", async () => {
@@ -270,12 +302,12 @@ describe("OpenCode lifecycle wiring — host session events", () => {
     // The host wrote process-level records for a session whose events
     // predate this plugin instance: no scope exists, the records do.
     sessionAgentRegistry.bind("ghost", "dolphin");
-    setModelLimit("ghost", 1000, "model");
+    runtime.setModelLimit(permitFor("ghost"), 1000, "model");
 
     await wiring.handleEvent(sessionEvent("session.deleted", "ghost"));
 
     assert.equal(sessionAgentRegistry.resolve("ghost"), undefined);
-    assert.equal(getModelLimit("ghost"), undefined);
+    assert.equal(runtime.modelLimit("ghost"), undefined);
   });
 
   it("leaves an unrelated session's records alone on deletion", async () => {
@@ -372,7 +404,7 @@ describe("OpenCode lifecycle wiring — deletion boundary", () => {
     const { store, deletes } = sandboxStore();
     const wiring = buildWiring();
     await wiring.ensureSession("s1");
-    stageBlock("s1");
+    await stageBlock("s1");
     sessionAgentRegistry.bind("s1", "dolphin");
 
     await wiring.dispose();
@@ -386,7 +418,7 @@ describe("OpenCode lifecycle wiring — deletion boundary", () => {
     const { store, deletes } = sandboxStore();
     const wiring = buildWiring();
     await wiring.ensureSession("s1");
-    stageBlock("s1");
+    await stageBlock("s1");
 
     await wiring.dispose();
     await wiring.handleEvent(sessionEvent("session.deleted", "s1"));
@@ -455,121 +487,687 @@ describe("OpenCode lifecycle wiring — dispose", () => {
   });
 });
 
-describe("session scopes around the assembled hooks", () => {
-  /** The session ids the wrapper asked the lifecycle to ensure. */
-  function recorder() {
-    const asked: Array<string | null | undefined> = [];
-    return {
-      asked,
-      ensure: async (sessionID: string | null | undefined) => {
-        asked.push(sessionID);
-        return null;
-      },
-    };
+/** Wait until `predicate` holds, or fail the test. */
+async function waitFor(predicate: () => boolean): Promise<void> {
+  for (let tick = 0; tick < 200 && !predicate(); tick += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 1));
   }
+  assert.equal(predicate(), true, "the expected state was never reached");
+}
 
-  it("ensures the session a hook names before its body runs", async () => {
-    const { asked, ensure } = recorder();
-    const seen: string[] = [];
-    const hooks = withEnsuredSessions(
+/** A promise the test releases by hand. */
+function gate() {
+  let open = () => {};
+  const waited = new Promise<void>((resolve) => {
+    open = resolve;
+  });
+  return { waited, open };
+}
+
+/** The `event` hook input as the host sends it. */
+type EventInput = {
+  event: { type: string; properties?: Record<string, unknown> };
+};
+
+/** A tool entry as the composition hands it to the host. */
+function toolEntry(
+  execute: (
+    args: unknown,
+    toolCtx: unknown,
+    hostCtx?: unknown,
+  ) => Promise<string>,
+) {
+  return {
+    name: "compress",
+    description: "Compress a range.",
+    args: { ranges: {} },
+    required: ["ranges"],
+    execute,
+  };
+}
+
+describe("session work around ordinary hooks", () => {
+  it("admits a hook under the permit of the session it names", async () => {
+    const { wiring, log } = buildRecordingWiring();
+    const hooks = withSessionWork(
       {
         "tool.execute.before": async (input: { sessionID: string }) => {
-          // The scope exists by the time the handler reads session state.
-          seen.push(`body:${input.sessionID}:${asked.length}`);
+          // The session's scope exists by the time the body runs.
+          log.push(`body:${input.sessionID}`);
         },
       },
-      ensure,
+      wiring,
     );
 
-    await (hooks["tool.execute.before"] as (input: unknown) => Promise<void>)({
-      sessionID: "s1",
-    });
+    await hooks["tool.execute.before"]({ sessionID: "s1" });
 
-    assert.deepEqual(asked, ["s1"]);
-    assert.deepEqual(seen, ["body:s1:1"]);
+    assert.deepEqual(log, ["create:ext", "create:worker:s1", "body:s1"]);
   });
 
-  it("derives the transform's session from the transcript it received", async () => {
-    const { asked, ensure } = recorder();
-    const hooks = withEnsuredSessions(
+  it("derives the transform's session from the first message", async () => {
+    const { wiring, log } = buildRecordingWiring();
+    const hooks = withSessionWork(
       {
         "experimental.chat.messages.transform": async (
-          _input: unknown,
+          _input: Record<string, never>,
           _output: unknown,
         ) => {},
       },
-      ensure,
+      wiring,
     );
 
-    await (
-      hooks["experimental.chat.messages.transform"] as (
-        input: unknown,
-        output: unknown,
-      ) => Promise<void>
-    )({}, { messages: [{ info: { sessionID: "s2" }, parts: [] }] });
-
-    assert.deepEqual(asked, ["s2"]);
-  });
-
-  it("leaves the config hook alone: it addresses no session", async () => {
-    const { asked, ensure } = recorder();
-    const config = async () => {};
-    const hooks = withEnsuredSessions({ config }, ensure);
-
-    assert.equal(
-      hooks.config,
-      config,
-      "the config hook runs before any session exists",
+    await hooks["experimental.chat.messages.transform"](
+      {},
+      {
+        messages: [{ info: { sessionID: "s2" }, parts: [] }],
+      },
     );
-    await (hooks.config as () => Promise<void>)();
 
-    assert.deepEqual(asked, [], "config must not enter the session lifecycle");
+    assert.deepEqual(log, ["create:ext", "create:worker:s2"]);
   });
 
-  it("runs a hook naming no session and creates nothing", async () => {
-    const { asked, ensure } = recorder();
+  it("runs the system transform without a session and issues no permit", async () => {
+    const { wiring, log } = buildRecordingWiring();
+    const permits: Array<WorkPermit | undefined> = [];
+    const hooks = withSessionWork(
+      {
+        "experimental.chat.system.transform": async (
+          _input: { sessionID?: string; model?: unknown },
+          _output: unknown,
+          permit?: WorkPermit,
+        ) => {
+          permits.push(permit);
+        },
+      },
+      wiring,
+    );
+
+    await hooks["experimental.chat.system.transform"](
+      { model: { id: "gpt-5.5", limit: { context: 1000, output: 100 } } },
+      { system: ["prompt"] },
+    );
+
+    assert.equal(permits.length, 1, "the handler still runs");
+    assert.equal(permits[0], undefined, "no permit is issued");
+    assert.deepEqual(log, [], "no session record is created");
+  });
+
+  it("admits the system transform for the session it names", async () => {
+    const { wiring, log } = buildRecordingWiring();
+    const permits: Array<WorkPermit | undefined> = [];
+    const hooks = withSessionWork(
+      {
+        "experimental.chat.system.transform": async (
+          _input: { sessionID?: string; model?: unknown },
+          _output: unknown,
+          permit?: WorkPermit,
+        ) => {
+          permits.push(permit);
+        },
+      },
+      wiring,
+    );
+
+    await hooks["experimental.chat.system.transform"](
+      { sessionID: "s1", model: { id: "m", limit: { context: 1, output: 1 } } },
+      { system: [] },
+    );
+
+    assert.equal(permits[0]?.sessionID, "s1");
+    assert.deepEqual(log, ["create:ext", "create:worker:s1"]);
+  });
+
+  it("runs no hook for a call that names no session", async () => {
+    const { wiring, log } = buildRecordingWiring();
     let ran = 0;
-    const hooks = withEnsuredSessions(
+    const hooks = withSessionWork(
       {
         "tool.execute.before": async () => {
           ran += 1;
         },
+        "experimental.chat.messages.transform": async (
+          _input: Record<string, never>,
+          _output: unknown,
+        ) => {
+          ran += 1;
+        },
       },
-      ensure,
+      wiring,
     );
 
-    // A malformed call carries no session id; the wrapper asks for nothing
-    // and the handler still runs.
-    await (hooks["tool.execute.before"] as () => Promise<void>)();
+    await hooks["tool.execute.before"]();
+    await hooks["experimental.chat.messages.transform"]({}, {});
 
-    assert.equal(ran, 1);
-    assert.deepEqual(asked, [null]);
+    assert.equal(ran, 0, "a call without a session id is refused");
+    assert.deepEqual(log, [], "nothing is created for a nameless call");
   });
 
-  it("leaves the event hook and non-function hooks alone", async () => {
-    const { ensure } = recorder();
-    const event = async () => {};
-    const tool = { compress: { execute: async () => "ok" } };
-    const hooks = withEnsuredSessions({ event, tool }, ensure);
-
-    assert.equal(hooks.event, event, "the event hook ensures its own paths");
-    assert.equal(hooks.tool, tool);
-  });
-
-  it("propagates a handler's error unchanged", async () => {
-    const { ensure } = recorder();
-    const hooks = withEnsuredSessions(
+  it("runs no hook after the host deleted the session", async () => {
+    const { wiring, log } = buildRecordingWiring();
+    await wiring.ensureSession("s1");
+    await wiring.handleEvent(sessionEvent("session.deleted", "s1"));
+    let ran = 0;
+    const hooks = withSessionWork(
       {
-        "command.execute.before": async () => {
+        "tool.execute.before": async (_input: { sessionID?: string }) => {
+          ran += 1;
+        },
+      },
+      wiring,
+    );
+
+    await hooks["tool.execute.before"]({ sessionID: "s1" });
+
+    assert.equal(ran, 0, "a late hook must not run on a deleted session");
+    assert.deepEqual(log, [
+      "create:ext",
+      "create:worker:s1",
+      "dispose:worker:s1:session.deleted:delete-session",
+    ]);
+  });
+
+  it("runs no hook after the plugin disposed", async () => {
+    const { wiring } = buildRecordingWiring();
+    await wiring.ensureSession("s1");
+    await wiring.dispose();
+    let ran = 0;
+    const hooks = withSessionWork(
+      {
+        "tool.execute.before": async (_input: { sessionID?: string }) => {
+          ran += 1;
+        },
+      },
+      wiring,
+    );
+
+    await hooks["tool.execute.before"]({ sessionID: "s1" });
+
+    assert.equal(ran, 0);
+  });
+
+  it("leaves the hooks that address no session alone", async () => {
+    const { wiring, log } = buildRecordingWiring();
+    const config = async () => {};
+    const definition = async () => {};
+    const hooks = withSessionWork(
+      { config, "tool.definition": definition },
+      wiring,
+    );
+
+    assert.equal(hooks.config, config);
+    assert.equal(
+      hooks["tool.definition"],
+      definition,
+      "definitions keep enhancing",
+    );
+    await hooks.config();
+    assert.deepEqual(log, [], "the configuration stage enters no session");
+  });
+
+  it("propagates a hook's error unchanged", async () => {
+    const { wiring } = buildRecordingWiring();
+    const hooks = withSessionWork(
+      {
+        "command.execute.before": async (_input: { sessionID?: string }) => {
           throw new Error("command handled");
         },
       },
-      ensure,
+      wiring,
     );
 
     await assert.rejects(
-      () => (hooks["command.execute.before"] as () => Promise<void>)(),
+      () => hooks["command.execute.before"]({ sessionID: "s1" }),
       /command handled/,
     );
+  });
+});
+
+describe("session work around registered tools", () => {
+  it("runs a tool under its session's permit and keeps its metadata", async () => {
+    const { wiring, log } = buildRecordingWiring();
+    const seen: Array<{
+      args: unknown;
+      toolCtx: Record<string, unknown>;
+      hostCtx: Record<string, unknown>;
+    }> = [];
+    const entry = toolEntry(async (args, toolCtx, hostCtx) => {
+      seen.push({
+        args,
+        toolCtx: toolCtx as Record<string, unknown>,
+        hostCtx: hostCtx as Record<string, unknown>,
+      });
+      return "compressed";
+    });
+    const hooks = withSessionWork({ tool: { compress: entry } }, wiring);
+    const caller = new AbortController();
+
+    const result = await hooks.tool.compress.execute(
+      { ranges: [1] },
+      { sessionID: "s1", messageID: "m1", abort: caller.signal },
+    );
+
+    assert.equal(result, "compressed", "the business result propagates");
+    assert.deepEqual(log, ["create:ext", "create:worker:s1"]);
+    assert.deepEqual(seen[0]?.args, { ranges: [1] });
+    assert.equal(seen[0]?.toolCtx.messageID, "m1", "other context fields stay");
+    assert.equal(hooks.tool.compress.description, entry.description);
+    assert.deepEqual(hooks.tool.compress.args, entry.args);
+    assert.deepEqual(hooks.tool.compress.required, ["ranges"]);
+  });
+
+  it("hands the tool the permit's signal over its own abort", async () => {
+    const { wiring } = buildRecordingWiring();
+    const seen: Array<{
+      toolCtx: Record<string, unknown>;
+      hostCtx: Record<string, unknown>;
+    }> = [];
+    const hooks = withSessionWork(
+      {
+        tool: {
+          compress: toolEntry(async (_args, toolCtx, hostCtx) => {
+            seen.push({
+              toolCtx: toolCtx as Record<string, unknown>,
+              hostCtx: hostCtx as Record<string, unknown>,
+            });
+            return "ok";
+          }),
+        },
+      },
+      wiring,
+    );
+    const caller = new AbortController();
+    const hostCtx = { callId: "call-1" };
+
+    await hooks.tool.compress.execute(
+      {},
+      { sessionID: "s1", abort: caller.signal },
+      hostCtx,
+    );
+
+    const permit = seen[0]?.hostCtx.permit as {
+      sessionID: string;
+      signal: AbortSignal;
+      isActive(): boolean;
+    };
+    assert.equal(permit.sessionID, "s1");
+    assert.notEqual(seen[0]?.toolCtx.abort, caller.signal);
+    assert.equal(
+      seen[0]?.toolCtx.abort,
+      permit.signal,
+      "abort is the permit's",
+    );
+    assert.equal(seen[0]?.hostCtx.signal, permit.signal);
+    assert.equal(seen[0]?.hostCtx.callId, "call-1", "host fields survive");
+    assert.equal(permit.isActive(), false, "the permit ends with the call");
+
+    caller.abort();
+    assert.equal(
+      (seen[0]?.toolCtx.abort as AbortSignal).aborted,
+      true,
+      "the tool's abort follows the caller",
+    );
+  });
+
+  it("aborts a running tool when the host deletes its session", async () => {
+    const { wiring } = buildRecordingWiring();
+    let toolAbort: AbortSignal | undefined;
+    const hooks = withSessionWork(
+      {
+        tool: {
+          compress: toolEntry(async (_args, toolCtx) => {
+            toolAbort = (toolCtx as { abort?: AbortSignal }).abort;
+            return "ok";
+          }),
+        },
+      },
+      wiring,
+    );
+    await hooks.tool.compress.execute({}, { sessionID: "s1" });
+
+    await wiring.handleEvent(sessionEvent("session.deleted", "s1"));
+
+    assert.equal(toolAbort?.aborted, true);
+  });
+
+  it("refuses a tool call that names no session", async () => {
+    const { wiring, log } = buildRecordingWiring();
+    let ran = 0;
+    const hooks = withSessionWork(
+      {
+        tool: {
+          compress: toolEntry(async () => {
+            ran += 1;
+            return "ok";
+          }),
+        },
+      },
+      wiring,
+    );
+
+    assert.equal(
+      await hooks.tool.compress.execute({}, {}),
+      "",
+      "a refused call returns an empty string",
+    );
+    assert.equal(ran, 0);
+    assert.deepEqual(log, []);
+  });
+
+  it("refuses a tool call for a session the host deleted", async () => {
+    const { wiring } = buildRecordingWiring();
+    await wiring.ensureSession("s1");
+    await wiring.handleEvent(sessionEvent("session.deleted", "s1"));
+    let ran = 0;
+    const hooks = withSessionWork(
+      {
+        tool: {
+          compress: toolEntry(async () => {
+            ran += 1;
+            return "ok";
+          }),
+        },
+      },
+      wiring,
+    );
+
+    assert.equal(
+      await hooks.tool.compress.execute({}, { sessionID: "s1" }),
+      "",
+    );
+    assert.equal(ran, 0);
+  });
+
+  it("accepts the host's snake-case session id", async () => {
+    const { wiring, log } = buildRecordingWiring();
+    const hooks = withSessionWork(
+      {
+        tool: { compress: toolEntry(async () => "ok") },
+      },
+      wiring,
+    );
+
+    await hooks.tool.compress.execute({}, { sessionId: "s2" });
+
+    assert.deepEqual(log, ["create:ext", "create:worker:s2"]);
+  });
+
+  it("propagates a tool's error unchanged", async () => {
+    const { wiring } = buildRecordingWiring();
+    const hooks = withSessionWork(
+      {
+        tool: {
+          compress: toolEntry(async () => {
+            throw new Error("tool failed");
+          }),
+        },
+      },
+      wiring,
+    );
+
+    await assert.rejects(
+      () => hooks.tool.compress.execute({}, { sessionID: "s1" }),
+      /tool failed/,
+    );
+  });
+});
+
+describe("session work around host events", () => {
+  it("admits a message update under the event's session permit", async () => {
+    const { wiring, log } = buildRecordingWiring();
+    const seen: string[] = [];
+    const hooks = withSessionWork(
+      {
+        event: async (input: EventInput) => {
+          seen.push(input.event.type);
+        },
+      },
+      wiring,
+    );
+
+    await hooks.event({
+      event: {
+        type: "message.updated",
+        properties: { info: { sessionID: "s1" } },
+      },
+    });
+
+    assert.deepEqual(seen, ["message.updated"]);
+    assert.deepEqual(log, ["create:ext", "create:worker:s1"]);
+  });
+
+  it("admits an idle and an error under the event's session permit", async () => {
+    const { wiring, log } = buildRecordingWiring();
+    const seen: string[] = [];
+    const hooks = withSessionWork(
+      {
+        event: async (input: EventInput) => {
+          seen.push(input.event.type);
+        },
+      },
+      wiring,
+    );
+
+    await hooks.event({
+      event: { type: "session.idle", properties: { sessionID: "s1" } },
+    });
+    await hooks.event({
+      event: { type: "session.error", properties: { sessionID: "s2" } },
+    });
+
+    assert.deepEqual(seen, ["session.idle", "session.error"]);
+    assert.deepEqual(log, [
+      "create:ext",
+      "create:worker:s1",
+      "create:worker:s2",
+    ]);
+  });
+
+  it("runs no work event that names no session", async () => {
+    const { wiring, log } = buildRecordingWiring();
+    let ran = 0;
+    const hooks = withSessionWork(
+      {
+        event: async (_input: EventInput) => {
+          ran += 1;
+        },
+      },
+      wiring,
+    );
+
+    for (const type of ["message.updated", "session.error", "session.idle"]) {
+      await hooks.event({ event: { type, properties: {} } });
+    }
+
+    assert.equal(ran, 0);
+    assert.deepEqual(log, []);
+  });
+
+  it("routes a creation and a deletion without business admission", async () => {
+    const { wiring, log } = buildRecordingWiring();
+    const hooks = withSessionWork(
+      { event: (input: EventInput) => wiring.handleEvent(input.event) },
+      wiring,
+    );
+
+    await hooks.event({ event: sessionEvent("session.created", "s1") });
+    await hooks.event({ event: sessionEvent("session.deleted", "s1") });
+    // The id is tombstoned by then: a permit would be refused, so this
+    // proves the deletion took the lifecycle path instead.
+    const late = await hooks.event({
+      event: sessionEvent("session.deleted", "s1"),
+    });
+
+    assert.deepEqual(late, {
+      action: "stop-session",
+      sessionID: "s1",
+      report: { errors: [] },
+    });
+    assert.deepEqual(log, [
+      "create:ext",
+      "create:worker:s1",
+      "dispose:worker:s1:session.deleted:delete-session",
+    ]);
+  });
+
+  it("leaves an unmapped event to the hook and admits nothing", async () => {
+    const { wiring, log } = buildRecordingWiring();
+    const seen: string[] = [];
+    const hooks = withSessionWork(
+      {
+        event: async (input: EventInput) => {
+          seen.push(input.event.type);
+        },
+      },
+      wiring,
+    );
+
+    await hooks.event({
+      event: { type: "session.updated", properties: { info: { id: "s1" } } },
+    });
+
+    assert.deepEqual(seen, ["session.updated"]);
+    assert.deepEqual(log, []);
+  });
+});
+
+describe("stops against running session work", () => {
+  it("waits for a running hook before disposing its session", async () => {
+    const { wiring, log } = buildRecordingWiring();
+    const blocker = gate();
+    const hooks = withSessionWork(
+      {
+        "command.execute.before": async (_input: { sessionID?: string }) => {
+          log.push("body:start");
+          await blocker.waited;
+          log.push("body:end");
+        },
+      },
+      wiring,
+    );
+
+    const running = hooks["command.execute.before"]({ sessionID: "s1" });
+    await waitFor(() => log.includes("body:start"));
+    const disposing = wiring.dispose();
+    let disposed = false;
+    void disposing.then(() => {
+      disposed = true;
+    });
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    assert.equal(disposed, false, "the dispose must wait for the hook");
+
+    blocker.open();
+    await running;
+    assert.deepEqual(await disposing, { errors: [] });
+    assert.deepEqual(log, [
+      "create:ext",
+      "create:worker:s1",
+      "body:start",
+      "body:end",
+      "dispose:worker:s1:dispose:release-runtime",
+      "dispose:ext:dispose",
+    ]);
+  });
+
+  it("cancels a running tool on dispose and waits for it", async () => {
+    const { wiring, log } = buildRecordingWiring();
+    const blocker = gate();
+    let toolAbort: AbortSignal | undefined;
+    const hooks = withSessionWork(
+      {
+        tool: {
+          compress: toolEntry(async (_args, toolCtx) => {
+            toolAbort = (toolCtx as { abort?: AbortSignal }).abort;
+            log.push("tool:start");
+            await blocker.waited;
+            log.push(`tool:end:${toolAbort?.aborted}`);
+            return "ok";
+          }),
+        },
+      },
+      wiring,
+    );
+
+    const running = hooks.tool.compress.execute({}, { sessionID: "s1" });
+    await waitFor(() => log.includes("tool:start"));
+    const disposing = wiring.dispose();
+    await waitFor(() => toolAbort?.aborted === true);
+    assert.equal(
+      log.includes("dispose:ext:dispose"),
+      false,
+      "the tool's session is not disposed yet",
+    );
+
+    blocker.open();
+    assert.equal(await running, "ok");
+    assert.deepEqual(await disposing, { errors: [] });
+    assert.deepEqual(log.slice(-3), [
+      "tool:end:true",
+      "dispose:worker:s1:dispose:release-runtime",
+      "dispose:ext:dispose",
+    ]);
+  });
+
+  it("waits for a running hook before deleting its session", async () => {
+    const { wiring, log } = buildRecordingWiring();
+    const blocker = gate();
+    const hooks = withSessionWork(
+      {
+        "command.execute.before": async (_input: { sessionID?: string }) => {
+          log.push("body:start");
+          await blocker.waited;
+          log.push("body:end");
+        },
+      },
+      wiring,
+    );
+
+    const running = hooks["command.execute.before"]({ sessionID: "s1" });
+    await waitFor(() => log.includes("body:start"));
+    const stopping = wiring.handleEvent(sessionEvent("session.deleted", "s1"));
+    let stopped = false;
+    void stopping.then(() => {
+      stopped = true;
+    });
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    assert.equal(stopped, false, "the deletion must wait for the hook");
+
+    blocker.open();
+    await running;
+    await stopping;
+    assert.deepEqual(log.slice(2), [
+      "body:start",
+      "body:end",
+      "dispose:worker:s1:session.deleted:delete-session",
+    ]);
+  });
+
+  it("stops one session without cancelling another's work", async () => {
+    const { wiring } = buildRecordingWiring();
+    const blocker = gate();
+    const signals = new Map<string, AbortSignal>();
+    const hooks = withSessionWork(
+      {
+        tool: {
+          compress: toolEntry(async (_args, toolCtx) => {
+            const ctx = toolCtx as { sessionID: string; abort: AbortSignal };
+            signals.set(ctx.sessionID, ctx.abort);
+            await blocker.waited;
+            return ctx.sessionID;
+          }),
+        },
+      },
+      wiring,
+    );
+
+    const first = hooks.tool.compress.execute({}, { sessionID: "s1" });
+    const second = hooks.tool.compress.execute({}, { sessionID: "s2" });
+    await waitFor(() => signals.size === 2);
+    const stopping = wiring.handleEvent(sessionEvent("session.deleted", "s1"));
+    await waitFor(() => signals.get("s1")?.aborted === true);
+    assert.equal(signals.get("s2")?.aborted, false, "a sibling keeps running");
+
+    blocker.open();
+    await stopping;
+    assert.deepEqual(await Promise.all([first, second]), ["s1", "s2"]);
   });
 });

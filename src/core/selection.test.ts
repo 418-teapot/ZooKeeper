@@ -10,7 +10,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import type { ModeProfile } from "./config-types.js";
-import { planSelection } from "./selection.js";
+import { derivePrimaries, planSelection } from "./selection.js";
 import type { CapabilityKey, UnitDescriptor, UnitKind } from "./unit.js";
 
 /** A descriptor whose factory must never run under the planner. */
@@ -754,5 +754,54 @@ describe("planSelection — immutability", () => {
       (selection.agents as string[]).push("late");
     });
     assert.deepEqual(selection.agents, ["mola", "dolphin"]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// derivePrimaries
+// ---------------------------------------------------------------------------
+
+describe("derivePrimaries", () => {
+  it("returns an empty set for an empty agents array", () => {
+    assert.deepEqual(derivePrimaries([], {}), []);
+  });
+
+  it("returns an empty set when no agent is marked primary", () => {
+    assert.deepEqual(
+      derivePrimaries(["alpha", "beta"], {
+        alpha: "subagent",
+        beta: "subagent",
+      }),
+      [],
+    );
+  });
+
+  it("keeps a single primary and drops subagents", () => {
+    assert.deepEqual(
+      derivePrimaries(["alpha", "beta", "gamma"], {
+        alpha: "subagent",
+        beta: "primary",
+        gamma: "subagent",
+      }),
+      ["beta"],
+    );
+  });
+
+  it("keeps multiple primaries in array order", () => {
+    assert.deepEqual(
+      derivePrimaries(["alpha", "beta", "gamma"], {
+        alpha: "primary",
+        beta: "subagent",
+        gamma: "primary",
+      }),
+      ["alpha", "gamma"],
+    );
+  });
+
+  it("treats agents missing from the modes map as non-primaries", () => {
+    assert.deepEqual(
+      derivePrimaries(["alpha", "beta", "gamma"], { beta: "primary" }),
+      ["beta"],
+    );
   });
 });

@@ -17,20 +17,16 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, it } from "node:test";
 import { initTheme } from "@earendil-works/pi-coding-agent";
+import { buildPiCommandRegistrationPlan } from "../../compose-pi.js";
 import { project } from "../../core/context/lens.js";
-import {
-  clearRoundView,
-  getRoundView,
-  publishRoundView,
-} from "../../core/context/round-view.js";
+import { createContextRuntime } from "../../core/context/runtime.js";
+import type { CleanupReport, WorkPermit } from "../../core/lifecycle/index.js";
+import type {
+  SwitchHost,
+  SwitchNewSessionOps,
+} from "../../core/ports/switch.js";
 import { sessionAgentRegistry } from "../../core/session/agent.js";
 import type { SubagentDriver } from "../../core/subagent/driver.js";
-import {
-  getPrimary,
-  _resetForTesting as resetIdentityForTesting,
-  runWithIdentity,
-  setPrimary,
-} from "../../core/subagent/identity.js";
 import {
   finishRun,
   getRun,
@@ -40,6 +36,8 @@ import {
   updateRun,
 } from "../../core/subagent/registry.js";
 import { createTodoStore } from "../../core/todo/store.js";
+import type { ToolContribution } from "../../core/unit.js";
+import { permitFor } from "../../testkits/context-runtime.js";
 import {
   COLORS_RAW,
   fakePiToolHost,
@@ -65,11 +63,19 @@ import {
 } from "../../utils/logger.js";
 import { createPiHandoffTarget } from "./handoff-target.js";
 import { beginHydration, resetHydration, waitForHydration } from "./hydrate.js";
+import type { PiSessionWorkRunner } from "./lifecycle-wiring.js";
+import {
+  createPiHandoffIdentity,
+  createSwitchOpsStore,
+  pendingSwitchPrimary,
+} from "./switch-host.js";
 import { TRANSCRIPT_UNAVAILABLE_NOTICE } from "./tui/transcript.js";
 import {
   buildPiContributions,
   buildPiHandlers,
   buildPiResolveAgent,
+  buildPiSubagentExtension,
+  buildPiToolExecute,
 } from "./wire.js";
 
 afterEach(resetPiTestState);
@@ -179,6 +185,38 @@ describe("buildPiContributions — profile-driven selection", () => {
     assert.deepEqual(composed.transform, []);
   });
 
+  it("flags only the replacing commands for control admission", () => {
+    // The replacing claim is explicit metadata on the contribution, never a
+    // command-name lookup: `/go` and the `/<agent>` switches set it, every
+    // other command leaves it unset and runs as ordinary session work.
+    const switchHost: SwitchHost = {
+      getBaselineTools: () => [],
+      setActiveTools: () => {},
+      getPrimary: () => undefined,
+      setPrimary: () => {},
+      newSession: async () => ({ cancelled: false }),
+    };
+    // The pi switch surface is what contributes the `/<agent>` commands, so
+    // a stub host brings them into the same composition.
+    const { composed } = buildPiContributions(
+      POLY_ZOO,
+      { switchHost },
+      MODES_RAW,
+    );
+    const plan = buildPiCommandRegistrationPlan(composed.commands);
+    assert.deepEqual(
+      plan
+        .filter((registration) => registration.replacesSession)
+        .map((registration) => registration.name)
+        .sort(),
+      ["dolphin", "go", "mola"],
+    );
+    assert.equal(
+      plan.find((registration) => registration.name === "dcp")?.replacesSession,
+      false,
+    );
+  });
+
   it("poly full profile → no unknown_unit warnings (all names match the registry)", () => {
     // pi composes the full profile against the full registry: every
     // hooks/tools/commands/agents/skills name must match a unit or the
@@ -276,10 +314,15 @@ describe("buildPiContributions — profile-driven selection", () => {
 // ---------------------------------------------------------------------------
 
 describe("buildPiResolveAgent — session identity resolution", () => {
-  /** The default primary the selection derives for the poly profile. */
-  const DEFAULT_PRIMARY = "dolphin";
+  /** The orchestrator the selection resolves for the poly profile. */
+  const ORCHESTRATOR = "dolphin";
 
-  it("(a) a subagent child session resolves to its delegated run agent", () => {
+  /** The main runtime's sources: no fixed agent, no pending replacement. */
+  function mainSources() {
+    return { orchestrator: () => ORCHESTRATOR };
+  }
+
+  it("a recorded child session resolves to its delegated run agent", () => {
     startRun({
       id: "run-1",
       agent: "beaver",
@@ -287,11 +330,11 @@ describe("buildPiResolveAgent — session identity resolution", () => {
       startedAt: 100,
     });
     updateRun("run-1", { childSession: "child-beaver" });
-    const resolve = buildPiResolveAgent(DEFAULT_PRIMARY);
+    const resolve = buildPiResolveAgent(mainSources());
     assert.equal(resolve("child-beaver"), "beaver");
   });
 
-  it("(a) the hit is bound so later lookups skip the run table", () => {
+  it("the child-session answer is bound so later lookups skip the run table", () => {
     startRun({
       id: "run-1",
       agent: "beaver",
@@ -299,69 +342,121 @@ describe("buildPiResolveAgent — session identity resolution", () => {
       startedAt: 100,
     });
     updateRun("run-1", { childSession: "child-beaver" });
-    const resolve = buildPiResolveAgent(DEFAULT_PRIMARY);
+    const resolve = buildPiResolveAgent(mainSources());
     assert.equal(sessionAgentRegistry.resolve("child-beaver"), undefined);
     assert.equal(resolve("child-beaver"), "beaver");
-    // The (a) answer is memoized: a later lookup hits the registry
-    // directly — proven by emptying the run table first, so only the
-    // binding can answer now.
+    // The answer is memoized: a later lookup hits the registry directly —
+    // proven by emptying the run table first, so only the binding can
+    // answer now.
     resetRegistry();
     assert.equal(sessionAgentRegistry.resolve("child-beaver"), "beaver");
     assert.equal(resolve("child-beaver"), "beaver");
   });
 
-  it("(a) a still-unknown child session (no run recorded) falls through", () => {
-    // Without a run and outside any identity scope the caller's session
-    // is treated as the root session → the default primary.
-    const resolve = buildPiResolveAgent(DEFAULT_PRIMARY);
+  it("a session the run table does not know falls through to the orchestrator", () => {
+    const resolve = buildPiResolveAgent(mainSources());
     assert.equal(resolve("root-ses"), "dolphin");
   });
 
-  it("(b) an unregistered session inside a subagent identity scope resolves to it", () => {
-    const resolve = buildPiResolveAgent(DEFAULT_PRIMARY);
-    let resolved: string | undefined;
-    runWithIdentity({ kind: "subagent", name: "lynx" }, () => {
-      resolved = resolve("orphan-child");
+  it("a sub-session runtime resolves its fixed agent before any run report", () => {
+    // The delegation's first events precede the run's first progress
+    // report, so the run table cannot answer yet: the runtime's own fixed
+    // agent must.
+    const resolve = buildPiResolveAgent({
+      fixedAgent: "lynx",
+      orchestrator: () => ORCHESTRATOR,
     });
-    assert.equal(resolved, "lynx");
+    assert.equal(resolve("child-of-lynx"), "lynx");
+    assert.equal(sessionAgentRegistry.resolve("child-of-lynx"), "lynx");
   });
 
-  it("(b) the subagent-identity answer is bound into the shared registry", () => {
-    const resolve = buildPiResolveAgent(DEFAULT_PRIMARY);
-    assert.equal(sessionAgentRegistry.resolve("orphan-child-2"), undefined);
-    let resolved: string | undefined;
-    runWithIdentity({ kind: "subagent", name: "lynx" }, () => {
-      resolved = resolve("orphan-child-2");
+  it("two concurrent sub-session runtimes never exchange identities", async () => {
+    // Each runtime is built for one delegation; their sessions are distinct
+    // and their events interleave.
+    const beaver = buildPiResolveAgent({
+      fixedAgent: "beaver",
+      orchestrator: () => ORCHESTRATOR,
     });
-    assert.equal(resolved, "lynx");
-    // The binding persists after the ALS scope has ended: a later
-    // resolve hits the registry directly, independent of the resolver
-    // that created it.
-    assert.equal(sessionAgentRegistry.resolve("orphan-child-2"), "lynx");
+    const lynx = buildPiResolveAgent({
+      fixedAgent: "lynx",
+      orchestrator: () => ORCHESTRATOR,
+    });
+
+    /** Resolve after a real async yield, so interleaving is observable. */
+    const probe = async (
+      resolve: (sessionID: string) => string | undefined,
+      sessionID: string,
+      expected: string,
+    ): Promise<string | undefined> => {
+      const first = resolve(sessionID);
+      await Promise.resolve();
+      const afterYield = resolve(sessionID);
+      assert.equal(afterYield, expected);
+      assert.equal(first, afterYield);
+      return afterYield;
+    };
+
+    const [left, right] = await Promise.all([
+      probe(beaver, "sess-beaver", "beaver"),
+      probe(lynx, "sess-lynx", "lynx"),
+      probe(beaver, "sess-beaver-2", "beaver"),
+      probe(lynx, "sess-lynx-2", "lynx"),
+    ]);
+
+    assert.equal(left, "beaver");
+    assert.equal(right, "lynx");
+    assert.equal(sessionAgentRegistry.resolve("sess-beaver"), "beaver");
+    assert.equal(sessionAgentRegistry.resolve("sess-lynx"), "lynx");
+    assert.equal(sessionAgentRegistry.resolve("sess-beaver-2"), "beaver");
+    assert.equal(sessionAgentRegistry.resolve("sess-lynx-2"), "lynx");
   });
 
-  it("(c) the root-session answer is bound and repeats hit the registry", () => {
-    const resolve = buildPiResolveAgent(DEFAULT_PRIMARY);
+  it("a pending replacement target answers before the orchestrator", () => {
+    const store = createSwitchOpsStore();
+    store.stash({ primary: "mola" });
+    const resolve = buildPiResolveAgent({
+      pendingPrimary: () => store.pendingPrimary(),
+      orchestrator: () => ORCHESTRATOR,
+    });
+
+    // The replacement session's bind-time events run before the deferred
+    // switch ops are drained, so the target must answer now.
+    assert.equal(resolve("sess-replaced"), "mola");
+    assert.equal(sessionAgentRegistry.resolve("sess-replaced"), "mola");
+  });
+
+  it("a drained pending target no longer answers", () => {
+    const store = createSwitchOpsStore();
+    store.stash({ primary: "mola" });
+    const resolve = buildPiResolveAgent({
+      pendingPrimary: () => store.pendingPrimary(),
+      orchestrator: () => ORCHESTRATOR,
+    });
+    store.drain();
+
+    assert.equal(resolve("sess-after-drain"), "dolphin");
+  });
+
+  it("the orchestrator answer is bound and repeats hit the registry", () => {
+    const resolve = buildPiResolveAgent(mainSources());
     assert.equal(sessionAgentRegistry.resolve("root-ses-2"), undefined);
     assert.equal(resolve("root-ses-2"), "dolphin");
-    // The root session is bound: without the binding every later
-    // lookup from the main session's tool events would re-run the (a)
-    // reverse scan, guaranteed to miss.  Accumulation is bounded —
-    // one root entry per process (see `buildPiResolveAgent`).
+    // The main session is bound, so repeated lookups skip the sources.
     assert.equal(sessionAgentRegistry.resolve("root-ses-2"), "dolphin");
-    // Repeated calls stay stable, hitting the binding directly.
     assert.equal(resolve("root-ses-2"), "dolphin");
-    assert.equal(sessionAgentRegistry.resolve("root-ses-2"), "dolphin");
   });
 
   it("a pre-existing registry binding wins over fresh resolution", () => {
     sessionAgentRegistry.bind("bound-ses", "mola");
-    const resolve = buildPiResolveAgent(DEFAULT_PRIMARY);
+    const resolve = buildPiResolveAgent({
+      fixedAgent: "boy",
+      orchestrator: () => ORCHESTRATOR,
+    });
     assert.equal(resolve("bound-ses"), "mola");
   });
 
-  it("no selected primary → undefined (fail-closed, no binding created)", () => {
-    const resolve = buildPiResolveAgent(undefined);
+  it("no source answering → undefined (fail-closed, no binding created)", () => {
+    const resolve = buildPiResolveAgent({ orchestrator: () => undefined });
     assert.equal(resolve("any-session"), undefined);
     assert.equal(sessionAgentRegistry.resolve("any-session"), undefined);
   });
@@ -466,28 +561,34 @@ describe("buildPiContributions — fetch converter availability", () => {
 // Orchestrator seeding
 // ---------------------------------------------------------------------------
 
-describe("buildPiContributions — orchestrator seeding", () => {
-  it("seeds the identity with the selection's orchestrator", () => {
-    buildPiContributions(POLY_ZOO, undefined, MODES_RAW);
+describe("buildPiContributions — session agent resolution", () => {
+  it("resolves the selection's orchestrator for an unbound session", () => {
+    const { resolveAgent } = buildPiContributions(
+      POLY_ZOO,
+      undefined,
+      MODES_RAW,
+    );
 
-    assert.equal(getPrimary(), "dolphin");
+    assert.equal(resolveAgent("sess-main"), "dolphin");
   });
 
-  it("never overwrites a switched primary on reassembly", () => {
+  it("lets a binding written after composition win (a switch target)", () => {
     // The extension factory re-runs on every session replacement; the
-    // switch sets its target before calling `newSession`, so the re-seed
-    // must leave that choice intact.
-    buildPiContributions(POLY_ZOO, undefined, MODES_RAW);
-    setPrimary("mola");
+    // switch writes the session binding before `newSession`, so the fresh
+    // composition must keep that choice instead of re-resolving it.
+    const { resolveAgent } = buildPiContributions(
+      POLY_ZOO,
+      undefined,
+      MODES_RAW,
+    );
+    sessionAgentRegistry.bind("sess-main", "mola");
 
-    buildPiContributions(POLY_ZOO, undefined, MODES_RAW);
-
-    assert.equal(getPrimary(), "mola");
+    assert.equal(resolveAgent("sess-main"), "mola");
   });
 
   it("follows the declared orchestrator, not the profile's agent order", () => {
     // mola is listed first and is a primary, yet the role belongs to
-    // dolphin: the seed must follow the declared role.
+    // dolphin: resolution must follow the declared role.
     const zoo = {
       ...POLY_ZOO,
       mode: {
@@ -495,20 +596,33 @@ describe("buildPiContributions — orchestrator seeding", () => {
       },
     };
 
-    buildPiContributions(zoo, undefined, MODES_RAW);
+    const { resolveAgent } = buildPiContributions(zoo, undefined, MODES_RAW);
 
-    assert.equal(getPrimary(), "dolphin");
+    assert.equal(resolveAgent("sess-main"), "dolphin");
   });
 
-  it("seeds nothing when the profile cannot provide the orchestrator", () => {
+  it("resolves nothing when the profile cannot provide the orchestrator", () => {
     const zoo = {
       ...POLY_ZOO,
       mode: { poly: { ...POLY_PROFILE, agents: ["beaver", "lynx"] } },
     };
 
-    buildPiContributions(zoo, undefined, MODES_RAW);
+    const { resolveAgent } = buildPiContributions(zoo, undefined, MODES_RAW);
 
-    assert.equal(getPrimary(), undefined);
+    assert.equal(resolveAgent("sess-main"), undefined);
+    assert.equal(sessionAgentRegistry.resolve("sess-main"), undefined);
+  });
+
+  it("resolves a sub-session runtime to its fixed agent", () => {
+    // The inline factory of a delegation fixes the agent, so every session
+    // of that runtime answers with it — even before the run reports.
+    const { resolveAgent } = buildPiContributions(
+      POLY_ZOO,
+      { fixedAgent: "beaver" },
+      MODES_RAW,
+    );
+
+    assert.equal(resolveAgent("sess-child"), "beaver");
   });
 });
 
@@ -630,7 +744,10 @@ describe("buildPiHandlers — registerTool wiring", () => {
       { questions: [{ question: "One?", options: [{ label: "A1" }] }] },
       undefined,
       undefined,
-      { mode: "print" },
+      {
+        sessionManager: { getSessionId: () => "sess-ask" },
+        mode: "print",
+      },
     )) as { details?: Record<string, unknown> };
     assert.equal(result.details?.sessionPath, "/tmp/ask-run.jsonl");
     assert.ok(
@@ -691,7 +808,7 @@ describe("buildPiHandlers — registerTool wiring", () => {
     // by the composed allowlist judge.  The subagent prompt is well-formed so
     // the subagent-prompt judge (the other composed judge) lets it through
     // and the allowlist judge is the one that refuses.
-    setPrimary("beaver");
+    sessionAgentRegistry.bind("sess-gate", "beaver");
     const refusal = await handlers.toolCall(
       {
         type: "tool_call",
@@ -852,13 +969,16 @@ describe("buildPiHandlers — registerCommand wiring", () => {
 
   it("/dcp context appends a zoo-notice custom entry (persistent, no LLM context)", async () => {
     const api = mockApi();
-    await buildPiHandlers(POLY_ZOO, api as any, MODES_RAW);
+    const runtime = createContextRuntime();
+    await buildPiHandlers(POLY_ZOO, api as any, MODES_RAW, {
+      contextRuntime: runtime,
+    });
     const dcp = api.commands.find((c) => c.name === "dcp");
     assert.ok(dcp && typeof dcp.handler === "function");
 
     // pi offers no host history read, so /dcp reports over the round view
     // published by the context transform — the projection the model holds.
-    publishRoundView("sess-dcp", {
+    runtime.publishRoundView(permitFor("sess-dcp"), {
       projection: project(
         [
           {
@@ -882,7 +1002,7 @@ describe("buildPiHandlers — registerCommand wiring", () => {
         ctx,
       );
     } finally {
-      clearRoundView("sess-dcp");
+      runtime.clearRoundView("sess-dcp");
     }
 
     assert.ok(
@@ -942,8 +1062,9 @@ describe("buildPiHandlers — registerCommand wiring", () => {
       assert.ok(go && typeof go.handler === "function");
 
       // The planning session runs as another primary: the handoff must
-      // switch to the selection's orchestrator, not keep this one.
-      setPrimary("mola");
+      // bind the replaced session to the selection's orchestrator, not keep
+      // this one.
+      sessionAgentRegistry.bind("sess-go", "mola");
       await (go.handler as (args: string, ctx: unknown) => Promise<void>)("", {
         sessionManager: { getSessionId: () => "sess-go" },
         newSession: async (options: any) => {
@@ -955,7 +1076,10 @@ describe("buildPiHandlers — registerCommand wiring", () => {
 
       assert.equal(sessions.length, 1);
       assert.equal(sessions[0].parentSession, "sess-go");
-      assert.equal(getPrimary(), "dolphin");
+      // The parentage session carries the executor the handoff resolved,
+      // and the replacement session resolves it from the pending slot.
+      assert.equal(sessionAgentRegistry.resolve("sess-go"), "dolphin");
+      assert.equal(pendingSwitchPrimary(), "dolphin");
       assert.ok(
         fs
           .readFileSync(join(dir, ".zoo/plans/demo-plan.md"), "utf-8")
@@ -1117,26 +1241,23 @@ describe("buildPiHandlers — primary-switch command wiring", () => {
     const dolphin = api.commands.find((c) => c.name === "dolphin");
     assert.ok(dolphin && typeof dolphin.handler === "function");
 
-    // Register the fleet widget first so the switch can nudge it.
-    const { calls, ctx } = widgetRecordingCtx();
-    await handlers.sessionStart(
-      { type: "session_start", reason: "startup" },
-      ctx,
-    );
+    // The replacement session starts as mola, then switches to dolphin.
+    sessionAgentRegistry.bind("sess-switch", "mola");
 
-    // A switch away from the default primary (mola) to dolphin.
-    setPrimary("mola");
-
-    // The switch command's `setWidget("zoo", ...)` is now a "primary
-    // changed" notification routed to the fleet widget (it reads the primary
-    // live), so the mock ui never receives a string-array widget for zoo.
+    // The switch command's `setWidget("zoo", ...)` is a "primary changed"
+    // notification routed to the fleet widget (it reads the session's
+    // primary), so the mock ui never receives a string-array widget for zoo.
     await (dolphin.handler as (args: string, ctx: unknown) => Promise<void>)(
       "",
       switchCtx(() => {}),
     );
-    // The identity switched; the fleet widget (already registered) reads the
-    // new primary live on its next render.
-    assert.equal(getPrimary(), "dolphin");
+
+    // The replacement session's bind-time handlers run before its first
+    // turn and resolve the target the switch published, so the widget it
+    // registers already renders the new primary.
+    const { calls, ctx } = widgetRecordingCtx("sess-new");
+    await handlers.sessionStart({ type: "session_start", reason: "new" }, ctx);
+    assert.equal(sessionAgentRegistry.resolve("sess-new"), "dolphin");
     const { lines, dispose } = renderZooWidget(calls);
     assert.ok(lines[0].includes("dolphin"), lines[0]);
     assert.ok(!lines[0].includes("mola"), lines[0]);
@@ -1153,6 +1274,41 @@ describe("buildPiHandlers — primary-switch command wiring", () => {
     // Tool-level deny (webfetch) removed; bash (fine-grained sub-table)
     // kept in the active set.
     assert.deepEqual(api.activeTools, ["edit", "bash"]);
+  });
+
+  it("resources_discover of the replacement session filters by the switch target", async () => {
+    // The replacement session's skill contribution runs at bind time, so the
+    // target the switch published must already answer there.
+    const api = mockApi();
+    const handlers = await buildPiHandlers(POLY_ZOO, api as any, {
+      agent: {
+        dolphin: {
+          mode: "primary",
+          permission: { skill: { "*": "deny", "git-commit": "allow" } },
+        },
+        mola: {
+          mode: "primary",
+          permission: { skill: { "*": "deny", grill: "allow" } },
+        },
+      },
+    });
+    const mola = api.commands.find((c) => c.name === "mola");
+    assert.ok(mola && typeof mola.handler === "function");
+    sessionAgentRegistry.bind("sess-switch", "dolphin");
+
+    await (mola.handler as (args: string, ctx: unknown) => Promise<void>)(
+      "",
+      switchCtx(() => {}),
+    );
+
+    const resources = await handlers.resourcesDiscover(undefined, {
+      sessionManager: { getSessionId: () => "sess-new" },
+    });
+    assert.ok(resources);
+    assert.deepEqual(
+      resources.skillPaths.map((path) => path.split("/").pop()),
+      ["grill"],
+    );
   });
 
   it("no agent-role table → invalid profile → no switch commands", async () => {
@@ -1191,11 +1347,16 @@ describe("buildPiHandlers — primary tool-deny trim (main session)", () => {
   /** A reference tool set carrying the fetch tool the deny tests target. */
   const ALL_TOOLS = ["fetch", "edit", "bash"];
 
+  /** Bind the session under test, so the trim has a primary to read. */
+  function bindSession(name: string): void {
+    sessionAgentRegistry.bind("sess-1", name);
+  }
+
   it("trims a beaver-primary session's fetch at session start", async () => {
     const api = mockApi();
     api.activeTools.push(...ALL_TOOLS);
     const handlers = await buildPiHandlers(POLY_ZOO, api as any, PERM_DENY_RAW);
-    setPrimary("beaver");
+    bindSession("beaver");
     await handlers.sessionStart(
       { type: "session_start", reason: "startup" },
       SESSION_CTX,
@@ -1207,7 +1368,6 @@ describe("buildPiHandlers — primary tool-deny trim (main session)", () => {
     const api = mockApi();
     api.activeTools.push(...ALL_TOOLS);
     const handlers = await buildPiHandlers(POLY_ZOO, api as any, PERM_DENY_RAW);
-    setPrimary("dolphin");
     await handlers.sessionStart(
       { type: "session_start", reason: "startup" },
       SESSION_CTX,
@@ -1219,7 +1379,7 @@ describe("buildPiHandlers — primary tool-deny trim (main session)", () => {
     const api = mockApi();
     api.activeTools.push(...ALL_TOOLS);
     const handlers = await buildPiHandlers(POLY_ZOO, api as any, PERM_DENY_RAW);
-    setPrimary("beaver");
+    bindSession("beaver");
     await handlers.beforeAgentStart(
       { messageType: "user", systemPrompt: "base" },
       SESSION_CTX,
@@ -1237,13 +1397,13 @@ describe("buildPiHandlers — primary tool-deny trim (main session)", () => {
     const api = mockApi();
     api.activeTools.push(...ALL_TOOLS);
     const handlers = await buildPiHandlers(POLY_ZOO, api as any, PERM_DENY_RAW);
-    setPrimary("beaver");
+    bindSession("beaver");
     await handlers.sessionStart(
       { type: "session_start", reason: "startup" },
       SESSION_CTX,
     );
     assert.deepEqual(api.activeTools, ["edit", "bash"]);
-    setPrimary("dolphin");
+    bindSession("dolphin");
     await handlers.beforeAgentStart(
       { messageType: "user", systemPrompt: "base" },
       SESSION_CTX,
@@ -1253,16 +1413,20 @@ describe("buildPiHandlers — primary tool-deny trim (main session)", () => {
 
   it("does not trim a subagent session's tool face", async () => {
     // The driver already restricts a child session's tools via the
-    // capability allowlist; the process-wide primary is not its identity.
+    // capability allowlist; the primary denies are not its identity.
     const api = mockApi();
     api.activeTools.push(...ALL_TOOLS);
-    const handlers = await buildPiHandlers(POLY_ZOO, api as any, PERM_DENY_RAW);
-    setPrimary("beaver");
-    await runWithIdentity({ kind: "subagent", name: "beaver" }, () =>
-      handlers.sessionStart(
-        { type: "session_start", reason: "startup" },
-        SESSION_CTX,
-      ),
+    const handlers = await buildPiHandlers(
+      POLY_ZOO,
+      api as any,
+      PERM_DENY_RAW,
+      {
+        agent: "beaver",
+      },
+    );
+    await handlers.sessionStart(
+      { type: "session_start", reason: "startup" },
+      SESSION_CTX,
     );
     assert.deepEqual(api.activeTools, ALL_TOOLS);
   });
@@ -1270,7 +1434,7 @@ describe("buildPiHandlers — primary tool-deny trim (main session)", () => {
   it("leaves the tool set untouched with no baseline (fail-closed)", async () => {
     const api = mockApi();
     const handlers = await buildPiHandlers(POLY_ZOO, api as any, PERM_DENY_RAW);
-    setPrimary("beaver");
+    bindSession("beaver");
     await handlers.sessionStart(
       { type: "session_start", reason: "startup" },
       SESSION_CTX,
@@ -1282,7 +1446,7 @@ describe("buildPiHandlers — primary tool-deny trim (main session)", () => {
     const api = mockApi();
     api.activeTools.push(...ALL_TOOLS);
     const handlers = await buildPiHandlers(POLY_ZOO, api as any, PERM_DENY_RAW);
-    setPrimary("beaver");
+    bindSession("beaver");
     await handlers.sessionStart(
       { type: "session_start", reason: "startup" },
       SESSION_CTX,
@@ -1309,10 +1473,10 @@ describe("buildPiHandlers — primary tool-deny trim (main session)", () => {
     const api = mockApi();
     api.activeTools.push(...ALL_TOOLS);
     const handlers = await buildPiHandlers(POLY_ZOO, api as any, PERM_DENY_RAW);
-    setPrimary("dolphin");
-    // The /go handoff switches the self-maintained primary to the executor
-    // (beaver) BEFORE replacing the session; the generic trim in the new
-    // session's bind-time handler then removes beaver's deny.
+    sessionAgentRegistry.bind("sess-go", "dolphin");
+    // The /go handoff binds the replaced session to the executor (beaver)
+    // and publishes it for the replacement session; the generic trim in the
+    // new session's bind-time handler then removes beaver's deny.
     const target = createPiHandoffTarget({
       getCommandCtx: () => ({
         newSession: async (options) => {
@@ -1320,6 +1484,7 @@ describe("buildPiHandlers — primary tool-deny trim (main session)", () => {
           return { cancelled: false };
         },
       }),
+      identity: createPiHandoffIdentity(),
     });
     const session = await target.create({
       parentage: "sess-go",
@@ -1328,7 +1493,7 @@ describe("buildPiHandlers — primary tool-deny trim (main session)", () => {
     });
     await target.installAgent(session);
     await target.deliver(session, "plan ref");
-    assert.equal(getPrimary(), "beaver");
+    assert.equal(sessionAgentRegistry.resolve("sess-go"), "beaver");
     await handlers.sessionStart(
       { type: "session_start", reason: "new" },
       SESSION_CTX,
@@ -1342,7 +1507,7 @@ describe("buildPiHandlers — primary tool-deny trim (main session)", () => {
 // ---------------------------------------------------------------------------
 
 /** A ui ctx that records setWidget calls (key + content). */
-function widgetRecordingCtx(): {
+function widgetRecordingCtx(sessionID = "sess-seed"): {
   calls: Array<[string, unknown]>;
   ctx: {
     sessionManager: { getSessionId(): string };
@@ -1354,7 +1519,7 @@ function widgetRecordingCtx(): {
 } {
   const calls: Array<[string, unknown]> = [];
   const ctx = {
-    sessionManager: { getSessionId: () => "sess-seed" },
+    sessionManager: { getSessionId: () => sessionID },
     ui: {
       notify: () => {},
       setWidget: (key: string, content: unknown) => calls.push([key, content]),
@@ -1715,11 +1880,8 @@ describe("buildPiHandlers — widget seeding", () => {
 
   it("session_start stays silent when the profile cannot provide the orchestrator", async () => {
     const api = mockApi();
-    // Defensively reset the module-level primary so an order-dependent
-    // stale value from a prior test can never seed the widget.
-    resetIdentityForTesting();
     // The profile omits the orchestrator, so the selection is invalid:
-    // no orchestrator resolves and no seed may run.
+    // no orchestrator resolves for the session and no seed may run.
     const handlers = await buildPiHandlers(
       { mode: { poly: { ...POLY_PROFILE, agents: ["beaver"] } } },
       api as any,
@@ -1740,7 +1902,7 @@ describe("buildPiHandlers — widget seeding", () => {
       ctx,
     );
     assert.equal(widgetCalls, 0, "no orchestrator → no seed");
-    assert.equal(getPrimary(), undefined);
+    assert.equal(sessionAgentRegistry.resolve("sess"), undefined);
   });
 
   it("stays silent without a pi switch host (no API)", async () => {
@@ -1764,11 +1926,8 @@ describe("buildPiHandlers — widget seeding", () => {
 
   it("stays silent when the profile cannot provide the orchestrator", async () => {
     const api = mockApi();
-    // Defensively reset the module-level primary so an order-dependent
-    // stale value from a prior test can never seed the widget.
-    resetIdentityForTesting();
-    // An invalid selection resolves no orchestrator, so the bind-time
-    // seed stays off.
+    // An invalid selection resolves no orchestrator, so the bind-time seed
+    // stays off.
     const handlers = await buildPiHandlers(
       { mode: { poly: { ...POLY_PROFILE, agents: ["beaver"] } } },
       api as any,
@@ -1789,7 +1948,7 @@ describe("buildPiHandlers — widget seeding", () => {
       ctx,
     );
     assert.equal(widgetCalls, 0, "no orchestrator → no seed");
-    assert.equal(getPrimary(), undefined);
+    assert.equal(sessionAgentRegistry.resolve("sess"), undefined);
   });
 
   it("session_start rebuilds the run registry from the message history", async () => {
@@ -2007,11 +2166,14 @@ describe("buildPiHandlers — widget seeding", () => {
 describe("buildPiHandlers — session_start is not a stop", () => {
   it("keeps the session's published round view on a resume", async () => {
     const api = mockApi();
-    const handlers = await buildPiHandlers(POLY_ZOO, api as any, MODES_RAW);
+    const runtime = createContextRuntime();
+    const handlers = await buildPiHandlers(POLY_ZOO, api as any, MODES_RAW, {
+      contextRuntime: runtime,
+    });
     // Only a session stop releases the runtime records, so a resume must
     // leave the session's records untouched — the next pruning round
     // republishes the view anyway.
-    publishRoundView("sess-rv", {
+    runtime.publishRoundView(permitFor("sess-rv"), {
       projection: project(
         [
           {
@@ -2024,7 +2186,7 @@ describe("buildPiHandlers — session_start is not a stop", () => {
       ),
       numbered: [],
     });
-    assert.ok(getRoundView("sess-rv"), "the view starts published");
+    assert.ok(runtime.roundView("sess-rv"), "the view starts published");
     sessionAgentRegistry.bind("sess-rv", "dolphin");
 
     await handlers.sessionStart(
@@ -2036,7 +2198,7 @@ describe("buildPiHandlers — session_start is not a stop", () => {
     );
 
     assert.ok(
-      getRoundView("sess-rv"),
+      runtime.roundView("sess-rv"),
       "a start notice must not clear the cached round view",
     );
     assert.equal(
@@ -2876,26 +3038,19 @@ describe("buildPiHandlers — primary-switch widget colorization", () => {
     const mola = api.commands.find((c) => c.name === "mola");
     assert.ok(mola && typeof mola.handler === "function");
 
-    // Register the fleet widget first (session_start), then switch away from
-    // the default primary (dolphin) to mola.
-    const { calls, ctx } = widgetRecordingCtx();
-    await handlers.sessionStart(
-      { type: "session_start", reason: "startup" },
-      ctx,
-    );
-    setPrimary("dolphin");
-
-    // The switch writes a "primary changed" notification (not a
-    // string-array widget): the fleet widget turns it into a re-render,
-    // reading the primary live.
+    // The switch publishes its target (not a string-array widget): it is a
+    // "primary changed" notification the fleet widget turns into a
+    // re-render of the session's own primary.
     await (mola.handler as (args: string, ctx: unknown) => Promise<void>)(
       "",
       switchCtx(() => {}),
     );
-    assert.equal(getPrimary(), "mola");
 
-    // The registered fleet widget now renders the switched primary with its
-    // configured color.
+    // The replacement session registers its widget at bind time and already
+    // resolves the switched primary, rendered with its configured color.
+    const { calls, ctx } = widgetRecordingCtx("sess-new");
+    await handlers.sessionStart({ type: "session_start", reason: "new" }, ctx);
+    assert.equal(sessionAgentRegistry.resolve("sess-new"), "mola");
     const { lines, dispose } = renderZooWidget(calls);
     const r = 0xff;
     const g = 0xa5;
@@ -2916,25 +3071,412 @@ describe("buildPiHandlers — primary-switch widget colorization", () => {
     const dolphin = api.commands.find((c) => c.name === "dolphin");
     assert.ok(dolphin && typeof dolphin.handler === "function");
 
-    // Register the fleet widget first, then switch away from the default
-    // primary (mola) to dolphin.
-    const { calls, ctx } = widgetRecordingCtx();
-    await handlers.sessionStart(
-      { type: "session_start", reason: "startup" },
-      ctx,
-    );
-    setPrimary("mola");
-
+    sessionAgentRegistry.bind("sess-switch", "mola");
     await (dolphin.handler as (args: string, ctx: unknown) => Promise<void>)(
       "",
       switchCtx(() => {}),
     );
-    assert.equal(getPrimary(), "dolphin");
+
+    // The replacement session's bind-time handlers resolve the switched
+    // primary and render it plainly (it has no configured color).
+    const { calls, ctx } = widgetRecordingCtx("sess-new");
+    await handlers.sessionStart({ type: "session_start", reason: "new" }, ctx);
+    assert.equal(sessionAgentRegistry.resolve("sess-new"), "dolphin");
 
     const { lines, dispose } = renderZooWidget(calls);
     assert.ok(lines[0].includes("dolphin"), lines[0]);
     assert.ok(!lines[0].includes("\u001b["), "no ANSI for an uncolored agent");
     dispose();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Tool admission
+// ---------------------------------------------------------------------------
+
+describe("buildPiToolExecute — tool admission", () => {
+  /** A recording permit the fake admission issues. */
+  function fakePermit(): WorkPermit {
+    const controller = new AbortController();
+    return {
+      sessionID: "sess-tool",
+      signal: controller.signal,
+      isActive: () => !controller.signal.aborted,
+    };
+  }
+
+  /** A tool whose host context and calls the test records. */
+  function recordingTool(calls: {
+    host: unknown[];
+    args: unknown[];
+  }): ToolContribution {
+    return {
+      name: "probe",
+      description: "probe",
+      execute: async (args, _toolCtx, hostCtx) => {
+        calls.args.push(args);
+        calls.host.push(hostCtx);
+        return "ok";
+      },
+    };
+  }
+
+  it("runs the whole call under the permit it is handed", async () => {
+    const permit = fakePermit();
+    const calls = { host: [] as unknown[], args: [] as unknown[] };
+    const published: Array<[string, unknown]> = [];
+    const ctx = { sessionManager: { getSessionId: () => "sess-tool" } };
+    const admitted: unknown[] = [];
+    const run: PiSessionWorkRunner = {
+      runSession: async (callCtx, work) => {
+        admitted.push(callCtx);
+        return work(permit);
+      },
+    };
+    const onUpdate = () => {};
+    const caller = new AbortController();
+
+    const result = await buildPiToolExecute(
+      recordingTool(calls),
+      run,
+      (sessionID, callCtx) => published.push([sessionID, callCtx]),
+    )("call-1", { a: 1 }, caller.signal, onUpdate, ctx);
+
+    // The call is admitted for its own context, which is bound under the
+    // permit's session id.
+    assert.deepEqual(admitted, [ctx]);
+    assert.deepEqual(published, [["sess-tool", ctx]]);
+
+    // The tool receives the permit's signal (never pi's native one) and the
+    // permit itself; the other forwarded fields stay unchanged.
+    assert.deepEqual(calls.args, [{ a: 1 }]);
+    const host = calls.host[0] as Record<string, unknown>;
+    assert.equal(host.permit, permit);
+    assert.equal(host.signal, permit.signal);
+    assert.notEqual(host.signal, caller.signal);
+    assert.equal(host.callId, "call-1");
+    assert.equal(host.onUpdate, onUpdate);
+    assert.deepEqual(result, {
+      content: [{ type: "text", text: "ok" }],
+      details: {},
+    });
+  });
+
+  it("runs nothing and publishes nothing when the call is refused", async () => {
+    const calls = { host: [] as unknown[], args: [] as unknown[] };
+    const published: unknown[] = [];
+    const run: PiSessionWorkRunner = { runSession: async () => undefined };
+
+    const result = await buildPiToolExecute(recordingTool(calls), run, (ctx) =>
+      published.push(ctx),
+    )("call-1", {}, undefined, undefined, {
+      sessionManager: { getSessionId: () => "s" },
+    });
+
+    // The host still receives a result in its own shape, and the tool never
+    // ran.
+    assert.deepEqual(result, { content: [], details: {} });
+    assert.deepEqual(calls.args, []);
+    assert.deepEqual(published, []);
+  });
+});
+
+describe("buildPiHandlers — tool and command admission", () => {
+  /** The profile with the two stateless tools, so the bridge registers. */
+  const TOOL_ZOO = {
+    ...POLY_ZOO,
+    mode: {
+      poly: {
+        ...POLY_PROFILE,
+        tools: ["decompress"],
+        hooks: POLY_PROFILE.hooks.filter((h) => h !== "context-pruning"),
+      },
+    },
+  };
+
+  it("runs no tool after the session stopped", async () => {
+    const api = mockApi();
+    const handlers = await buildPiHandlers(TOOL_ZOO, api as any, MODES_RAW);
+    const decompress = api.tools.find(
+      (tool: any) => tool.name === "decompress",
+    ) as { execute: (...args: unknown[]) => Promise<unknown> } | undefined;
+    assert.ok(decompress);
+    await handlers.sessionStart(
+      { type: "session_start", reason: "startup" },
+      SESSION_CTX,
+    );
+    await handlers.sessionShutdown(
+      { type: "session_shutdown", reason: "quit" },
+      SESSION_CTX,
+    );
+
+    // A malformed call would reject if the tool ran; a refused call reports
+    // an empty result instead.
+    const result = await decompress.execute(
+      "call-late",
+      {},
+      undefined,
+      undefined,
+      SESSION_CTX,
+    );
+
+    assert.deepEqual(result, { content: [], details: {} });
+  });
+
+  it("runs no tool without a session id", async () => {
+    const api = mockApi();
+    await buildPiHandlers(TOOL_ZOO, api as any, MODES_RAW);
+    const decompress = api.tools.find(
+      (tool: any) => tool.name === "decompress",
+    ) as { execute: (...args: unknown[]) => Promise<unknown> } | undefined;
+    assert.ok(decompress);
+
+    const result = await decompress.execute(
+      "call-no-session",
+      {},
+      undefined,
+      undefined,
+      {},
+    );
+
+    assert.deepEqual(result, { content: [], details: {} });
+  });
+
+  it("a cancelled caller refuses that call only", async () => {
+    const api = mockApi();
+    const signals: AbortSignal[] = [];
+    const releases: Array<() => void> = [];
+    const driver: SubagentDriver = {
+      async run(_req, ctx) {
+        signals.push(ctx.signal);
+        await new Promise<void>((resolve) => releases.push(resolve));
+        return { kind: "ok", text: "done" };
+      },
+    };
+    await buildPiHandlers(
+      {
+        mode: {
+          poly: { ...POLY_PROFILE, tools: ["subagent"], hooks: [] },
+        },
+      },
+      api as any,
+      MODES_RAW,
+      { subagentDriver: driver },
+    );
+    const subagent = api.tools.find((tool: any) => tool.name === "subagent") as
+      | { execute: (...args: unknown[]) => Promise<unknown> }
+      | undefined;
+    assert.ok(subagent);
+    const input = { agent: "beaver", description: "实现任务", prompt: "t" };
+
+    const cancelled = new AbortController();
+    const cancelledCall = subagent.execute(
+      "call-a",
+      input,
+      cancelled.signal,
+      undefined,
+      SESSION_CTX,
+    );
+    const liveCall = subagent.execute(
+      "call-b",
+      input,
+      undefined,
+      undefined,
+      SESSION_CTX,
+    );
+    while (signals.length < 2) {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+
+    cancelled.abort();
+    assert.equal(signals[0]?.aborted, true, "the cancelled call is revoked");
+    assert.equal(signals[1]?.aborted, false, "the other call keeps running");
+
+    for (const release of releases) release();
+    await Promise.all([cancelledCall, liveCall]);
+  });
+
+  it("does not wait for a replacing command at the shutdown it triggers", async () => {
+    // pi tears the replaced session down INSIDE `newSession` (its
+    // `session_shutdown` reaches this runtime).  A command admitted as
+    // session work would be waited on by that stop and never return, so a
+    // replacing command is a control operation.
+    const api = mockApi();
+    const handlers = await buildPiHandlers(POLY_ZOO, api as any, MODES_RAW);
+    const mola = api.commands.find((command) => command.name === "mola");
+    assert.ok(mola && typeof mola.handler === "function");
+
+    const switched = await (
+      mola.handler as (args: string, ctx: unknown) => Promise<void>
+    )("", {
+      sessionManager: { getSessionId: () => "sess-switch" },
+      ui: { notify: () => {}, setWidget: () => {} },
+      newSession: async (options?: {
+        withSession?: (ops: SwitchNewSessionOps) => void | Promise<void>;
+      }) => {
+        await handlers.sessionShutdown(
+          { type: "session_shutdown", reason: "new" },
+          { sessionManager: { getSessionId: () => "sess-switch" } },
+        );
+        await options?.withSession?.({
+          setWidget: () => {},
+          setActiveTools: () => {},
+        });
+        return { cancelled: false };
+      },
+    });
+
+    assert.equal(switched, undefined);
+    // The replacement ran to its end: the target reached the pending slot.
+    assert.equal(pendingSwitchPrimary(), "mola");
+    assert.equal(sessionAgentRegistry.resolve("sess-switch"), "mola");
+  });
+
+  it("does not wait for a plan handoff at the shutdown it triggers", async () => {
+    // `/go` replaces the session it belongs to, exactly like a primary
+    // switch: the shutdown `newSession` raises must not wait for the
+    // command, or the handoff would deadlock the stop it performs.
+    const api = mockApi();
+    const dir = makeTmpDir("zoo-pi-go-control");
+    writePlanFile(
+      dir,
+      "demo-plan.md",
+      { status: "planning-done", slug: "demo-plan" },
+      "body",
+    );
+    try {
+      const handlers = await buildPiHandlers(POLY_ZOO, api as any, MODES_RAW, {
+        directory: dir,
+      });
+      const go = api.commands.find((command) => command.name === "go");
+      assert.ok(go && typeof go.handler === "function");
+      const ctx = { sessionManager: { getSessionId: () => "sess-go" } };
+      let stopSettledDuringReplacement = false;
+
+      await (go.handler as (args: string, ctx: unknown) => Promise<void>)("", {
+        ...ctx,
+        newSession: async (options?: {
+          withSession?: (newCtx: {
+            sendUserMessage(content: string): Promise<void>;
+          }) => void | Promise<void>;
+        }) => {
+          let settled = false;
+          const stopped = handlers
+            .sessionShutdown({ type: "session_shutdown", reason: "new" }, ctx)
+            .then(() => {
+              settled = true;
+            });
+          await new Promise((resolve) => setTimeout(resolve, 0));
+          stopSettledDuringReplacement = settled;
+          await options?.withSession?.({ sendUserMessage: async () => {} });
+          await stopped;
+          return { cancelled: false };
+        },
+      });
+
+      assert.equal(
+        stopSettledDuringReplacement,
+        true,
+        "the stop must not wait for /go",
+      );
+      // The handoff still ran to its end: executor published, plan moved.
+      assert.equal(pendingSwitchPrimary(), "dolphin");
+      assert.ok(
+        fs
+          .readFileSync(join(dir, ".zoo/plans/demo-plan.md"), "utf-8")
+          .includes("status: executing"),
+      );
+    } finally {
+      cleanupPlanDir(dir);
+    }
+  });
+
+  it("waits for an ordinary command at the shutdown it triggers", async () => {
+    // `/debug` is ordinary session work: the stop cancels it and waits for
+    // it to return, so it never outlives the session it belongs to.
+    const api = mockApi();
+    const dir = makeTmpDir("zoo-pi-debug-admission");
+    let releaseExec: (() => void) | undefined;
+    let signalStarted: (() => void) | undefined;
+    const started = new Promise<void>((resolve) => {
+      signalStarted = resolve;
+    });
+    const zdebugExec = async () => {
+      signalStarted?.();
+      await new Promise<void>((resolve) => {
+        releaseExec = resolve;
+      });
+      return { stdout: "", stderr: "", exitCode: 0 };
+    };
+    const handlers = await buildPiHandlers(
+      { ...POLY_ZOO, mode: { poly: { ...POLY_PROFILE, commands: ["debug"] } } },
+      api as any,
+      MODES_RAW,
+      { directory: dir, zdebugExec },
+    );
+    const debug = api.commands.find((command) => command.name === "debug");
+    assert.ok(debug && typeof debug.handler === "function");
+    const ctx = { sessionManager: { getSessionId: () => "sess-debug" } };
+
+    const running = (
+      debug.handler as (args: string, ctx: unknown) => Promise<void>
+    )("调查目标", ctx);
+    await started;
+
+    let stopSettled = false;
+    const stopped = handlers
+      .sessionShutdown({ type: "session_shutdown", reason: "quit" }, ctx)
+      .then(() => {
+        stopSettled = true;
+      });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.equal(stopSettled, false, "the stop must wait for the command");
+
+    // Releasing the command lets it return, and only then does the stop
+    // complete.
+    releaseExec?.();
+    await running;
+    await stopped;
+    assert.equal(stopSettled, true);
+  });
+
+  it("runs no command after the session stopped", async () => {
+    const api = mockApi();
+    const handlers = await buildPiHandlers(POLY_ZOO, api as any, MODES_RAW);
+    const dcp = api.commands.find((command) => command.name === "dcp");
+    assert.ok(dcp && typeof dcp.handler === "function");
+    await handlers.sessionStart(
+      { type: "session_start", reason: "startup" },
+      SESSION_CTX,
+    );
+    await handlers.sessionShutdown(
+      { type: "session_shutdown", reason: "quit" },
+      SESSION_CTX,
+    );
+    const appended = api.appendedEntries.length;
+
+    await (dcp.handler as (args: string, ctx: unknown) => Promise<void>)(
+      "context",
+      SESSION_CTX,
+    );
+
+    // The command body appends a report when it runs; a late command adds
+    // nothing.
+    assert.equal(api.appendedEntries.length, appended);
+  });
+
+  it("runs no command without a session id", async () => {
+    const api = mockApi();
+    await buildPiHandlers(POLY_ZOO, api as any, MODES_RAW);
+    const dcp = api.commands.find((command) => command.name === "dcp");
+    assert.ok(dcp && typeof dcp.handler === "function");
+
+    await (dcp.handler as (args: string, ctx: unknown) => Promise<void>)(
+      "context",
+      {},
+    );
+
+    assert.equal(api.appendedEntries.length, 0);
   });
 });
 
@@ -2954,12 +3496,14 @@ describe("buildPiHandlers — null profile fail-closed", () => {
         ui: { notify: () => {}, setWidget: () => {} },
       },
     );
-    const prompt = await handlers.beforeAgentStart({
-      messageType: "user",
-      systemPrompt: "base",
-    });
+    const prompt = await handlers.beforeAgentStart(
+      { messageType: "user", systemPrompt: "base" },
+      SESSION_CTX,
+    );
+    assert.ok(prompt);
     assert.equal(prompt.systemPrompt, "base");
-    assert.deepEqual((await handlers.resourcesDiscover()).skillPaths, []);
+    const resources = await handlers.resourcesDiscover(undefined, SESSION_CTX);
+    assert.deepEqual(resources?.skillPaths, []);
     assert.equal(
       await handlers.toolResult(
         {
@@ -3107,5 +3651,77 @@ describe("buildPiHandlers — plugin_init load-time event", () => {
         // ignore
       }
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Sub-session inline extension
+// ---------------------------------------------------------------------------
+
+describe("buildPiSubagentExtension — the child runtime's ZooKeeper", () => {
+  it("reports the close handle of the wiring it builds", async () => {
+    const api = mockApi();
+    const closes: Array<() => Promise<CleanupReport>> = [];
+
+    await buildPiHandlers(POLY_ZOO, api as any, MODES_RAW, {
+      entryPath: "/zoo/src/pi.ts",
+      onLifecycle: (close) => closes.push(close),
+    });
+
+    assert.equal(closes.length, 1, "the host receives one close handle");
+    const first = await closes[0]();
+    assert.deepEqual(first, { errors: [] });
+    // The extension scope is terminal: a repeated close reports the same
+    // outcome and disposes nothing twice.
+    assert.deepEqual(await closes[0](), first);
+  });
+
+  it("builds the child handlers over the captured config snapshot", async () => {
+    // A profile carrying the subagent tool: the child wires its own driver,
+    // which is what lets a nested sub-session create its own inline factory.
+    const zoo = {
+      ...POLY_ZOO,
+      mode: {
+        poly: { ...POLY_PROFILE, tools: ["subagent"] },
+      },
+    };
+    const api = mockApi();
+    const closes: Array<() => Promise<CleanupReport>> = [];
+    const factory = buildPiSubagentExtension(zoo, MODES_RAW, {
+      agent: "beaver",
+      entryPath: "/zoo/src/pi.ts",
+      onClose: (close) => closes.push(close),
+    });
+
+    await factory(api as any);
+
+    // The child runtime is fixed to the delegated agent, so its own
+    // session resolves that agent with no ambient identity.
+    await (api.handlers.before_agent_start as (...args: unknown[]) => unknown)(
+      { messageType: "user", systemPrompt: "base" },
+      { sessionManager: { getSessionId: () => "sess-child" } },
+    );
+    assert.equal(sessionAgentRegistry.resolve("sess-child"), "beaver");
+
+    // The child registers the same profile's surfaces and logs exactly one
+    // composition anchor, so the config snapshot is composed once and never
+    // re-read.
+    assert.equal(typeof api.handlers.before_agent_start, "function");
+    assert.equal(typeof api.handlers.context, "function");
+    assert.ok(
+      api.tools.some((tool: any) => tool.name === "subagent"),
+      "the child wires its own subagent driver",
+    );
+    const inits = _getBufferForTesting().filter(
+      (entry) => entry.event === "plugin_init",
+    );
+    assert.equal(inits.length, 1);
+    assert.equal(
+      (inits[0].agents as string[]).length,
+      POLY_PROFILE.agents.length,
+    );
+    // The close handle of the child's own scope reaches the caller.
+    assert.equal(closes.length, 1);
+    assert.deepEqual(await closes[0](), { errors: [] });
   });
 });

@@ -32,10 +32,6 @@ import type {
   SubagentResult,
 } from "../core/subagent/driver.js";
 import {
-  _resetForTesting as _resetIdentityForTesting,
-  setPrimary,
-} from "../core/subagent/identity.js";
-import {
   getRun,
   resetRegistry,
   topLevelRuns,
@@ -47,16 +43,14 @@ import {
 } from "../utils/logger.js";
 import { unit } from "./subagent.js";
 
-// The identity and registry cores are process-global (bun shares one isolate
-// across every test file), so reset them between tests to keep the
-// caller-resolution and registry-write assertions deterministic.
+// The run registry is process-global (bun shares one isolate across every
+// test file), so reset it between tests to keep the registry-write
+// assertions deterministic.
 beforeEach(() => {
-  _resetIdentityForTesting();
   resetRegistry();
 });
 
 afterEach(() => {
-  _resetIdentityForTesting();
   resetRegistry();
   _resetLoggerForTesting();
 });
@@ -111,7 +105,9 @@ function makeDeps(
     // keep the happy-path cases running the driver.
     subagentModels: { beaver: "Dummy/dummy-small" },
     directory: "/tmp/zoo",
-    resolveAgent: () => undefined,
+    // The caller resolution the tool reads: the session the call names is
+    // the poly profile's orchestrator unless a case overrides it.
+    resolveCallerAgent: async () => "dolphin",
     toolHost: TOOL_HOST,
     ...overrides,
   };
@@ -156,7 +152,6 @@ describe("subagent tool unit — fail-closed registration", () => {
 describe("subagent tool execute — argument validation", () => {
   it("rejects missing description and never runs the driver", async () => {
     const { driver, calls } = fakeDriver({ kind: "ok", text: "done" });
-    setPrimary("dolphin");
     const t = tool(makeDeps({ subagentDriver: driver }));
 
     await assert.rejects(
@@ -169,7 +164,6 @@ describe("subagent tool execute — argument validation", () => {
 
   it("rejects an empty description and never runs the driver", async () => {
     const { driver, calls } = fakeDriver({ kind: "ok", text: "done" });
-    setPrimary("dolphin");
     const t = tool(makeDeps({ subagentDriver: driver }));
 
     await assert.rejects(
@@ -185,7 +179,6 @@ describe("subagent tool execute — argument validation", () => {
 
   it("rejects missing prompt and never runs the driver", async () => {
     const { driver, calls } = fakeDriver({ kind: "ok", text: "done" });
-    setPrimary("dolphin");
     const t = tool(makeDeps({ subagentDriver: driver }));
 
     await assert.rejects(
@@ -201,7 +194,6 @@ describe("subagent tool execute — argument validation", () => {
 
   it("rejects an empty prompt and never runs the driver", async () => {
     const { driver, calls } = fakeDriver({ kind: "ok", text: "done" });
-    setPrimary("dolphin");
     const t = tool(makeDeps({ subagentDriver: driver }));
 
     await assert.rejects(
@@ -217,7 +209,6 @@ describe("subagent tool execute — argument validation", () => {
 
   it("rejects non-object arguments and never runs the driver", async () => {
     const { driver, calls } = fakeDriver({ kind: "ok", text: "done" });
-    setPrimary("dolphin");
     const t = tool(makeDeps({ subagentDriver: driver }));
 
     await assert.rejects(
@@ -238,7 +229,6 @@ describe("subagent tool execute — successful delegation", () => {
       kind: "ok",
       text: "beaver finished the implementation",
     });
-    setPrimary("dolphin");
 
     const t = tool(
       makeDeps({
@@ -271,7 +261,6 @@ describe("subagent tool execute — successful delegation", () => {
 
   it("computes the target capability set as baseline minus the target's denied tools", async () => {
     const { driver, calls } = fakeDriver({ kind: "ok", text: "done" });
-    setPrimary("dolphin");
 
     const t = tool(
       makeDeps({
@@ -291,7 +280,6 @@ describe("subagent tool execute — successful delegation", () => {
 
   it("proceeds with an empty capability set when the baseline is missing (fail-closed)", async () => {
     const { driver, calls } = fakeDriver({ kind: "ok", text: "done" });
-    setPrimary("dolphin");
 
     const t = tool(
       makeDeps({
@@ -311,22 +299,7 @@ describe("subagent tool execute — successful delegation", () => {
     assert.deepEqual(calls[0].request.tools, []);
   });
 
-  it("drops the parentSession when the tool context has no session id", async () => {
-    const { driver, calls } = fakeDriver({ kind: "ok", text: "done" });
-    setPrimary("dolphin");
-
-    const t = tool(makeDeps({ subagentDriver: driver }));
-    await t.execute(
-      { agent: "beaver", description: "实现任务", prompt: "task" },
-      { abort: TOOL_CTX.abort },
-    );
-
-    assert.equal(calls[0].request.parentSession, undefined);
-  });
-
   it("forwards the host signal from the third hostCtx argument", async () => {
-    setPrimary("dolphin");
-
     // A hanging driver that records the signal it observes and only resolves
     // once the run is aborted.
     let release: (() => void) | undefined;
@@ -364,7 +337,6 @@ describe("subagent tool execute — successful delegation", () => {
 
   it("uses the agents.json configured model (the sole source in strict mode)", async () => {
     const { driver, calls } = fakeDriver({ kind: "ok", text: "done" });
-    setPrimary("dolphin");
 
     const t = tool(
       makeDeps({
@@ -387,7 +359,6 @@ describe("subagent tool execute — successful delegation", () => {
 
   it('passes a concatenated "provider/model" value through to the request (registry-prefixed id)', async () => {
     const { driver, calls } = fakeDriver({ kind: "ok", text: "done" });
-    setPrimary("dolphin");
 
     // The loader maps `{provider: "Dummy", model: "dummy/prefixed-id"}`
     // to the concatenated `"Dummy/dummy/prefixed-id"`; the tool must
@@ -409,7 +380,6 @@ describe("subagent tool execute — successful delegation", () => {
 
   it("reports an actionable error when agents.json has no entry for the target", async () => {
     const { driver, calls } = fakeDriver({ kind: "ok", text: "done" });
-    setPrimary("dolphin");
 
     // The map exists but lacks the target agent.
     const t = tool(
@@ -441,7 +411,6 @@ describe("subagent tool execute — successful delegation", () => {
 
   it("reports an actionable error when agents.json is missing or invalid (empty map)", async () => {
     const { driver, calls } = fakeDriver({ kind: "ok", text: "done" });
-    setPrimary("dolphin");
 
     // No subagentModels → the loader failed closed to an empty map.
     const t = tool(
@@ -469,7 +438,6 @@ describe("subagent tool execute — successful delegation", () => {
 
   it("uses the configured model even without an inherited model", async () => {
     const { driver, calls } = fakeDriver({ kind: "ok", text: "done" });
-    setPrimary("dolphin");
 
     const t = tool(
       makeDeps({
@@ -487,7 +455,6 @@ describe("subagent tool execute — successful delegation", () => {
 
   it("ignores a hostCtx model when agents.json has no entry for the target (no inheritance)", async () => {
     const { driver, calls } = fakeDriver({ kind: "ok", text: "done" });
-    setPrimary("dolphin");
 
     // No entry for beaver + a parent model in hostCtx: strict mode must
     // NOT fall back to the parent — it errors instead.
@@ -521,7 +488,6 @@ describe("subagent tool execute — successful delegation", () => {
 describe("subagent tool execute — target-role guard", () => {
   it('rejects a target declared mode = "primary" with a reason text and never runs the driver', async () => {
     const { driver, calls } = fakeDriver({ kind: "ok", text: "done" });
-    setPrimary("dolphin");
 
     const t = tool(
       makeDeps({
@@ -548,7 +514,6 @@ describe("subagent tool execute — target-role guard", () => {
 
   it("rejects an unknown target name with a reason text and never runs the driver", async () => {
     const { driver, calls } = fakeDriver({ kind: "ok", text: "done" });
-    setPrimary("dolphin");
 
     const t = tool(
       makeDeps({
@@ -575,7 +540,6 @@ describe("subagent tool execute — target-role guard", () => {
 
   it("rejects every target when the modes map is absent (fail-closed)", async () => {
     const { driver, calls } = fakeDriver({ kind: "ok", text: "done" });
-    setPrimary("dolphin");
 
     // No agentModes in deps → no target can be verified as a subagent.
     const t = tool(makeDeps({ subagentDriver: driver, agentModes: undefined }));
@@ -598,7 +562,6 @@ describe("subagent tool execute — target-role guard", () => {
 
   it("logs a target_role_blocked warn entry for a rejected target", async () => {
     const { driver } = fakeDriver({ kind: "ok", text: "done" });
-    setPrimary("dolphin");
 
     const t = tool(
       makeDeps({
@@ -629,15 +592,65 @@ describe("subagent tool execute — target-role guard", () => {
 describe("subagent tool execute — unresolved caller", () => {
   it("fails closed with a text result when no caller identity resolves", async () => {
     const { driver, calls } = fakeDriver({ kind: "ok", text: "done" });
-    // No setPrimary → resolveIdentity() is undefined (fail-closed).
 
-    const t = tool(makeDeps({ subagentDriver: driver }));
+    const t = tool(
+      makeDeps({
+        subagentDriver: driver,
+        resolveCallerAgent: async () => undefined,
+      }),
+    );
 
     const result = await t.execute(
       { agent: "beaver", description: "实现任务", prompt: "task" },
       TOOL_CTX,
     );
 
+    assert.equal(calls.length, 0, "driver must not run without a caller");
+    assert.ok(result.length > 0, "must return an explanatory text");
+  });
+
+  it("resolves the caller from the session the tool context names", async () => {
+    const { driver } = fakeDriver({ kind: "ok", text: "done" });
+    const asked: string[] = [];
+
+    const t = tool(
+      makeDeps({
+        subagentDriver: driver,
+        resolveCallerAgent: async (sessionID) => {
+          asked.push(sessionID);
+          return "beaver";
+        },
+      }),
+    );
+
+    await t.execute(
+      { agent: "beaver", description: "实现任务", prompt: "task" },
+      TOOL_CTX,
+    );
+
+    assert.deepEqual(asked, ["sess-subagent"]);
+  });
+
+  it("fails closed when the tool context names no session", async () => {
+    const { driver, calls } = fakeDriver({ kind: "ok", text: "done" });
+    let asked = 0;
+
+    const t = tool(
+      makeDeps({
+        subagentDriver: driver,
+        resolveCallerAgent: async () => {
+          asked += 1;
+          return "dolphin";
+        },
+      }),
+    );
+
+    const result = await t.execute(
+      { agent: "beaver", description: "实现任务", prompt: "task" },
+      {},
+    );
+
+    assert.equal(asked, 0, "no session id means no caller lookup");
     assert.equal(calls.length, 0, "driver must not run without a caller");
     assert.ok(result.length > 0, "must return an explanatory text");
   });
@@ -650,7 +663,6 @@ describe("subagent tool execute — unresolved caller", () => {
 describe("subagent tool execute — result mapping", () => {
   it("maps an ok result to the subagent text verbatim", async () => {
     const { driver } = fakeDriver({ kind: "ok", text: "result text" });
-    setPrimary("dolphin");
     const t = tool(makeDeps({ subagentDriver: driver }));
     assert.equal(
       await t.execute(
@@ -667,7 +679,6 @@ describe("subagent tool execute — result mapping", () => {
       text: "partial output",
       errorMessage: "session failed",
     });
-    setPrimary("dolphin");
     const t = tool(makeDeps({ subagentDriver: driver }));
     const result = await t.execute(
       { agent: "beaver", description: "实现任务", prompt: "t" },
@@ -686,7 +697,6 @@ describe("subagent tool execute — result mapping", () => {
 
   it("maps an aborted result to the partial text plus a reason line", async () => {
     const { driver } = fakeDriver({ kind: "aborted", text: "partial output" });
-    setPrimary("dolphin");
     const t = tool(makeDeps({ subagentDriver: driver }));
     const result = await t.execute(
       { agent: "beaver", description: "实现任务", prompt: "t" },
@@ -707,7 +717,6 @@ describe("subagent tool execute — result mapping", () => {
 
 describe("subagent tool execute — progress to registry updates", () => {
   it("hands the run's fact log to the driver and patches progress from its report", async () => {
-    setPrimary("dolphin");
     // The driver appends the full facts to the log the tool hands over (the
     // registry run's own log) and reports the running token total it already
     // computed while appending them — the registry counter follows the
@@ -774,7 +783,6 @@ describe("subagent tool execute — progress to registry updates", () => {
   });
 
   it("takes the token total from the progress payload, not from the log", async () => {
-    setPrimary("dolphin");
     // Discriminating check for the rescan fix: the driver reports a token
     // total without appending any usage fact to the log.  A tool that still
     // derived counters from `run.log.facts()` would leave the run's tokens
@@ -798,7 +806,6 @@ describe("subagent tool execute — progress to registry updates", () => {
   });
 
   it("leaves the run's token total absent when no report carried usage", async () => {
-    setPrimary("dolphin");
     // Parity check: a run that never reported usage keeps
     // the token segment absent rather than zeroed.
     const driver: SubagentDriver = {
@@ -818,7 +825,6 @@ describe("subagent tool execute — progress to registry updates", () => {
   });
 
   it("clears the run's currentTool when the driver reports no current tool", async () => {
-    setPrimary("dolphin");
     // `currentTool: null` is the driver's "this tool finished" signal; an
     // absent field means "unchanged".  The tool must forward the clear and
     // never mistake it for silence, so the card title cannot keep showing a
@@ -850,29 +856,7 @@ describe("subagent tool execute — progress to registry updates", () => {
     assert.equal(getRun("call-clear")?.currentTool, undefined);
   });
 
-  it("runs without a log when the caller has no parent session", async () => {
-    setPrimary("dolphin");
-    let sawLog: unknown = "unset";
-    const driver: SubagentDriver = {
-      async run(_req, ctx) {
-        sawLog = ctx.log;
-        return { kind: "ok", text: "done" };
-      },
-    };
-    const t = tool(makeDeps({ subagentDriver: driver }));
-    // No session id in the tool context: no registry run, so no log to hand
-    // over — the driver must still run.
-    await t.execute(
-      { agent: "beaver", description: "实现任务", prompt: "t" },
-      { abort: new AbortController().signal },
-      { callId: "call-nolog" },
-    );
-    assert.equal(sawLog, undefined);
-    assert.equal(getRun("call-nolog"), undefined);
-  });
-
   it("emits an empty repaint partial on every progress report (pi)", async () => {
-    setPrimary("dolphin");
     const snapshots: SubagentProgress[] = [
       { currentTool: "bash", done: false },
       { done: false, tokens: 150 },
@@ -910,7 +894,6 @@ describe("subagent tool execute — progress to registry updates", () => {
   });
 
   it("does not fail the run when the repaint callback throws", async () => {
-    setPrimary("dolphin");
     const driver: SubagentDriver = {
       async run(_req, ctx) {
         ctx.onProgress?.({ currentTool: "bash", done: false });
@@ -937,7 +920,6 @@ describe("subagent tool execute — progress to registry updates", () => {
   });
 
   it("runs the driver without any hostCtx streaming surface (OpenCode path)", async () => {
-    setPrimary("dolphin");
     const { driver, calls } = fakeDriver({ kind: "ok", text: "done" });
     const t = tool(makeDeps({ subagentDriver: driver }));
 
@@ -951,7 +933,6 @@ describe("subagent tool execute — progress to registry updates", () => {
   });
 
   it("attaches renderCall / renderResult when a renderer is present (pi)", () => {
-    setPrimary("dolphin");
     const renderCall = () => ({ kind: "call" });
     const renderResult = () => ({ kind: "result" });
     const t = tool(
@@ -969,7 +950,6 @@ describe("subagent tool execute — progress to registry updates", () => {
   });
 
   it("keeps the tool text-only when no renderer is present (OpenCode)", () => {
-    setPrimary("dolphin");
     const t = tool(
       makeDeps({
         subagentDriver: {
@@ -990,7 +970,6 @@ describe("subagent tool execute — progress to registry updates", () => {
 
 describe("subagent tool execute — run-registry writes", () => {
   it("writes start/update/finish keyed by the forwarded tool-call id", async () => {
-    setPrimary("dolphin");
     const snapshots: SubagentProgress[] = [
       { currentTool: "bash", done: false },
       { done: true, sessionPath: "/tmp/s.jsonl" },
@@ -1025,7 +1004,6 @@ describe("subagent tool execute — run-registry writes", () => {
   });
 
   it("patches sessionPath on the running run before it finishes", async () => {
-    setPrimary("dolphin");
     // The driver reads the registry synchronously right after its running
     // (done: false) snapshot is delivered — at that point the tool's
     // onProgress handler has already run but finishRun has not, so the run
@@ -1065,7 +1043,6 @@ describe("subagent tool execute — run-registry writes", () => {
   });
 
   it("maps error and aborted outcomes onto the terminal status", async () => {
-    setPrimary("dolphin");
     const okT = tool(
       makeDeps({
         subagentDriver: {
@@ -1101,7 +1078,6 @@ describe("subagent tool execute — run-registry writes", () => {
   });
 
   it("records the child session so nested runs associate through it", async () => {
-    setPrimary("dolphin");
     const driver: SubagentDriver = {
       async run(_req, ctx) {
         ctx.onProgress?.({
@@ -1150,7 +1126,6 @@ describe("subagent tool execute — run-registry writes", () => {
   });
 
   it("assigns a unique ASCII synthetic run id per delegation when no call id is forwarded", async () => {
-    setPrimary("dolphin");
     const t = tool(
       makeDeps({
         subagentDriver: {
@@ -1192,7 +1167,6 @@ describe("subagent tool execute — run-registry writes", () => {
   });
 
   it("notifies onSubagentRunChange on start, update, and finish", async () => {
-    setPrimary("dolphin");
     let notifications = 0;
     const driver: SubagentDriver = {
       async run(_req, ctx) {
@@ -1224,7 +1198,6 @@ describe("subagent tool execute — run-registry writes", () => {
   });
 
   it("stays silent when no parent session id is available", async () => {
-    setPrimary("dolphin");
     const t = tool(
       makeDeps({
         subagentDriver: {

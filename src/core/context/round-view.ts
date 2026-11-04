@@ -8,23 +8,25 @@
  * host risks addressing a different ordinal space than the one the
  * model was shown (the failure mode behind mismatched `mN` refs).
  *
- * This module is that hand-off: the transform `publishRoundView`s its
- * fold result, the tools `getRoundView` it.  The published view is
- * frozen on the way in — every region text copied into a plain string
- * and every view item copied into plain data — so the cache is a
- * snapshot, not a live handle: a host that mutates its conversation
- * in place mid-turn (or a state mutation from a preceding compress
- * call in the same round) can never reshuffle an address space already
- * handed to the model.
+ * This module is that hand-off: the `RoundViewRegistry` holds the
+ * snapshot, the transform publishes it through the per-instance
+ * `ContextRuntime` (`runtime.ts`) once the round commits, and the tools
+ * read it back by session id.  The view is frozen on the way in — every
+ * region text copied into a plain string and every view item copied into
+ * plain data — so the cache is a snapshot, not a live handle: a host
+ * that mutates its conversation in place mid-turn (or a state mutation
+ * from a preceding compress call in the same round) can never reshuffle
+ * an address space already handed to the model.
  *
  * The record is runtime-only (never persisted — loss on restart is
- * benign: the next transform republishes) and per-session, so the session
- * stop path drops it (see `session/resources.ts`).
+ * benign: the next transform republishes) and per-session.  One registry
+ * belongs to one `ContextRuntime`, so two plugin instances in the same
+ * process never share a published view, and the instance's session
+ * records drop the entries on a stop.
  *
  * @module
  */
 
-import type { ReleasedSessionResource } from "../session/resources.js";
 import type { HostMessage, Invocation, Projection } from "./lens.js";
 import { project } from "./lens.js";
 import type { NumberedItem } from "./view-refs.js";
@@ -102,71 +104,56 @@ export function freezeNumberedView(numbered: NumberedItem[]): NumberedItem[] {
 }
 
 // ---------------------------------------------------------------------------
-// Per-session cache
+// Per-session registry
 // ---------------------------------------------------------------------------
 
-/** The latest published view per session. */
-const roundViews = new Map<string, RoundView>();
-
-/**
- * Publish the current round's view for the compression tools.
- *
- * The view is frozen on the way in (see `freezeProjection` /
- * `freezeNumberedView`), so callers hand over their live objects
- * without keeping a reachable handle.  Overwrites any earlier view of
- * the same session — only the newest round's address space is of
- * interest.
- *
- * @param sessionId - The session identifier.
- * @param view - The round's snapshot and numbered view.
- */
-export function publishRoundView(sessionId: string, view: RoundView): void {
-  roundViews.set(sessionId, {
-    projection: freezeProjection(view.projection),
-    numbered: freezeNumberedView(view.numbered),
-  });
+/** The published round view of each session. */
+export interface RoundViewRegistry {
+  /**
+   * Publish the current round's view for the compression tools.
+   *
+   * The view is frozen on the way in (see `freezeProjection` /
+   * `freezeNumberedView`), so callers hand over their live objects
+   * without keeping a reachable handle.  Overwrites any earlier view of
+   * the same session — only the newest round's address space is of
+   * interest.
+   *
+   * @param sessionId - The session identifier.
+   * @param view - The round's snapshot and numbered view.
+   */
+  publish(sessionId: string, view: RoundView): void;
+  /**
+   * Read the current round's frozen view.
+   *
+   * @param sessionId - The session identifier.
+   * @returns The published view, or undefined when no transform has run
+   *   for this session yet in this runtime.
+   */
+  get(sessionId: string): RoundView | undefined;
+  /** Drop the session's cached round view. */
+  clear(sessionId: string): void;
 }
 
 /**
- * Read the current round's frozen view.
+ * Create an empty round-view registry.
  *
- * @param sessionId - The session identifier.
- * @returns The published view, or undefined when no transform has run
- *   for this session yet in this process.
+ * @returns The registry; its entries live only as long as the caller
+ *   keeps it.
  */
-export function getRoundView(sessionId: string): RoundView | undefined {
-  return roundViews.get(sessionId);
-}
-
-/**
- * Drop the session's cached round view.
- *
- * The round view is a session resource (`session/resources.ts`), so a
- * session's stop clears it.
- *
- * @param sessionId - The session identifier.
- */
-export function clearRoundView(sessionId: string): void {
-  roundViews.delete(sessionId);
-}
-
-/**
- * The cached round view is runtime-only: both stop modes drop it, and the
- * next pruning round republishes the current one.
- */
-export const roundViewResource: ReleasedSessionResource = {
-  name: "roundView",
-  runtime: "release",
-  release: clearRoundView,
-  delete: clearRoundView,
-};
-
-/** Test affordance: the sessions that currently hold a cached round view. */
-export function _listRoundViewSessionsForTesting(): string[] {
-  return [...roundViews.keys()];
-}
-
-/** Test affordance: drop every cached round view. */
-export function _resetRoundViewsForTesting(): void {
-  roundViews.clear();
+export function createRoundViewRegistry(): RoundViewRegistry {
+  const views = new Map<string, RoundView>();
+  return {
+    publish(sessionId, view) {
+      views.set(sessionId, {
+        projection: freezeProjection(view.projection),
+        numbered: freezeNumberedView(view.numbered),
+      });
+    },
+    get(sessionId) {
+      return views.get(sessionId);
+    },
+    clear(sessionId) {
+      views.delete(sessionId);
+    },
+  };
 }

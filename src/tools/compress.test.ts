@@ -16,7 +16,8 @@
  * gate (tool hooks + primary_tools).
  */
 import assert from "node:assert/strict";
-import { afterEach, describe, it } from "node:test";
+import { rmSync } from "node:fs";
+import { after, afterEach, beforeEach, describe, it } from "node:test";
 import { registerProfileToolsInConfig } from "../compose-opencode.js";
 import { parseContextConfig } from "../core/config-parse.js";
 import type { ModeProfile } from "../core/config-types.js";
@@ -24,15 +25,12 @@ import { fold } from "../core/context/fold.js";
 import type { HostMessage, Projection } from "../core/context/lens.js";
 import { project } from "../core/context/lens.js";
 import {
-  _listRoundViewSessionsForTesting,
-  publishRoundView,
-} from "../core/context/round-view.js";
-import {
-  _resetContextStateManagerForTesting,
-  consumePendingViewChange,
-  getContextStateManager,
+  type ContextRuntime,
+  createContextRuntime,
+  type RuntimeFlaggedState,
 } from "../core/context/runtime.js";
-import type { Block, SessionState } from "../core/context/state.js";
+import type { Block } from "../core/context/state.js";
+import { createStateStore } from "../core/context/store.js";
 import { numberView } from "../core/context/view-refs.js";
 import type { ToolHost } from "../core/ports/tool-host.js";
 import { composeForTest } from "../testkits/compose.js";
@@ -42,6 +40,8 @@ import {
   POLY_ZOO,
   polyHostConfig,
 } from "../testkits/config.js";
+import { permitFor } from "../testkits/context-runtime.js";
+import { makeTmpDir } from "../testkits/tmp.js";
 import { _resetForTesting } from "../utils/logger.js";
 import { unit as compressUnit, createCompressTool } from "./compress.js";
 
@@ -65,12 +65,34 @@ interface CompressArgsSchema {
 
 const TEST_SESSION_ID = "sess-compress-tool";
 
+/** Sandbox store directory of this suite. */
+const storeDir = makeTmpDir("zoo-compress-tool");
+const store = createStateStore(storeDir);
+/** The plugin instance under test. */
+let runtime: ContextRuntime = createContextRuntime(store);
+/** The permit a tool call is admitted under. */
+let permit = permitFor(TEST_SESSION_ID);
+
+beforeEach(() => {
+  runtime = createContextRuntime(store);
+  permit = permitFor(TEST_SESSION_ID);
+});
+
 afterEach(() => {
-  const store = getContextStateManager().store;
   store.delete(TEST_SESSION_ID);
-  _resetContextStateManagerForTesting();
   _resetForTesting();
 });
+
+after(() => {
+  rmSync(storeDir, { recursive: true, force: true });
+});
+
+/** The committed state of the tool's session. */
+function stateOf(): RuntimeFlaggedState {
+  const state = runtime.read(permitFor(TEST_SESSION_ID), (draft) => draft);
+  if (state === undefined) throw new Error("no committed state");
+  return state;
+}
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -227,9 +249,16 @@ const mockToolContext = {
   ask: async () => {},
 };
 
-/** The shared manager's live session state (same singleton the tool uses). */
-function sessionState(): SessionState {
-  return getContextStateManager().get(TEST_SESSION_ID);
+/** The host execution surface a tool call receives. */
+const hostContext = {
+  get permit() {
+    return permit;
+  },
+};
+
+/** The runtime's live session state (the same instance the tool uses). */
+function sessionState(): RuntimeFlaggedState {
+  return stateOf();
 }
 
 /** The first (and only) block of the live session state. */
@@ -254,13 +283,12 @@ function firstBlock(): Block {
  */
 function publishViewOf(messages: HostMessage[]): void {
   const snapshot = project(messages, []);
-  const state = getContextStateManager().get(TEST_SESSION_ID);
-  const { items } = fold(snapshot, state);
+  const { items } = fold(snapshot, stateOf());
   const numbered = numberView(
     items,
     (ordinal) => snapshot.messages[ordinal].hidden,
   );
-  publishRoundView(TEST_SESSION_ID, { projection: snapshot, numbered });
+  runtime.publishRoundView(permit, { projection: snapshot, numbered });
 }
 
 /**
@@ -290,6 +318,41 @@ function sourceHost(options: { history?: HostMessage[]; calls?: number[] }): {
   return { host, notifyCalls };
 }
 
+describe("compress tool execute — permit lapses after the commit", () => {
+  it("commits the block but flags no view change", async () => {
+    publishViewOf(makeMessages());
+    const { host, notifyCalls } = sourceHost({});
+    const controller = new AbortController();
+    // The session stops right after the commit succeeded.
+    const stopping: ContextRuntime = {
+      ...runtime,
+      commit: async (p, change) => {
+        const value = await runtime.commit(p, change);
+        controller.abort();
+        return value;
+      },
+    };
+    const tool = createCompressTool(host, PARSED_CONFIG, stopping);
+
+    const result = await tool.execute(
+      { ranges: [makeRange(1, 9)] },
+      mockToolContext,
+      { permit: permitFor(TEST_SESSION_ID, controller.signal) },
+    );
+
+    // The committed compression stands.
+    assert.equal(stateOf().blocks.size, 1);
+    assert.ok(result.includes("已压缩"));
+    assert.equal(notifyCalls.length, 1);
+    // The lapsed call leaves no runtime-only record behind.
+    assert.equal(
+      runtime.consumePendingViewChange(permitFor(TEST_SESSION_ID)),
+      false,
+      "the lapsed call flags no view change",
+    );
+  });
+});
+
 describe("compress tool execute — history source", () => {
   it("uses the published round view and never reads the host history", async () => {
     // A view is published for this round; the host read would answer with
@@ -299,10 +362,11 @@ describe("compress tool execute — history source", () => {
     const calls: number[] = [];
     const { host, notifyCalls } = sourceHost({ history: [], calls });
 
-    const tool = createCompressTool(host, PARSED_CONFIG);
+    const tool = createCompressTool(host, PARSED_CONFIG, runtime);
     const result = await tool.execute(
       { ranges: [makeRange(1, 9)] },
       mockToolContext,
+      hostContext,
     );
 
     assert.equal(
@@ -310,37 +374,43 @@ describe("compress tool execute — history source", () => {
       0,
       "the cached round view must not re-read the host",
     );
-    assert.equal(getContextStateManager().get(TEST_SESSION_ID).blocks.size, 1);
-    assert.equal(consumePendingViewChange(TEST_SESSION_ID), true);
+    assert.equal(stateOf().blocks.size, 1);
+    assert.equal(runtime.consumePendingViewChange(permit), true);
     assert.equal(notifyCalls.length, 1);
     assert.ok(result.includes("已压缩"));
   });
 
   it("falls back to the host history read when no round view exists", async () => {
-    assert.deepEqual(_listRoundViewSessionsForTesting(), []);
+    assert.equal(runtime.roundView(TEST_SESSION_ID), undefined);
     const calls: number[] = [];
     const { host } = sourceHost({ history: makeMessages(), calls });
 
-    const tool = createCompressTool(host, PARSED_CONFIG);
+    const tool = createCompressTool(host, PARSED_CONFIG, runtime);
     const result = await tool.execute(
       { ranges: [makeRange(1, 9)] },
       mockToolContext,
+      hostContext,
     );
 
     assert.equal(calls.length, 1, "the fallback read runs once");
-    assert.equal(getContextStateManager().get(TEST_SESSION_ID).blocks.size, 1);
+    assert.equal(stateOf().blocks.size, 1);
     assert.ok(result.includes("已压缩"));
   });
 
   it("fails closed with guidance when neither a view nor a fallback exists", async () => {
     const { host, notifyCalls } = sourceHost({});
 
-    const tool = createCompressTool(host, PARSED_CONFIG);
+    const tool = createCompressTool(host, PARSED_CONFIG, runtime);
     // An unaddressable view is not a model-recoverable condition: the
     // failure is thrown (never returned as a success-shaped string) and
     // says that repeating the call in this round changes nothing.
     await assert.rejects(
-      () => tool.execute({ ranges: [makeRange(1, 9)] }, mockToolContext),
+      () =>
+        tool.execute(
+          { ranges: [makeRange(1, 9)] },
+          mockToolContext,
+          hostContext,
+        ),
       (err: unknown) =>
         err instanceof Error &&
         /无法压缩/.test(err.message) &&
@@ -348,12 +418,12 @@ describe("compress tool execute — history source", () => {
         /本轮内重试结果相同/.test(err.message),
     );
     assert.equal(
-      getContextStateManager().get(TEST_SESSION_ID).blocks.size,
+      stateOf().blocks.size,
       0,
       "state untouched — nothing was compressed",
     );
     assert.equal(
-      consumePendingViewChange(TEST_SESSION_ID),
+      runtime.consumePendingViewChange(permit),
       false,
       "no view change armed by a refused call",
     );
@@ -375,23 +445,24 @@ describe("compress tool execute — happy path", () => {
     const messages = makeMessages();
     const { host, notifyCalls } = fakeHost(messages);
 
-    const tool = createCompressTool(host, PARSED_CONFIG);
+    const tool = createCompressTool(host, PARSED_CONFIG, runtime);
 
     const result = await tool.execute(
       { ranges: [makeRange(1, 9)] },
       mockToolContext,
+      hostContext,
     );
 
-    // (1) Block created in the shared session state.
+    // (1) Block created in the instance's session state.
     const block = firstBlock();
     assert.equal(block.status, "active");
     assert.equal(block.title, "执行命令主题");
     assert.equal(block.end - block.start, 9, "range [1, 10) covers 9 ordinals");
 
     // (2) Pending view change flagged (transient, consumed by the hook).
-    assert.equal(consumePendingViewChange(TEST_SESSION_ID), true);
+    assert.equal(runtime.consumePendingViewChange(permit), true);
     assert.equal(
-      consumePendingViewChange(TEST_SESSION_ID),
+      runtime.consumePendingViewChange(permit),
       false,
       "flag is consumed and cleared",
     );
@@ -409,8 +480,8 @@ describe("compress tool execute — happy path", () => {
       "a landed compression books something",
     );
 
-    // (3) State persisted to disk via the shared manager.
-    const persisted = getContextStateManager().store.load(TEST_SESSION_ID);
+    // (3) State persisted to disk by the commit.
+    const persisted = store.load(TEST_SESSION_ID);
     assert.equal(persisted.blocks.size, 1);
     assert.equal(persisted.blocks.get(1)?.status, "active");
     assert.equal(persisted.blocks.get(1)?.title, "执行命令主题");
@@ -458,13 +529,14 @@ describe("compress tool execute — happy path", () => {
     const messages = makeMessages();
     const { host, notifyCalls } = fakeHost(messages);
 
-    const tool = createCompressTool(host, PARSED_CONFIG);
+    const tool = createCompressTool(host, PARSED_CONFIG, runtime);
 
     const result = await tool.execute(
       {
         ranges: [makeRange(1, 5, "主题一"), makeRange(6, 9, "主题二")],
       },
       mockToolContext,
+      hostContext,
     );
 
     // (1) Two blocks created in order.
@@ -480,10 +552,10 @@ describe("compress tool execute — happy path", () => {
       (state.blocks.get(2)?.end ?? 0) - (state.blocks.get(2)?.start ?? 0),
       4,
     );
-    assert.equal(consumePendingViewChange(TEST_SESSION_ID), true);
+    assert.equal(runtime.consumePendingViewChange(permit), true);
 
     // (2) Persisted exactly once (both blocks on disk).
-    const persisted = getContextStateManager().store.load(TEST_SESSION_ID);
+    const persisted = store.load(TEST_SESSION_ID);
     assert.equal(persisted.blocks.size, 2);
     assert.equal(persisted.blocks.get(2)?.status, "active");
 
@@ -503,11 +575,16 @@ describe("compress tool execute — happy path", () => {
   it("accepts a sessionId-shaped tool context (defensive)", async () => {
     const messages = makeMessages();
     const { host } = fakeHost(messages);
-    const tool = createCompressTool(host, PARSED_CONFIG);
+    const tool = createCompressTool(host, PARSED_CONFIG, runtime);
 
     const result = await tool.execute(
       { ranges: [makeRange(1, 9)] },
-      { ...mockToolContext, sessionID: undefined, sessionId: TEST_SESSION_ID },
+      {
+        ...mockToolContext,
+        sessionID: undefined,
+        sessionId: TEST_SESSION_ID,
+      },
+      hostContext,
     );
 
     const state = sessionState();
@@ -523,12 +600,13 @@ describe("compress tool execute — happy path", () => {
   it("accepts a title of exactly 80 characters", async () => {
     const messages = makeMessages();
     const { host } = fakeHost(messages);
-    const tool = createCompressTool(host, PARSED_CONFIG);
+    const tool = createCompressTool(host, PARSED_CONFIG, runtime);
 
     const title = "超".repeat(80);
     const result = await tool.execute(
       { ranges: [makeRange(1, 9, title)] },
       mockToolContext,
+      hostContext,
     );
 
     const state = sessionState();
@@ -547,10 +625,15 @@ describe("compress tool execute — protection gates", () => {
   it("rejects a range containing the session's first user message", async () => {
     const messages = makeMessages();
     const { host } = fakeHost(messages);
-    const tool = createCompressTool(host, PARSED_CONFIG);
+    const tool = createCompressTool(host, PARSED_CONFIG, runtime);
 
     await assert.rejects(
-      () => tool.execute({ ranges: [makeRange(0, 5)] }, mockToolContext),
+      () =>
+        tool.execute(
+          { ranges: [makeRange(0, 5)] },
+          mockToolContext,
+          hostContext,
+        ),
       (err: unknown) =>
         err instanceof Error && /第一条用户消息/.test(err.message),
     );
@@ -567,13 +650,13 @@ describe("compress tool execute — error paths", () => {
   it("rejects more ranges than max_ranges with a loud batch-guidance error", async () => {
     const messages = makeMessages();
     const { host } = fakeHost(messages);
-    const tool = createCompressTool(host, PARSED_CONFIG);
+    const tool = createCompressTool(host, PARSED_CONFIG, runtime);
 
     // Real config.toml sets max_ranges = 8; 9 ranges must be rejected
     // BEFORE any ref resolution (refs are dummy on purpose).
     const ranges = Array.from({ length: 9 }, () => makeRange(1, 2));
     await assert.rejects(
-      () => tool.execute({ ranges }, mockToolContext),
+      () => tool.execute({ ranges }, mockToolContext, hostContext),
       (err: unknown) =>
         err instanceof Error &&
         /9/.test(err.message) &&
@@ -589,10 +672,10 @@ describe("compress tool execute — error paths", () => {
   it("rejects an empty ranges array", async () => {
     const messages = makeMessages();
     const { host } = fakeHost(messages);
-    const tool = createCompressTool(host, PARSED_CONFIG);
+    const tool = createCompressTool(host, PARSED_CONFIG, runtime);
 
     await assert.rejects(
-      () => tool.execute({ ranges: [] }, mockToolContext),
+      () => tool.execute({ ranges: [] }, mockToolContext, hostContext),
       /不能为空/,
     );
     const state = sessionState();
@@ -602,14 +685,20 @@ describe("compress tool execute — error paths", () => {
   it("rejects a missing or non-array ranges argument", async () => {
     const messages = makeMessages();
     const { host } = fakeHost(messages);
-    const tool = createCompressTool(host, PARSED_CONFIG);
+    const tool = createCompressTool(host, PARSED_CONFIG, runtime);
 
-    await assert.rejects(() => tool.execute({}, mockToolContext), /ranges/);
     await assert.rejects(
-      () => tool.execute({ ranges: "m1" }, mockToolContext),
+      () => tool.execute({}, mockToolContext, hostContext),
       /ranges/,
     );
-    await assert.rejects(() => tool.execute(null, mockToolContext), /ranges/);
+    await assert.rejects(
+      () => tool.execute({ ranges: "m1" }, mockToolContext, hostContext),
+      /ranges/,
+    );
+    await assert.rejects(
+      () => tool.execute(null, mockToolContext, hostContext),
+      /ranges/,
+    );
     const state = sessionState();
     assert.equal(state.blocks.size, 0);
   });
@@ -617,7 +706,7 @@ describe("compress tool execute — error paths", () => {
   it("propagates the unknown-ref guidance error naming the range index", async () => {
     const messages = makeMessages();
     const { host } = fakeHost(messages);
-    const tool = createCompressTool(host, PARSED_CONFIG);
+    const tool = createCompressTool(host, PARSED_CONFIG, runtime);
 
     await assert.rejects(
       () =>
@@ -626,6 +715,7 @@ describe("compress tool execute — error paths", () => {
             ranges: [makeRange(1, 6), { ...makeRange(6, 9), fromRef: "m9999" }],
           },
           mockToolContext,
+          hostContext,
         ),
       (err: unknown) =>
         err instanceof Error &&
@@ -637,7 +727,7 @@ describe("compress tool execute — error paths", () => {
   it("propagates the reversed-order guidance error naming the range index", async () => {
     const messages = makeMessages();
     const { host } = fakeHost(messages);
-    const tool = createCompressTool(host, PARSED_CONFIG);
+    const tool = createCompressTool(host, PARSED_CONFIG, runtime);
 
     await assert.rejects(
       () =>
@@ -654,6 +744,7 @@ describe("compress tool execute — error paths", () => {
             ],
           },
           mockToolContext,
+          hostContext,
         ),
       (err: unknown) =>
         err instanceof Error &&
@@ -665,13 +756,14 @@ describe("compress tool execute — error paths", () => {
   it("rejects overlapping ranges naming both indices", async () => {
     const messages = makeMessages();
     const { host } = fakeHost(messages);
-    const tool = createCompressTool(host, PARSED_CONFIG);
+    const tool = createCompressTool(host, PARSED_CONFIG, runtime);
 
     await assert.rejects(
       () =>
         tool.execute(
           { ranges: [makeRange(1, 6), makeRange(4, 9)] },
           mockToolContext,
+          hostContext,
         ),
       (err: unknown) =>
         err instanceof Error &&
@@ -686,7 +778,7 @@ describe("compress tool execute — error paths", () => {
   it("rejects an empty title in a specific range naming that range", async () => {
     const messages = makeMessages();
     const { host } = fakeHost(messages);
-    const tool = createCompressTool(host, PARSED_CONFIG);
+    const tool = createCompressTool(host, PARSED_CONFIG, runtime);
 
     await assert.rejects(
       () =>
@@ -695,6 +787,7 @@ describe("compress tool execute — error paths", () => {
             ranges: [makeRange(1, 6), makeRange(6, 9, "   ")],
           },
           mockToolContext,
+          hostContext,
         ),
       (err: unknown) =>
         err instanceof Error &&
@@ -710,12 +803,16 @@ describe("compress tool execute — error paths", () => {
   it("rejects a title longer than 80 characters with a loud Chinese guidance error", async () => {
     const messages = makeMessages();
     const { host } = fakeHost(messages);
-    const tool = createCompressTool(host, PARSED_CONFIG);
+    const tool = createCompressTool(host, PARSED_CONFIG, runtime);
 
     const longTitle = "超".repeat(81);
     await assert.rejects(
       () =>
-        tool.execute({ ranges: [makeRange(1, 9, longTitle)] }, mockToolContext),
+        tool.execute(
+          { ranges: [makeRange(1, 9, longTitle)] },
+          mockToolContext,
+          hostContext,
+        ),
       (err: unknown) =>
         err instanceof Error &&
         /过长/.test(err.message) &&
@@ -728,7 +825,7 @@ describe("compress tool execute — error paths", () => {
   it("rejects titles containing newlines or control characters with a loud single-line guidance error", async () => {
     const messages = makeMessages();
     const { host } = fakeHost(messages);
-    const tool = createCompressTool(host, PARSED_CONFIG);
+    const tool = createCompressTool(host, PARSED_CONFIG, runtime);
 
     const badTitles = [
       "foo\nbar",
@@ -740,7 +837,11 @@ describe("compress tool execute — error paths", () => {
     for (const title of badTitles) {
       await assert.rejects(
         () =>
-          tool.execute({ ranges: [makeRange(1, 9, title)] }, mockToolContext),
+          tool.execute(
+            { ranges: [makeRange(1, 9, title)] },
+            mockToolContext,
+            hostContext,
+          ),
         (err: unknown) =>
           err instanceof Error &&
           /单行/.test(err.message) &&
@@ -755,13 +856,17 @@ describe("compress tool execute — error paths", () => {
   it("rejects titles containing three or more consecutive hyphens with a loud Chinese guidance error", async () => {
     const messages = makeMessages();
     const { host } = fakeHost(messages);
-    const tool = createCompressTool(host, PARSED_CONFIG);
+    const tool = createCompressTool(host, PARSED_CONFIG, runtime);
 
     const badTitles = ["foo---bar", "----", "a--b---c--d"];
     for (const title of badTitles) {
       await assert.rejects(
         () =>
-          tool.execute({ ranges: [makeRange(1, 9, title)] }, mockToolContext),
+          tool.execute(
+            { ranges: [makeRange(1, 9, title)] },
+            mockToolContext,
+            hostContext,
+          ),
         (err: unknown) =>
           err instanceof Error &&
           /连字符/.test(err.message) &&
@@ -776,7 +881,7 @@ describe("compress tool execute — error paths", () => {
   it("rejects non-string fields inside a range item before core validation", async () => {
     const messages = makeMessages();
     const { host } = fakeHost(messages);
-    const tool = createCompressTool(host, PARSED_CONFIG);
+    const tool = createCompressTool(host, PARSED_CONFIG, runtime);
     const cases: Array<{ name: string; item: Record<string, unknown> }> = [
       {
         name: "fromRef",
@@ -813,7 +918,8 @@ describe("compress tool execute — error paths", () => {
 
     for (const item of cases) {
       await assert.rejects(
-        () => tool.execute({ ranges: [item.item] }, mockToolContext),
+        () =>
+          tool.execute({ ranges: [item.item] }, mockToolContext, hostContext),
         (err: unknown) =>
           err instanceof Error &&
           err.message.includes(item.name) &&
@@ -827,10 +933,10 @@ describe("compress tool execute — error paths", () => {
   it("rejects a non-object range item naming the range index", async () => {
     const messages = makeMessages();
     const { host } = fakeHost(messages);
-    const tool = createCompressTool(host, PARSED_CONFIG);
+    const tool = createCompressTool(host, PARSED_CONFIG, runtime);
 
     await assert.rejects(
-      () => tool.execute({ ranges: ["m1"] }, mockToolContext),
+      () => tool.execute({ ranges: ["m1"] }, mockToolContext, hostContext),
       (err: unknown) =>
         err instanceof Error &&
         /第 1 个范围/.test(err.message) &&
@@ -843,13 +949,18 @@ describe("compress tool execute — error paths", () => {
   it("throws a loud error when the tool context lacks a session id", async () => {
     const messages = makeMessages();
     const { host } = fakeHost(messages);
-    const tool = createCompressTool(host, PARSED_CONFIG);
+    const tool = createCompressTool(host, PARSED_CONFIG, runtime);
 
     await assert.rejects(
       () =>
         tool.execute(
           { ranges: [makeRange(1, 9)] },
-          { ...mockToolContext, sessionID: undefined, sessionId: undefined },
+          {
+            ...mockToolContext,
+            hostContext,
+            sessionID: undefined,
+            sessionId: undefined,
+          },
         ),
       /sessionID/,
     );
@@ -868,7 +979,11 @@ describe("compress tool execute — error paths", () => {
 
     await assert.rejects(
       () =>
-        hooks.compress.execute({ ranges: [makeRange(1, 9)] }, mockToolContext),
+        hooks.compress.execute(
+          { ranges: [makeRange(1, 9)] },
+          mockToolContext,
+          hostContext,
+        ),
       /\[zoo\.context\.compress\] 段缺失或非法/,
     );
   });
@@ -891,7 +1006,11 @@ describe("compress tool execute — error paths", () => {
 
     await assert.rejects(
       () =>
-        hooks.compress.execute({ ranges: [makeRange(1, 9)] }, mockToolContext),
+        hooks.compress.execute(
+          { ranges: [makeRange(1, 9)] },
+          mockToolContext,
+          hostContext,
+        ),
       /protected_messages/,
     );
   });
@@ -904,11 +1023,12 @@ describe("compress tool execute — error paths", () => {
         throw new Error("notify rejected");
       },
     };
-    const tool = createCompressTool(notifyErrorHost, PARSED_CONFIG);
+    const tool = createCompressTool(notifyErrorHost, PARSED_CONFIG, runtime);
 
     const result = await tool.execute(
       { ranges: [makeRange(1, 9)] },
       mockToolContext,
+      hostContext,
     );
 
     // Compression still succeeded and returned a ToolResult.
@@ -1121,6 +1241,7 @@ describe("compress tool unsupported host", () => {
       contextConfig: PARSED_CONFIG,
       directory: "",
       resolveAgent: () => undefined,
+      contextRuntime: runtime,
       toolHost: undefined,
     });
 

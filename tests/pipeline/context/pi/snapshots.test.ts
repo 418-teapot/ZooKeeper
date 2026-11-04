@@ -54,7 +54,7 @@ describe("snapshot baseline (pi)", () => {
     test(scenario.id, async () => {
       await assertScenarioMatchesSnapshot(
         scenario,
-        createPiPipelineHost(scenario.sessionID),
+        createPiPipelineHost(SANDBOX),
         SNAPSHOT_DIR,
         UPDATE,
       );
@@ -65,7 +65,7 @@ describe("snapshot baseline (pi)", () => {
 describe("pi lane smoke — production-entry transform", () => {
   test("runs a trivial round through runTransform with refs injected and input purity", async () => {
     const SID = "pi-smoke-transform";
-    const host = createPiPipelineHost(SID);
+    const host = createPiPipelineHost(SANDBOX);
     const msgs: PiAgentMessage[] = [
       userMsg("hello"),
       assistantMsg([toolCallPart("c1", "bash", { cmd: "ls" })], {
@@ -80,6 +80,7 @@ describe("pi lane smoke — production-entry transform", () => {
     const originals = [...msgs];
 
     await host.runTransform(
+      SID,
       msgs,
       { protectedMessages: 0, dedup: {}, purgeErrors: {} },
       false,
@@ -102,9 +103,10 @@ describe("pi lane smoke — production-entry transform", () => {
   });
 
   test("no-ops cleanly on an empty message array", async () => {
-    const host = createPiPipelineHost("pi-smoke-empty");
+    const host = createPiPipelineHost(SANDBOX);
     const msgs: PiAgentMessage[] = [];
     await host.runTransform(
+      "pi-smoke-empty",
       msgs,
       { protectedMessages: 0, dedup: {}, purgeErrors: {} },
       false,

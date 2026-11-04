@@ -28,11 +28,11 @@ const SNAPSHOT_DIR = join(dirname(fileURLToPath(import.meta.url)), "snapshots");
 /** Whether snapshot regeneration is requested. */
 const UPDATE = process.env.ZOO_SNAPSHOT_UPDATE === "1";
 
-/** The lane's host seam (stateless — one instance serves all scenarios). */
-const HOST = createV1PipelineHost();
-
 /** Test-owned storage and log root for this suite. */
 const SANDBOX = createPipelineSandbox("opencode-snapshots");
+
+/** The lane's host seam (stateless — one instance serves all scenarios). */
+const HOST = createV1PipelineHost(SANDBOX);
 
 beforeEach(() => {
   resetPipelineState(SANDBOX);

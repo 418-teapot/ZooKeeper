@@ -16,7 +16,8 @@
 
 import { afterAll, beforeEach, describe, expect, test } from "bun:test";
 import type { PiAgentMessage } from "../../../../src/adapters/pi/types.js";
-import { getContextStateManager } from "../../../../src/core/context/runtime.js";
+import type { RuntimeFlaggedState } from "../../../../src/core/context/runtime.js";
+import { permitFor } from "../../../../src/testkits/context-runtime.js";
 import { createPipelineSandbox } from "../sandbox.js";
 import { resetPipelineState } from "../teardown.js";
 import { createPiPipelineHost } from "./host.js";
@@ -40,6 +41,13 @@ afterAll(() => {
   SANDBOX.dispose();
 });
 
+/** The committed state of a session in the sandbox instance. */
+function stateOf(sessionID: string): RuntimeFlaggedState {
+  const state = SANDBOX.runtime.read(permitFor(sessionID), (draft) => draft);
+  if (state === undefined) throw new Error(`no committed state: ${sessionID}`);
+  return state;
+}
+
 /** A small view: user, assistant toolCall, linked toolResult, assistant. */
 function toolView(): PiAgentMessage[] {
   return [
@@ -54,7 +62,7 @@ function toolView(): PiAgentMessage[] {
 
 describe("pi host — /dcp absence", () => {
   test("handleDcp throws the pi-specific absence error", async () => {
-    const host = createPiPipelineHost("pi-host-dcp");
+    const host = createPiPipelineHost(SANDBOX);
     await expect(
       host.handleDcp(
         "pi-host-dcp",
@@ -69,13 +77,13 @@ describe("pi host — /dcp absence", () => {
 
 describe("pi host — resolveMarkTarget", () => {
   test("resolves a call id to its linked toolResult's tool-output region", () => {
-    const host = createPiPipelineHost("pi-host-mark");
+    const host = createPiPipelineHost(SANDBOX);
     const target = host.resolveMarkTarget(toolView(), "c1");
     expect(target).toEqual({ ordinal: 2, regionIndex: 0 });
   });
 
   test("falls back to the toolCall block's tool-input region without a result", () => {
-    const host = createPiPipelineHost("pi-host-mark");
+    const host = createPiPipelineHost(SANDBOX);
     const messages: PiAgentMessage[] = [
       userMsg("hello"),
       assistantMsg([
@@ -90,21 +98,21 @@ describe("pi host — resolveMarkTarget", () => {
   });
 
   test("returns null for an unknown call id", () => {
-    const host = createPiPipelineHost("pi-host-mark");
+    const host = createPiPipelineHost(SANDBOX);
     expect(host.resolveMarkTarget(toolView(), "ghost")).toBeNull();
   });
 });
 
 describe("pi host — landPlan", () => {
   test("lands an id-keyed plan as an ordinal-keyed block with a span hash", () => {
-    const host = createPiPipelineHost("pi-host-plan");
+    const host = createPiPipelineHost(SANDBOX);
     const messages = [
       userMsg("hello", { id: "u0" }),
       assistantMsg([toolCallPart("c1", "bash", { cmd: "ls" })], { id: "a1" }),
       toolResultMsg("c1", "bash", [textPart("total 12")], { id: "tr1" }),
       userMsg("again", { id: "u3" }),
     ];
-    const state = getContextStateManager().get("pi-host-plan");
+    const state = stateOf("pi-host-plan");
     host.landPlan(state, messages, {
       anchorMessageId: "tr1",
       messageIds: ["a1", "tr1"],
@@ -124,8 +132,8 @@ describe("pi host — landPlan", () => {
   });
 
   test("no-ops when the first message id is absent from the view", () => {
-    const host = createPiPipelineHost("pi-host-plan");
-    const state = getContextStateManager().get("pi-host-plan");
+    const host = createPiPipelineHost(SANDBOX);
+    const state = stateOf("pi-host-plan");
     host.landPlan(state, toolView(), {
       anchorMessageId: "ghost",
       messageIds: ["ghost"],
@@ -138,8 +146,8 @@ describe("pi host — landPlan", () => {
   });
 
   test("no-ops on an empty transcript (interval cannot be hashed)", () => {
-    const host = createPiPipelineHost("pi-host-plan");
-    const state = getContextStateManager().get("pi-host-plan");
+    const host = createPiPipelineHost(SANDBOX);
+    const state = stateOf("pi-host-plan");
     host.landPlan(state, [], {
       anchorMessageId: "u0",
       messageIds: ["u0"],
@@ -154,7 +162,7 @@ describe("pi host — landPlan", () => {
 
 describe("pi host — runTool through the real pi tool host", () => {
   test("compress-tool-raw with malformed args rejects with Chinese guidance", async () => {
-    const host = createPiPipelineHost("pi-host-tool");
+    const host = createPiPipelineHost(SANDBOX);
     await expect(
       host.runTool(
         { kind: "compress-tool-raw", args: {} },
@@ -167,7 +175,7 @@ describe("pi host — runTool through the real pi tool host", () => {
   });
 
   test("decompress-tool with an unknown block rejects with the not-found error", async () => {
-    const host = createPiPipelineHost("pi-host-tool");
+    const host = createPiPipelineHost(SANDBOX);
     const config = {
       decompress: { maxFillPercent: 80 },
       dedup: {},

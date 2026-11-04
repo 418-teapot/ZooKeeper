@@ -1,68 +1,67 @@
 /**
  * Tests for the per-session model context-limit registry.
  *
- * Covers: set/get round-trip, unknown-session reads, invalid-input
- * rejection, overwrite semantics, single-session clearing, and the
- * testing reset.
+ * Boundary: `createModelLimitRegistry` (the registry instance the context
+ * runtime composes).  Covers: set/get round-trip, unknown-session reads,
+ * invalid-input rejection, overwrite semantics, single-session clearing,
+ * and the isolation of two instances.
  */
 import assert from "node:assert/strict";
-import { afterEach, describe, it } from "node:test";
-import {
-  _resetForTesting,
-  clearModelLimit,
-  getModelLimit,
-  setModelLimit,
-} from "./model-limits.js";
+import { describe, it } from "node:test";
+import { createModelLimitRegistry } from "./model-limits.js";
 
-afterEach(() => {
-  _resetForTesting();
-});
-
-describe("model-limits registry", () => {
+describe("model-limit registry", () => {
   it("stores and retrieves a captured model limit", () => {
-    setModelLimit("sess-1", 200000, "gpt-test");
-    assert.deepEqual(getModelLimit("sess-1"), {
+    const registry = createModelLimitRegistry();
+    registry.set("sess-1", 200000, "gpt-test");
+    assert.deepEqual(registry.get("sess-1"), {
       context: 200000,
       modelId: "gpt-test",
     });
   });
 
   it("returns undefined for unknown sessions", () => {
-    assert.equal(getModelLimit("nope"), undefined);
+    const registry = createModelLimitRegistry();
+    assert.equal(registry.get("nope"), undefined);
   });
 
   it("ignores missing session IDs and non-finite limits", () => {
-    setModelLimit("", 200000, "gpt-test");
-    setModelLimit("sess-2", Number.NaN, "gpt-test");
-    setModelLimit("sess-3", Number.POSITIVE_INFINITY, "gpt-test");
-    assert.equal(getModelLimit(""), undefined);
-    assert.equal(getModelLimit("sess-2"), undefined);
-    assert.equal(getModelLimit("sess-3"), undefined);
+    const registry = createModelLimitRegistry();
+    registry.set("", 200000, "gpt-test");
+    registry.set("sess-2", Number.NaN, "gpt-test");
+    registry.set("sess-3", Number.POSITIVE_INFINITY, "gpt-test");
+    assert.equal(registry.get(""), undefined);
+    assert.equal(registry.get("sess-2"), undefined);
+    assert.equal(registry.get("sess-3"), undefined);
   });
 
   it("overwrites on repeat set for the same session", () => {
-    setModelLimit("sess-4", 200000, "gpt-test");
-    setModelLimit("sess-4", 1000000, "gpt-big");
-    assert.deepEqual(getModelLimit("sess-4"), {
+    const registry = createModelLimitRegistry();
+    registry.set("sess-4", 200000, "gpt-test");
+    registry.set("sess-4", 1000000, "gpt-big");
+    assert.deepEqual(registry.get("sess-4"), {
       context: 1000000,
       modelId: "gpt-big",
     });
   });
 
-  it("clearModelLimit removes a single session", () => {
-    setModelLimit("sess-5", 200000, "gpt-test");
-    setModelLimit("sess-6", 200000, "gpt-test");
-    clearModelLimit("sess-5");
-    assert.equal(getModelLimit("sess-5"), undefined);
-    assert.deepEqual(getModelLimit("sess-6"), {
+  it("clear removes a single session", () => {
+    const registry = createModelLimitRegistry();
+    registry.set("sess-5", 200000, "gpt-test");
+    registry.set("sess-6", 200000, "gpt-test");
+    registry.clear("sess-5");
+    assert.equal(registry.get("sess-5"), undefined);
+    assert.deepEqual(registry.get("sess-6"), {
       context: 200000,
       modelId: "gpt-test",
     });
   });
 
-  it("_resetForTesting clears all entries", () => {
-    setModelLimit("sess-7", 200000, "gpt-test");
-    _resetForTesting();
-    assert.equal(getModelLimit("sess-7"), undefined);
+  it("keeps two registries independent", () => {
+    const first = createModelLimitRegistry();
+    const second = createModelLimitRegistry();
+    first.set("sess-7", 200000, "gpt-test");
+    assert.equal(second.get("sess-7"), undefined);
+    assert.ok(first.get("sess-7"));
   });
 });

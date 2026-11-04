@@ -7,17 +7,22 @@
  *
  * pi's `ctx.newSession` is a REPLACE operation that both creates the new
  * session and switches the TUI to it in one call, so the create and
- * deliver steps are coupled: the parent session id is stashed at create
- * time and consumed by the deliver step's `withSession` callback (all
- * post-replacement operations must run inside that callback — the old
- * command context is stale once the session is replaced).
+ * deliver steps are coupled: the session the create step returns carries
+ * the parent session id, and the deliver step's `withSession` callback
+ * runs all post-replacement operations (the old command context is stale
+ * once the session is replaced).
+ *
+ * The executor primary travels through an injected identity surface: the
+ * parentage session's binding is read and written by id, and the executor
+ * is published into the pending slot so the replacement session's
+ * bind-time handlers resolve it before its first turn.
  *
  * @module
  */
 
-import type { HandoffTarget } from "../../core/handoff.js";
-import { getPrimary, setPrimary } from "../../core/subagent/identity.js";
+import type { HandoffSession, HandoffTarget } from "../../core/handoff.js";
 import { log } from "../../utils/logger.js";
+import type { PiHandoffIdentity } from "./switch-host.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -60,72 +65,79 @@ export interface PiCommandCtx {
 /**
  * Build the pi handoff target from a command-context provider.
  *
- * `getCommandCtx` is a supplier (not a value) so the handoff target
- * always reads the latest pi command context from the entry point's
- * mutable holder — the command handler refreshes that holder with pi's
- * fresh command context immediately before the handoff target runs.
+ * `getCommandCtx` resolves the command context of ONE session by id: the
+ * parentage session the handoff replaces.  The entry point binds that
+ * context when the command is admitted, so the handoff addresses the session
+ * that asked for it instead of whichever session ran a command last.
  *
  * The executor agent is NOT captured here: it arrives with each handoff
  * and rides through the returned session, so one target serves every
  * `/go` call.
  *
- * @param opts - The context supplier.
+ * @param opts - The context supplier and the identity surface the executor
+ *   primary travels through.
  * @returns The pi handoff target.
  */
 export function createPiHandoffTarget(opts: {
-  getCommandCtx: () => PiCommandCtx | null | undefined;
+  getCommandCtx: (sessionID: string) => PiCommandCtx | null | undefined;
+  identity: PiHandoffIdentity;
 }): HandoffTarget {
-  const { getCommandCtx } = opts;
-  /** The parent session id stashed at create time for the deliver step. */
-  let parentage: string | undefined;
-  /** The primary that preceded the handoff, restored on a failed replacement. */
-  let previousPrimary: string | undefined;
+  const { getCommandCtx, identity } = opts;
+  /**
+   * Each created session's pre-handoff primary, keyed by that session, so
+   * two overlapping handoffs never restore each other's binding.
+   */
+  const previousPrimaries = new WeakMap<HandoffSession, string | undefined>();
 
   return {
     /**
      * Validate that the current command context can create a session.
      *
      * pi's `newSession` couples create and replace, so nothing is created
-     * here — the context is only validated and the parent session id is
-     * stashed for the deliver step.  The title is ignored (pi has no
-     * session-list title concept).  Returns an empty id: pi's TUI binds
+     * here — the context is only validated.  The title is ignored (pi has
+     * no session-list title concept).  Returns an empty id: pi's TUI binds
      * the replaced session itself, so deliver/focus never use it.  The
-     * executor is echoed into the returned session.
+     * executor and the parent session are echoed into the returned
+     * session, so the later steps read them from there instead of sharing
+     * one slot.
      *
      * @param ctx - The handoff context (parentage = the current session
      *   id, agent = the handoff's executor).
-     * @returns The session with an empty id (unused on pi) and that
-     *   executor.
+     * @returns The session with an empty id (unused on pi), that executor
+     *   and that parent session.
      * @throws Error when the command context is unavailable or lacks the
      *   `newSession` API (fail-closed).
      */
     create(ctx) {
-      const cmdCtx = getCommandCtx();
+      const cmdCtx = getCommandCtx(ctx.parentage);
       if (!cmdCtx?.newSession) {
         throw new Error(
           "pi session replacement API is not available. " +
             "Ensure the pi command context exposes newSession.",
         );
       }
-      parentage = ctx.parentage;
-      return Promise.resolve({ id: "", agent: ctx.agent });
+      return Promise.resolve({
+        id: "",
+        agent: ctx.agent,
+        parentage: ctx.parentage,
+      });
     },
 
     /**
      * Prepare the new session's agent identity.
      *
-     * Switches pi's self-maintained primary to the session's executor so
-     * the replaced session's `before_agent_start` resolves the executor's
-     * prompt.  The previous primary is stashed so `deliver` can restore
-     * it when the replacement is cancelled or throws before the session
-     * was created.
+     * Binds the parentage session to the session's executor so the
+     * replaced session's `before_agent_start` resolves the executor's
+     * prompt.  The previous binding is stashed so `deliver` can restore it
+     * when the replacement is cancelled or throws before the session was
+     * created.
      *
      * @param session - The created session whose `agent` becomes the
      *   primary.
      */
     installAgent(session) {
-      previousPrimary = getPrimary();
-      setPrimary(session.agent);
+      previousPrimaries.set(session, identity.getPrimary(session.parentage));
+      identity.setPrimary(session.parentage, session.agent);
     },
 
     /**
@@ -146,29 +158,36 @@ export function createPiHandoffTarget(opts: {
      * throw from `deliver`: the reference was already accepted, so the
      * handoff is not rolled back.
      *
+     * The executor is published into the pending identity slot before the
+     * replacement, so the new session's bind-time handlers resolve it.
+     *
      * The `{ cancelled: true }` result is the replacement outcome and
      * stays awaited — a cancelled replacement means the session was never
      * created.  When the replacement is cancelled or `newSession` throws
-     * before the session was created, the primary is restored to the
-     * value that preceded the handoff (the user stays in their planning
-     * session, so its identity must survive).
+     * before the session was created, the parentage session's primary is
+     * restored to the value that preceded the handoff and the pending
+     * target is dropped (the user stays in their planning session, so its
+     * identity must survive).
      *
-     * @param _session - Unused (pi binds the replaced session itself).
+     * @param session - The created session; its `parentage` is the
+     *   session the replacement addresses.
      * @param planReference - The plan-reference prompt text.
      * @throws Error when the session replacement is cancelled or the
      *   `newSession` API is unavailable.
      */
-    async deliver(_session, planReference) {
-      const cmdCtx = getCommandCtx();
+    async deliver(session, planReference) {
+      const { parentage } = session;
+      const cmdCtx = getCommandCtx(parentage);
       if (!cmdCtx?.newSession) {
         // Fail closed before any replacement: no session was created, so
         // restore the primary that preceded the handoff.
-        if (previousPrimary !== undefined) setPrimary(previousPrimary);
+        identity.setPrimary(parentage, previousPrimaries.get(session));
         throw new Error(
           "pi session replacement API is not available. " +
             "Ensure the pi command context exposes newSession.",
         );
       }
+      identity.stashPrimary(session.agent);
       let result: { cancelled: boolean };
       try {
         result = await cmdCtx.newSession({
@@ -193,14 +212,16 @@ export function createPiHandoffTarget(opts: {
         // `newSession` threw before the session was created: restore the
         // previous primary so the surviving session's identity is intact,
         // then propagate the failure (the plan file stays untouched).
-        if (previousPrimary !== undefined) setPrimary(previousPrimary);
+        identity.setPrimary(parentage, previousPrimaries.get(session));
+        identity.stashPrimary(undefined);
         throw err;
       }
       if (result?.cancelled === true) {
         // Cancelled: the session was never created, so restore the
         // previous primary before throwing (asymmetric with the catch
         // path above only in that `newSession` resolved).
-        if (previousPrimary !== undefined) setPrimary(previousPrimary);
+        identity.setPrimary(parentage, previousPrimaries.get(session));
+        identity.stashPrimary(undefined);
         throw new Error(
           "Plan handoff cancelled: the new session was not created.",
         );

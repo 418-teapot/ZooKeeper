@@ -7,8 +7,12 @@
  *  - `ensureSession` creates (or reuses) the session scope of the id a hook
  *    names.  OpenCode announces creations with `session.created`, but many
  *    hooks can be the FIRST thing the host says about a session (a message
- *    update, a tool call, a command), so they all ensure the scope before
- *    touching session state; a missing id creates nothing.
+ *    update, a tool call, a command), so all of them enter through this
+ *    scope; a missing id creates nothing.
+ *  - `runSession` admits one unit of call-scoped work under a `WorkPermit`
+ *    (a hook call, a tool call).  The permit's signal follows the session,
+ *    the extension, and the caller's own cancellation, and a stop waits for
+ *    admitted work before disposing the scope.
  *  - `handleEvent` maps the host's own session events (`session.created`
  *    is a real start notice, `session.deleted` stops exactly that session)
  *    through the shared mapping.  A deletion never creates a scope: the
@@ -23,13 +27,19 @@
  * Cleanup failures are never swallowed: the wiring logs each of them and
  * still returns the report.  A `session.deleted` naming a session this
  * instance never created a scope for still deletes that session's
- * process-level records (the context pipeline keeps one store per process —
- * see `services.ts`): the catalog applies the same declarations a scope's
- * disposer applies, without creating a scope.  A session a scope owned is
+ * instance records (the context runtime and the agent registry outlive a
+ * scope — see `services.ts`): the catalog applies the same declarations a
+ * scope's disposer applies, without creating a scope.  A session a scope
+ * owned is
  * deleted by that scope's own disposer, and its failures join the returned
  * report.  Ownership therefore covers both ways a scope is created: the
- * first-use `ensureSession` and the `session.created` notice, so a
- * created-then-deleted session never runs both deletions.
+ * first-use `ensureSession`, the `session.created` notice, and any admitted
+ * work, so a created-then-deleted session never runs both deletions.
+ *
+ * `withSessionWork` is the shape the plugin entry point registers: every
+ * session hook becomes call-scoped work, the `tool` registry becomes
+ * permit-scoped tools, and the `event` hook sends lifetime events through
+ * the lifecycle while admitting the rest of its per-session work.
  *
  * @module
  */
@@ -42,8 +52,9 @@ import {
   type LifecycleKernel,
   type ServiceMap,
   type SessionScope,
+  type WorkPermit,
 } from "../../core/lifecycle/index.js";
-import { sessionResources } from "../../core/session/resources.js";
+import type { SessionResourceCatalog } from "../../core/session/resources.js";
 import { log } from "../../utils/logger.js";
 import {
   createOpenCodeLifecycleMapping,
@@ -60,6 +71,35 @@ export interface OpenCodeLifecycleWiringOptions<
   readonly extensionServices: Extension;
   /** The session-scoped service declarations of this plugin instance. */
   readonly sessionServices: Session;
+  /**
+   * The session records of this plugin instance.
+   *
+   * A deletion naming a session this instance never created a scope for
+   * still applies these declarations, without creating a scope.
+   */
+  readonly sessionCatalog: SessionResourceCatalog;
+}
+
+/**
+ * One session's admission surface.
+ *
+ * A call is admitted only for a live session; the work runs under the
+ * issued permit, and its result reaches the caller unchanged.
+ */
+export interface SessionWorkRunner {
+  /**
+   * Admit one unit of work under a {@link WorkPermit}.
+   *
+   * @param sessionID - The session the call addresses.
+   * @param work - The admitted work, receiving its permit.
+   * @param signal - The caller's own cancellation, if any.
+   * @returns The work's value, or `undefined` when the call is refused.
+   */
+  runSession<T>(
+    sessionID: string | null | undefined,
+    work: (permit: WorkPermit) => T | Promise<T>,
+    signal?: AbortSignal,
+  ): Promise<T | undefined>;
 }
 
 /**
@@ -72,7 +112,7 @@ export interface OpenCodeLifecycleWiringOptions<
 export interface OpenCodeLifecycleWiring<
   Session extends
     readonly AnySessionServiceDefinition[] = readonly AnySessionServiceDefinition[],
-> {
+> extends SessionWorkRunner {
   /**
    * Ensure the session scope of `sessionID`.
    *
@@ -134,38 +174,202 @@ function sessionIDOfArgs(args: readonly unknown[]): string | null {
   return typeof id === "string" ? id : null;
 }
 
-/** Hooks that receive host configuration rather than a session. */
-const SESSIONLESS_HOOKS: ReadonlySet<string> = new Set(["event", "config"]);
+/** Hooks that address the host rather than a session. */
+const SESSIONLESS_HOOKS: ReadonlySet<string> = new Set([
+  "config",
+  "tool.definition",
+]);
 
 /**
- * Wrap the assembled hooks so each call ensures the session scope first.
+ * Hooks that still run when their call names no session.
  *
- * Every hook that names a session may be the host's first observation of
- * it, so the session's state must exist before the handler reads it.  The
- * hooks that name no session are left untouched: `event` ensures exactly
- * the paths it drives, and some of them (a deletion) must not create
- * anything, while `config` runs against the host configuration before any
- * session exists.  Non-function entries (the `tool` registry) pass through
- * as they are.
+ * The system transform addresses the host, not one session: only its
+ * session-scoped part depends on admission, and that part stays behind
+ * the permit.
+ */
+const SESSION_OPTIONAL_HOOKS: ReadonlySet<string> = new Set([
+  "experimental.chat.system.transform",
+]);
+
+/** Events whose body is one session's work. */
+const SESSION_EVENTS: ReadonlySet<string> = new Set([
+  "message.updated",
+  "session.error",
+  "session.idle",
+]);
+
+/**
+ * Read the session a per-session host event addresses.
+ *
+ * `message.updated` names it on the message info; `session.error` and
+ * `session.idle` name it on the event properties.  Anything else carries
+ * no session.
+ *
+ * @param event - The host event the `event` hook received.
+ * @returns The session id, or `null`.
+ */
+function eventSessionID(event: unknown): string | null {
+  const properties = (event as { properties?: unknown } | null | undefined)
+    ?.properties as
+    | { sessionID?: unknown; info?: { sessionID?: unknown } }
+    | undefined;
+  const candidate = properties?.info?.sessionID ?? properties?.sessionID;
+  return typeof candidate === "string" ? candidate : null;
+}
+
+/** The host-forwarded tool surface the wrapper extends. */
+interface ToolHostContext {
+  [field: string]: unknown;
+  signal?: AbortSignal;
+  permit?: WorkPermit;
+}
+
+/** One registered tool as the host calls it. */
+type ToolExecute = (
+  args: unknown,
+  toolCtx: unknown,
+  hostCtx?: ToolHostContext,
+) => Promise<string>;
+
+/** The tool-registry entry shape this module wraps. */
+interface ToolEntry {
+  [metadata: string]: unknown;
+  execute?: ToolExecute;
+}
+
+/**
+ * Wrap one tool so each call is admitted under its session's permit.
+ *
+ * The tool context's `abort` is the caller's cancellation.  The admitted
+ * permit's signal replaces it, so the tool stops when the session or the
+ * extension stops.  The third argument keeps the host's fields and adds
+ * the permit for tools that need it.  A refused call returns an empty
+ * string and never runs the tool.
+ *
+ * @param entry - The tool contribution as the registry holds it.
+ * @param run - Admits the call.
+ * @returns The wrapped entry, with every other field unchanged.
+ */
+function withSessionTool(entry: unknown, run: SessionWorkRunner): unknown {
+  const tool = entry as ToolEntry | null | undefined;
+  const execute = tool?.execute;
+  if (typeof execute !== "function") return entry;
+  return {
+    ...tool,
+    async execute(args: unknown, toolCtx: unknown, hostCtx?: ToolHostContext) {
+      const context = (toolCtx ?? {}) as {
+        sessionID?: unknown;
+        sessionId?: unknown;
+        abort?: unknown;
+      };
+      const sessionID =
+        typeof context.sessionID === "string"
+          ? context.sessionID
+          : typeof context.sessionId === "string"
+            ? context.sessionId
+            : null;
+      const caller =
+        context.abort instanceof AbortSignal ? context.abort : undefined;
+      const result = await run.runSession(
+        sessionID,
+        (permit) =>
+          execute(
+            args,
+            { ...context, abort: permit.signal },
+            { ...hostCtx, signal: permit.signal, permit },
+          ),
+        caller,
+      );
+      return result ?? "";
+    },
+  };
+}
+
+/**
+ * Wrap every tool of the registry, keeping each entry's metadata.
+ *
+ * @param tools - The `tool` value of the assembled hooks.
+ * @param run - Admits each call.
+ * @returns The wrapped registry, with the same keys.
+ */
+function withSessionTools(tools: unknown, run: SessionWorkRunner): unknown {
+  if (typeof tools !== "object" || tools === null) return tools;
+  const wrapped: Record<string, unknown> = {};
+  for (const [name, entry] of Object.entries(tools)) {
+    wrapped[name] = withSessionTool(entry, run);
+  }
+  return wrapped as Record<string, unknown>;
+}
+
+/**
+ * Wrap the `event` hook.
+ *
+ * A creation and a deletion drive the lifecycle and take no permit: the
+ * deletion of a stopped session still has to run.  A per-session event is
+ * admitted under the session it names and runs nothing when it names none.
+ * Every other event keeps the hook's own behavior.
+ *
+ * @param handler - The assembled event hook.
+ * @param run - Admits the per-session work.
+ * @returns The wrapped event hook.
+ */
+function withSessionEvents(
+  handler: HookHandler,
+  run: SessionWorkRunner,
+): HookHandler {
+  return async (...args: unknown[]) => {
+    const event = (args[0] as { event?: unknown } | undefined)?.event;
+    const type = (event as { type?: unknown } | null | undefined)?.type;
+    if (typeof type !== "string" || !SESSION_EVENTS.has(type)) {
+      return handler(...args);
+    }
+    return run.runSession(eventSessionID(event), () => handler(...args));
+  };
+}
+
+/**
+ * Wrap the assembled hooks so every call enters through its session.
+ *
+ * A session hook becomes one unit of admitted work: it runs only for a
+ * live session, receives the permit as its trailing argument, and a stop
+ * waits for it before disposing the scope.  The system transform keeps
+ * running when its call names no session, without a permit.  The `tool`
+ * registry is wrapped entry by entry, so a tool call is admitted the same
+ * way and receives the permit's signal as its abort.  `config` and
+ * `tool.definition` address the host, not a session, and stay unchanged.
  *
  * @param hooks - The assembled hook fragment.
- * @param ensure - Ensures the scope of the session a call addresses.
+ * @param run - The lifecycle admission surface.
  * @returns The wrapped fragment, with the same keys.
  */
-export function withEnsuredSessions<T extends Record<string, unknown>>(
+export function withSessionWork<T extends Record<string, unknown>>(
   hooks: T,
-  ensure: (sessionID: string | null | undefined) => Promise<unknown>,
+  run: SessionWorkRunner,
 ): T {
   const wrapped: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(hooks)) {
+    if (key === "tool") {
+      wrapped.tool = withSessionTools(value, run);
+      continue;
+    }
     if (typeof value !== "function" || SESSIONLESS_HOOKS.has(key)) {
       wrapped[key] = value;
       continue;
     }
     const handler = value as HookHandler;
+    if (key === "event") {
+      wrapped.event = withSessionEvents(handler, run);
+      continue;
+    }
     wrapped[key] = async (...args: unknown[]) => {
-      await ensure(sessionIDOfArgs(args));
-      return handler(...args);
+      const sessionID = sessionIDOfArgs(args);
+      if (
+        SESSION_OPTIONAL_HOOKS.has(key) &&
+        normalizeSessionID(sessionID) === null
+      ) {
+        return handler(...args, undefined);
+      }
+      return run.runSession(sessionID, (permit) => handler(...args, permit));
     };
   }
   return wrapped as T;
@@ -227,6 +431,25 @@ export function createOpenCodeLifecycleWiring<
     return scope as SessionScope<ServiceMap<Session>>;
   }
 
+  async function runSession<T>(
+    rawSessionID: string | null | undefined,
+    work: (permit: WorkPermit) => T | Promise<T>,
+    signal?: AbortSignal,
+  ): Promise<T | undefined> {
+    const sessionID = normalizeSessionID(rawSessionID);
+    if (sessionID === null) return undefined;
+    return kernel.runSession<T>(
+      sessionID,
+      (_scope, permit) => {
+        // Admission itself registers ownership, so a later deletion uses
+        // the scope's disposer instead of the unknown-session fallback.
+        owned.add(sessionID);
+        return work(permit);
+      },
+      signal,
+    );
+  }
+
   async function handleEvent(
     event: unknown,
   ): Promise<OpenCodeLifecycleOutcome> {
@@ -250,7 +473,7 @@ export function createOpenCodeLifecycleWiring<
     // disposer; one it never created still gets the deletion, so nothing is
     // left behind and its failures reach the caller as well.
     if (sessionID !== null && !owned.delete(sessionID)) {
-      const fallback = await sessionResources.delete(sessionID);
+      const fallback = await options.sessionCatalog.delete(sessionID);
       report = { errors: [...fallback.errors, ...report.errors] };
     }
     logCleanupFailures(report);
@@ -264,5 +487,5 @@ export function createOpenCodeLifecycleWiring<
     return report;
   }
 
-  return { ensureSession, handleEvent, dispose };
+  return { ensureSession, runSession, handleEvent, dispose };
 }

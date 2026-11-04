@@ -14,7 +14,8 @@
  * untouched).
  */
 import assert from "node:assert/strict";
-import { afterEach, describe, it } from "node:test";
+import { rmSync } from "node:fs";
+import { after, afterEach, beforeEach, describe, it } from "node:test";
 import { registerProfileToolsInConfig } from "../compose-opencode.js";
 import { parseContextConfig } from "../core/config-parse.js";
 import type {
@@ -23,20 +24,16 @@ import type {
 } from "../core/config-types.js";
 import type { HostMessage, Projection } from "../core/context/lens.js";
 import {
-  _resetForTesting as _resetModelLimitsForTesting,
-  setModelLimit,
-} from "../core/context/model-limits.js";
-import { publishRoundView } from "../core/context/round-view.js";
-import {
-  _resetContextStateManagerForTesting,
-  consumePendingViewChange,
-  getContextStateManager,
+  type ContextRuntime,
+  createContextRuntime,
+  type RuntimeFlaggedState,
 } from "../core/context/runtime.js";
 import {
   allocateBlockId,
   type Block,
   RECALL_MAX_CHARS,
 } from "../core/context/state.js";
+import { createStateStore } from "../core/context/store.js";
 import type { ToolHost } from "../core/ports/tool-host.js";
 import { composeForTest } from "../testkits/compose.js";
 import {
@@ -46,6 +43,8 @@ import {
   polyHostConfig,
 } from "../testkits/config.js";
 import { projectMessages } from "../testkits/context.js";
+import { permitFor } from "../testkits/context-runtime.js";
+import { makeTmpDir } from "../testkits/tmp.js";
 import { _resetForTesting } from "../utils/logger.js";
 import { createDecompressTool, unit as decompressUnit } from "./decompress.js";
 
@@ -55,13 +54,34 @@ import { createDecompressTool, unit as decompressUnit } from "./decompress.js";
 
 const TEST_SESSION_ID = "sess-decompress-tool";
 
+/** Sandbox store directory of this suite. */
+const storeDir = makeTmpDir("zoo-decompress-tool");
+const store = createStateStore(storeDir);
+/** The plugin instance under test. */
+let runtime: ContextRuntime = createContextRuntime(store);
+/** The permit a tool call is admitted under. */
+let permit = permitFor(TEST_SESSION_ID);
+
+beforeEach(() => {
+  runtime = createContextRuntime(store);
+  permit = permitFor(TEST_SESSION_ID);
+});
+
 afterEach(() => {
-  const store = getContextStateManager().store;
   store.delete(TEST_SESSION_ID);
-  _resetContextStateManagerForTesting();
-  _resetModelLimitsForTesting();
   _resetForTesting();
 });
+
+after(() => {
+  rmSync(storeDir, { recursive: true, force: true });
+});
+
+/** The committed state of the tool's session. */
+function stateOf(): RuntimeFlaggedState {
+  const state = runtime.read(permitFor(TEST_SESSION_ID), (draft) => draft);
+  if (state === undefined) throw new Error("no committed state");
+  return state;
+}
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -158,6 +178,13 @@ function mockClient(messages: any[]): {
   return { client, promptCalls };
 }
 
+/** The host execution surface a tool call receives. */
+const hostContext = {
+  get permit() {
+    return permit;
+  },
+};
+
 /** Hand-written minimal OpenCode ToolContext shape. */
 const mockToolContext = {
   sessionID: TEST_SESSION_ID,
@@ -179,7 +206,7 @@ const ENABLED_CONFIG: ContextPruningConfig = {
 };
 
 /**
- * Seed a block in the shared manager's session state (b1 by default).
+ * Seed a block in the instance's session state (b1 by default).
  *
  * The default span [0, 3) covers the 3-message transcript, with
  * compressedTokens 20000 / summaryTokens 500 (net delta 19500) — the
@@ -189,8 +216,7 @@ const ENABLED_CONFIG: ContextPruningConfig = {
  * @returns The seeded block id.
  */
 function seedBlock(overrides: Partial<Block> = {}): number {
-  const manager = getContextStateManager();
-  const state = manager.get(TEST_SESSION_ID);
+  const state = stateOf();
   const id = allocateBlockId(state);
   state.blocks.set(id, {
     start: 0,
@@ -236,12 +262,44 @@ function sourceHost(options: {
   return host;
 }
 
+describe("decompress tool execute — permit lapses after the commit", () => {
+  it("consumes the block but flags no view change", async () => {
+    const { host } = fakeHost(makeMessages());
+    seedActiveBlock();
+    const controller = new AbortController();
+    // The session stops right after the commit succeeded.
+    const stopping: ContextRuntime = {
+      ...runtime,
+      commit: async (p, change) => {
+        const value = await runtime.commit(p, change);
+        controller.abort();
+        return value;
+      },
+    };
+    const tool = createDecompressTool(host, PARSED_CONFIG, stopping);
+
+    const result = await tool.execute({ blockId: "b1" }, mockToolContext, {
+      permit: permitFor(TEST_SESSION_ID, controller.signal),
+    });
+
+    // The committed restore stands.
+    assert.equal(stateOf().blocks.get(1)?.status, "consumed");
+    assert.ok(result.includes("3 条原始消息"));
+    // The lapsed call leaves no runtime-only record behind.
+    assert.equal(
+      runtime.consumePendingViewChange(permitFor(TEST_SESSION_ID)),
+      false,
+      "the lapsed call flags no view change",
+    );
+  });
+});
+
 describe("decompress tool execute — history source", () => {
   it("restores against the published round view without reading the host", async () => {
     // The seeded block spans [0, 3): the round view says 3 messages, the
     // host read would answer with an empty transcript (0 messages).
     seedActiveBlock();
-    publishRoundView(TEST_SESSION_ID, {
+    runtime.publishRoundView(permit, {
       projection: projectMessages(makeMessages()),
       numbered: [],
     });
@@ -250,8 +308,13 @@ describe("decompress tool execute — history source", () => {
     const tool = createDecompressTool(
       sourceHost({ history: [], calls }),
       PARSED_CONFIG,
+      runtime,
     );
-    const result = await tool.execute({ blockId: "b1" }, mockToolContext);
+    const result = await tool.execute(
+      { blockId: "b1" },
+      mockToolContext,
+      hostContext,
+    );
 
     assert.equal(
       calls.length,
@@ -266,14 +329,14 @@ describe("decompress tool execute — history source", () => {
 
   it("throws guidance when neither a view nor a host fallback exists", async () => {
     seedActiveBlock();
-    const tool = createDecompressTool(sourceHost({}), PARSED_CONFIG);
+    const tool = createDecompressTool(sourceHost({}), PARSED_CONFIG, runtime);
 
     await assert.rejects(
-      () => tool.execute({ blockId: "b1" }, mockToolContext),
+      () => tool.execute({ blockId: "b1" }, mockToolContext, hostContext),
       /无法解压：尚未取得当轮上下文视图/,
     );
     assert.equal(
-      getContextStateManager().get(TEST_SESSION_ID).blocks.get(1)?.status,
+      stateOf().blocks.get(1)?.status,
       "active",
       "state untouched — the block stays folded",
     );
@@ -290,19 +353,23 @@ describe("decompress tool execute — restore happy path", () => {
     const { host, notifyCalls } = fakeHost(messages);
     seedActiveBlock();
 
-    const tool = createDecompressTool(host, PARSED_CONFIG);
+    const tool = createDecompressTool(host, PARSED_CONFIG, runtime);
 
-    const result = await tool.execute({ blockId: "b1" }, mockToolContext);
+    const result = await tool.execute(
+      { blockId: "b1" },
+      mockToolContext,
+      hostContext,
+    );
 
-    // (1) Block moved to consumed in the shared session state.
-    const state = getContextStateManager().get(TEST_SESSION_ID);
+    // (1) Block moved to consumed in the instance's session state.
+    const state = stateOf();
     const block = state.blocks.get(1);
     assert.ok(block !== undefined);
     assert.equal(block.status, "consumed");
-    assert.equal(consumePendingViewChange(TEST_SESSION_ID), true);
+    assert.equal(runtime.consumePendingViewChange(permit), true);
 
-    // (2) State persisted to disk via the shared manager.
-    const persisted = getContextStateManager().store.load(TEST_SESSION_ID);
+    // (2) State persisted to disk by the commit.
+    const persisted = store.load(TEST_SESSION_ID);
     assert.equal(persisted.blocks.size, 1);
     assert.equal(persisted.blocks.get(1)?.status, "consumed");
 
@@ -353,8 +420,12 @@ describe("decompress tool execute — recall path", () => {
       title: "旧块主题",
     });
 
-    const tool = createDecompressTool(host, PARSED_CONFIG);
-    const result = await tool.execute({ blockId: "b1" }, mockToolContext);
+    const tool = createDecompressTool(host, PARSED_CONFIG, runtime);
+    const result = await tool.execute(
+      { blockId: "b1" },
+      mockToolContext,
+      hostContext,
+    );
 
     // The body is always framed by a note naming the block id and saying
     // out loud that no original text is restored — a bare body would read
@@ -368,12 +439,12 @@ describe("decompress tool execute — recall path", () => {
     );
 
     // Zero state change.
-    const after = getContextStateManager().get(TEST_SESSION_ID);
+    const after = stateOf();
     assert.equal(after.blocks.get(1)?.status, "consumed");
-    assert.equal(consumePendingViewChange(TEST_SESSION_ID), false);
+    assert.equal(runtime.consumePendingViewChange(permit), false);
 
     // No persistence, no notification.
-    const persisted = getContextStateManager().store.load(TEST_SESSION_ID);
+    const persisted = store.load(TEST_SESSION_ID);
     assert.equal(persisted.blocks.size, 0);
     assert.equal(notifyCalls.length, 0);
   });
@@ -387,8 +458,12 @@ describe("decompress tool execute — recall path", () => {
       title: "超长块主题",
     });
 
-    const tool = createDecompressTool(host, PARSED_CONFIG);
-    const result = await tool.execute({ blockId: "b1" }, mockToolContext);
+    const tool = createDecompressTool(host, PARSED_CONFIG, runtime);
+    const result = await tool.execute(
+      { blockId: "b1" },
+      mockToolContext,
+      hostContext,
+    );
 
     // The recall note is one line; the truncated body follows it.
     assert.ok(result.startsWith("【仅返回摘要，未恢复原文】"));
@@ -414,11 +489,11 @@ describe("decompress tool execute — gate rejection", () => {
     const { host, notifyCalls } = fakeHost([]);
     seedActiveBlock();
     // Tiny window: after = 0 + 19500 > 1000 × 90% = 900 → rejected.
-    setModelLimit(TEST_SESSION_ID, 1000, "test-model");
+    runtime.setModelLimit(permit, 1000, "test-model");
 
-    const tool = createDecompressTool(host, PARSED_CONFIG);
+    const tool = createDecompressTool(host, PARSED_CONFIG, runtime);
     await assert.rejects(
-      () => tool.execute({ blockId: "b1" }, mockToolContext),
+      () => tool.execute({ blockId: "b1" }, mockToolContext, hostContext),
       (err: unknown) =>
         err instanceof Error &&
         /超过解压阈值/.test(err.message) &&
@@ -426,13 +501,10 @@ describe("decompress tool execute — gate rejection", () => {
     );
 
     // State untouched: block still active, nothing saved, no notification.
-    const state = getContextStateManager().get(TEST_SESSION_ID);
+    const state = stateOf();
     assert.equal(state.blocks.get(1)?.status, "active");
-    assert.equal(consumePendingViewChange(TEST_SESSION_ID), false);
-    assert.equal(
-      getContextStateManager().store.load(TEST_SESSION_ID).blocks.size,
-      0,
-    );
+    assert.equal(runtime.consumePendingViewChange(permit), false);
+    assert.equal(store.load(TEST_SESSION_ID).blocks.size, 0);
     assert.equal(notifyCalls.length, 0);
   });
 
@@ -442,10 +514,14 @@ describe("decompress tool execute — gate rejection", () => {
     seedActiveBlock();
     // No setModelLimit call → getModelLimit returns undefined → gate skipped.
 
-    const tool = createDecompressTool(host, PARSED_CONFIG);
-    const result = await tool.execute({ blockId: "b1" }, mockToolContext);
+    const tool = createDecompressTool(host, PARSED_CONFIG, runtime);
+    const result = await tool.execute(
+      { blockId: "b1" },
+      mockToolContext,
+      hostContext,
+    );
 
-    const state = getContextStateManager().get(TEST_SESSION_ID);
+    const state = stateOf();
     assert.equal(state.blocks.get(1)?.status, "consumed");
     assert.equal(typeof result, "string");
     assert.ok(result.includes("下一轮上下文生效"));
@@ -463,9 +539,9 @@ describe("decompress tool execute — target resolution errors", () => {
     const { host } = fakeHost(messages);
     seedActiveBlock();
 
-    const tool = createDecompressTool(host, PARSED_CONFIG);
+    const tool = createDecompressTool(host, PARSED_CONFIG, runtime);
     await assert.rejects(
-      () => tool.execute({ blockId: "b9" }, mockToolContext),
+      () => tool.execute({ blockId: "b9" }, mockToolContext, hostContext),
       (err: unknown) =>
         err instanceof Error &&
         /b9 不存在/.test(err.message) &&
@@ -478,9 +554,9 @@ describe("decompress tool execute — target resolution errors", () => {
   it("rejects a malformed block id with format guidance", async () => {
     const { host } = fakeHost([]);
 
-    const tool = createDecompressTool(host, PARSED_CONFIG);
+    const tool = createDecompressTool(host, PARSED_CONFIG, runtime);
     await assert.rejects(
-      () => tool.execute({ blockId: "9" }, mockToolContext),
+      () => tool.execute({ blockId: "9" }, mockToolContext, hostContext),
       (err: unknown) =>
         err instanceof Error &&
         /格式非法/.test(err.message) &&
@@ -492,9 +568,9 @@ describe("decompress tool execute — target resolution errors", () => {
   it("reports the empty-session case when no block exists at all", async () => {
     const { host } = fakeHost([]);
 
-    const tool = createDecompressTool(host, PARSED_CONFIG);
+    const tool = createDecompressTool(host, PARSED_CONFIG, runtime);
     await assert.rejects(
-      () => tool.execute({ blockId: "b1" }, mockToolContext),
+      () => tool.execute({ blockId: "b1" }, mockToolContext, hostContext),
       (err: unknown) =>
         err instanceof Error &&
         /b1 不存在/.test(err.message) &&
@@ -510,10 +586,14 @@ describe("decompress tool execute — target resolution errors", () => {
 describe("decompress tool execute — config guidance error", () => {
   it("throws a loud config-guidance error when the decompress section is absent", async () => {
     const { host } = fakeHost([]);
-    const tool = createDecompressTool(host, { dedup: {}, purgeErrors: {} });
+    const tool = createDecompressTool(
+      host,
+      { dedup: {}, purgeErrors: {} },
+      runtime,
+    );
 
     await assert.rejects(
-      () => tool.execute({ blockId: "b1" }, mockToolContext),
+      () => tool.execute({ blockId: "b1" }, mockToolContext, hostContext),
       (err: unknown) =>
         err instanceof Error &&
         err.message.includes("[zoo.context.decompress]") &&
@@ -521,22 +601,22 @@ describe("decompress tool execute — config guidance error", () => {
     );
 
     // No state was touched.
-    const state = getContextStateManager().get(TEST_SESSION_ID);
+    const state = stateOf();
     assert.equal(state.blocks.size, 0);
   });
 
   it("rejects a non-string blockId with a loud Chinese argument error", async () => {
     const { host } = fakeHost([]);
-    const tool = createDecompressTool(host, ENABLED_CONFIG);
+    const tool = createDecompressTool(host, ENABLED_CONFIG, runtime);
 
     await assert.rejects(
-      () => tool.execute({ blockId: 3 }, mockToolContext),
+      () => tool.execute({ blockId: 3 }, mockToolContext, hostContext),
       (err: unknown) =>
         err instanceof Error &&
         /blockId/.test(err.message) &&
         /字符串/.test(err.message),
     );
-    const state = getContextStateManager().get(TEST_SESSION_ID);
+    const state = stateOf();
     assert.equal(state.blocks.size, 0);
   });
 });
@@ -711,6 +791,7 @@ describe("decompress tool unsupported host", () => {
       contextConfig: ENABLED_CONFIG,
       directory: "",
       resolveAgent: () => undefined,
+      contextRuntime: runtime,
       toolHost: undefined,
     });
 

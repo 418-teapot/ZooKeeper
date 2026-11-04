@@ -14,19 +14,23 @@
  */
 import assert from "node:assert/strict";
 import { rmSync } from "node:fs";
-import { afterEach, describe, it } from "node:test";
+import { afterEach, beforeEach, describe, it } from "node:test";
 import {
-  clearModelLimit,
-  getModelLimit,
-  setModelLimit,
-} from "../../core/context/model-limits.js";
-import {
-  _resetContextStateManagerForTesting,
-  getContextStateManager,
+  type ContextRuntime,
+  createContextRuntime,
 } from "../../core/context/runtime.js";
 import { createStateStore } from "../../core/context/store.js";
 import { createLifecycleKernel } from "../../core/lifecycle/index.js";
-import { sessionAgentRegistry } from "../../core/session/agent.js";
+import {
+  sessionAgentRegistry,
+  sessionAgentResource,
+} from "../../core/session/agent.js";
+import {
+  contextSessionResources,
+  createSessionResourceCatalog,
+  type SessionResourceCatalog,
+} from "../../core/session/resources.js";
+import { permitFor } from "../../testkits/context-runtime.js";
 import { makeTmpDir } from "../../testkits/tmp.js";
 import { createOpenCodeHostServices, sessionScopeState } from "./services.js";
 
@@ -34,20 +38,32 @@ import { createOpenCodeHostServices, sessionScopeState } from "./services.js";
 const tmpDirs: string[] = [];
 
 afterEach(() => {
-  _resetContextStateManagerForTesting();
-  // The registries are process-wide singletons; a stale binding would make
-  // the release assertions pass for the wrong reason.
+  // The agent registry is a process-wide singleton; a stale binding would
+  // make the release assertions pass for the wrong reason.
   for (const sessionID of ["s1", "s2"]) {
     sessionAgentRegistry.delete(sessionID);
-    clearModelLimit(sessionID);
   }
   for (const dir of tmpDirs.splice(0)) {
     rmSync(dir, { recursive: true, force: true });
   }
 });
 
+/** The plugin instance of the current test. */
+let runtime: ContextRuntime;
+let sessionCatalog: SessionResourceCatalog;
+
+beforeEach(() => {
+  const dir = makeTmpDir("zoo-opencode-services");
+  tmpDirs.push(dir);
+  runtime = createContextRuntime(createStateStore(dir));
+  sessionCatalog = createSessionResourceCatalog([
+    ...contextSessionResources(runtime),
+    sessionAgentResource,
+  ]);
+});
+
 /**
- * Bind the shared manager to a scratch store and stage one cached block.
+ * Create an instance runtime over a scratch store and stage one block.
  *
  * @param sessionID - The session to stage.
  * @returns The sandbox store directory.
@@ -55,16 +71,22 @@ afterEach(() => {
 function sandboxWithCachedBlock(sessionID: string): string {
   const dir = makeTmpDir("zoo-opencode-services");
   tmpDirs.push(dir);
-  _resetContextStateManagerForTesting(createStateStore(dir));
-  getContextStateManager().get(sessionID).blocks.set(1, {
-    start: 0,
-    end: 3,
-    summary: "kept",
-    spanHash: "ffff0000",
-    status: "active",
-    compressedTokens: 100,
-    summaryTokens: 20,
-    createdAt: 1000,
+  runtime = createContextRuntime(createStateStore(dir));
+  sessionCatalog = createSessionResourceCatalog([
+    ...contextSessionResources(runtime),
+    sessionAgentResource,
+  ]);
+  void runtime.commit(permitFor(sessionID), (state) => {
+    state.blocks.set(1, {
+      start: 0,
+      end: 3,
+      summary: "kept",
+      spanHash: "ffff0000",
+      status: "active",
+      compressedTokens: 100,
+      summaryTokens: 20,
+      createdAt: 1000,
+    });
   });
   return dir;
 }
@@ -78,7 +100,10 @@ function sandboxWithCachedBlock(sessionID: string): string {
 function buildKernel(
   onSettled: Parameters<typeof createOpenCodeHostServices>[0]["onSettled"] = [],
 ) {
-  const declarations = createOpenCodeHostServices({ onSettled });
+  const declarations = createOpenCodeHostServices({
+    onSettled,
+    sessionCatalog,
+  });
   const kernel = createLifecycleKernel(declarations);
   return { kernel, declarations };
 }
@@ -171,7 +196,7 @@ describe("OpenCode session runtime — release mode", () => {
     const { kernel } = buildKernel();
     await kernel.ensureSession("s1");
     sessionAgentRegistry.bind("s1", "dolphin");
-    setModelLimit("s1", 1000, "model");
+    runtime.setModelLimit(permitFor("s1"), 1000, "model");
 
     await kernel.stopSession("s1", "dispose", "release-runtime");
 
@@ -185,7 +210,11 @@ describe("OpenCode session runtime — release mode", () => {
       "dolphin",
       "the agent binding outlives the plugin instance",
     );
-    assert.equal(getModelLimit("s1"), undefined, "runtime state is released");
+    assert.equal(
+      runtime.modelLimit("s1"),
+      undefined,
+      "runtime state is released",
+    );
   });
 
   it("decides deletion from the mode, not the reason", async () => {
@@ -306,15 +335,15 @@ describe("OpenCode session runtime — release", () => {
     await kernel.ensureSession("s2");
     for (const sessionID of ["s1", "s2"]) {
       sessionAgentRegistry.bind(sessionID, "dolphin");
-      setModelLimit(sessionID, 1000, "model");
+      runtime.setModelLimit(permitFor(sessionID), 1000, "model");
     }
 
     await kernel.stopSession("s1", "session.deleted", "delete-session");
 
     assert.equal(sessionAgentRegistry.resolve("s1"), undefined);
-    assert.equal(getModelLimit("s1"), undefined);
+    assert.equal(runtime.modelLimit("s1"), undefined);
     assert.equal(sessionAgentRegistry.resolve("s2"), "dolphin");
-    assert.ok(getModelLimit("s2"));
+    assert.ok(runtime.modelLimit("s2"));
   });
 });
 

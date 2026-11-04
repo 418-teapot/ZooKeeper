@@ -50,6 +50,7 @@ export const unit = defineCommand({
       commands: primaries.map((name) => ({
         name,
         description: `切换主 agent 到 ${name}`,
+        replacesSession: true,
         handle: async (input) => {
           try {
             await applySwitch(

@@ -1,10 +1,10 @@
 /**
  * Host-agnostic lifecycle orchestration for one subagent delegation.
  *
- * Drives a `SubagentDriver` through its lifecycle: binding the subagent
- * identity, wiring termination (parent abort), and mapping every possible
- * outcome onto the `SubagentResult` union so a run always ends in a returned
- * result and never in an unhandled rejection.
+ * Drives a `SubagentDriver` through its lifecycle: wiring termination
+ * (parent abort) and mapping every possible outcome onto the
+ * `SubagentResult` union so a run always ends in a returned result and
+ * never in an unhandled rejection.
  *
  * Runs are intentionally unconstrained: no concurrency cap and no wall-clock
  * timeout.  A run ends only when the driver resolves or the parent aborts.
@@ -34,7 +34,6 @@ import type {
   SubagentRequest,
   SubagentResult,
 } from "./driver.js";
-import { runWithIdentity } from "./identity.js";
 import type { RunLog } from "./run-log.js";
 
 /**
@@ -54,10 +53,11 @@ export interface SubagentRunContext {
 /**
  * Run one subagent delegation to completion.
  *
- * Binds the subagent identity via `runWithIdentity` and forwards the parent
- * abort signal to the driver, mapping every possible outcome onto the
- * `SubagentResult` union.  The driver's result passes through unchanged; a
- * driver throw collapses into an `error` result.
+ * Forwards the parent abort signal to the driver and maps every possible
+ * outcome onto the `SubagentResult` union.  The driver's result passes
+ * through unchanged; a driver throw collapses into an `error` result.  The
+ * request's agent is the sub-session's identity: the driver hands it to the
+ * extension it builds for that session.
  *
  * @param driver - The host driver that executes the subagent.
  * @param request - The subagent request to run.
@@ -70,15 +70,11 @@ export async function runSubagent(
   ctx: SubagentRunContext,
 ): Promise<SubagentResult> {
   try {
-    return await runWithIdentity(
-      { kind: "subagent", name: request.agent },
-      () =>
-        driver.run(request, {
-          signal: ctx.signal,
-          onProgress: ctx.onProgress,
-          log: ctx.log,
-        }),
-    );
+    return await driver.run(request, {
+      signal: ctx.signal,
+      onProgress: ctx.onProgress,
+      log: ctx.log,
+    });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     return { kind: "error", text: "", errorMessage: message };

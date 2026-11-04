@@ -33,4 +33,5 @@ export {
   type SessionServiceDefinition,
   type SessionStartContext,
   type SessionStopMode,
+  type WorkPermit,
 } from "./types.js";

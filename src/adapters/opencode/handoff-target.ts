@@ -89,7 +89,8 @@ export function createOpenCodeHandoffTarget(
      * @param ctx - The handoff context: the parent session id, the
      *   session title derived from the resolved plan, and the executor
      *   agent identity.
-     * @returns The created session carrying that executor.
+     * @returns The created session carrying that executor and the
+     *   parent session the handoff replaces.
      * @throws Error when the session-create API is unavailable (fail
      *   closed, the missing-client behaviour).
      */
@@ -114,7 +115,11 @@ export function createOpenCodeHandoffTarget(
         });
         throw new Error(`Failed to create execution session: ${errMsg}`);
       }
-      return { id: createResult.data.id, agent: ctx.agent };
+      return {
+        id: createResult.data.id,
+        agent: ctx.agent,
+        parentage: ctx.parentage,
+      };
     },
 
     /**

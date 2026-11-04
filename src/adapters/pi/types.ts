@@ -332,12 +332,12 @@ export interface PiEventHandlers {
   beforeAgentStart(
     evt: { systemPrompt: string; messageType: "user" | "custom" },
     ctx?: unknown,
-  ): Promise<{ systemPrompt: string }>;
+  ): Promise<{ systemPrompt: string } | undefined>;
   /** `resources_discover`: contribute the profile's skill directories. */
   resourcesDiscover(
     evt?: unknown,
     ctx?: unknown,
-  ): Promise<{ skillPaths: string[] }>;
+  ): Promise<{ skillPaths: string[] } | undefined>;
   /** `tool_result`: run the composed after-exec contributions. */
   toolResult(
     event: PiToolResultEvent,
@@ -352,7 +352,7 @@ export interface PiEventHandlers {
   messageEnd(
     event: PiMessageEndEvent,
     ctx: PiMessageEndContext,
-  ): PiMessageEndResult | undefined;
+  ): Promise<PiMessageEndResult | undefined>;
   /**
    * `tool_call`: enforce the composed delegation gate on `subagent` calls.
    * A refusal blocks the call and surfaces the reason as an error tool
@@ -389,16 +389,16 @@ export interface PiEventHandlers {
    * `agent_end`: record a finished run's terminal messages for the
    * boundary judge (the boundary event carries no transcript).
    */
-  agentEnd(evt?: unknown, ctx?: unknown): void;
+  agentEnd(evt?: unknown, ctx?: unknown): Promise<void>;
   /**
    * `agent_before_settle`: judge a settled run, returning a
    * `zoo-loop-wake` entry when the composed strategy wakes.
    */
   beforeSettle(evt?: unknown, ctx?: unknown): Promise<PiBoundaryResult>;
   /** `agent_settled`: flush the log once a run has fully settled. */
-  agentSettled(evt?: unknown, ctx?: unknown): void;
+  agentSettled(evt?: unknown, ctx?: unknown): Promise<void>;
   /** `ui_prompt_start`: track a blocking user-facing UI prompt span. */
-  uiPromptStart(evt?: unknown, ctx?: unknown): void;
+  uiPromptStart(evt?: unknown, ctx?: unknown): Promise<void>;
   /** `ui_prompt_end`: close a blocking user-facing UI prompt span. */
-  uiPromptEnd(evt?: unknown, ctx?: unknown): void;
+  uiPromptEnd(evt?: unknown, ctx?: unknown): Promise<void>;
 }

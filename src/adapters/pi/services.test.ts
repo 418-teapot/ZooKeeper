@@ -2,7 +2,7 @@
  * Tests for the pi host services (`services.ts`).
  *
  * These are the state owners the entry point used to keep as unnamed
- * locals: the live context, the tool baselines, the published profile
+ * locals: the session contexts, the tool baselines, the published profile
  * catalog, the todo catalog, the fleet surface and the switch surface.  The
  * tests drive them through the real lifecycle kernel, so they read what an
  * event or a consumer observes — what a baseline capture costs, what a
@@ -11,14 +11,19 @@
  */
 import assert from "node:assert/strict";
 import { afterEach, describe, it } from "node:test";
+import { createContextRuntime } from "../../core/context/runtime.js";
 import {
   createLifecycleKernel,
   defineExtensionService,
 } from "../../core/lifecycle/index.js";
 import {
-  _resetForTesting as resetIdentityForTesting,
-  setPrimary,
-} from "../../core/subagent/identity.js";
+  sessionAgentRegistry,
+  sessionAgentResource,
+} from "../../core/session/agent.js";
+import {
+  contextSessionResources,
+  createSessionResourceCatalog,
+} from "../../core/session/resources.js";
 import type { SubagentRun } from "../../core/subagent/registry.js";
 import type { TodoPhase } from "../../core/todo/types.js";
 import { renderZooWidget } from "../../testkits/pi-wiring.js";
@@ -34,7 +39,7 @@ import type { ExtensionAPI } from "./types.js";
 import { buildPiContributions } from "./wire.js";
 
 afterEach(() => {
-  resetIdentityForTesting();
+  sessionAgentRegistry.clear();
   _resetForTesting();
 });
 
@@ -55,6 +60,14 @@ function fakeApi(tools: string[]) {
   } as unknown as ExtensionAPI;
   return { state, api };
 }
+
+/** The context records of the instance under test. */
+const CONTEXT = createContextRuntime();
+/** The session records of the instance under test. */
+const SESSION_CATALOG = createSessionResourceCatalog([
+  ...contextSessionResources(CONTEXT),
+  sessionAgentResource,
+]);
 
 /** The pure host helpers the services take from the entry point. */
 const HOST_HELPERS = {
@@ -216,6 +229,8 @@ describe("pi host services — declarations", () => {
       piApi,
       appendEntry: undefined,
       composeProfile: () => buildPiContributions({}),
+      contextRuntime: CONTEXT,
+      sessionCatalog: SESSION_CATALOG,
       ...HOST_HELPERS,
     };
   }
@@ -233,7 +248,10 @@ describe("pi host services — declarations", () => {
 
     // The pre-compose surfaces exist now; no session was created to get
     // here, so the composition can be built without inventing a session.
-    assert.equal(extension.services.liveContext.current(), undefined);
+    assert.equal(
+      extension.services.sessionContexts.forSession("s1"),
+      undefined,
+    );
     assert.equal(typeof extension.services.adapter.history, "function");
     assert.equal(
       typeof extension.services.toolHost.resolveSessionId,
@@ -278,7 +296,7 @@ describe("pi host services — declarations", () => {
     });
     const { services } = await wiring.activateExtension();
     let reads = 0;
-    services.liveContext.publish({
+    services.sessionContexts.bind("s1", {
       sessionManager: {
         getSessionId: () => "s1",
         getBranch: () => {
@@ -316,7 +334,7 @@ describe("pi host services — declarations", () => {
     // one session can be proven not to touch another's history.
     const scans: string[] = [];
     const publish = (sessionID: string, task: string): void => {
-      services.liveContext.publish({
+      services.sessionContexts.bind(sessionID, {
         sessionManager: {
           getSessionId: () => sessionID,
           getBranch: () => {
@@ -350,7 +368,7 @@ describe("pi host services — declarations", () => {
     assert.deepEqual(scans, ["s1", "s2"], "each read scans its own transcript");
   });
 
-  it("fails closed for a session that published no context", async () => {
+  it("fails closed for a session that bound no context", async () => {
     const { api } = fakeApi(["edit"]);
     const declarations = createPiHostServices(buildHost(api));
     const wiring = createPiLifecycleWiring({
@@ -360,7 +378,7 @@ describe("pi host services — declarations", () => {
     });
     const { services } = await wiring.activateExtension();
     const scans: string[] = [];
-    services.liveContext.publish({
+    services.sessionContexts.bind("s1", {
       sessionManager: {
         getSessionId: () => "s1",
         getBranch: () => {
@@ -371,13 +389,13 @@ describe("pi host services — declarations", () => {
     });
 
     // A session this host never observed has no transcript to read: it must
-    // not borrow the live session's.
+    // not borrow another session's.
     assert.deepEqual(await services.todo.get("s-unknown"), []);
     assert.deepEqual(await services.todo.get("s-unknown"), []);
     assert.deepEqual(scans, [], "no other session's transcript is scanned");
   });
 
-  it("serves tool-host toasts through the live context", async () => {
+  it("serves tool-host toasts through the session contexts", async () => {
     const { api } = fakeApi(["edit"]);
     const declarations = createPiHostServices(buildHost(api));
     const wiring = createPiLifecycleWiring({
@@ -386,7 +404,7 @@ describe("pi host services — declarations", () => {
     });
     const { services } = await wiring.activateExtension();
     const toasts: string[] = [];
-    services.liveContext.publish({
+    services.sessionContexts.bind("s1", {
       ui: { notify: (message: string) => toasts.push(message) },
     });
 
@@ -423,7 +441,7 @@ describe("pi host services — declarations", () => {
       getSessionID: (ctx) => (ctx as { id?: string } | undefined)?.id,
     });
     const { services } = await wiring.activateExtension();
-    services.liveContext.publish({
+    services.sessionContexts.bind("s1", {
       sessionManager: { getSessionId: () => "s1" },
     });
     await wiring.ensureSession({ id: "s1" });
@@ -433,7 +451,7 @@ describe("pi host services — declarations", () => {
 
     await wiring.stopExtension({ type: "session_shutdown", reason: "quit" });
 
-    assert.equal(services.liveContext.current(), undefined);
+    assert.equal(services.sessionContexts.forSession("s1"), undefined);
     assert.deepEqual(services.profileCatalog.get(), []);
     assert.equal(services.toolBaselines.primary(), undefined);
     assert.deepEqual(await services.todo.get("s1"), []);
@@ -451,10 +469,11 @@ describe("pi host services — declarations", () => {
     const { services } = await wiring.activateExtension();
 
     // The widget renders nothing without a primary; with one, the session
-    // registration reaches the host ui it was bound to.
-    setPrimary("dolphin");
+    // registration reaches the host ui it was bound to.  The binding is
+    // per session, so it names the session under test.
+    sessionAgentRegistry.bind("s1", "dolphin");
     const calls: unknown[] = [];
-    services.liveContext.publish({
+    services.sessionContexts.bind("s1", {
       sessionManager: { getSessionId: () => "s1" },
       ui: {
         setWidget: (...args: unknown[]) => calls.push(args),
@@ -478,7 +497,8 @@ describe("pi host services — declarations", () => {
     const extensionScope = await kernel.ensureExtension();
     assert.ok(extensionScope !== null);
     const { services } = extensionScope;
-    setPrimary("dolphin");
+    sessionAgentRegistry.bind("s1", "dolphin");
+    sessionAgentRegistry.bind("s2", "dolphin");
     /** A ui recording the widget registrations of exactly one session. */
     const widgetUi = () => {
       const calls: Array<[string, unknown]> = [];
@@ -505,22 +525,22 @@ describe("pi host services — declarations", () => {
       sessionManager: { getSessionId: () => "s2" },
       ui: b.ui,
     };
-    services.liveContext.publish(contextA);
+    services.sessionContexts.bind("s1", contextA);
     await kernel.ensureSession("s1");
-    services.liveContext.publish(contextB);
+    services.sessionContexts.bind("s2", contextB);
     await kernel.ensureSession("s2");
 
     services.fleet.register("s1");
     services.fleet.register("s2");
     assert.deepEqual([a.state.widgets, b.state.widgets], [1, 1]);
 
-    // Stopping s1 releases its listener and drops only its live-context
-    // view; s2's fleet and context stay live.
+    // Stopping s1 releases its listener and drops only its own context;
+    // s2's fleet and context stay live.
     await kernel.stopSession("s1", "test", "release-runtime");
     assert.deepEqual(a.state, { widgets: 1, unsubscribes: 1 });
     assert.deepEqual(b.state, { widgets: 1, unsubscribes: 0 });
-    assert.equal(services.liveContext.forSession("s1"), undefined);
-    assert.equal(services.liveContext.forSession("s2"), contextB);
+    assert.equal(services.sessionContexts.forSession("s1"), undefined);
+    assert.equal(services.sessionContexts.forSession("s2"), contextB);
 
     // A late call for the stopped session writes nothing; the sibling
     // re-registers through its own (still live) widget.
@@ -553,7 +573,7 @@ describe("pi host services — declarations", () => {
       [],
     );
     assert.deepEqual(extensionNames.slice(0, 3), [
-      "liveContext",
+      "sessionContexts",
       "adapter",
       "toolHost",
     ]);
@@ -577,13 +597,13 @@ describe("pi host services — declarations", () => {
     );
   });
 
-  it("keeps the live context and adapter creation order", async () => {
+  it("keeps the session contexts and adapter creation order", async () => {
     const order: string[] = [];
     const live = defineExtensionService({
-      name: "liveContextProbe",
+      name: "sessionContextsProbe",
       deps: [],
       create: () => {
-        order.push("liveContext");
+        order.push("sessionContexts");
         return {};
       },
     });
@@ -602,6 +622,6 @@ describe("pi host services — declarations", () => {
 
     await wiring.activateExtension();
 
-    assert.deepEqual(order, ["liveContext", "adapter"]);
+    assert.deepEqual(order, ["sessionContexts", "adapter"]);
   });
 });

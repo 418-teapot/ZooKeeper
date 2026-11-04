@@ -37,9 +37,9 @@ import {
 } from "./compose-pi.js";
 import type { ComposedResult } from "./core/compose.js";
 import type { ModeProfile } from "./core/config-types.js";
+import { createContextRuntime } from "./core/context/runtime.js";
 import type { Capabilities } from "./core/ports/index.js";
 import type { ToolHost } from "./core/ports/tool-host.js";
-import { _resetForTesting as _resetIdentityForTesting } from "./core/subagent/identity.js";
 import { createTodoStore } from "./core/todo/store.js";
 import type {
   AfterExecContribution,
@@ -53,16 +53,19 @@ import { createReplyStripHandler } from "./hooks/reply-strip/index.js";
 import { enhanceSubagentDefinition } from "./hooks/subagent-prompt/index.js";
 import { REGISTRY } from "./registry.js";
 import { composeForTest } from "./testkits/compose.js";
+import { permitFor } from "./testkits/context-runtime.js";
 import { assistantMessage } from "./testkits/pi-messages.js";
 import { _getBufferForTesting, _resetForTesting } from "./utils/logger.js";
 
 afterEach(() => {
   _resetForTesting();
-  _resetIdentityForTesting();
 });
 
 /** Session context shared by the handler tests. */
 const SESSION_CTX = { sessionManager: { getSessionId: () => "sess-1" } };
+
+/** The plugin instance's context records. */
+const runtime = createContextRuntime();
 
 /**
  * Build a minimal after-exec contribution that appends a suffix line.
@@ -372,14 +375,17 @@ describe("buildPiToolResultHandler", () => {
 describe("buildPiContextHandler", () => {
   it("passes native pi messages to transform contributions", async () => {
     let captured: TransformOutput | undefined;
-    const handler = buildPiContextHandler([
-      {
-        name: "capture",
-        handle: (output) => {
-          captured = output;
+    const handler = buildPiContextHandler(
+      [
+        {
+          name: "capture",
+          handle: (output) => {
+            captured = output;
+          },
         },
-      },
-    ]);
+      ],
+      runtime,
+    );
     const messages: PiAgentMessage[] = [{ role: "user", content: "hello" }];
     const result = await handler({ type: "context", messages }, SESSION_CTX);
     assert.deepEqual(result, { messages });
@@ -390,14 +396,17 @@ describe("buildPiContextHandler", () => {
     const replacement: PiAgentMessage[] = [
       { role: "user", content: "replaced" },
     ];
-    const handler = buildPiContextHandler([
-      {
-        name: "replace",
-        handle: (output) => {
-          output.messages = replacement;
+    const handler = buildPiContextHandler(
+      [
+        {
+          name: "replace",
+          handle: (output) => {
+            output.messages = replacement;
+          },
         },
-      },
-    ]);
+      ],
+      runtime,
+    );
     const result = await handler(
       { type: "context", messages: [{ role: "user", content: "hi" }] },
       SESSION_CTX,
@@ -406,33 +415,40 @@ describe("buildPiContextHandler", () => {
   });
 
   it("captures the model context window from ctx.model", async () => {
-    const handler = buildPiContextHandler([
-      {
-        name: "noop",
-        handle: () => {},
-      },
-    ]);
+    const handler = buildPiContextHandler(
+      [
+        {
+          name: "noop",
+          handle: () => {},
+        },
+      ],
+      runtime,
+    );
+    const permit = permitFor("sess-model");
     await handler(
       { type: "context", messages: [{ role: "user", content: "hi" }] },
       {
         sessionManager: { getSessionId: () => "sess-model" },
         model: { id: "gpt-5", contextWindow: 128000 },
       },
+      permit.sessionID,
+      permit,
     );
-    // The capture is best verified through the downstream pruning/nudge
-    // behavior; here we assert the handler completes without throwing.
-    assert.ok(true);
+    assert.deepEqual(runtime.modelLimit("sess-model"), {
+      context: 128000,
+      modelId: "gpt-5",
+    });
   });
 
   it("returns the input messages for an empty contribution list", async () => {
     const messages: PiAgentMessage[] = [{ role: "user", content: "hi" }];
-    const handler = buildPiContextHandler([]);
+    const handler = buildPiContextHandler([], runtime);
     const result = await handler({ type: "context", messages }, SESSION_CTX);
     assert.deepEqual(result, { messages });
   });
 
   it("yields empty messages for an empty message array", async () => {
-    const handler = buildPiContextHandler([]);
+    const handler = buildPiContextHandler([], runtime);
     const result = await handler(
       { type: "context", messages: [] },
       SESSION_CTX,
@@ -442,20 +458,23 @@ describe("buildPiContextHandler", () => {
 
   it("isolates a throwing transform contribution and still runs later ones", async () => {
     let captured: TransformOutput | undefined;
-    const handler = buildPiContextHandler([
-      {
-        name: "boom",
-        handle: () => {
-          throw new Error("ctx boom");
+    const handler = buildPiContextHandler(
+      [
+        {
+          name: "boom",
+          handle: () => {
+            throw new Error("ctx boom");
+          },
         },
-      },
-      {
-        name: "capture",
-        handle: (output) => {
-          captured = output;
+        {
+          name: "capture",
+          handle: (output) => {
+            captured = output;
+          },
         },
-      },
-    ]);
+      ],
+      runtime,
+    );
     const result = await handler(
       { type: "context", messages: [{ role: "user", content: "hi" }] },
       SESSION_CTX,
@@ -696,21 +715,30 @@ describe("buildPiCommandRegistrationPlan", () => {
     assert.equal(captured?.arguments, "context");
   });
 
-  it("runs the refresh callback with the pi command context", async () => {
-    let refreshed: unknown;
+  it("carries the contribution's replacing claim", () => {
     const commands: ComposedResult["commands"] = {
+      go: {
+        name: "go",
+        description: "go",
+        replacesSession: true,
+        handle: async () => {},
+      },
       dcp: {
         name: "dcp",
-        description: "desc",
+        description: "dcp",
         handle: async () => {},
       },
     };
-    const [reg] = buildPiCommandRegistrationPlan(commands, (ctx) => {
-      refreshed = ctx;
-    });
-    const ctx = { sessionManager: { getSessionId: () => "sess-r" } };
-    await reg.handler("context", ctx);
-    assert.equal(refreshed, ctx);
+    assert.deepEqual(
+      buildPiCommandRegistrationPlan(commands).map((registration) => [
+        registration.name,
+        registration.replacesSession,
+      ]),
+      [
+        ["go", true],
+        ["dcp", false],
+      ],
+    );
   });
 
   it("returns an empty plan for an empty commands map", () => {
@@ -884,6 +912,7 @@ function piCaps(host: Partial<Capabilities> = {}): Partial<Capabilities> {
     contextConfig: {},
     directory: "",
     resolveAgent: () => undefined,
+    contextRuntime: runtime,
     ...host,
   };
 }
@@ -1036,18 +1065,18 @@ function stubHandlers(
     resourcesDiscover: async () => ({ skillPaths: [] }),
     toolResult: async () => undefined,
     contextHandler: async () => undefined,
-    messageEnd: () => undefined,
+    messageEnd: async () => undefined,
     toolCall: async () => undefined,
     sessionStart: async () => {},
     sessionShutdown: async () => {},
     sessionTree: async () => {},
     hasSettledHandlers,
     hasGateHandlers,
-    agentEnd: () => {},
+    agentEnd: async () => {},
     beforeSettle: async () => ({}),
-    agentSettled: () => {},
-    uiPromptStart: () => {},
-    uiPromptEnd: () => {},
+    agentSettled: async () => {},
+    uiPromptStart: async () => {},
+    uiPromptEnd: async () => {},
   };
 }
 

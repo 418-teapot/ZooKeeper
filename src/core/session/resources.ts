@@ -2,10 +2,10 @@
  * Session records and the declarations that stop them.
  *
  * Some per-session records cannot live inside a session scope: every host
- * entry point in the process shares one store, one agent registry and one
- * set of runtime caches, so no scope may own them.  Each record therefore
- * declares what a stop does to it, and the catalog applies the declarations
- * once per stop:
+ * entry point of one plugin instance shares one context runtime and one
+ * agent registry, so no single session scope may own them.  Each record
+ * therefore declares what a stop does to it, and the catalog applies the
+ * declarations once per stop:
  *
  *  - a `release` record drops its runtime part on a `release-runtime` stop
  *    and is deleted by a `delete-session` stop;
@@ -17,29 +17,24 @@
  * declaration runs, and the failures come back in a report the way the
  * kernel reports stop failures.
  *
- * {@link sessionResources} lists every process-level session record of this
- * build, and {@link sessionResourcesService} puts those declarations on the
- * session scope's stop path.  A `release-runtime` stop (a plugin dispose, a
- * pi `session_shutdown`) releases the runtime records and keeps the
- * persisted state plus the agent binding; a `delete-session` stop (an
- * OpenCode `session.deleted`) deletes every record.
+ * {@link contextSessionResources} lists the context records of one runtime.
+ * Each host composition root builds its instance catalog from that list plus
+ * the explicit session records (the agent binding) and puts it on the
+ * session scope's stop path through {@link defineSessionResourcesService}.
+ * A `release-runtime` stop (a plugin dispose, a pi `session_shutdown`)
+ * releases the runtime records and keeps the persisted state plus the agent
+ * binding; a `delete-session` stop (an OpenCode `session.deleted`) deletes
+ * every record.
  *
  * @module
  */
 
-import { modelLimitResource } from "../context/model-limits.js";
-import { roundViewResource } from "../context/round-view.js";
-import {
-  pendingViewChangeFlagResource,
-  sessionStateCacheResource,
-  sessionStateFileResource,
-} from "../context/runtime.js";
+import type { ContextRuntime } from "../context/runtime.js";
 import {
   type CleanupFailure,
   type CleanupReport,
   defineSessionService,
 } from "../lifecycle/index.js";
-import { sessionAgentResource } from "./agent.js";
 
 /** What every session record declaration carries. */
 interface SessionResourceBase {
@@ -128,35 +123,63 @@ export function createSessionResourceCatalog(
 }
 
 /**
- * Every process-level session record of this build.
+ * Build the context session records of one runtime.
  *
  * The listed order is the application order.  The records are otherwise
  * independent.  The order does not protect a deletion: a delete evicts the
  * cached entry without writing it back, and only a release saves it.
+ *
+ * @param runtime - The plugin instance's context runtime.
+ * @returns The runtime's session records, in application order.
  */
-export const sessionResources = createSessionResourceCatalog([
-  modelLimitResource,
-  roundViewResource,
-  pendingViewChangeFlagResource,
-  sessionStateFileResource,
-  sessionStateCacheResource,
-  sessionAgentResource,
-]);
+export function contextSessionResources(
+  runtime: ContextRuntime,
+): readonly SessionResource[] {
+  return [
+    {
+      name: "modelLimit",
+      runtime: "release",
+      release: (sessionID) => runtime.clearModelLimit(sessionID),
+      delete: (sessionID) => runtime.clearModelLimit(sessionID),
+    },
+    {
+      name: "roundView",
+      runtime: "release",
+      release: (sessionID) => runtime.clearRoundView(sessionID),
+      delete: (sessionID) => runtime.clearRoundView(sessionID),
+    },
+    {
+      name: "pendingViewChangeFlag",
+      runtime: "release",
+      release: (sessionID) => runtime.clearPendingViewChange(sessionID),
+      delete: (sessionID) => runtime.clearPendingViewChange(sessionID),
+    },
+    {
+      name: "sessionStateFile",
+      runtime: "retain",
+      delete: (sessionID) => runtime.delete(sessionID),
+    },
+    {
+      name: "sessionStateCache",
+      runtime: "release",
+      release: (sessionID) => runtime.release(sessionID),
+      delete: (sessionID) => runtime.evict(sessionID),
+    },
+  ];
+}
 
 /**
  * Declare the session service that applies the catalog to a stopping scope.
  *
- * The service carries no state: the records are process-level, so the
+ * The service carries no state: the records keep their own storage, so the
  * service exists only to hand the stop mode to the catalog.  A record
  * failure is rethrown as one aggregate error so the kernel still reports
  * it; every other record has already been applied by then.
  *
- * @param catalog - The declarations to apply; this build's by default.
- * @returns The session service both hosts declare.
+ * @param catalog - The declarations of this plugin instance.
+ * @returns The session service the host declares.
  */
-export function defineSessionResourcesService(
-  catalog: SessionResourceCatalog = sessionResources,
-) {
+export function defineSessionResourcesService(catalog: SessionResourceCatalog) {
   return defineSessionService({
     name: "sessionResources",
     deps: [],
@@ -176,6 +199,3 @@ export function defineSessionResourcesService(
     },
   });
 }
-
-/** The session service both hosts declare. */
-export const sessionResourcesService = defineSessionResourcesService();

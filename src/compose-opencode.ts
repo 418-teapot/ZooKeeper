@@ -45,6 +45,7 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ComposedResult } from "./core/compose.js";
 import { runIsolated } from "./core/compose.js";
+import type { WorkPermit } from "./core/lifecycle/index.js";
 import type { Capabilities } from "./core/ports/index.js";
 import type {
   AgentMaterialisation,
@@ -601,10 +602,11 @@ export function assembleOpenCodeHooks(
           async "experimental.chat.messages.transform"(
             _input: Record<string, never>,
             output: TransformOutput,
+            permit?: WorkPermit,
           ) {
             await runIsolated(
               composed.transform,
-              (handler) => handler.handle(output),
+              (handler) => handler.handle(output, undefined, permit),
               { sessionID: transformSessionID(output) },
             );
           },
@@ -717,11 +719,14 @@ export function assembleOpenCodeHooks(
     // Present only when at least one slash command is registered.
     ...(Object.keys(composed.commands).length > 0
       ? {
-          async "command.execute.before"(input: CommandInput) {
+          async "command.execute.before"(
+            input: CommandInput,
+            permit?: WorkPermit,
+          ) {
             const contribution = composed.commands[input.command];
             // Unregistered command — pass through untouched.
             if (!contribution) return;
-            await contribution.handle(input);
+            await contribution.handle(input, permit);
             throw COMMAND_HANDLED;
           },
         }

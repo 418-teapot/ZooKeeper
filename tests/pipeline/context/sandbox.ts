@@ -14,7 +14,10 @@
 import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { _resetContextStateManagerForTesting } from "../../../src/core/context/runtime.js";
+import {
+  type ContextRuntime,
+  createContextRuntime,
+} from "../../../src/core/context/runtime.js";
 import {
   createStateStore,
   type StateStore,
@@ -46,10 +49,18 @@ export interface PipelineSandbox {
   /** Session-state store bound to `<root>/storage`. */
   readonly store: StateStore;
   /**
+   * The plugin instance's context records.  A reset replaces it with a
+   * fresh instance over the same store, so a scenario sees the state its
+   * store reloads.
+   */
+  readonly runtime: ContextRuntime;
+  /**
    * Wipe the root and install it on the shared state manager and the
    * logger, so the next test starts from an empty sandbox.
    */
   reset(): void;
+  /** Drop the in-memory cache; the store keeps its files. */
+  restart(): void;
   /**
    * Remove the root from disk.  Idempotent.
    */
@@ -67,16 +78,23 @@ export function createPipelineSandbox(label: string): PipelineSandbox {
 
   const store = createStateStore(join(root, "storage"));
   const logDir = join(root, "log");
+  let runtime = createContextRuntime(store);
 
   return {
     root,
     store,
+    get runtime() {
+      return runtime;
+    },
     reset(): void {
       removeRoot(root);
       mkdirSync(root, { recursive: true });
       _resetLoggerForTesting();
       initLogger(SANDBOX_HOST, { logDir });
-      _resetContextStateManagerForTesting(store);
+      runtime = createContextRuntime(store);
+    },
+    restart(): void {
+      runtime = createContextRuntime(store);
     },
     dispose(): void {
       // The logger's flush timer outlives a disposed root and would

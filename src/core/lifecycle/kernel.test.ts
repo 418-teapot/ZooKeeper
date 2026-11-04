@@ -21,6 +21,7 @@ import {
   defineExtensionService,
   defineSessionService,
   LifecycleDefinitionError,
+  type WorkPermit,
 } from "./index.js";
 
 /** A promise plus its resolvers, used to hold a factory mid-creation. */
@@ -912,5 +913,358 @@ describe("lifecycle kernel", () => {
         }),
       LifecycleDefinitionError,
     );
+  });
+});
+
+describe("lifecycle work permits", () => {
+  it("runs the first session work after lazily creating the scope", async () => {
+    const created: string[] = [];
+    const service = defineSessionService({
+      name: "service",
+      deps: [],
+      create: ({ sessionID }) => {
+        created.push(sessionID);
+        return { value: 1 };
+      },
+    });
+    const kernel = createLifecycleKernel({ extension: [], session: [service] });
+
+    const value = await kernel.runSession("s1", (scope, permit) => {
+      assert.equal(scope.sessionID, "s1");
+      assert.equal(scope.services.service.value, 1);
+      assert.deepEqual(
+        { sessionID: permit.sessionID, active: permit.isActive() },
+        { sessionID: "s1", active: true },
+      );
+      assert.equal(permit.signal.aborted, false);
+      return "done";
+    });
+
+    assert.equal(value, "done");
+    assert.deepEqual(created, ["s1"]);
+  });
+
+  it("refuses work for invalid, stopped, and cancelled calls", async () => {
+    let calls = 0;
+    const run = () => {
+      calls += 1;
+      return "ran";
+    };
+    const kernel = createLifecycleKernel({ extension: [], session: [] });
+
+    assert.equal(await kernel.runSession(undefined, run), undefined);
+    assert.equal(await kernel.runSession(null, run), undefined);
+    assert.equal(await kernel.runSession("   ", run), undefined);
+
+    await kernel.ensureSession("s1");
+    await kernel.stopSession("s1", "session.stop", "release-runtime");
+    assert.equal(await kernel.runSession("s1", run), undefined);
+
+    const cancelled = new AbortController();
+    cancelled.abort();
+    assert.equal(
+      await kernel.runSession("s2", run, cancelled.signal),
+      undefined,
+    );
+    assert.equal(calls, 0);
+  });
+
+  it("invalidates an admitted permit on stop and disposes after the work", async () => {
+    const events: string[] = [];
+    const entered = deferred<void>();
+    const gate = deferred<void>();
+    let permit: WorkPermit | undefined;
+
+    const service = defineSessionService({
+      name: "service",
+      deps: [],
+      create: () => ({}),
+      dispose: () => {
+        events.push("dispose");
+      },
+    });
+    const kernel = createLifecycleKernel({ extension: [], session: [service] });
+
+    const working = kernel.runSession("s1", async (_scope, issued) => {
+      permit = issued;
+      events.push("work");
+      entered.resolve();
+      await gate.promise;
+      events.push(`after:${issued.isActive()}`);
+      return "done";
+    });
+
+    await entered.promise;
+    const stopping = kernel.stopSession(
+      "s1",
+      "session.stop",
+      "release-runtime",
+    );
+
+    // The stop invalidates the permit before the work can return.
+    assert.deepEqual(
+      { active: permit?.isActive(), aborted: permit?.signal.aborted },
+      { active: false, aborted: true },
+    );
+    await Promise.resolve();
+    assert.deepEqual(events, ["work"]);
+
+    gate.resolve();
+    assert.equal(await working, "done");
+    const report = await stopping;
+
+    assert.deepEqual(report.errors, []);
+    assert.deepEqual(events, ["work", "after:false", "dispose"]);
+  });
+
+  it("does not wait for a control operation to finish at stop", async () => {
+    // The operation that STOPS a session cannot be waited on by that same
+    // stop: waiting would deadlock the caller.  A control operation is
+    // therefore admitted like session work, but no stop waits for it.
+    const events: string[] = [];
+    const entered = deferred<void>();
+    const gate = deferred<void>();
+    let permit: WorkPermit | undefined;
+
+    const service = defineSessionService({
+      name: "service",
+      deps: [],
+      create: () => ({}),
+      dispose: () => {
+        events.push("dispose");
+      },
+    });
+    const kernel = createLifecycleKernel({ extension: [], session: [service] });
+
+    const working = kernel.runControl("s1", async (_scope, issued) => {
+      permit = issued;
+      events.push("work");
+      entered.resolve();
+      await gate.promise;
+      events.push(`after:${issued.isActive()}`);
+      return "done";
+    });
+
+    await entered.promise;
+    // The stop returns while the control operation is still running.
+    const report = await kernel.stopSession(
+      "s1",
+      "session.stop",
+      "release-runtime",
+    );
+
+    assert.deepEqual(report.errors, []);
+    assert.deepEqual(events, ["work", "dispose"]);
+    // The permit was revoked at once, like every other permit.
+    assert.deepEqual(
+      { active: permit?.isActive(), aborted: permit?.signal.aborted },
+      { active: false, aborted: true },
+    );
+
+    gate.resolve();
+    assert.equal(await working, "done");
+  });
+
+  it("never runs work that a stop overtakes during creation", async () => {
+    const started = deferred<void>();
+    const gate = deferred<void>();
+    let calls = 0;
+
+    const slow = defineSessionService({
+      name: "slow",
+      deps: [],
+      create: async () => {
+        started.resolve();
+        await gate.promise;
+        return {};
+      },
+    });
+    const kernel = createLifecycleKernel({ extension: [], session: [slow] });
+
+    const working = kernel.runSession("s1", () => {
+      calls += 1;
+      return "ran";
+    });
+    await started.promise;
+
+    const stopping = kernel.stopSession(
+      "s1",
+      "session.stop",
+      "release-runtime",
+    );
+    gate.resolve();
+
+    assert.equal(await working, undefined);
+    assert.equal(calls, 0);
+    assert.deepEqual((await stopping).errors, []);
+    assert.equal(await kernel.runSession("s1", () => "ran"), undefined);
+    assert.equal(calls, 0);
+  });
+
+  it("refuses work when the stop starts in the same tick as admission", async () => {
+    let calls = 0;
+    const kernel = createLifecycleKernel({ extension: [], session: [] });
+    await kernel.ensureSession("s1");
+
+    const working = kernel.runSession("s1", () => {
+      calls += 1;
+      return "ran";
+    });
+    const stopping = kernel.stopSession(
+      "s1",
+      "session.stop",
+      "release-runtime",
+    );
+
+    assert.equal(await working, undefined);
+    assert.deepEqual((await stopping).errors, []);
+    assert.equal(calls, 0);
+  });
+
+  it("cancels only the work whose caller signal aborts", async () => {
+    const caller = new AbortController();
+    const firstEntered = deferred<void>();
+    const secondEntered = deferred<void>();
+    const gate = deferred<void>();
+    const events: string[] = [];
+
+    const kernel = createLifecycleKernel({ extension: [], session: [] });
+
+    const first = kernel.runSession(
+      "s1",
+      async (_scope, permit) => {
+        firstEntered.resolve();
+        await gate.promise;
+        events.push(`first:${permit.isActive()}`);
+      },
+      caller.signal,
+    );
+    await firstEntered.promise;
+
+    const second = kernel.runSession("s1", async (_scope, permit) => {
+      secondEntered.resolve();
+      await gate.promise;
+      events.push(`second:${permit.isActive()}`);
+    });
+    await secondEntered.promise;
+
+    caller.abort();
+    assert.equal(
+      await kernel.runSession("s1", () => "late", caller.signal),
+      undefined,
+    );
+
+    gate.resolve();
+    await Promise.all([first, second]);
+    assert.deepEqual(events, ["first:false", "second:true"]);
+  });
+
+  it("keeps another session's permit active when one session stops", async () => {
+    const otherEntered = deferred<void>();
+    const gate = deferred<void>();
+    const events: string[] = [];
+    let otherPermit: WorkPermit | undefined;
+
+    const kernel = createLifecycleKernel({ extension: [], session: [] });
+
+    const first = kernel.runSession("s1", async (_scope, permit) => {
+      await gate.promise;
+      events.push(`s1:${permit.isActive()}`);
+    });
+    const second = kernel.runSession("s2", async (_scope, permit) => {
+      otherPermit = permit;
+      otherEntered.resolve();
+      await gate.promise;
+      events.push(`s2:${permit.isActive()}`);
+    });
+    await otherEntered.promise;
+
+    const stopping = kernel.stopSession(
+      "s1",
+      "session.stop",
+      "release-runtime",
+    );
+    assert.equal(otherPermit?.isActive(), true);
+    assert.equal(otherPermit?.signal.aborted, false);
+
+    gate.resolve();
+    await Promise.all([first, second]);
+    assert.deepEqual((await stopping).errors, []);
+    assert.deepEqual(events, ["s1:false", "s2:true"]);
+  });
+
+  it("releases the permit when the work throws", async () => {
+    const failure = new Error("work-boom");
+    const kernel = createLifecycleKernel({ extension: [], session: [] });
+
+    await assert.rejects(
+      kernel.runSession("s1", () => {
+        throw failure;
+      }),
+      (error) => error === failure,
+    );
+
+    const report = await kernel.stopSession(
+      "s1",
+      "session.stop",
+      "release-runtime",
+    );
+    assert.deepEqual(report.errors, []);
+  });
+
+  it("invalidates every session permit when the extension stops", async () => {
+    const firstEntered = deferred<void>();
+    const secondEntered = deferred<void>();
+    const gate = deferred<void>();
+    const events: string[] = [];
+    const disposed: string[] = [];
+    let firstPermit: WorkPermit | undefined;
+    let secondPermit: WorkPermit | undefined;
+
+    const service = defineSessionService({
+      name: "service",
+      deps: [],
+      create: ({ sessionID }) => ({ sessionID }),
+      dispose: (service) => {
+        disposed.push(service.sessionID);
+      },
+    });
+    const kernel = createLifecycleKernel({ extension: [], session: [service] });
+
+    const first = kernel.runSession("s1", async (_scope, permit) => {
+      firstPermit = permit;
+      firstEntered.resolve();
+      await gate.promise;
+      events.push(`work:${permit.isActive()}`);
+    });
+    const second = kernel.runSession("s2", async (_scope, permit) => {
+      secondPermit = permit;
+      secondEntered.resolve();
+      await gate.promise;
+      events.push(`work:${permit.isActive()}`);
+    });
+    await Promise.all([firstEntered.promise, secondEntered.promise]);
+
+    const stopping = kernel.stopExtension("host.shutdown");
+    assert.deepEqual(
+      [firstPermit?.isActive(), secondPermit?.isActive()],
+      [false, false],
+    );
+    assert.deepEqual(
+      [firstPermit?.signal.aborted, secondPermit?.signal.aborted],
+      [true, true],
+    );
+
+    await Promise.resolve();
+    assert.deepEqual(events, []);
+
+    gate.resolve();
+    await Promise.all([first, second]);
+    const report = await stopping;
+
+    assert.deepEqual(report.errors, []);
+    assert.deepEqual(events, ["work:false", "work:false"]);
+    assert.deepEqual(disposed.sort(), ["s1", "s2"]);
+    assert.equal(await kernel.runSession("s1", () => "ran"), undefined);
   });
 });

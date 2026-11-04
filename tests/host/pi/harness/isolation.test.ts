@@ -43,13 +43,24 @@ describe("createIsolatedRoot", () => {
         expect(existsSync(dir)).toBe(true);
         expect(dir.startsWith(first.root)).toBe(true);
       }
-      // The extension entry is the repository's real one, never a copy.
+      // Two extension files of the repository itself, never copies:
+      // ZooKeeper first (it must handle events before the probe), then the
+      // observation probe.
       const settings = JSON.parse(
         readFileSync(join(first.agentDir, "settings.json"), "utf8"),
       ) as { extensions?: string[] };
-      expect(settings.extensions?.length).toBe(1);
-      expect(settings.extensions?.[0]?.startsWith(REPO_ROOT)).toBe(true);
-      expect(settings.extensions?.[0]?.endsWith("entry.ts")).toBe(true);
+      expect(settings.extensions?.length).toBe(2);
+      const [zooEntry, probeEntry] = settings.extensions ?? [];
+      expect(zooEntry?.startsWith(first.repoRoot)).toBe(true);
+      expect(zooEntry?.endsWith(join("src", "pi.ts"))).toBe(true);
+      expect(probeEntry?.startsWith(first.repoRoot)).toBe(true);
+      expect(probeEntry?.endsWith(join("extension", "probe-entry.ts"))).toBe(
+        true,
+      );
+      expect(existsSync(zooEntry ?? "")).toBe(true);
+      expect(existsSync(probeEntry ?? "")).toBe(true);
+      expect(first.zooEntryPath).toBe(zooEntry);
+      expect(first.probeEntryPath).toBe(probeEntry);
     } finally {
       rmSync(first.root, { recursive: true, force: true });
       rmSync(second.root, { recursive: true, force: true });

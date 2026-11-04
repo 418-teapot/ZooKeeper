@@ -100,15 +100,18 @@ describe("zookeeperPi — thin entry wiring", () => {
         "zoo-notice renderer must be registered",
       );
 
-      const prompt = (await api.handlers.before_agent_start({
-        messageType: "user",
-        systemPrompt: "base",
-      })) as { systemPrompt: string };
+      const prompt = (await api.handlers.before_agent_start(
+        { messageType: "user", systemPrompt: "base" },
+        SESSION_CTX,
+      )) as { systemPrompt: string } | undefined;
+      assert.ok(prompt, "the handler must admit the event's session");
       assert.ok(prompt.systemPrompt.startsWith("<Role>"));
 
-      const resources = (await api.handlers.resources_discover()) as {
-        skillPaths: string[];
-      };
+      const resources = (await api.handlers.resources_discover(
+        undefined,
+        SESSION_CTX,
+      )) as { skillPaths: string[] } | undefined;
+      assert.ok(resources, "the handler must admit the event's session");
       // The default primary (dolphin) denies the beaver-*/kiwi-*/mola-*
       // skill globs in config.toml, so 4 of the 14 profile skills are
       // filtered out at session bind.

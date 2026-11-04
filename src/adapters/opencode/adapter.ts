@@ -41,10 +41,6 @@ export function createV1Adapter(): HostAdapter<unknown> {
     materialize(conversation: unknown, plan: RenderEntry[]): unknown {
       return materialize(conversation as ContextMessageEntry[], plan);
     },
-    sessionId(conversation: unknown): string | undefined {
-      return (conversation as ContextMessageEntry[] | null | undefined)?.[0]
-        ?.info?.sessionID;
-    },
     appendUserMessage(
       conversation: unknown,
       id: string,

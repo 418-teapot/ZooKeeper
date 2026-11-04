@@ -15,7 +15,6 @@ import { afterAll, afterEach, describe, expect, test } from "bun:test";
 import { existsSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { getContextStateManager } from "../../../src/core/context/runtime.js";
 import type { SessionState } from "../../../src/core/context/state.js";
 import { _flushForTesting, log } from "../../../src/utils/logger.js";
 import { createPipelineSandbox } from "./sandbox.js";
@@ -41,14 +40,14 @@ describe("pipeline sandbox", () => {
   test("binds the shared state store to the sandbox root", () => {
     resetPipelineState(SANDBOX);
 
-    const store = getContextStateManager().store;
+    const store = SANDBOX.runtime.store;
     expect(store.dir).toBe(join(SANDBOX.root, "storage"));
     expect(SANDBOX.root.startsWith(tmpdir())).toBe(true);
   });
 
   test("persists inside the root and wipes it on the next reset", () => {
     resetPipelineState(SANDBOX);
-    const store = getContextStateManager().store;
+    const store = SANDBOX.runtime.store;
     store.save("sandbox-session", emptyState());
     const filePath = join(store.dir, "sandbox-session.json");
     expect(existsSync(filePath)).toBe(true);

@@ -7,10 +7,14 @@
  * Factories receive exactly that dependency projection plus the scope's
  * `AbortSignal`, never the kernel or a service locator.
  *
- * The two scopes are the entire vocabulary.  There is no process dispose
- * and no turn/call boundary here — hosts translate their own events into
- * `ensureSession` / `notifySessionStart` calls and the kernel does not
- * inspect host types.
+ * The two scopes are the entire resource vocabulary.  There is no process
+ * dispose and no host event handling here — hosts translate their own
+ * events into `ensureSession`, `notifySessionStart`, and `runSession`
+ * calls, and the kernel does not inspect host types.
+ *
+ * Call-scoped work is admitted through `runSession`, which issues a
+ * `WorkPermit` whose signal and activity reflect the session, the
+ * extension, and the optional caller cancellation.
  *
  * A session service may declare a `start` hook.  Bare `ensure` never runs
  * it: only a real host start notice does, after the scope is ready, in
@@ -144,8 +148,8 @@ export interface SessionServiceDefinition<
    * React to a real session start.
    *
    * Hooks run in creation order, after the scope is ensured, for every
-   * host start notice.  The scope's signal is not yet aborted and the
-   * session cannot be disposed until the notice completes.
+   * host start notice.  A stop aborts the scope's signal immediately and
+   * waits for a notice that has begun before it disposes the session.
    */
   start?(service: Service, context: SessionStartContext): void | Promise<void>;
   /** Release the service; errors are collected by the stop report. */
@@ -189,6 +193,25 @@ export interface SessionScope<Services> {
   readonly signal: AbortSignal;
   /** The created session services. */
   readonly services: Services;
+}
+
+/**
+ * Proof that one session accepts work for one {@link
+ * LifecycleKernel.runSession} call.
+ *
+ * The kernel issues one permit per accepted call and releases it when the
+ * work returns.  The permit never outlives the call.
+ */
+export interface WorkPermit {
+  /** The session this permit belongs to. */
+  readonly sessionID: string;
+  /**
+   * Aborted when the session or extension stops, or when the caller
+   * cancels the call.
+   */
+  readonly signal: AbortSignal;
+  /** Whether the work may still run under this permit. */
+  isActive(): boolean;
 }
 
 /**
@@ -254,6 +277,46 @@ export interface LifecycleKernel<
   ensureSession(
     sessionID: string | null | undefined,
   ): Promise<SessionScope<ServiceMap<Session>> | null>;
+  /**
+   * Run one unit of session work under a {@link WorkPermit}.
+   *
+   * The first call lazily creates the session.  An absent or blank ID, a
+   * stopped session or extension, or an already-cancelled `signal` returns
+   * `undefined` without running `work`.  A stop that begins during
+   * creation is observed before the permit is issued, so the callback
+   * never runs after it.  The callback's value and errors propagate
+   * unchanged, and the permit is always released in `finally`.
+   */
+  runSession<T>(
+    sessionID: string | null | undefined,
+    work: (
+      scope: SessionScope<ServiceMap<Session>>,
+      permit: WorkPermit,
+    ) => T | Promise<T>,
+    signal?: AbortSignal,
+  ): Promise<T | undefined>;
+  /**
+   * Run one control operation for a session under a permit no stop waits
+   * for.
+   *
+   * Admission is the same as {@link LifecycleKernel.runSession}: an absent
+   * or blank ID, a stopped session or extension, or an already-cancelled
+   * `signal` runs nothing, and a stop revokes the permit at once.  The
+   * difference is the stop's wait: a session and an extension stop do not
+   * wait for this call to return.  It exists for the call that STOPS the
+   * session it belongs to — a host command that replaces the session (an
+   * agent switch, a plan handoff) — because waiting would deadlock the
+   * stop it performs.  Ordinary business work must use
+   * {@link LifecycleKernel.runSession} instead.
+   */
+  runControl<T>(
+    sessionID: string | null | undefined,
+    work: (
+      scope: SessionScope<ServiceMap<Session>>,
+      permit: WorkPermit,
+    ) => T | Promise<T>,
+    signal?: AbortSignal,
+  ): Promise<T | undefined>;
   /**
    * Handle a real host session start.
    *

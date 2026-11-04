@@ -32,13 +32,9 @@ import { expect } from "bun:test";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { ContextPruningConfig } from "../../../src/core/config-types.js";
-import { setModelLimit } from "../../../src/core/context/model-limits.js";
-import {
-  getContextStateManager,
-  getRuntimeFlaggedState,
-  setPendingViewChange,
-} from "../../../src/core/context/runtime.js";
+import type { ContextRuntime } from "../../../src/core/context/runtime.js";
 import { type Mark, markKey } from "../../../src/core/context/state.js";
+import { permitFor } from "../../../src/testkits/context-runtime.js";
 import { compareSnapshots } from "../framework/compare.js";
 import type {
   PipelineHost,
@@ -73,10 +69,15 @@ async function runAction<M>(
 ): Promise<{ result: string | null; error: string | null }> {
   if (!action) return { result: null, error: null };
 
-  // Force a fresh state snapshot through the shared manager — every
-  // action here mutates the same in-memory state the transform round
-  // will subsequently read.
-  const state = getContextStateManager().get(sessionID);
+  // Read the committed state of the instance — every action here mutates
+  // the same object the transform round will subsequently read.
+  const stateOf = (runtime: ContextRuntime) => {
+    const state = runtime.read(permitFor(sessionID), (draft) => draft);
+    if (state === undefined)
+      throw new Error(`no committed state: ${sessionID}`);
+    return state;
+  };
+  const state = stateOf(host.runtime);
 
   try {
     switch (action.kind) {
@@ -127,14 +128,14 @@ async function runAction<M>(
         return { result: null, error: null };
       }
       case "create-block": {
-        host.landPlan(state, messages, action.plan);
+        host.landPlan(stateOf(host.runtime), messages, action.plan);
         return { result: null, error: null };
       }
       case "stale-block": {
         // Simulate a block that lost its content guarantee (hash
         // expiry, revert cut): the record stays in the map with the
         // stale status.
-        const block = state.blocks.get(action.blockId);
+        const block = stateOf(host.runtime).blocks.get(action.blockId);
         if (block) block.status = "stale";
         return { result: null, error: null };
       }
@@ -142,24 +143,28 @@ async function runAction<M>(
         // Simulate a process crash: drop the in-memory cache of every
         // session.  Persisted files must survive — the reload below is
         // the round-trip under test.
-        const manager = getContextStateManager();
-        manager._resetForTesting?.();
+        host.restart();
         // Re-prime the cache so the round sees the disk-restored
         // state rather than a fresh empty state.
-        manager.get(sessionID);
+        stateOf(host.runtime);
         return { result: null, error: null };
       }
       case "set-model-limit": {
-        setModelLimit(sessionID, action.context, "test-model");
+        host.runtime.setModelLimit(
+          permitFor(sessionID),
+          action.context,
+          "test-model",
+        );
         return { result: null, error: null };
       }
       case "arm-manual-trigger": {
-        const flagged = getRuntimeFlaggedState(sessionID);
-        flagged.pendingManualTrigger = true;
+        await host.runtime.commit(permitFor(sessionID), (draft) => {
+          draft.pendingManualTrigger = true;
+        });
         return { result: null, error: null };
       }
       case "set-pending-view-change": {
-        setPendingViewChange(sessionID);
+        host.runtime.setPendingViewChange(permitFor(sessionID));
         return { result: null, error: null };
       }
       default: {
@@ -216,8 +221,12 @@ async function runRound<M>(
     // `await` — the pi lane's production entry (`buildPiContextHandler`)
     // is asynchronous; the opencode lane returns void, which awaits
     // trivially.
-    await host.runTransform(messages, merged, hasCompressTool, (text) =>
-      notifications.push(text),
+    await host.runTransform(
+      sessionID,
+      messages,
+      merged,
+      hasCompressTool,
+      (text) => notifications.push(text),
     );
   }
 

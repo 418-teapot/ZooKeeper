@@ -2,11 +2,10 @@
  * Core scenario 5: SDK sub-session lifecycle.
  *
  * The subagent tool creates a real SDK session inside the pi process.  The
- * primary evidence is public: the parent's tool result carries the child's
- * reply, the child runs its own extension runtime and its own model turn,
- * and its session id differs from the parent's.  The SDK bridge check
- * (`hasPiSdkSession`) is recorded as auxiliary white-box evidence and is
- * never the only support for an assertion.
+ * parent's tool result carries the child's reply, the child runs its own
+ * extension runtime and its own model turn, its session id differs from the
+ * parent's, and its tool face comes from the inline extension the driver
+ * loads.
  */
 
 import { CHILD_REPLY, MARKERS } from "../harness/constants.js";
@@ -114,22 +113,28 @@ export const subagentSdk: ScenarioDefinition = {
       evidence: "trace.jsonl",
     });
 
-    // Auxiliary white-box evidence: the SDK bridge association exists while
-    // the child runs and is already released when the parent sees the result.
+    // The child runtime loads ZooKeeper from the driver's inline factory, so
+    // ZooKeeper's own tools register there.  `todo` belongs to ZooKeeper (pi
+    // provides no such builtin), so its presence proves the inline extension
+    // ran in the child; the driver's capability allowlist decides the rest of
+    // the child's face.
+    const childTools: string[] = Array.isArray(childStart?.toolNames)
+      ? (childStart.toolNames as string[])
+      : [];
     ctx.checks.add({
-      id: "bridge_associated_during_child_run",
-      title: "（白盒辅助）子会话运行期 SDK 生命周期桥已关联",
-      status: childStart?.hasPiSdkSession === true,
-      detail: `child=${childSessionID} hasPiSdkSession=${childStart?.hasPiSdkSession}`,
+      id: "child_extension_loaded",
+      title: "子会话运行时加载了 ZooKeeper 内联扩展（注册 todo 工具）",
+      status: childTools.includes("todo"),
+      detail: `child=${childSessionID} childTools=${JSON.stringify(childTools)}`,
       evidence: "trace.jsonl",
     });
     ctx.checks.add({
-      id: "bridge_released_before_parent_result",
-      title: "（白盒辅助）父工具结果到达时子会话作用域已 stop",
+      id: "parent_result_names_child_session",
+      title: "父工具结果记录的子会话 ID 与子运行时观测的一致",
       status:
-        parentResult?.childSessionID === childSessionID &&
-        parentResult?.childHasPiSdkSession === false,
-      detail: `childSessionID=${parentResult?.childSessionID} childHasPiSdkSession=${parentResult?.childHasPiSdkSession}`,
+        typeof childSessionID === "string" &&
+        parentResult?.childSessionID === childSessionID,
+      detail: `parentResult=${parentResult?.childSessionID} observed=${childSessionID}`,
       evidence: "trace.jsonl",
     });
 

@@ -10,8 +10,8 @@
  * - Log field sets: `prune_completed` counts effective marks
  *   only, `marks_released` carries the forced field, `nudge_injected` /
  *   `manual_compress_injected` carry their payloads.
- * - Robust no-ops for null / undefined / empty / missing
- *   sessionID inputs.
+ * - Robust no-ops for null / undefined / empty inputs and for a lapsed
+ *   permit.
  * - The unit registration contributes the transform handler
  *   unconditionally.
  * - Persistence round-trip through the shared store (restart keeps
@@ -20,48 +20,48 @@
  *   contract for the pending-view-change bypass.
  *
  * Fixtures are v1-shaped message arrays driven through the real
- * handler; state and persistence go through the process-wide shared
- * manager (`getContextStateManager`), with session files cleaned up in
- * teardown.
+ * handler; state and persistence go through one explicit
+ * `ContextRuntime` per test, with session files cleaned up in teardown.
  */
 import assert from "node:assert/strict";
-import { afterEach, describe, it } from "node:test";
+import { rmSync } from "node:fs";
+import { after, afterEach, beforeEach, describe, it } from "node:test";
 import { createV1Adapter } from "../../adapters/opencode/adapter.js";
-import type { ModeProfile } from "../../core/config-types.js";
+import type {
+  ContextPruningConfig,
+  ModeProfile,
+} from "../../core/config-types.js";
 import type { HostAdapter, HostMessage } from "../../core/context/lens.js";
 import { project } from "../../core/context/lens.js";
 import { PRUNED_TOOL_OUTPUT_REPLACEMENT } from "../../core/context/message-parts.js";
-import {
-  _resetForTesting as _resetModelLimitsForTesting,
-  setModelLimit,
-} from "../../core/context/model-limits.js";
 import { creditReclaim } from "../../core/context/nudge.js";
 import {
   contextPruningTransformHandler,
   handleContextPruning,
 } from "../../core/context/pipeline.js";
 import {
-  _listRoundViewSessionsForTesting,
-  getRoundView,
-} from "../../core/context/round-view.js";
-import {
-  _resetContextStateManagerForTesting,
-  consumePendingViewChange,
-  getContextStateManager,
-  getRuntimeFlaggedState,
-  setPendingViewChange,
+  type ContextRuntime,
+  createContextRuntime,
+  type RuntimeFlaggedState,
 } from "../../core/context/runtime.js";
 import { computeSpanHash } from "../../core/context/spanhash.js";
 import { allocateBlockId, markKey } from "../../core/context/state.js";
+import { createStateStore } from "../../core/context/store.js";
 import type { Capabilities } from "../../core/ports/index.js";
-import type { ToolHost } from "../../core/ports/tool-host.js";
-import { sessionResources } from "../../core/session/resources.js";
+import type { ToastPayload, ToolHost } from "../../core/ports/tool-host.js";
+import { sessionAgentResource } from "../../core/session/agent.js";
+import {
+  contextSessionResources,
+  createSessionResourceCatalog,
+} from "../../core/session/resources.js";
 import { REGISTRY } from "../../registry.js";
 import {
   assembleForTest,
   composeForTest,
   facts,
 } from "../../testkits/compose.js";
+import { permitFor } from "../../testkits/context-runtime.js";
+import { makeTmpDir } from "../../testkits/tmp.js";
 import { _getBufferForTesting, _resetForTesting } from "../../utils/logger.js";
 import { unit } from "./index.js";
 
@@ -95,6 +95,102 @@ interface TestTokenInfo {
 
 /** Shared v1 adapter instance for the fixture-driven tests. */
 const adapter = createV1Adapter();
+
+// ---------------------------------------------------------------------------
+// Context runtime under test
+// ---------------------------------------------------------------------------
+
+/** Sandbox store directory of this suite. */
+const storeDir = makeTmpDir("zoo-context-hook");
+const store = createStateStore(storeDir);
+/** The plugin instance under test; recreated to simulate a restart. */
+let runtime: ContextRuntime = createContextRuntime(store);
+
+beforeEach(() => {
+  runtime = createContextRuntime(store);
+});
+
+after(() => {
+  rmSync(storeDir, { recursive: true, force: true });
+});
+
+/** The committed state of a session. */
+function stateOf(sessionID: string): RuntimeFlaggedState {
+  const state = runtime.read(permitFor(sessionID), (draft) => draft);
+  if (state === undefined) throw new Error(`no committed state: ${sessionID}`);
+  return state;
+}
+
+/** Capture a model limit for a session. */
+function setLimit(sessionID: string, context: number, modelId: string): void {
+  runtime.setModelLimit(permitFor(sessionID), context, modelId);
+}
+
+/** Arm a session's pending-view-change flag. */
+function armViewChange(sessionID: string): void {
+  runtime.setPendingViewChange(permitFor(sessionID));
+}
+
+/** Read and clear a session's pending-view-change flag. */
+function consumeViewChange(sessionID: string): boolean {
+  return runtime.consumePendingViewChange(permitFor(sessionID));
+}
+
+/** Delete a session's records through this instance's catalog. */
+function deleteSession(sessionID: string) {
+  return createSessionResourceCatalog([
+    ...contextSessionResources(runtime),
+    sessionAgentResource,
+  ]).delete(sessionID);
+}
+
+/** The session a fixture names. */
+function fixtureSessionID(messages: unknown): string {
+  const first = Array.isArray(messages) ? (messages[0] as any) : undefined;
+  const id = first?.info?.sessionID;
+  return typeof id === "string" && id !== "" ? id : "sess-unattributed";
+}
+
+/** Drive the transform handler under a permit for the fixture session. */
+function transform(
+  handlerAdapter: HostAdapter<unknown>,
+  messages: unknown,
+  config: ContextPruningConfig,
+  notify?: (text: string) => void,
+  hasCompressTool?: boolean,
+  toast?: (payload: ToastPayload) => void,
+  sessionID?: string,
+): Promise<unknown> {
+  return contextPruningTransformHandler(
+    runtime,
+    permitFor(sessionID ?? fixtureSessionID(messages)),
+    handlerAdapter,
+    messages,
+    config,
+    notify,
+    hasCompressTool,
+    toast,
+  );
+}
+
+/** Drive the transform wrapper under a permit for the fixture session. */
+function transformOutput(
+  output: { messages: unknown },
+  config: ContextPruningConfig,
+  toolHost: ToolHost | undefined,
+  hasCompressTool: boolean | undefined,
+  handlerAdapter: HostAdapter<unknown>,
+): Promise<void> {
+  return handleContextPruning(
+    runtime,
+    permitFor(fixtureSessionID(output.messages)),
+    output,
+    config,
+    toolHost,
+    hasCompressTool,
+    handlerAdapter,
+  );
+}
 
 // ---------------------------------------------------------------------------
 // Fixture helpers
@@ -135,13 +231,10 @@ const TEST_SESSION_IDS = [
 ];
 
 afterEach(() => {
-  const manager = getContextStateManager();
   for (const sid of TEST_SESSION_IDS) {
-    manager.store.delete(sid);
+    store.delete(sid);
   }
-  _resetContextStateManagerForTesting();
   _resetForTesting();
-  _resetModelLimitsForTesting();
 });
 
 /** Build a text part. */
@@ -222,7 +315,7 @@ describe("block staleness (span-hash invalidation)", () => {
 
   /** Seed an active block over [0, 2) hashing the given transcript. */
   function seedBlock(sessionID: string, hashing: TestMessageEntry[]): void {
-    const state = getContextStateManager().get(sessionID);
+    const state = stateOf(sessionID);
     state.blocks.set(1, {
       start: 0,
       end: 2,
@@ -238,50 +331,40 @@ describe("block staleness (span-hash invalidation)", () => {
 
   const NO_PRODUCERS = { dedup: {}, purgeErrors: {} };
 
-  it("folds while the span validates, then expands once it does not", () => {
+  it("folds while the span validates, then expands once it does not", async () => {
     const sessionID = "sess-stale-expiry";
     seedBlock(sessionID, turn(sessionID, "hello"));
 
     const roundOne = turn(sessionID, "hello");
-    contextPruningTransformHandler(adapter, roundOne, NO_PRODUCERS);
+    await transform(adapter, roundOne, NO_PRODUCERS);
     assert.equal(roundOne[0].info.synthetic, true, "block folds while valid");
-    assert.equal(
-      getContextStateManager().get(sessionID).blocks.get(1)?.status,
-      "active",
-    );
+    assert.equal(stateOf(sessionID).blocks.get(1)?.status, "active");
 
     // The covered content changed under the block: it can no longer
     // vouch for its interval.
     const roundTwo = turn(sessionID, "rewritten opening");
-    contextPruningTransformHandler(adapter, roundTwo, NO_PRODUCERS);
+    await transform(adapter, roundTwo, NO_PRODUCERS);
 
     assert.equal(
       roundTwo[0].info.synthetic,
       undefined,
       "the invalidated interval expands back into originals",
     );
-    assert.equal(
-      getContextStateManager().get(sessionID).blocks.get(1)?.status,
-      "stale",
-    );
+    assert.equal(stateOf(sessionID).blocks.get(1)?.status, "stale");
   });
 
-  it("keeps the record addressable — retained in the map with its text", () => {
+  it("keeps the record addressable — retained in the map with its text", async () => {
     const sessionID = "sess-stale-expiry";
     seedBlock(sessionID, turn(sessionID, "hello"));
-    contextPruningTransformHandler(
-      adapter,
-      turn(sessionID, "hello"),
-      NO_PRODUCERS,
-    );
+    await transform(adapter, turn(sessionID, "hello"), NO_PRODUCERS);
 
-    contextPruningTransformHandler(
+    await transform(
       adapter,
       turn(sessionID, "rewritten opening"),
       NO_PRODUCERS,
     );
 
-    const state = getContextStateManager().get(sessionID);
+    const state = stateOf(sessionID);
     const block = state.blocks.get(1);
     assert.ok(block !== undefined, "the record is not deleted");
     assert.equal(block.title, "会话开场");
@@ -290,17 +373,13 @@ describe("block staleness (span-hash invalidation)", () => {
     assert.equal(state.blocks.size, 1);
   });
 
-  it("logs the transition with the interval and both hashes", () => {
+  it("logs the transition with the interval and both hashes", async () => {
     const sessionID = "sess-stale-expiry";
     seedBlock(sessionID, turn(sessionID, "hello"));
-    contextPruningTransformHandler(
-      adapter,
-      turn(sessionID, "hello"),
-      NO_PRODUCERS,
-    );
+    await transform(adapter, turn(sessionID, "hello"), NO_PRODUCERS);
     const before = _getBufferForTesting().length;
 
-    contextPruningTransformHandler(
+    await transform(
       adapter,
       turn(sessionID, "rewritten opening"),
       NO_PRODUCERS,
@@ -323,14 +402,14 @@ describe("block staleness (span-hash invalidation)", () => {
     assert.notEqual(entry.storedHash, entry.currentHash);
   });
 
-  it("reports a reason instead of a hash when the span is out of bounds", () => {
+  it("reports a reason instead of a hash when the span is out of bounds", async () => {
     const sessionID = "sess-stale-expiry";
     seedBlock(sessionID, turn(sessionID, "hello"));
     const before = _getBufferForTesting().length;
 
     // The transcript shrank under the block's interval (a revert cut).
     const truncated = [msg("user", "u1", [textPart("hello")], sessionID)];
-    contextPruningTransformHandler(adapter, truncated, NO_PRODUCERS);
+    await transform(adapter, truncated, NO_PRODUCERS);
 
     const entry = _getBufferForTesting()
       .slice(before)
@@ -342,27 +421,21 @@ describe("block staleness (span-hash invalidation)", () => {
     assert.equal(typeof entry.storedHash, "string");
     assert.equal(entry.currentHash, null, "no hash is defined for the span");
     assert.equal(entry.historyLength, 1);
-    assert.equal(
-      getContextStateManager().get(sessionID).blocks.get(1)?.status,
-      "stale",
-    );
+    assert.equal(stateOf(sessionID).blocks.get(1)?.status, "stale");
   });
 
-  it("never re-ages a stale block in later rounds", () => {
+  it("never re-ages a stale block in later rounds", async () => {
     const sessionID = "sess-stale-expiry";
     seedBlock(sessionID, turn(sessionID, "hello"));
-    contextPruningTransformHandler(
+    await transform(
       adapter,
       turn(sessionID, "rewritten opening"),
       NO_PRODUCERS,
     );
-    assert.equal(
-      getContextStateManager().get(sessionID).blocks.get(1)?.status,
-      "stale",
-    );
+    assert.equal(stateOf(sessionID).blocks.get(1)?.status, "stale");
     const before = _getBufferForTesting().length;
 
-    contextPruningTransformHandler(
+    await transform(
       adapter,
       turn(sessionID, "rewritten opening"),
       NO_PRODUCERS,
@@ -375,22 +448,19 @@ describe("block staleness (span-hash invalidation)", () => {
       0,
       "a terminal block is never re-validated or re-reported",
     );
-    assert.equal(
-      getContextStateManager().get(sessionID).blocks.get(1)?.status,
-      "stale",
-    );
+    assert.equal(stateOf(sessionID).blocks.get(1)?.status, "stale");
   });
 
-  it("allocates a fresh id for the next block instead of reusing b1", () => {
+  it("allocates a fresh id for the next block instead of reusing b1", async () => {
     const sessionID = "sess-stale-expiry";
     seedBlock(sessionID, turn(sessionID, "hello"));
-    contextPruningTransformHandler(
+    await transform(
       adapter,
       turn(sessionID, "rewritten opening"),
       NO_PRODUCERS,
     );
 
-    const state = getContextStateManager().get(sessionID);
+    const state = stateOf(sessionID);
     assert.equal(allocateBlockId(state), 2);
     assert.equal(state.blocks.get(1)?.status, "stale");
   });
@@ -416,7 +486,7 @@ describe("retained terminal blocks do not force every release", () => {
 
   /** Seed a pending mark over a1's tool-output region. */
   function seedPendingMark(): void {
-    getContextStateManager().get(sessionID).marks.set(markKey(1, 1), {
+    stateOf(sessionID).marks.set(markKey(1, 1), {
       anchorOrdinal: 1,
       regionIndex: 1,
       content: "first call output",
@@ -433,11 +503,11 @@ describe("retained terminal blocks do not force every release", () => {
       .filter((e) => e.event === "marks_released") as Record<string, unknown>[];
   }
 
-  it("arms the bypass for the expiry round only", () => {
+  it("arms the bypass for the expiry round only", async () => {
     // releasedPercent is unset, so the percentage gate stays closed and a
     // release can only come from the view-change bypass.
     const config = { dedup: {}, purgeErrors: {} };
-    const state = getContextStateManager().get(sessionID);
+    const state = stateOf(sessionID);
     state.blocks.set(1, {
       start: 0,
       end: 2,
@@ -452,19 +522,19 @@ describe("retained terminal blocks do not force every release", () => {
     // Round 1: the span still validates; the pending mark stays pending.
     seedPendingMark();
     let watermark = _getBufferForTesting().length;
-    contextPruningTransformHandler(adapter, turn("hello"), config);
+    await transform(adapter, turn("hello"), config);
     assert.equal(releasedLog(watermark).length, 0, "gate closed, no bypass");
 
     // Round 2: the content changes, the block goes stale and arms the
     // bypass for the NEXT round.
     watermark = _getBufferForTesting().length;
-    contextPruningTransformHandler(adapter, turn("rewritten opening"), config);
-    assert.equal(state.blocks.get(1)?.status, "stale");
+    await transform(adapter, turn("rewritten opening"), config);
+    assert.equal(stateOf(sessionID).blocks.get(1)?.status, "stale");
     assert.equal(releasedLog(watermark).length, 0, "the flag lands next turn");
 
     // Round 3: the bypass fires — the mark flushes even with the gate shut.
     watermark = _getBufferForTesting().length;
-    contextPruningTransformHandler(adapter, turn("rewritten opening"), config);
+    await transform(adapter, turn("rewritten opening"), config);
     const forced = releasedLog(watermark);
     assert.equal(forced.length, 1, "the armed bypass flushed the mark");
     assert.equal(forced[0].forced, "view_change");
@@ -473,9 +543,9 @@ describe("retained terminal blocks do not force every release", () => {
     // fold over it must not arm the bypass again.
     seedPendingMark();
     watermark = _getBufferForTesting().length;
-    contextPruningTransformHandler(adapter, turn("rewritten opening"), config);
-    assert.equal(state.blocks.size, 1, "the record is retained");
-    assert.equal(state.blocks.get(1)?.status, "stale");
+    await transform(adapter, turn("rewritten opening"), config);
+    assert.equal(stateOf(sessionID).blocks.size, 1, "the record is retained");
+    assert.equal(stateOf(sessionID).blocks.get(1)?.status, "stale");
     assert.equal(
       releasedLog(watermark).length,
       0,
@@ -483,9 +553,9 @@ describe("retained terminal blocks do not force every release", () => {
     );
   });
 
-  it("treats a terminal record in the map as steady state every round", () => {
+  it("treats a terminal record in the map as steady state every round", async () => {
     const config = { dedup: {}, purgeErrors: {} };
-    const state = getContextStateManager().get(sessionID);
+    const state = stateOf(sessionID);
     // A block that stopped folding but stayed in the map (restored or
     // swallowed by a wider block) — exactly what retention now leaves
     // behind round after round.
@@ -503,7 +573,7 @@ describe("retained terminal blocks do not force every release", () => {
     for (const round of ["first", "second"]) {
       seedPendingMark();
       const watermark = _getBufferForTesting().length;
-      contextPruningTransformHandler(adapter, turn("hello"), config);
+      await transform(adapter, turn("hello"), config);
       assert.equal(
         releasedLog(watermark).length,
         0,
@@ -538,8 +608,8 @@ describe("a session deletion drops a bypass armed by the fold", () => {
    * Run one round whose opening text changes, staling the active block
    * and arming the bypass for the NEXT round.
    */
-  function armBypass(sessionID: string): void {
-    const state = getContextStateManager().get(sessionID);
+  async function armBypass(sessionID: string): Promise<void> {
+    const state = stateOf(sessionID);
     state.blocks.set(1, {
       start: 0,
       end: 2,
@@ -554,28 +624,31 @@ describe("a session deletion drops a bypass armed by the fold", () => {
       summaryTokens: 10,
       createdAt: 1000,
     });
-    contextPruningTransformHandler(
-      adapter,
-      turnFor(sessionID, "rewritten opening"),
-      { dedup: {}, purgeErrors: {} },
+    await transform(adapter, turnFor(sessionID, "rewritten opening"), {
+      dedup: {},
+      purgeErrors: {},
+    });
+    assert.equal(
+      stateOf(sessionID).blocks.get(1)?.status,
+      "stale",
+      "the span went stale",
     );
-    assert.equal(state.blocks.get(1)?.status, "stale", "the span went stale");
   }
 
   it("leaves no armed flag behind once the session is deleted", async () => {
     // Control: without cleanup the armed flag is pending for the next
     // round, so the assertion below is not vacuously true.
-    armBypass("sess-cleanup-control");
+    await armBypass("sess-cleanup-control");
     assert.equal(
-      consumePendingViewChange("sess-cleanup-control"),
+      consumeViewChange("sess-cleanup-control"),
       true,
       "the fold armed the bypass",
     );
 
-    armBypass("sess-cleanup-bypass");
-    await sessionResources.delete("sess-cleanup-bypass");
+    await armBypass("sess-cleanup-bypass");
+    await deleteSession("sess-cleanup-bypass");
     assert.equal(
-      consumePendingViewChange("sess-cleanup-bypass"),
+      consumeViewChange("sess-cleanup-bypass"),
       false,
       "a session deletion must drop the fold-armed bypass",
     );
@@ -587,46 +660,59 @@ describe("a session deletion drops a bypass armed by the fold", () => {
 // ---------------------------------------------------------------------------
 
 describe("robustness", () => {
-  it("is a no-op for null messages", () => {
-    assert.doesNotThrow(() =>
-      contextPruningTransformHandler(adapter, null, {}),
-    );
+  it("is a no-op for null messages", async () => {
+    assert.equal(await transform(adapter, null, {}), null);
   });
 
-  it("is a no-op for undefined messages", () => {
-    assert.doesNotThrow(() =>
-      contextPruningTransformHandler(adapter, undefined, {}),
-    );
+  it("is a no-op for undefined messages", async () => {
+    assert.equal(await transform(adapter, undefined, {}), undefined);
   });
 
-  it("is a no-op for an empty array", () => {
-    assert.doesNotThrow(() => contextPruningTransformHandler(adapter, [], {}));
+  it("is a no-op for an empty array", async () => {
+    assert.deepEqual(await transform(adapter, [], {}), []);
   });
 
-  it("is a no-op when the first message has no sessionID", () => {
+  it("addresses the permit's session although the messages name none", async () => {
     const messages = [msg("user", "u1", [textPart("hi")])];
-    assert.doesNotThrow(() =>
-      contextPruningTransformHandler(adapter, messages, {
-        dedup: { minMessages: 20, thresholdContext: 100000 },
-        purgeErrors: { minMessages: 20, thresholdContext: 100000 },
-        compress: { protectedTokens: 0, thresholdTokens: 0 },
-      }),
+    const result = (await transform(adapter, messages, {
+      dedup: { minMessages: 20, thresholdContext: 100000 },
+      purgeErrors: { minMessages: 20, thresholdContext: 100000 },
+      compress: { protectedTokens: 0, thresholdTokens: 0 },
+    })) as TestMessageEntry[];
+    assert.equal(result.length, 1, "no synthetic message is appended");
+    assert.ok(
+      runtime.roundView("sess-unattributed"),
+      "the admitted session owns the published view",
     );
-    assert.equal(messages.length, 1, "input untouched");
   });
 
-  it("is a no-op when the first message is null", () => {
+  it("is a no-op for a lapsed permit", async () => {
+    const sessionID = "sess-lapsed";
+    const messages = [msg("user", "u1", [textPart("hi")], sessionID)];
+    const controller = new AbortController();
+    controller.abort();
+    const result = await contextPruningTransformHandler(
+      runtime,
+      permitFor(sessionID, controller.signal),
+      adapter,
+      messages,
+      {},
+    );
+    assert.equal(result, messages, "the input conversation is unchanged");
+    assert.equal(runtime.roundView(sessionID), undefined);
+  });
+
+  it("tolerates a null first message", async () => {
     const messages = [null, msg("user", "u2", [textPart("hi")])];
-    assert.doesNotThrow(() =>
-      contextPruningTransformHandler(
-        adapter,
-        messages as unknown as TestMessageEntry[],
-        {},
-      ),
+    const result = await transform(
+      adapter,
+      messages as unknown as TestMessageEntry[],
+      {},
     );
+    assert.ok(Array.isArray(result));
   });
 
-  it("tolerates messages with null parts and stateless tool parts", () => {
+  it("tolerates messages with null parts and stateless tool parts", async () => {
     const sessionID = "sess-robust-parts";
     const messages = [
       msg("user", "u1", [textPart("do it")], sessionID),
@@ -637,13 +723,11 @@ describe("robustness", () => {
       msg("user", "u2", [null, textPart("again")], sessionID),
     ];
     // The pipeline must never throw on degenerate part shapes.
-    assert.doesNotThrow(() =>
-      contextPruningTransformHandler(adapter, messages, {
-        dedup: { minMessages: 20, thresholdContext: 100000 },
-        purgeErrors: {},
-      }),
-    );
-    assert.equal(messages.length, 3, "no synthetic messages appended");
+    const result = await transform(adapter, messages, {
+      dedup: { minMessages: 20, thresholdContext: 100000 },
+      purgeErrors: {},
+    });
+    assert.equal((result as TestMessageEntry[]).length, 3);
   });
 });
 
@@ -652,7 +736,7 @@ describe("robustness", () => {
 // ---------------------------------------------------------------------------
 
 describe("persistence round-trip via the shared store", () => {
-  it("restart keeps blocks folding and effective marks pruning", () => {
+  it("restart keeps blocks folding and effective marks pruning", async () => {
     const sessionID = "sess-persist-roundtrip";
 
     const buildTurn = (): TestMessageEntry[] => [
@@ -667,8 +751,7 @@ describe("persistence round-trip via the shared store", () => {
 
     // Seed a persistent block over [0,2) and one effective mark on a2's
     // tool-output region (ordinal 3, region index 1).
-    const manager = getContextStateManager();
-    const state = manager.get(sessionID);
+    const state = stateOf(sessionID);
     const turnOne = buildTurn();
     state.blocks.set(1, {
       start: 0,
@@ -691,7 +774,7 @@ describe("persistence round-trip via the shared store", () => {
 
     // Turn 1: effective mark applied + block folded + state saved.
     const turnOneMessages = buildTurn();
-    contextPruningTransformHandler(adapter, turnOneMessages, {
+    await transform(adapter, turnOneMessages, {
       dedup: {},
       purgeErrors: {},
     });
@@ -705,12 +788,12 @@ describe("persistence round-trip via the shared store", () => {
 
     // Simulate a restart: drop the in-memory cache (state reloads from
     // the store on the next get).
-    _resetContextStateManagerForTesting();
+    runtime = createContextRuntime(store);
 
     // Turn 2: fresh transcript from the host — the reloaded state must
     // still fold the block and apply the effective mark.
     const turnTwoMessages = buildTurn();
-    contextPruningTransformHandler(adapter, turnTwoMessages, {
+    await transform(adapter, turnTwoMessages, {
       dedup: {},
       purgeErrors: {},
     });
@@ -725,7 +808,7 @@ describe("persistence round-trip via the shared store", () => {
     );
 
     // The reloaded state itself carries the block and the mark.
-    const reloaded = getContextStateManager().get(sessionID);
+    const reloaded = stateOf(sessionID);
     assert.equal(reloaded.blocks.size, 1, "block persisted");
     assert.equal(reloaded.marks.size, 1, "mark persisted");
     assert.equal(reloaded.marks.get(markKey(3, 1))?.effective, true);
@@ -737,9 +820,9 @@ describe("persistence round-trip via the shared store", () => {
 // ---------------------------------------------------------------------------
 
 describe("release notification", () => {
-  it("notifies exactly once with the cleanup wording on a batch release", () => {
+  it("notifies exactly once with the cleanup wording on a batch release", async () => {
     const sessionID = "sess-release-notify";
-    setModelLimit(sessionID, MODEL_LIMIT, "test-model");
+    setLimit(sessionID, MODEL_LIMIT, "test-model");
 
     const buildTurn = (): TestMessageEntry[] => [
       msg("user", "u1", [textPart("do it")], sessionID),
@@ -760,7 +843,7 @@ describe("release notification", () => {
 
     // Seed one pending mark; the release phase of the first turn flips
     // it under the open percentage gate and notifies exactly once.
-    const state = getContextStateManager().get(sessionID);
+    const state = stateOf(sessionID);
     state.marks.set(markKey(1, 1), {
       anchorOrdinal: 1,
       regionIndex: 1,
@@ -770,7 +853,7 @@ describe("release notification", () => {
       markedAt: 1000,
     });
 
-    contextPruningTransformHandler(adapter, buildTurn(), config, notify);
+    await transform(adapter, buildTurn(), config, notify);
     assert.equal(notifyCalls.length, 1, "notify called exactly once");
 
     // The notification text carries the required wording and the mark
@@ -796,9 +879,9 @@ describe("release notification", () => {
     );
   });
 
-  it("keeps marks pending while the releasedPercent gate is closed", () => {
+  it("keeps marks pending while the releasedPercent gate is closed", async () => {
     const sessionID = "sess-release-below";
-    setModelLimit(sessionID, MODEL_LIMIT, "test-model");
+    setLimit(sessionID, MODEL_LIMIT, "test-model");
     const buildTurn = (): TestMessageEntry[] => [
       msg("user", "u1", [textPart("do it")], sessionID),
       msg("assistant", "a1", [toolPart(LONG_OUTPUT)], undefined, {
@@ -809,7 +892,7 @@ describe("release notification", () => {
 
     // Seed a pending mark; releasedPercent undefined keeps the gate
     // closed regardless of pending tokens, so it never flips.
-    const state = getContextStateManager().get(sessionID);
+    const state = stateOf(sessionID);
     state.marks.set(markKey(1, 1), {
       anchorOrdinal: 1,
       regionIndex: 1,
@@ -821,9 +904,7 @@ describe("release notification", () => {
     const config = { protectedMessages: 0 };
     for (let turn = 0; turn < 2; turn++) {
       const notifyCalls: string[] = [];
-      contextPruningTransformHandler(adapter, buildTurn(), config, (t) =>
-        notifyCalls.push(t),
-      );
+      await transform(adapter, buildTurn(), config, (t) => notifyCalls.push(t));
       assert.equal(notifyCalls.length, 0, "no release without releasedPercent");
     }
     const marks = [...state.marks.values()];
@@ -837,10 +918,9 @@ describe("release notification", () => {
 // ---------------------------------------------------------------------------
 
 describe("log field sets", () => {
-  it("prune_completed counts effective marks only", () => {
+  it("prune_completed counts effective marks only", async () => {
     const sessionID = "sess-log-effective";
-    const manager = getContextStateManager();
-    const state = manager.get(sessionID);
+    const state = stateOf(sessionID);
 
     // 2 effective marks + 1 pending mark.
     state.marks.set(markKey(1, 1), {
@@ -877,7 +957,7 @@ describe("log field sets", () => {
         toolPart("pending output"),
       ]),
     ];
-    contextPruningTransformHandler(adapter, messages, {
+    await transform(adapter, messages, {
       dedup: {},
       purgeErrors: {},
     });
@@ -891,10 +971,9 @@ describe("log field sets", () => {
     assert.equal(entry.totalPruneTokens, 500);
   });
 
-  it("marks_released carries the forced field when pendingViewChange bypasses the gate", () => {
+  it("marks_released carries the forced field when pendingViewChange bypasses the gate", async () => {
     const sessionID = "sess-release-forced";
-    const manager = getContextStateManager();
-    const state = manager.get(sessionID);
+    const state = stateOf(sessionID);
     state.marks.set(markKey(1, 1), {
       anchorOrdinal: 1,
       regionIndex: 1,
@@ -905,7 +984,7 @@ describe("log field sets", () => {
     });
     // A sibling unit (compress / decompress tool) armed the view change
     // through the shared runtime flag map.
-    setPendingViewChange(sessionID);
+    armViewChange(sessionID);
 
     const messages = [
       msg("user", "u1", [textPart("do it")], sessionID),
@@ -915,11 +994,8 @@ describe("log field sets", () => {
       }),
     ];
     const notifyCalls: string[] = [];
-    contextPruningTransformHandler(
-      adapter,
-      messages,
-      { dedup: {}, purgeErrors: {} },
-      (t) => notifyCalls.push(t),
+    await transform(adapter, messages, { dedup: {}, purgeErrors: {} }, (t) =>
+      notifyCalls.push(t),
     );
 
     const entry = _getBufferForTesting().find(
@@ -932,7 +1008,7 @@ describe("log field sets", () => {
 
     // The flag is consumed — cleared by the release phase.
     assert.equal(
-      consumePendingViewChange(sessionID),
+      consumeViewChange(sessionID),
       false,
       "flag consumed and cleared",
     );
@@ -980,13 +1056,13 @@ describe("context-nudge injection", () => {
     ];
   }
 
-  it("injects a gentle nudge at the END and persists the anchor", () => {
+  it("injects a gentle nudge at the END and persists the anchor", async () => {
     const sessionID = "sess-nudge-basic";
-    setModelLimit(sessionID, NUDGE_LIMIT, "test-model");
+    setLimit(sessionID, NUDGE_LIMIT, "test-model");
 
     // Baseline eval at 140K — establishes the anchor silently.
     let messages = nudgeMessages(sessionID, 140000);
-    contextPruningTransformHandler(
+    await transform(
       adapter,
       messages,
       nudgeTransformConfig(2),
@@ -994,12 +1070,12 @@ describe("context-nudge injection", () => {
       true,
     );
     assert.equal(messages.length, 4, "baseline injects nothing");
-    let state = getContextStateManager().get(sessionID);
+    let state = stateOf(sessionID);
     assert.equal(state.nudges?.lastNudgeTokens, 140000, "anchor persisted");
 
     // Growth past the gentle interval: 150K (delta 10K >= 10K).
     messages = nudgeMessages(sessionID, 150000);
-    contextPruningTransformHandler(
+    await transform(
       adapter,
       messages,
       nudgeTransformConfig(2),
@@ -1030,7 +1106,7 @@ describe("context-nudge injection", () => {
     assert.ok(/\(~\d+ tokens\)/.test(text), "reclaim estimate present");
 
     // Anchor ratcheted up to the fired level's tokens.
-    state = getContextStateManager().get(sessionID);
+    state = stateOf(sessionID);
     assert.equal(state.nudges?.lastNudgeTokens, 150000);
 
     // nudge_injected log carries the evaluation payload.
@@ -1045,9 +1121,9 @@ describe("context-nudge injection", () => {
     assert.equal(entry.endRef, "m2");
   });
 
-  it("toasts the gentle nudge with source and info level, fire-and-forget", () => {
+  it("toasts the gentle nudge with source and info level, fire-and-forget", async () => {
     const sessionID = "sess-nudge-toast";
-    setModelLimit(sessionID, NUDGE_LIMIT, "test-model");
+    setLimit(sessionID, NUDGE_LIMIT, "test-model");
     const toasts: Array<{ source: string; level: string; text: string }> = [];
     const toast = (t: { source: string; level: string; text: string }) => {
       toasts.push(t);
@@ -1055,7 +1131,7 @@ describe("context-nudge injection", () => {
 
     // Baseline eval at 140K — nothing fires, so nothing toasts.
     let messages = nudgeMessages(sessionID, 140000);
-    contextPruningTransformHandler(
+    await transform(
       adapter,
       messages,
       nudgeTransformConfig(2),
@@ -1067,7 +1143,7 @@ describe("context-nudge injection", () => {
 
     // Growth past the gentle interval: 150K → the nudge injects.
     messages = nudgeMessages(sessionID, 150000);
-    contextPruningTransformHandler(
+    await transform(
       adapter,
       messages,
       nudgeTransformConfig(2),
@@ -1085,9 +1161,9 @@ describe("context-nudge injection", () => {
     assert.match(toasts[0].text, /75%/);
   });
 
-  it("toasts the urgent nudge with warning level", () => {
+  it("toasts the urgent nudge with warning level", async () => {
     const sessionID = "sess-nudge-toast-urgent";
-    setModelLimit(sessionID, NUDGE_LIMIT, "test-model");
+    setLimit(sessionID, NUDGE_LIMIT, "test-model");
     const toasts: Array<{ source: string; level: string; text: string }> = [];
     const toast = (t: { source: string; level: string; text: string }) => {
       toasts.push(t);
@@ -1095,7 +1171,7 @@ describe("context-nudge injection", () => {
 
     // Baseline at 170K (already past the 80% max threshold) is silent.
     let messages = nudgeMessages(sessionID, 170000);
-    contextPruningTransformHandler(
+    await transform(
       adapter,
       messages,
       nudgeTransformConfig(2),
@@ -1107,7 +1183,7 @@ describe("context-nudge injection", () => {
 
     // 180K: delta 10K >= the urgent interval (5K) → urgent fires.
     messages = nudgeMessages(sessionID, 180000);
-    contextPruningTransformHandler(
+    await transform(
       adapter,
       messages,
       nudgeTransformConfig(2),
@@ -1126,12 +1202,12 @@ describe("context-nudge injection", () => {
     assert.match(toasts[0].text, /90%/);
   });
 
-  it("does not re-inject while the anchor sits at the current tokens", () => {
+  it("does not re-inject while the anchor sits at the current tokens", async () => {
     const sessionID = "sess-nudge-basic";
-    setModelLimit(sessionID, NUDGE_LIMIT, "test-model");
+    setLimit(sessionID, NUDGE_LIMIT, "test-model");
 
     let messages = nudgeMessages(sessionID, 140000);
-    contextPruningTransformHandler(
+    await transform(
       adapter,
       messages,
       nudgeTransformConfig(2),
@@ -1139,7 +1215,7 @@ describe("context-nudge injection", () => {
       true,
     );
     messages = nudgeMessages(sessionID, 150000);
-    contextPruningTransformHandler(
+    await transform(
       adapter,
       messages,
       nudgeTransformConfig(2),
@@ -1150,7 +1226,7 @@ describe("context-nudge injection", () => {
 
     // Same tokens again — delta 0 → the anchor already moved → silent.
     const messages2 = nudgeMessages(sessionID, 150000);
-    contextPruningTransformHandler(
+    await transform(
       adapter,
       messages2,
       nudgeTransformConfig(2),
@@ -1161,15 +1237,15 @@ describe("context-nudge injection", () => {
     assert.equal(messages2[messages2.length - 1].info.id, "a2");
   });
 
-  it("advertises the window in the folded view's coordinates", () => {
+  it("advertises the window in the folded view's coordinates", async () => {
     // Two sessions over the same transcript; one carries an active block
     // folding ordinals 1-2.  The window the nudge advertises must be
     // measured over the view the model sees: the folded interval holds no
     // reclaim and the dense renumbering pulls the end ref back.
     const plain = "sess-nudge-window-plain";
     const folded = "sess-nudge-window-folded";
-    setModelLimit(plain, NUDGE_LIMIT, "test-model");
-    setModelLimit(folded, NUDGE_LIMIT, "test-model");
+    setLimit(plain, NUDGE_LIMIT, "test-model");
+    setLimit(folded, NUDGE_LIMIT, "test-model");
 
     const HEAVY = "y".repeat(2000);
     const viewMessages = (sessionID: string, inputTokens: number) => [
@@ -1187,22 +1263,20 @@ describe("context-nudge injection", () => {
     // Seed the block over [1, 3) on the transcript as the fold sees it.
     const seed = viewMessages(folded, 140000);
     const snapshot = adapter.history(seed);
-    getContextStateManager()
-      .get(folded)
-      .blocks.set(1, {
-        start: 1,
-        end: 3,
-        summary: "已折叠的历史",
-        spanHash: computeSpanHash(snapshot, 1, 3),
-        status: "active",
-        compressedTokens: 900,
-        summaryTokens: 30,
-        createdAt: 1000,
-      });
+    stateOf(folded).blocks.set(1, {
+      start: 1,
+      end: 3,
+      summary: "已折叠的历史",
+      spanHash: computeSpanHash(snapshot, 1, 3),
+      status: "active",
+      compressedTokens: 900,
+      summaryTokens: 30,
+      createdAt: 1000,
+    });
 
-    const run = (sessionID: string, inputTokens: number) => {
+    const run = async (sessionID: string, inputTokens: number) => {
       _resetForTesting();
-      contextPruningTransformHandler(
+      await transform(
         adapter,
         viewMessages(sessionID, inputTokens),
         nudgeTransformConfig(2),
@@ -1215,10 +1289,10 @@ describe("context-nudge injection", () => {
     };
 
     // Baseline round establishes the anchor; the growth round fires.
-    run(plain, 140000);
-    run(folded, 140000);
-    const plainEntry = run(plain, 150000);
-    const foldedEntry = run(folded, 150000);
+    await run(plain, 140000);
+    await run(folded, 140000);
+    const plainEntry = await run(plain, 150000);
+    const foldedEntry = await run(folded, 150000);
     assert.ok(plainEntry && foldedEntry, "both rounds fire the nudge");
 
     // Unfolded: the window is ordinals 1-3, i.e. lines m2-m4, and all
@@ -1236,67 +1310,62 @@ describe("context-nudge injection", () => {
     );
   });
 
-  it("drops the water level as soon as a compression books its reclaim", () => {
+  it("drops the water level as soon as a compression books its reclaim", async () => {
     const sessionID = "sess-nudge-reclaim-credit";
-    setModelLimit(sessionID, NUDGE_LIMIT, "test-model");
-    const state = getContextStateManager().get(sessionID);
+    setLimit(sessionID, NUDGE_LIMIT, "test-model");
 
     // Anchor at 140K.
-    contextPruningTransformHandler(
+    await transform(
       adapter,
       nudgeMessages(sessionID, 140000),
       nudgeTransformConfig(2),
       undefined,
       true,
     );
-    assert.equal(state.nudges?.lastNudgeTokens, 140000);
+    assert.equal(stateOf(sessionID).nudges?.lastNudgeTokens, 140000);
 
     // A compression frees 30K mid-round; the usage figure still reads
     // 150K because it was written by the call that preceded the compress.
-    creditReclaim(state, 30000);
+    creditReclaim(stateOf(sessionID), 30000);
     const stale = nudgeMessages(sessionID, 150000);
-    contextPruningTransformHandler(
-      adapter,
-      stale,
-      nudgeTransformConfig(2),
-      undefined,
-      true,
-    );
+    await transform(adapter, stale, nudgeTransformConfig(2), undefined, true);
     assert.equal(stale.length, 4, "the reclaimed tokens are off the level");
     assert.equal(
-      state.nudges?.lastNudgeTokens,
+      stateOf(sessionID).nudges?.lastNudgeTokens,
       120000,
       "water level follows the view down at once",
     );
-    assert.equal(state.nudges?.pendingReclaimTokens, 30000, "still booked");
-    assert.equal(state.nudges?.reclaimMeasurement, 150000, "anchored to it");
+    assert.equal(
+      stateOf(sessionID).nudges?.pendingReclaimTokens,
+      30000,
+      "still booked",
+    );
+    assert.equal(
+      stateOf(sessionID).nudges?.reclaimMeasurement,
+      150000,
+      "anchored to it",
+    );
 
     // A newer measurement already includes the reclaim, so the credit is
     // consumed rather than subtracted again: the level is the measured
     // 152K, and that is 32K above the anchor → the nudge fires.
     const fresh = nudgeMessages(sessionID, 152000);
-    contextPruningTransformHandler(
-      adapter,
-      fresh,
-      nudgeTransformConfig(2),
-      undefined,
-      true,
-    );
+    await transform(adapter, fresh, nudgeTransformConfig(2), undefined, true);
     assert.equal(
       fresh[fresh.length - 1].info.id,
       "zoo-nudge",
       "no double subtraction: the level is measured, not discounted twice",
     );
-    assert.equal(state.nudges?.pendingReclaimTokens, undefined);
-    assert.equal(state.nudges?.reclaimMeasurement, undefined);
-    assert.equal(state.nudges?.lastNudgeTokens, 152000);
+    assert.equal(stateOf(sessionID).nudges?.pendingReclaimTokens, undefined);
+    assert.equal(stateOf(sessionID).nudges?.reclaimMeasurement, undefined);
+    assert.equal(stateOf(sessionID).nudges?.lastNudgeTokens, 152000);
   });
 
-  it("stays silent without the nudge section or the compress tool", () => {
+  it("stays silent without the nudge section or the compress tool", async () => {
     // Gate 1: the compress tool registered but NO nudge section — the
     // evaluation would fire at 150K if the section existed.
     const sessionID = "sess-nudge-no-section";
-    setModelLimit(sessionID, NUDGE_LIMIT, "test-model");
+    setLimit(sessionID, NUDGE_LIMIT, "test-model");
     const noNudgeConfig = {
       protectedMessages: 2,
       compress: { protectedTokens: 0, thresholdTokens: 0 },
@@ -1304,28 +1373,16 @@ describe("context-nudge injection", () => {
       purgeErrors: {},
     };
     let messages = nudgeMessages(sessionID, 140000);
-    contextPruningTransformHandler(
-      adapter,
-      messages,
-      noNudgeConfig,
-      undefined,
-      true,
-    );
+    await transform(adapter, messages, noNudgeConfig, undefined, true);
     messages = nudgeMessages(sessionID, 150000);
-    contextPruningTransformHandler(
-      adapter,
-      messages,
-      noNudgeConfig,
-      undefined,
-      true,
-    );
+    await transform(adapter, messages, noNudgeConfig, undefined, true);
     assert.equal(messages.length, 4, "absent nudge section → silent");
 
     // Gate 2: nudge section present but the compress tool NOT registered.
     const sessionID2 = "sess-nudge-no-tool";
-    setModelLimit(sessionID2, NUDGE_LIMIT, "test-model");
+    setLimit(sessionID2, NUDGE_LIMIT, "test-model");
     messages = nudgeMessages(sessionID2, 140000);
-    contextPruningTransformHandler(
+    await transform(
       adapter,
       messages,
       nudgeTransformConfig(2),
@@ -1333,7 +1390,7 @@ describe("context-nudge injection", () => {
       false,
     );
     messages = nudgeMessages(sessionID2, 150000);
-    contextPruningTransformHandler(
+    await transform(
       adapter,
       messages,
       nudgeTransformConfig(2),
@@ -1345,7 +1402,7 @@ describe("context-nudge injection", () => {
     // Gate 3: the nudge section and the compress tool are present, but
     // no `[zoo.context.compress]` window is configured.
     const sessionID3 = "sess-nudge-no-window";
-    setModelLimit(sessionID3, NUDGE_LIMIT, "test-model");
+    setLimit(sessionID3, NUDGE_LIMIT, "test-model");
     const noWindowConfig = {
       protectedMessages: 2,
       nudge: NUDGE_CONFIG,
@@ -1353,21 +1410,9 @@ describe("context-nudge injection", () => {
       purgeErrors: {},
     };
     messages = nudgeMessages(sessionID3, 140000);
-    contextPruningTransformHandler(
-      adapter,
-      messages,
-      noWindowConfig,
-      undefined,
-      true,
-    );
+    await transform(adapter, messages, noWindowConfig, undefined, true);
     messages = nudgeMessages(sessionID3, 150000);
-    contextPruningTransformHandler(
-      adapter,
-      messages,
-      noWindowConfig,
-      undefined,
-      true,
-    );
+    await transform(adapter, messages, noWindowConfig, undefined, true);
     assert.equal(messages.length, 4, "unconfigured window → no nudge");
 
     const entries = _getBufferForTesting();
@@ -1377,9 +1422,9 @@ describe("context-nudge injection", () => {
     );
   });
 
-  it("routes the nudge toast through the tool host toast port", () => {
+  it("routes the nudge toast through the tool host toast port", async () => {
     const sessionID = "sess-toast-wire";
-    setModelLimit(sessionID, NUDGE_LIMIT, "test-model");
+    setLimit(sessionID, NUDGE_LIMIT, "test-model");
     const calls: Array<{
       sessionId: string;
       source: string;
@@ -1401,7 +1446,7 @@ describe("context-nudge injection", () => {
     };
 
     // Baseline turn — nothing injects, so the port stays untouched.
-    handleContextPruning(
+    await transformOutput(
       { messages: nudgeMessages(sessionID, 140000) },
       nudgeTransformConfig(2),
       toolHost,
@@ -1413,7 +1458,7 @@ describe("context-nudge injection", () => {
     // Growth turn — the nudge injects and the toast port receives it
     // synchronously (fire-and-forget — no await between handle returning
     // and the call landing).
-    handleContextPruning(
+    await transformOutput(
       { messages: nudgeMessages(sessionID, 150000) },
       nudgeTransformConfig(2),
       toolHost,
@@ -1427,30 +1472,28 @@ describe("context-nudge injection", () => {
     assert.match(calls[0].text, /75%/);
   });
 
-  it("never throws when the tool host wires no toast port", () => {
+  it("never throws when the tool host wires no toast port", async () => {
     const sessionID = "sess-toast-wire-noui";
-    setModelLimit(sessionID, NUDGE_LIMIT, "test-model");
+    setLimit(sessionID, NUDGE_LIMIT, "test-model");
     // A host that implements notify but not the optional toast port.
     const toolHost: ToolHost = {
       resolveSessionId: () => undefined,
       fetchHistory: async () => project([], []),
       notify: async () => {},
     };
-    handleContextPruning(
+    await transformOutput(
       { messages: nudgeMessages(sessionID, 140000) },
       nudgeTransformConfig(2),
       toolHost,
       true,
       adapter,
     );
-    assert.doesNotThrow(() =>
-      handleContextPruning(
-        { messages: nudgeMessages(sessionID, 150000) },
-        nudgeTransformConfig(2),
-        toolHost,
-        true,
-        adapter,
-      ),
+    await transformOutput(
+      { messages: nudgeMessages(sessionID, 150000) },
+      nudgeTransformConfig(2),
+      toolHost,
+      true,
+      adapter,
     );
     // The nudge itself still injected — a missing UI channel never
     // affects the model-facing reminder.
@@ -1488,19 +1531,13 @@ describe("manual compress trigger", () => {
     };
   }
 
-  it("injects the synthetic user command at the END and clears the flag", () => {
+  it("injects the synthetic user command at the END and clears the flag", async () => {
     const sessionID = "sess-manual-basic";
-    const state = getRuntimeFlaggedState(sessionID);
+    const state = stateOf(sessionID);
     state.pendingManualTrigger = true;
 
     const messages = manualMessages(sessionID);
-    contextPruningTransformHandler(
-      adapter,
-      messages,
-      manualConfig(2),
-      undefined,
-      true,
-    );
+    await transform(adapter, messages, manualConfig(2), undefined, true);
 
     assert.equal(messages.length, 5, "synthetic command appended");
     const last = messages[messages.length - 1];
@@ -1515,7 +1552,11 @@ describe("manual compress trigger", () => {
     // protectedMessages=2 + first-user exclusion → window is a1 only (m2).
     assert.ok(text.includes("可压缩窗口：m2–m2"), "window payload attached");
     // One-shot: the flag is cleared after injection.
-    assert.equal(state.pendingManualTrigger, false, "flag cleared");
+    assert.equal(
+      stateOf(sessionID).pendingManualTrigger,
+      false,
+      "flag cleared",
+    );
 
     // manual_compress_injected log carries the eligibility payload.
     const entry = _getBufferForTesting().find(
@@ -1527,22 +1568,20 @@ describe("manual compress trigger", () => {
     assert.equal(typeof entry.reclaimTokens, "number");
   });
 
-  it("clears a stale flag without injecting when the compress tool is absent", () => {
+  it("clears a stale flag without injecting when the compress tool is absent", async () => {
     const sessionID = "sess-manual-no-tool";
-    const state = getRuntimeFlaggedState(sessionID);
+    const state = stateOf(sessionID);
     state.pendingManualTrigger = true;
 
     const messages = manualMessages(sessionID);
-    contextPruningTransformHandler(
-      adapter,
-      messages,
-      manualConfig(2),
-      undefined,
-      false,
-    );
+    await transform(adapter, messages, manualConfig(2), undefined, false);
 
     assert.equal(messages.length, 4, "no injection without the compress tool");
-    assert.equal(state.pendingManualTrigger, false, "stale flag cleared");
+    assert.equal(
+      stateOf(sessionID).pendingManualTrigger,
+      false,
+      "stale flag cleared",
+    );
     const entries = _getBufferForTesting();
     assert.ok(
       entries.some((e) => e.event === "manual_compress_skipped"),
@@ -1621,12 +1660,12 @@ describe("config gating combinations", () => {
     return messages;
   }
 
-  it("skips dedup entirely when thresholdContext is not configured", () => {
+  it("skips dedup entirely when thresholdContext is not configured", async () => {
     const sessionID = "sess-dedup-gated";
-    contextPruningTransformHandler(adapter, dedupTranscript(sessionID), {
+    await transform(adapter, dedupTranscript(sessionID), {
       protectedMessages: 0,
     });
-    const state = getContextStateManager().get(sessionID);
+    const state = stateOf(sessionID);
     assert.equal(state.marks.size, 0, "no marks without the dedup gate");
     const entries = _getBufferForTesting();
     assert.ok(
@@ -1635,16 +1674,16 @@ describe("config gating combinations", () => {
     );
   });
 
-  it("skips dedup when minMessages is not configured", () => {
+  it("skips dedup when minMessages is not configured", async () => {
     const sessionID = "sess-dedup-no-min-messages";
-    setModelLimit(sessionID, MODEL_LIMIT, "test-model");
-    contextPruningTransformHandler(adapter, dedupTranscript(sessionID), {
+    setLimit(sessionID, MODEL_LIMIT, "test-model");
+    await transform(adapter, dedupTranscript(sessionID), {
       protectedMessages: 0,
       compress: { protectedTokens: 0, thresholdTokens: 0 },
       dedup: { thresholdContext: 100000 },
       purgeErrors: {},
     });
-    const state = getContextStateManager().get(sessionID);
+    const state = stateOf(sessionID);
     assert.equal(state.marks.size, 0, "no marks without min_messages");
     assert.ok(
       !_getBufferForTesting().some((e) => e.event === "dedup_marked"),
@@ -1652,15 +1691,15 @@ describe("config gating combinations", () => {
     );
   });
 
-  it("skips dedup when the token-protection layer is unconfigured", () => {
+  it("skips dedup when the token-protection layer is unconfigured", async () => {
     const sessionID = "sess-dedup-no-compress";
-    setModelLimit(sessionID, MODEL_LIMIT, "test-model");
-    contextPruningTransformHandler(adapter, dedupTranscript(sessionID), {
+    setLimit(sessionID, MODEL_LIMIT, "test-model");
+    await transform(adapter, dedupTranscript(sessionID), {
       protectedMessages: 0,
       dedup: { minMessages: 20, thresholdContext: 100000 },
       purgeErrors: {},
     });
-    const state = getContextStateManager().get(sessionID);
+    const state = stateOf(sessionID);
     assert.equal(state.marks.size, 0, "unconfigured protection → skip");
     assert.ok(
       !_getBufferForTesting().some((e) => e.event === "dedup_marked"),
@@ -1668,9 +1707,9 @@ describe("config gating combinations", () => {
     );
   });
 
-  it("runs dedup and leaves the mark pending when releasedPercent is undefined", () => {
+  it("runs dedup and leaves the mark pending when releasedPercent is undefined", async () => {
     const sessionID = "sess-dedup-marked";
-    setModelLimit(sessionID, MODEL_LIMIT, "test-model");
+    setLimit(sessionID, MODEL_LIMIT, "test-model");
 
     // The compress section supplies the token-protection layer.
     const config = {
@@ -1681,15 +1720,15 @@ describe("config gating combinations", () => {
     };
 
     // Turn N: dedup writes one pending mark; release gate is closed.
-    contextPruningTransformHandler(adapter, dedupTranscript(sessionID), config);
-    const state = getContextStateManager().get(sessionID);
+    await transform(adapter, dedupTranscript(sessionID), config);
+    const state = stateOf(sessionID);
     assert.equal(state.marks.size, 1, "one pending dedup mark");
     assert.equal(state.marks.get(markKey(21, 1))?.effective, false);
 
     // Turn N+1: the release gate is still closed and the position is
     // already claimed (first-write-wins), so the mark stays pending —
     // it never flips and is never re-marked.
-    contextPruningTransformHandler(adapter, dedupTranscript(sessionID), config);
+    await transform(adapter, dedupTranscript(sessionID), config);
     assert.equal(
       state.marks.get(markKey(21, 1))?.effective,
       false,
@@ -1701,9 +1740,9 @@ describe("config gating combinations", () => {
     assert.equal((dedupLogs[0] as Record<string, unknown>).markedCount, 1);
   });
 
-  it("releasedPercent 0 releases the pending dedup marks on the next turn", () => {
+  it("releasedPercent 0 releases the pending dedup marks on the next turn", async () => {
     const sessionID = "sess-dedup-pending";
-    setModelLimit(sessionID, MODEL_LIMIT, "test-model");
+    setLimit(sessionID, MODEL_LIMIT, "test-model");
     const config = {
       protectedMessages: 0,
       releasedPercent: 0,
@@ -1712,42 +1751,42 @@ describe("config gating combinations", () => {
       purgeErrors: {},
     };
 
-    contextPruningTransformHandler(adapter, dedupTranscript(sessionID), config);
-    let state = getContextStateManager().get(sessionID);
+    await transform(adapter, dedupTranscript(sessionID), config);
+    let state = stateOf(sessionID);
     assert.equal(state.marks.size, 1, "pending after the marking turn");
     assert.equal(state.marks.get(markKey(21, 1))?.effective, false);
 
-    contextPruningTransformHandler(adapter, dedupTranscript(sessionID), config);
-    state = getContextStateManager().get(sessionID);
+    await transform(adapter, dedupTranscript(sessionID), config);
+    state = stateOf(sessionID);
     assert.equal(state.marks.get(markKey(21, 1))?.effective, true, "released");
   });
 
-  it("skips purge-errors when minMessages is not configured", () => {
+  it("skips purge-errors when minMessages is not configured", async () => {
     // Positive control: both gate keys plus a captured model limit over
     // the failed-call transcript do mark, so the skip below is meaningful.
     const control = "sess-purge-control";
-    setModelLimit(control, MODEL_LIMIT, "test-model");
-    contextPruningTransformHandler(adapter, purgeErrorsTranscript(control), {
+    setLimit(control, MODEL_LIMIT, "test-model");
+    await transform(adapter, purgeErrorsTranscript(control), {
       protectedMessages: 0,
       compress: { protectedTokens: 0, thresholdTokens: 0 },
       dedup: {},
       purgeErrors: { minMessages: 20, thresholdContext: 100000 },
     });
     assert.equal(
-      getContextStateManager().get(control).marks.has(markKey(20, 0)),
+      stateOf(control).marks.has(markKey(20, 0)),
       true,
       "control run marks the failed call's input region",
     );
 
     const sessionID = "sess-purge-no-min-messages";
-    setModelLimit(sessionID, MODEL_LIMIT, "test-model");
-    contextPruningTransformHandler(adapter, purgeErrorsTranscript(sessionID), {
+    setLimit(sessionID, MODEL_LIMIT, "test-model");
+    await transform(adapter, purgeErrorsTranscript(sessionID), {
       protectedMessages: 0,
       compress: { protectedTokens: 0, thresholdTokens: 0 },
       dedup: {},
       purgeErrors: { thresholdContext: 100000 },
     });
-    const state = getContextStateManager().get(sessionID);
+    const state = stateOf(sessionID);
     assert.equal(state.marks.size, 0, "no marks without min_messages");
     assert.ok(
       !_getBufferForTesting().some(
@@ -1757,31 +1796,31 @@ describe("config gating combinations", () => {
     );
   });
 
-  it("skips dedup when the model limit is unknown", () => {
+  it("skips dedup when the model limit is unknown", async () => {
     // Positive control: the same transcript with a captured model limit
     // does mark, so the fail-closed skip below is meaningful.
     const control = "sess-dedup-model-control";
-    setModelLimit(control, MODEL_LIMIT, "test-model");
-    contextPruningTransformHandler(adapter, dedupTranscript(control), {
+    setLimit(control, MODEL_LIMIT, "test-model");
+    await transform(adapter, dedupTranscript(control), {
       protectedMessages: 0,
       compress: { protectedTokens: 0, thresholdTokens: 0 },
       dedup: { minMessages: 20, thresholdContext: 100000 },
       purgeErrors: {},
     });
     assert.equal(
-      getContextStateManager().get(control).marks.has(markKey(21, 1)),
+      stateOf(control).marks.has(markKey(21, 1)),
       true,
       "control run marks the duplicate call",
     );
 
     const sessionID = "sess-dedup-no-model-limit";
-    contextPruningTransformHandler(adapter, dedupTranscript(sessionID), {
+    await transform(adapter, dedupTranscript(sessionID), {
       protectedMessages: 0,
       compress: { protectedTokens: 0, thresholdTokens: 0 },
       dedup: { minMessages: 20, thresholdContext: 100000 },
       purgeErrors: {},
     });
-    const state = getContextStateManager().get(sessionID);
+    const state = stateOf(sessionID);
     assert.equal(state.marks.size, 0, "no marks without a model limit");
     assert.ok(
       !_getBufferForTesting().some(
@@ -1797,7 +1836,7 @@ describe("config gating combinations", () => {
 // ---------------------------------------------------------------------------
 
 describe("round-view publication", () => {
-  it("publishes the round's frozen snapshot and numbering before rendering", () => {
+  it("publishes the round's frozen snapshot and numbering before rendering", async () => {
     const sessionID = "sess-round-view";
     const messages: TestMessageEntry[] = [
       msg("user", "u1", [textPart("开场问题")], sessionID),
@@ -1805,12 +1844,12 @@ describe("round-view publication", () => {
       msg("user", "u2", [textPart("第二个问题")], sessionID),
     ];
 
-    const rendered = contextPruningTransformHandler(adapter, messages, {
+    const rendered = (await transform(adapter, messages, {
       dedup: {},
       purgeErrors: {},
-    }) as TestMessageEntry[];
+    })) as TestMessageEntry[];
 
-    const view = getRoundView(sessionID);
+    const view = runtime.roundView(sessionID);
     assert.ok(view, "the transform publishes the round view");
 
     // Numbering is the address space the model was shown this round.
@@ -1837,15 +1876,20 @@ describe("round-view publication", () => {
     assert.equal(view.projection.messages[0].regions[0].get(), "开场问题");
   });
 
-  it("publishes nothing when the pipeline short-circuits", () => {
-    // No resolvable session id → the handler returns before any fold, so
-    // no view is published and no session key enters the cache.
-    const orphan = [msg("user", "u1", [textPart("无主消息")])];
-    contextPruningTransformHandler(adapter, orphan, {
-      dedup: {},
-      purgeErrors: {},
-    });
-    assert.deepEqual(_listRoundViewSessionsForTesting(), []);
+  it("publishes nothing when the permit already lapsed", async () => {
+    // A lapsed permit returns before any fold, so no view is published.
+    const sessionID = "sess-round-view-lapsed";
+    const orphan = [msg("user", "u1", [textPart("无主消息")], sessionID)];
+    const controller = new AbortController();
+    controller.abort();
+    await contextPruningTransformHandler(
+      runtime,
+      permitFor(sessionID, controller.signal),
+      adapter,
+      orphan,
+      { dedup: {}, purgeErrors: {} },
+    );
+    assert.equal(runtime.roundView(sessionID), undefined);
   });
 });
 
@@ -1908,18 +1952,14 @@ describe("pure adapter pipeline support", () => {
             },
       );
     },
-    sessionId(messages) {
-      return messages[0]?.sessionId;
-    },
     appendUserMessage(messages, id, sessionId, text) {
       return [...messages, { id, sessionId, text }];
     },
   };
 
-  it("returns the adapter's arrays instead of mutating in place", () => {
+  it("returns the adapter's arrays instead of mutating in place", async () => {
     const sessionID = "sess-pure-mock";
-    const manager = getContextStateManager();
-    const state = manager.get(sessionID);
+    const state = stateOf(sessionID);
     state.marks.set(markKey(1, 0), {
       anchorOrdinal: 1,
       regionIndex: 0,
@@ -1935,11 +1975,15 @@ describe("pure adapter pipeline support", () => {
     ];
     const snapshot = structuredClone(original);
 
-    const result = contextPruningTransformHandler(
+    const result = (await transform(
       mockAdapter as HostAdapter<unknown>,
       original,
       { dedup: {}, purgeErrors: {} },
-    ) as MockMessage[];
+      undefined,
+      undefined,
+      undefined,
+      sessionID,
+    )) as MockMessage[];
 
     assert.notEqual(result, original, "handler returned a new array");
     assert.deepEqual(
@@ -1969,13 +2013,14 @@ describe("pure adapter pipeline support", () => {
 describe("unit.create enablement", () => {
   const activeSet = facts({ tools: ["compress"] });
 
-  it("contributes the transform handler when an adapter is wired", () => {
+  it("contributes the transform handler when an adapter is wired", async () => {
     const deps: Partial<Capabilities> = {
       limits: {},
       contextConfig: {},
       directory: "/tmp/zoo",
       resolveAgent: () => undefined,
       adapter,
+      contextRuntime: createContextRuntime(store),
     };
 
     const contributions = unit.create(deps, activeSet);
@@ -1988,7 +2033,7 @@ describe("unit.create enablement", () => {
     assert.ok(!_getBufferForTesting().some((e) => e.event === "unit_disabled"));
   });
 
-  it("reads the selected compress tool although it is built after the hook", () => {
+  it("reads the selected compress tool although it is built after the hook", async () => {
     // The registry declares the pruning hook before the compress tool, so
     // the hook's factory runs first.  The fact it reads is the selection,
     // not a registration side effect, so it already knows the tool was
@@ -2007,6 +2052,7 @@ describe("unit.create enablement", () => {
       directory: "/tmp/zoo",
       resolveAgent: () => undefined,
       adapter,
+      contextRuntime: createContextRuntime(store),
       toolHost: {
         resolveSessionId: () => undefined,
         fetchHistory: async () => project([], []),
@@ -2025,7 +2071,7 @@ describe("unit.create enablement", () => {
     assert.deepEqual(Object.keys(assembly.composed.tools), ["compress"]);
   });
 
-  it("is skipped by the composition when adapter is undefined (fail-closed)", () => {
+  it("is skipped by the composition when adapter is undefined (fail-closed)", async () => {
     const deps: Partial<Capabilities> = {
       limits: {},
       contextConfig: {},
@@ -2045,7 +2091,7 @@ describe("unit.create enablement", () => {
 
     assert.deepEqual(result.transform, []);
     assert.deepEqual(result.report.skipped, [
-      { name: "context-pruning", missing: ["adapter"] },
+      { name: "context-pruning", missing: ["adapter", "contextRuntime"] },
     ]);
   });
 });

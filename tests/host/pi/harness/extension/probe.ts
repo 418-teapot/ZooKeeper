@@ -1,12 +1,15 @@
 /**
  * Observation probe of the end-to-end suite.
  *
- * Loaded in the same extension file as the real ZooKeeper extension (see
- * `entry.ts`), it records real host events, registers the deterministic
+ * Loaded as its own extension file (see `probe-entry.ts`) beside the real
+ * ZooKeeper entry, it records real host events, registers the deterministic
  * provider and exposes one reload command.  It only observes: no event is
  * mutated, no result is returned, no tool is registered.  The behavioural
  * additions are the `e2e` provider (no network) and `/e2e-reload`, which
  * calls pi's real `ctx.reload()` because RPC has no reload command.
+ *
+ * A sub-session runtime loads this file too, so the probe also reports the
+ * tool face the child ends up with.
  */
 
 import { randomUUID } from "node:crypto";
@@ -22,7 +25,6 @@ import type {
   ToolCallEvent,
   ToolResultEvent,
 } from "@earendil-works/pi-coding-agent";
-import { hasPiSdkSession } from "../../../../../src/adapters/pi/sdk-lifecycle.js";
 import { REQUIRED_TOOLS } from "../constants.js";
 import {
   MODEL_ID,
@@ -127,6 +129,12 @@ export function probe(pi: ExtensionAPI): void {
   pi.on("before_agent_start", (event: BeforeAgentStartEvent, ctx) => {
     const sessionID = sessionIdOf(ctx);
     observeSession(sessionID);
+    // The tool face of this runtime: a sub-session loads ZooKeeper from the
+    // inline factory, so its own tools must be visible here.
+    const toolNames = pi
+      .getAllTools()
+      .map((tool) => tool.name)
+      .sort();
     rec("before_agent_start", {
       sessionID,
       messageType: event.messageType,
@@ -134,12 +142,12 @@ export function probe(pi: ExtensionAPI): void {
         event.messageType === "user" ? event.prompt : undefined,
         160,
       ),
+      // ZooKeeper registers before the probe, so this reads the system
+      // prompt AFTER its prompt injection: the record shows which agent
+      // the session resolved.
+      systemPrompt: excerpt(event.systemPrompt, 240),
       child: subagentActive,
-      // White-box, auxiliary evidence: read AFTER ZooKeeper's own handler ran
-      // (it registers first and ensures the session scope), so the SDK bridge
-      // association is visible here only when the child runtime shares the
-      // module graph with the runtime the subagent driver stops.
-      hasPiSdkSession: hasPiSdkSession(sessionID),
+      toolNames,
     });
   });
 
@@ -175,11 +183,8 @@ export function probe(pi: ExtensionAPI): void {
       child: subagentActive,
     };
     if (event.toolName === "subagent") {
-      // The driver stops the child's scope before the tool result exists, so
-      // this reads the bridge AFTER the teardown it performs.
       fields.parentSessionID = parentSessionID ?? null;
       fields.childSessionID = childSessionID ?? null;
-      fields.childHasPiSdkSession = hasPiSdkSession(childSessionID);
       subagentActive = false;
     }
     rec("tool_result", fields);

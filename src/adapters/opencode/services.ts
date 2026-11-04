@@ -19,9 +19,10 @@
  *
  * The context pipeline's per-session records (the persisted state, the model
  * limit, the round view, the pending view-change flag, the session's entry in
- * the shared agent registry) stay process-level: the hook, the tools and the
- * `/dcp` command share one store per process, so they cannot be re-created per
- * plugin instance.  They are declared in `core/session/resources.ts` and
+ * the agent registry) belong to the plugin instance: the hook, the tools and
+ * the `/dcp` command share one `ContextRuntime` per instance, so no session
+ * scope may own them.  They are declared by
+ * `contextSessionResources(runtime)` in `core/session/resources.ts` and
  * released through the `sessionResources` session service: the session scope
  * is their stop boundary, and the stop mode decides what it does to them.
  *
@@ -45,12 +46,17 @@ import {
   type LoopEngine,
   type SettledContribution,
 } from "../../core/loop/index.js";
-import { sessionResourcesService } from "../../core/session/resources.js";
+import {
+  defineSessionResourcesService,
+  type SessionResourceCatalog,
+} from "../../core/session/resources.js";
 
 /** The host inputs the service declarations close over. */
 export interface OpenCodeServiceHost {
   /** The settle strategies the active profile contributed. */
   readonly onSettled: readonly SettledContribution[];
+  /** The session records of this plugin instance. */
+  readonly sessionCatalog: SessionResourceCatalog;
 }
 
 /**
@@ -161,7 +167,10 @@ export function createOpenCodeHostServices(host: OpenCodeServiceHost) {
 
   return {
     extension: [loop] as const,
-    session: [sessionRuntime, sessionResourcesService] as const,
+    session: [
+      sessionRuntime,
+      defineSessionResourcesService(host.sessionCatalog),
+    ] as const,
   };
 }
 

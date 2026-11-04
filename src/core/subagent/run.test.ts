@@ -3,9 +3,9 @@
  *
  * Covers every remaining run outcome: normal passthrough, driver throw
  * collapse, parent abort propagation (both to the driver signal and to the
- * result), progress pass-through, and identity resolution inside the driver
- * callback.  Concurrency and timeout behaviours were removed with the
- * corresponding constraints and are no longer orchestrated here.
+ * result), and progress pass-through.  Concurrency and timeout behaviours
+ * were removed with the corresponding constraints and are no longer
+ * orchestrated here.
  */
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
@@ -14,7 +14,6 @@ import type {
   SubagentProgress,
   SubagentResult,
 } from "./driver.js";
-import { type Identity, resolveIdentity } from "./identity.js";
 import { runSubagent } from "./run.js";
 
 /**
@@ -214,29 +213,5 @@ describe("runSubagent — parent abort", () => {
       kind: "aborted",
       text: "was already stopped",
     });
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Identity binding
-// ---------------------------------------------------------------------------
-
-describe("runSubagent — identity binding", () => {
-  it("resolves the subagent identity inside the driver callback", async () => {
-    let seen: Identity | undefined;
-    const driver: SubagentDriver = {
-      async run(req): Promise<SubagentResult> {
-        seen = resolveIdentity();
-        // Survive a real async yield so the identity must be carried by the
-        // async context, not read from a synchronous frame.
-        await Promise.resolve();
-        return { kind: "ok", text: "done" };
-      },
-    };
-    const result = await runSubagent(driver, request("delegate"), {
-      signal: freshSignal(),
-    });
-    assert.deepEqual(seen, { kind: "subagent", name: "delegate" });
-    assert.equal(result.kind, "ok");
   });
 });

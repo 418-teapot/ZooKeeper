@@ -6,25 +6,34 @@
  * is not the ordinal space the `context` event projects), best-effort
  * notification via pi's `appendEntry` channel (`zoo-notice` custom
  * entries, including missing appendEntry and thrown appendEntry), and the
- * transient `toast` port through `ui.notify` (message rendering, silent
- * drop without the UI surface, and swallowed failures).
+ * transient `toast` port through the ui of the session the call names
+ * (message rendering, per-session routing, silent drop without a UI
+ * surface, and swallowed failures).
  */
 import assert from "node:assert/strict";
 import { afterEach, describe, it } from "node:test";
 import { _getBufferForTesting, _resetForTesting } from "../../utils/logger.js";
-import { createPiToolHost, type PiContextHolder } from "./tool-host.js";
+import { createPiSessionContexts } from "./session-contexts.js";
+import { createPiToolHost } from "./tool-host.js";
 
 afterEach(() => {
   _resetForTesting();
 });
 
-function makeHolder(ctx?: PiContextHolder["current"]): PiContextHolder {
-  return { current: ctx };
+/** A session context whose ui records the notices it receives. */
+function sessionCtx(notices: string[]): unknown {
+  return {
+    ui: {
+      notify: (message: string) => {
+        notices.push(message);
+      },
+    },
+  };
 }
 
 describe("createPiToolHost", () => {
   it("resolves the session id from the tool execution context", () => {
-    const host = createPiToolHost(makeHolder());
+    const host = createPiToolHost(createPiSessionContexts());
     const sessionId = host.resolveSessionId({
       sessionManager: { getSessionId: () => "sess-pi-42" },
     });
@@ -32,7 +41,7 @@ describe("createPiToolHost", () => {
   });
 
   it("returns undefined when the tool context has no sessionManager", () => {
-    const host = createPiToolHost(makeHolder());
+    const host = createPiToolHost(createPiSessionContexts());
     assert.equal(host.resolveSessionId({}), undefined);
   });
 
@@ -40,15 +49,18 @@ describe("createPiToolHost", () => {
     // pi's buildContextEntries channel is a different ordinal space than
     // the one the context event projects, so the host must not expose it
     // as a fallback — a regression here silently resurrects the bug.
-    const host = createPiToolHost(makeHolder());
+    const host = createPiToolHost(createPiSessionContexts());
     assert.equal(host.fetchHistory, undefined);
   });
 
   it("notifies by appending a zoo-notice custom entry when appendEntry is available", async () => {
     const appended: Array<{ customType: string; data?: unknown }> = [];
-    const host = createPiToolHost(makeHolder(), (customType, data) => {
-      appended.push({ customType, data });
-    });
+    const host = createPiToolHost(
+      createPiSessionContexts(),
+      (customType, data) => {
+        appended.push({ customType, data });
+      },
+    );
     await host.notify("sess-1", "上下文压缩完成");
 
     assert.deepEqual(appended, [
@@ -57,12 +69,12 @@ describe("createPiToolHost", () => {
   });
 
   it("no-ops gracefully when appendEntry is absent", async () => {
-    const host = createPiToolHost(makeHolder());
+    const host = createPiToolHost(createPiSessionContexts());
     await assert.doesNotReject(async () => host.notify("s", "noop"));
   });
 
   it("swallows appendEntry failures and logs a warning", async () => {
-    const host = createPiToolHost(makeHolder(), () => {
+    const host = createPiToolHost(createPiSessionContexts(), () => {
       throw new Error("session gone");
     });
     await host.notify("s", "boom"); // must not throw
@@ -77,15 +89,15 @@ describe("createPiToolHost", () => {
 describe("toast (pi ui.notify channel)", () => {
   it("renders source and level through ui.notify when available", () => {
     const notices: Array<{ message: string; type?: string }> = [];
-    const host = createPiToolHost(
-      makeHolder({
-        ui: {
-          notify: (message, type) => {
-            notices.push({ message, type });
-          },
+    const contexts = createPiSessionContexts();
+    contexts.bind("sess-1", {
+      ui: {
+        notify: (message: string, type?: "info" | "warning" | "error") => {
+          notices.push({ message, type });
         },
-      }),
-    );
+      },
+    });
+    const host = createPiToolHost(contexts);
 
     assert.doesNotThrow(() =>
       host.toast?.("sess-1", {
@@ -102,14 +114,44 @@ describe("toast (pi ui.notify channel)", () => {
     ]);
   });
 
+  it("toasts on the ui of the session the call names", () => {
+    const first: string[] = [];
+    const second: string[] = [];
+    const contexts = createPiSessionContexts();
+    contexts.bind("sess-1", sessionCtx(first));
+    contexts.bind("sess-2", sessionCtx(second));
+    const host = createPiToolHost(contexts);
+
+    host.toast?.("sess-1", { source: "x", level: "info", text: "to 1" });
+    host.toast?.("sess-2", { source: "x", level: "info", text: "to 2" });
+
+    assert.deepEqual(first, ["[zoo][x] to 1"]);
+    assert.deepEqual(second, ["[zoo][x] to 2"]);
+  });
+
+  it("drops a toast for a session that bound no context", () => {
+    const notices: string[] = [];
+    const contexts = createPiSessionContexts();
+    contexts.bind("sess-1", sessionCtx(notices));
+    const host = createPiToolHost(contexts);
+
+    // Fail closed: an unknown session never borrows another session's ui.
+    assert.doesNotThrow(() =>
+      host.toast?.("sess-2", { source: "x", level: "info", text: "hi" }),
+    );
+    assert.deepEqual(notices, []);
+  });
+
   it("silently drops when the context carries no ui.notify", () => {
     // ui present, notify absent (print mode).
-    const host = createPiToolHost(makeHolder({ ui: {} }));
+    const contexts = createPiSessionContexts();
+    contexts.bind("s", { ui: {} });
+    const host = createPiToolHost(contexts);
     assert.doesNotThrow(() =>
       host.toast?.("s", { source: "x", level: "info", text: "hi" }),
     );
     // Whole context absent.
-    const bare = createPiToolHost(makeHolder());
+    const bare = createPiToolHost(createPiSessionContexts());
     assert.doesNotThrow(() =>
       bare.toast?.("s", { source: "x", level: "info", text: "hi" }),
     );
@@ -121,15 +163,15 @@ describe("toast (pi ui.notify channel)", () => {
   });
 
   it("swallows ui.notify failures and logs a warning", () => {
-    const host = createPiToolHost(
-      makeHolder({
-        ui: {
-          notify: () => {
-            throw new Error("tui gone");
-          },
+    const contexts = createPiSessionContexts();
+    contexts.bind("s", {
+      ui: {
+        notify: () => {
+          throw new Error("tui gone");
         },
-      }),
-    );
+      },
+    });
+    const host = createPiToolHost(contexts);
     assert.doesNotThrow(() =>
       host.toast?.("s", { source: "x", level: "info", text: "boom" }),
     );

@@ -40,7 +40,6 @@ import { afterEach, beforeEach, describe, it } from "node:test";
 import type { PiBoundaryResult } from "../../adapters/pi/types.js";
 import { buildPiHandlers } from "../../adapters/pi/wire.js";
 import { sessionAgentRegistry } from "../../core/session/agent.js";
-import { _resetForTesting as resetIdentityForTesting } from "../../core/subagent/identity.js";
 import { resetRegistry } from "../../core/subagent/registry.js";
 import {
   type CaseFixture,
@@ -54,7 +53,6 @@ import { CONTINUATION_PROMPT } from "../todo-continuation/decide.js";
 
 afterEach(() => {
   _resetForTesting();
-  resetIdentityForTesting();
   resetRegistry();
   sessionAgentRegistry.clear();
 });
@@ -351,7 +349,7 @@ describe("buildPiHandlers — loop settle", () => {
     const api = mockApi();
     const handlers = await buildPiHandlers(ZOO, api as any, RAW_AGENTS);
     const ctx = settleCtx("sess-prior", ACTIVE_BRANCH);
-    handlers.agentEnd(RUN_ENDED, ctx);
+    await handlers.agentEnd(RUN_ENDED, ctx);
 
     // pi adopts a handler's returned `entries` as the new accumulated
     // list without merging, so the wake must re-emit the drafts the
@@ -372,7 +370,7 @@ describe("buildPiHandlers — loop settle", () => {
     const handlers = await buildPiHandlers(ZOO, api as any, RAW_AGENTS);
     const c = settleCtx("sess-await", ACTIVE_BRANCH);
 
-    handlers.uiPromptStart({ type: "ui_prompt_start" }, c);
+    await handlers.uiPromptStart({ type: "ui_prompt_start" }, c);
     const result = await settle(handlers, RUN_ENDED, c);
 
     assert.equal(wakes(result).length, 0);
@@ -423,6 +421,63 @@ describe("buildPiHandlers — loop settle", () => {
     const result = await settle(handlers, RUN_ENDED, c);
 
     assert.equal(wakes(result).length, 0);
+  });
+
+  it("judges each session's own run transcript when two settle", async () => {
+    const api = mockApi();
+    const handlers = await buildPiHandlers(ZOO, api as any, RAW_AGENTS);
+    const asking = settleCtx("sess-transcript-a", ACTIVE_BRANCH);
+    const working = settleCtx("sess-transcript-b", ACTIVE_BRANCH);
+
+    // Session A's run parked on a headless ask (it awaits the user), while
+    // session B's run made ordinary tool activity.  Their `agent_end`
+    // events interleave before either boundary fires.
+    await handlers.agentEnd(
+      runEnded([
+        askResultMessage([
+          { result: { status: "unavailable", reason: "no-ui" } },
+        ]),
+        assistant([toolCallPart("ask")]),
+      ]),
+      asking,
+    );
+    await handlers.agentEnd(RUN_ENDED, working);
+
+    const silent = await handlers.beforeSettle(
+      { type: "agent_before_settle", outcome: "completed" },
+      asking,
+    );
+    const woke = await handlers.beforeSettle(
+      { type: "agent_before_settle", outcome: "completed" },
+      working,
+    );
+
+    assert.equal(wakes(silent).length, 0, "A judges its own awaiting run");
+    assert.equal(wakes(woke).length, 1, "B judges its own active run");
+  });
+
+  it("tracks the blocking UI prompt per session", async () => {
+    const api = mockApi();
+    const handlers = await buildPiHandlers(ZOO, api as any, RAW_AGENTS);
+    const prompting = settleCtx("sess-prompt-a", ACTIVE_BRANCH);
+    const idle = settleCtx("sess-prompt-b", ACTIVE_BRANCH);
+
+    await handlers.agentEnd(RUN_ENDED, prompting);
+    await handlers.agentEnd(RUN_ENDED, idle);
+    // Only session A is waiting on a user-facing prompt.
+    await handlers.uiPromptStart({ type: "ui_prompt_start" }, prompting);
+
+    const idleResult = await handlers.beforeSettle(
+      { type: "agent_before_settle", outcome: "completed" },
+      idle,
+    );
+    const promptingResult = await handlers.beforeSettle(
+      { type: "agent_before_settle", outcome: "completed" },
+      prompting,
+    );
+
+    assert.equal(wakes(idleResult).length, 1, "B is not awaiting input");
+    assert.equal(wakes(promptingResult).length, 0, "A is awaiting input");
   });
 
   it("stays silent when the reminder budget is exhausted", async () => {
@@ -479,7 +534,8 @@ describe("buildPiHandlers — loop settle", () => {
     const api = mockApi();
     const handlers = await buildPiHandlers(ZOO, api as any, RAW_AGENTS);
     // pi invalidates a captured ctx on session replacement / reload; reading
-    // `sessionManager` then throws.  The judge must swallow it and log.
+    // `sessionManager` then throws.  The judge must swallow it and stay
+    // silent: a stale context names no session, so nothing is admitted.
     const stale = {
       get sessionManager(): never {
         throw new Error("stale ctx");
@@ -489,10 +545,11 @@ describe("buildPiHandlers — loop settle", () => {
     const result = await settle(handlers, RUN_ENDED, stale);
 
     assert.equal(wakes(result).length, 0);
-    const failed = _getBufferForTesting().filter(
-      (entry) => entry.event === "settle_failed",
+    // A stale context names no session; it is not a judge failure.
+    assert.deepEqual(
+      _getBufferForTesting().filter((entry) => entry.event === "settle_failed"),
+      [],
     );
-    assert.equal(failed.length, 1);
   });
 
   it("is a no-op when the profile contributes no settle handler", async () => {

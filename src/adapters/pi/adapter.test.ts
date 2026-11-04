@@ -8,7 +8,6 @@
  *   applying the plan's line refs and constructing summary messages.
  * - `applyEdits` followed by `materialize` composes without mutating input.
  * - `appendUserMessage` appends a synthetic user message to a new array.
- * - `sessionId` delegates to the provider supplied at construction.
  */
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
@@ -63,21 +62,9 @@ function seedBlock(
 // ---------------------------------------------------------------------------
 // Adapter contract
 // ---------------------------------------------------------------------------
-describe("createPiAdapter", () => {
-  it("sessionId delegates to the construction-time provider", () => {
-    const adapter = createPiAdapter(() => "sess-pi-42");
-    assert.equal(adapter.sessionId([]), "sess-pi-42");
-  });
-
-  it("sessionId can return undefined when the provider has no id", () => {
-    const adapter = createPiAdapter(() => undefined);
-    assert.equal(adapter.sessionId([userMessage("hi")]), undefined);
-  });
-});
-
 describe("pi adapter applyEdits", () => {
   it("returns a new array and leaves the input untouched", () => {
-    const adapter = createPiAdapter(() => "sess");
+    const adapter = createPiAdapter();
     const messages: PiAgentMessage[] = [
       userMessage("question"),
       assistantMessage([textPart("answer")]),
@@ -98,7 +85,7 @@ describe("pi adapter applyEdits", () => {
   });
 
   it("skips edits that cannot be resolved", () => {
-    const adapter = createPiAdapter(() => "sess");
+    const adapter = createPiAdapter();
     const messages: PiAgentMessage[] = [userMessage("question")];
     const edits: RegionEdit[] = [
       { messageOrdinal: 9, regionIndex: 0, text: "missing message" },
@@ -114,7 +101,7 @@ describe("pi adapter applyEdits", () => {
 });
 
 describe("pi adapter materialize", () => {
-  const adapter = createPiAdapter(() => "sess");
+  const adapter = createPiAdapter();
 
   /**
    * Plan the view the way the pipeline does and materialize it.
@@ -225,7 +212,7 @@ describe("pi adapter materialize", () => {
 
 describe("pi adapter appendUserMessage", () => {
   it("appends a synthetic user message to a new array", () => {
-    const adapter = createPiAdapter(() => "sess");
+    const adapter = createPiAdapter();
     const messages: PiAgentMessage[] = [userMessage("hello")];
     const snapshot = structuredClone(messages);
 

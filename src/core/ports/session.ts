@@ -16,16 +16,17 @@ export interface SessionPort {
    *
    * Backed by the shared `SessionAgentRegistry`: the host entry point owns
    * the bindings (OpenCode populates from `message.updated` events; pi
-   * resolves lazily through the subagent run registry and the
-   * async-local identity, then binds).  Returns `undefined` for an unknown
+   * resolves from explicit sources — an existing binding, its runtime's
+   * fixed subagent, the run registry's `childSession`, a pending switch
+   * target, or the orchestrator — then binds).  Returns `undefined` for an unknown
    * session (fail-closed) — callers must treat an unresolved identity as
    * "not the orchestrator".
    */
   resolveAgent: (sessionID: string) => string | undefined;
   /**
    * Resolve the agent driving a session, including the host's own
-   * authoritative fallback (OpenCode queries the session API; pi resolves
-   * through its identity core).
+   * authoritative fallback (OpenCode queries the session API; pi reads its
+   * session → agent resolver).
    *
    * Asynchronous because that fallback is a host call.  This is the port
    * the delegation gate uses to identify the caller: unlike `resolveAgent`

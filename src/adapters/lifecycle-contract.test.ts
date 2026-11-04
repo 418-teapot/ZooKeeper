@@ -11,7 +11,7 @@
  * asserted as literals, so flattening them would fail here: OpenCode
  * deletes a session, while pi only ever releases runtimes.
  *
- * The same holds for the process-level session records both hosts declare:
+ * The same holds for the per-instance session records both hosts declare:
  * the catalog's declarations reach the stop path through each host's own
  * session scope, so a pi shutdown releases their runtime state while an
  * OpenCode deletion removes every record.  The last block asserts that from
@@ -21,14 +21,9 @@ import assert from "node:assert/strict";
 import { rmSync } from "node:fs";
 import { afterEach, describe, it } from "node:test";
 import { project } from "../core/context/lens.js";
-import * as modelLimits from "../core/context/model-limits.js";
-import { getRoundView, publishRoundView } from "../core/context/round-view.js";
 import {
-  _hasContextStateManagerForTesting,
-  _resetContextStateManagerForTesting,
-  consumePendingViewChange,
-  getContextStateManager,
-  setPendingViewChange,
+  type ContextRuntime,
+  createContextRuntime,
 } from "../core/context/runtime.js";
 import { createStateStore, type StateStore } from "../core/context/store.js";
 import {
@@ -37,7 +32,16 @@ import {
   defineExtensionService,
   defineSessionService,
 } from "../core/lifecycle/index.js";
-import { sessionAgentRegistry } from "../core/session/agent.js";
+import {
+  sessionAgentRegistry,
+  sessionAgentResource,
+} from "../core/session/agent.js";
+import {
+  contextSessionResources,
+  createSessionResourceCatalog,
+  type SessionResourceCatalog,
+} from "../core/session/resources.js";
+import { permitFor } from "../testkits/context-runtime.js";
 import { makeTmpDir } from "../testkits/tmp.js";
 import { createOpenCodeLifecycleMapping } from "./opencode/lifecycle.js";
 import { createOpenCodeLifecycleWiring } from "./opencode/lifecycle-wiring.js";
@@ -301,10 +305,12 @@ const AGENT = "dolphin";
 /** Scratch store directories the current test created. */
 const recordDirs: string[] = [];
 
+/** The plugin instance under test. */
+let runtime: ContextRuntime;
+let sessionCatalog: SessionResourceCatalog;
+
 afterEach(() => {
-  _resetContextStateManagerForTesting();
   sessionAgentRegistry.clear();
-  modelLimits._resetForTesting();
   for (const dir of recordDirs.splice(0)) {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -319,7 +325,11 @@ function sandboxStore(): StateStore {
   const dir = makeTmpDir("zoo-lifecycle-contract");
   recordDirs.push(dir);
   const store = createStateStore(dir);
-  _resetContextStateManagerForTesting(store);
+  runtime = createContextRuntime(store);
+  sessionCatalog = createSessionResourceCatalog([
+    ...contextSessionResources(runtime),
+    sessionAgentResource,
+  ]);
   return store;
 }
 
@@ -327,24 +337,29 @@ function sandboxStore(): StateStore {
  * Give one session every record the catalog declares.
  *
  * @param sessionID - The session to stage.
+ * @returns Resolves once the state commit landed.
  */
-function stageRecords(sessionID: string): void {
-  const manager = getContextStateManager();
-  manager.get(sessionID).blocks.set(1, {
-    start: 0,
-    end: 3,
-    summary: "kept",
-    spanHash: "ffff0000",
-    status: "active",
-    compressedTokens: 100,
-    summaryTokens: 20,
-    createdAt: 1000,
+async function stageRecords(sessionID: string): Promise<void> {
+  const permit = permitFor(sessionID);
+  await runtime.commit(permit, (state) => {
+    state.blocks.set(1, {
+      start: 0,
+      end: 3,
+      summary: "kept",
+      spanHash: "ffff0000",
+      status: "active",
+      compressedTokens: 100,
+      summaryTokens: 20,
+      createdAt: 1000,
+    });
   });
-  manager.save(sessionID);
   sessionAgentRegistry.bind(sessionID, AGENT);
-  modelLimits.setModelLimit(sessionID, 1000, "model");
-  setPendingViewChange(sessionID);
-  publishRoundView(sessionID, { projection: project([], []), numbered: [] });
+  runtime.setModelLimit(permit, 1000, "model");
+  runtime.setPendingViewChange(permit);
+  runtime.publishRoundView(permit, {
+    projection: project([], []),
+    numbered: [],
+  });
 }
 
 /**
@@ -364,9 +379,9 @@ function assertReleased(store: StateStore, sessionID: string): void {
     AGENT,
     "a runtime release keeps the agent binding",
   );
-  assert.equal(modelLimits.getModelLimit(sessionID), undefined);
-  assert.equal(getRoundView(sessionID), undefined);
-  assert.equal(consumePendingViewChange(sessionID), false);
+  assert.equal(runtime.modelLimit(sessionID), undefined);
+  assert.equal(runtime.roundView(sessionID), undefined);
+  assert.equal(runtime.consumePendingViewChange(permitFor(sessionID)), false);
 }
 
 /**
@@ -378,26 +393,30 @@ function assertReleased(store: StateStore, sessionID: string): void {
 function assertDeleted(store: StateStore, sessionID: string): void {
   assert.equal(store.load(sessionID).blocks.size, 0);
   assert.equal(sessionAgentRegistry.resolve(sessionID), undefined);
-  assert.equal(modelLimits.getModelLimit(sessionID), undefined);
-  assert.equal(getRoundView(sessionID), undefined);
-  assert.equal(consumePendingViewChange(sessionID), false);
+  assert.equal(runtime.modelLimit(sessionID), undefined);
+  assert.equal(runtime.roundView(sessionID), undefined);
+  assert.equal(runtime.consumePendingViewChange(permitFor(sessionID)), false);
 }
 
 /** The host inputs pi's declarations need; no pi API means inert surfaces. */
-const PI_HOST: PiServiceHost = {
-  piApi: undefined,
-  appendEntry: undefined,
-  colorizeAgent: (name) => name,
-  titleForRun: (run) => run.agent,
-  borderColorizeForRun: () => undefined,
-  // A null profile composes no settle strategy, so this wiring declares an
-  // engine-less loop session.
-  composeProfile: () => buildPiContributions({}),
-};
+function piHost(): PiServiceHost {
+  return {
+    piApi: undefined,
+    appendEntry: undefined,
+    colorizeAgent: (name) => name,
+    titleForRun: (run) => run.agent,
+    borderColorizeForRun: () => undefined,
+    contextRuntime: runtime,
+    sessionCatalog,
+    // A null profile composes no settle strategy, so this wiring declares
+    // an engine-less loop session.
+    composeProfile: () => buildPiContributions({}),
+  };
+}
 
 /** Wiring over pi's real declarations. */
 function buildPiWiring() {
-  const declarations = createPiHostServices(PI_HOST);
+  const declarations = createPiHostServices(piHost());
   return createPiLifecycleWiring({
     extensionServices: declarations.extension,
     sessionServices: declarations.session,
@@ -407,10 +426,14 @@ function buildPiWiring() {
 
 /** Wiring over OpenCode's real declarations. */
 function buildOpenCodeWiring() {
-  const declarations = createOpenCodeHostServices({ onSettled: [] });
+  const declarations = createOpenCodeHostServices({
+    onSettled: [],
+    sessionCatalog,
+  });
   return createOpenCodeLifecycleWiring({
     extensionServices: declarations.extension,
     sessionServices: declarations.session,
+    sessionCatalog,
   });
 }
 
@@ -420,7 +443,7 @@ describe("host session record contract", () => {
     const wiring = buildPiWiring();
     await wiring.activateExtension();
     await wiring.ensureSession({ id: "s1" });
-    stageRecords("s1");
+    await stageRecords("s1");
 
     const report = await wiring.stopExtension({
       type: "session_shutdown",
@@ -435,7 +458,7 @@ describe("host session record contract", () => {
     const store = sandboxStore();
     const wiring = buildOpenCodeWiring();
     await wiring.ensureSession("s1");
-    stageRecords("s1");
+    await stageRecords("s1");
 
     await wiring.handleEvent(openCodeDeleted("s1"));
 
@@ -446,7 +469,7 @@ describe("host session record contract", () => {
     const store = sandboxStore();
     const wiring = buildOpenCodeWiring();
     await wiring.ensureSession("s1");
-    stageRecords("s1");
+    await stageRecords("s1");
 
     const report = await wiring.dispose();
 
@@ -454,20 +477,27 @@ describe("host session record contract", () => {
     assertReleased(store, "s1");
   });
 
-  it("deletes the records of a session no scope owned", async () => {
+  it("deletes the persisted records of a session no scope owned", async () => {
     const store = sandboxStore();
-    stageRecords("ghost");
-    // A later plugin instance: the records outlive the manager.
-    _resetContextStateManagerForTesting(store);
+    await stageRecords("ghost");
+    // A later plugin instance: the persisted state and the agent binding
+    // outlive the instance that wrote them, so its unknown-session
+    // deletion still has to remove both.
+    runtime = createContextRuntime(store);
+    sessionCatalog = createSessionResourceCatalog([
+      ...contextSessionResources(runtime),
+      sessionAgentResource,
+    ]);
     const wiring = buildOpenCodeWiring();
 
     await wiring.handleEvent(openCodeDeleted("ghost"));
 
-    assertDeleted(store, "ghost");
+    assert.equal(store.load("ghost").blocks.size, 0);
+    assert.equal(sessionAgentRegistry.resolve("ghost"), undefined);
     assert.equal(
-      _hasContextStateManagerForTesting(),
-      false,
-      "the deletion must not build a scope or a manager",
+      store.load("ghost").blocks.size,
+      0,
+      "the deletion must not build a scope that writes the state back",
     );
   });
 });

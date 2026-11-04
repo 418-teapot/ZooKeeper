@@ -76,9 +76,11 @@ export interface SubagentPort {
   subagentModels: Record<string, string>;
   /**
    * Called after every subagent run-registry mutation (start / update /
-   * finish) so the host can nudge its fleet widget to re-render.
+   * finish) so the host can nudge the parent session's fleet widget to
+   * re-render.  The parent session id is the delegation's own, so the nudge
+   * never reaches another session's widget.
    *
    * Absent on hosts without a fleet widget.
    */
-  onSubagentRunChange: () => void;
+  onSubagentRunChange: (sessionID: string) => void;
 }

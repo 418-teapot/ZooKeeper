@@ -4,10 +4,10 @@
  * Covers the config-driven command set (one `/<agent>` command per
  * configured primary, empty set / missing pi switch host → zero
  * commands), and the new-session switch semantics (`applySwitch`:
- * setPrimary FIRST → `newSession` with the current session id as parent
- * → post-replacement tool trim + widget inside `withSession`), including
- * the same-agent no-op, cancelled-rollback, missing-API fail-closed, and
- * the round-trip non-accumulation property.
+ * `setPrimary(sessionID, target)` FIRST → `newSession` with the current
+ * session id as parent → post-replacement tool trim + widget inside
+ * `withSession`), including the same-agent no-op, cancelled-rollback,
+ * missing-API fail-closed, and the round-trip non-accumulation property.
  */
 import assert from "node:assert/strict";
 import { mkdirSync, rmSync } from "node:fs";
@@ -16,11 +16,6 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, it } from "node:test";
 import type { ModeProfile } from "../../core/config-types.js";
 import type { SwitchHost } from "../../core/ports/switch.js";
-import {
-  _resetForTesting,
-  getPrimary,
-  setPrimary,
-} from "../../core/subagent/identity.js";
 import {
   type CommandUnitDescriptor,
   definePromptAgent,
@@ -38,14 +33,12 @@ import { applySwitch } from "./switch.js";
 let _loggerDir: string;
 
 beforeEach(() => {
-  _resetForTesting();
   _loggerDir = join(tmpdir(), `switch-log-${Date.now()}-${Math.random()}`);
   mkdirSync(_loggerDir, { recursive: true });
   initLogger("pi", { logDir: _loggerDir });
 });
 
 afterEach(() => {
-  _resetForTesting();
   _resetLoggerForTesting();
   try {
     rmSync(_loggerDir, { recursive: true, force: true });
@@ -70,13 +63,21 @@ afterEach(() => {
  * per-fresh-session facade (`SwitchNewSessionOps`), so tests can
  * observe exactly what the switch does inside `withSession`.
  *
- * The host's OWN `setActiveTools` / `setWidget` record into `hostCalls`
- * and are expected to stay EMPTY: switch.ts must touch only the facade
+ * The session → primary surface is an explicit per-session map, mirroring
+ * the production host: a switch reads and writes the primary of the session
+ * that asked for it.  `order` records the call sequence, so a test can prove
+ * the binding precedes the replacement.
+ *
+ * The host's OWN `setActiveTools` records into `hostCalls`
+ * and is expected to stay EMPTY: switch.ts must touch only the facade
  * inside `withSession` — the process-level host API is stale (pi
  * invalidates it) after `newSession`, so calling it there is the crash
  * this design prevents.
  */
-function mockHost(initialTools: string[] = []): {
+function mockHost(
+  initialTools: string[] = [],
+  overrides: Partial<SwitchHost> = {},
+): {
   host: SwitchHost;
   calls: {
     newSession: Array<{ parentSession?: string }>;
@@ -84,29 +85,32 @@ function mockHost(initialTools: string[] = []): {
     withSessionWidget: Array<[string, string[] | undefined]>;
     /** Facade ops.setActiveTools calls inside withSession. */
     setActiveTools: string[][];
+    /** Every primary write and replacement, in call order. */
+    order: string[];
   };
   hostCalls: {
     setActiveTools: string[][];
-    setWidget: Array<[string, string[] | undefined]>;
   };
   active: () => string[];
+  primary: (sessionID: string) => string | undefined;
   newSessionCount: () => number;
 } {
+  const primaries = new Map<string, string>();
   const calls: {
     newSession: Array<{ parentSession?: string }>;
     withSessionWidget: Array<[string, string[] | undefined]>;
     setActiveTools: string[][];
+    order: string[];
   } = {
     newSession: [],
     withSessionWidget: [],
     setActiveTools: [],
+    order: [],
   };
   const hostCalls: {
     setActiveTools: string[][];
-    setWidget: Array<[string, string[] | undefined]>;
   } = {
     setActiveTools: [],
-    setWidget: [],
   };
   const baseline = [...initialTools];
   let active = [...initialTools];
@@ -117,10 +121,14 @@ function mockHost(initialTools: string[] = []): {
     setActiveTools: (names) => {
       hostCalls.setActiveTools.push(names);
     },
-    setWidget: (key, lines) => {
-      hostCalls.setWidget.push([key, lines]);
+    getPrimary: (sessionID) => primaries.get(sessionID),
+    setPrimary: (sessionID, name) => {
+      calls.order.push(`setPrimary:${sessionID}:${name ?? "none"}`);
+      if (name === undefined) primaries.delete(sessionID);
+      else primaries.set(sessionID, name);
     },
     newSession: async (options) => {
+      calls.order.push(`newSession:${options.parentSession ?? "none"}`);
       calls.newSession.push({ parentSession: options.parentSession });
       // Simulate pi running the withSession callback against a
       // per-fresh-session facade.  The facade's setActiveTools applies
@@ -135,12 +143,14 @@ function mockHost(initialTools: string[] = []): {
       });
       return { cancelled: false };
     },
+    ...overrides,
   };
   return {
     host,
     calls,
     hostCalls,
     active: () => active,
+    primary: (sessionID) => primaries.get(sessionID),
     newSessionCount: () => calls.newSession.length,
   };
 }
@@ -181,6 +191,21 @@ describe("switch unit — command set follows the selection", () => {
       "dolphin",
       "mola",
     ]);
+  });
+
+  it("marks every /<agent> command as replacing the session", () => {
+    // A switch closes the session it runs in, so the host admits it as a
+    // control operation instead of ordinary session work.
+    const { host } = mockHost();
+    const contributions = unit.create(
+      makeDeps({ switchHost: host }),
+      makeUses(["dolphin", "mola"]),
+    );
+
+    assert.deepEqual(
+      contributions.commands.map((command) => command.replacesSession),
+      [true, true],
+    );
   });
 
   it("keeps the primaries in the selection's order", () => {
@@ -260,7 +285,7 @@ describe("switch unit — command set follows the selection", () => {
 
 describe("switch unit — new-session switch flow", () => {
   it("setPrimary runs BEFORE newSession; newSession parents to the current session id", async () => {
-    const { host, calls } = mockHost(["webfetch", "edit", "bash"]);
+    const { host, calls, primary } = mockHost(["webfetch", "edit", "bash"]);
     const contributions = unit.create(
       makeDeps({
         switchHost: host,
@@ -273,16 +298,21 @@ describe("switch unit — new-session switch flow", () => {
     assert.ok(dolphin, "dolphin switch command must exist");
 
     // A switch from a DIFFERENT current primary (mola) to dolphin.
-    setPrimary("mola");
+    host.setPrimary("sess-switch", "mola");
+    calls.order.length = 0;
     await dolphin.handle({
       command: "dolphin",
       sessionID: "sess-switch",
       arguments: "",
     });
 
-    // The identity core reflects the target BEFORE the replacement: the
-    // new session's bind-time handlers already resolve dolphin.
-    assert.equal(getPrimary(), "dolphin");
+    // The binding precedes the replacement: the new session's bind-time
+    // handlers already resolve dolphin.
+    assert.deepEqual(calls.order, [
+      "setPrimary:sess-switch:dolphin",
+      "newSession:sess-switch",
+    ]);
+    assert.equal(primary("sess-switch"), "dolphin");
     // The new session is parented to the current session id.
     assert.deepEqual(calls.newSession, [{ parentSession: "sess-switch" }]);
   });
@@ -299,7 +329,7 @@ describe("switch unit — new-session switch flow", () => {
     );
     const dolphin = contributions.commands.find((c) => c.name === "dolphin");
     assert.ok(dolphin);
-    setPrimary("mola");
+    host.setPrimary("sess-switch", "mola");
 
     await dolphin.handle({
       command: "dolphin",
@@ -328,38 +358,24 @@ describe("switch unit — new-session switch flow", () => {
     );
     const mola = contributions.commands.find((c) => c.name === "mola");
     assert.ok(mola);
-    setPrimary("dolphin");
+    host.setPrimary("sess-switch", "dolphin");
     await mola.handle({
       command: "mola",
       sessionID: "sess-switch",
       arguments: "",
     });
     assert.deepEqual(calls.setActiveTools, [["webfetch", "edit"]]);
-    assert.equal(getPrimary(), "mola");
+    assert.equal(host.getPrimary("sess-switch"), "mola");
   });
 
   it("skips the tool trim when the baseline is unavailable", async () => {
-    const { calls } = mockHost();
     // A host without a captured baseline returns undefined.
-    const bareHost: SwitchHost = {
-      getBaselineTools: () => undefined,
-      setActiveTools: (names) => calls.setActiveTools.push(names),
-      setWidget: (key, lines) => {
-        calls.withSessionWidget.push([key, lines]);
-      },
-      newSession: async (options) => {
-        await options.withSession?.({
-          setWidget: (key, lines) => calls.withSessionWidget.push([key, lines]),
-          setActiveTools: (names) => calls.setActiveTools.push(names),
-        });
-        return { cancelled: false };
-      },
-    };
-    setPrimary("mola");
-    await applySwitch("dolphin", ["webfetch"], bareHost, "sess");
+    const { host, calls } = mockHost([], { getBaselineTools: () => undefined });
+    host.setPrimary("sess", "mola");
+    await applySwitch("dolphin", ["webfetch"], host, "sess");
     assert.deepEqual(calls.setActiveTools, [], "trim must be skipped");
     assert.deepEqual(calls.withSessionWidget, [["zoo", ["dolphin"]]]);
-    assert.equal(getPrimary(), "dolphin");
+    assert.equal(host.getPrimary("sess"), "dolphin");
   });
 
   it("skips the tool trim when the baseline is an empty array (first-switch capture)", async () => {
@@ -368,36 +384,23 @@ describe("switch unit — new-session switch flow", () => {
     // activates tools — pi may report `[]` rather than undefined.
     // Filtering it would wipe every tool (fail-open), so the trim must
     // be skipped and the active set must never become `[]`.
-    const { calls } = mockHost();
-    const emptyBaselineHost: SwitchHost = {
-      getBaselineTools: () => [],
-      setActiveTools: (names) => calls.setActiveTools.push(names),
-      setWidget: (key, lines) => {
-        calls.withSessionWidget.push([key, lines]);
-      },
-      newSession: async (options) => {
-        await options.withSession?.({
-          setWidget: (key, lines) => calls.withSessionWidget.push([key, lines]),
-          setActiveTools: (names) => calls.setActiveTools.push(names),
-        });
-        return { cancelled: false };
-      },
-    };
-    setPrimary("mola");
-    await applySwitch("dolphin", ["webfetch"], emptyBaselineHost, "sess");
+    const { host, calls } = mockHost([], { getBaselineTools: () => [] });
+    host.setPrimary("sess", "mola");
+    await applySwitch("dolphin", ["webfetch"], host, "sess");
     assert.deepEqual(calls.setActiveTools, [], "trim must be skipped");
     assert.deepEqual(calls.withSessionWidget, [["zoo", ["dolphin"]]]);
-    assert.equal(getPrimary(), "dolphin");
+    assert.equal(host.getPrimary("sess"), "dolphin");
   });
 
   it("same-agent switch is a no-op: no newSession call", async () => {
     const { host, calls } = mockHost(["webfetch", "edit"]);
-    setPrimary("dolphin");
+    host.setPrimary("sess", "dolphin");
     await applySwitch("dolphin", ["webfetch"], host, "sess");
     assert.deepEqual(calls.newSession, [], "no replacement for the same agent");
     assert.deepEqual(calls.setActiveTools, []);
     assert.deepEqual(calls.withSessionWidget, []);
-    assert.equal(getPrimary(), "dolphin");
+    assert.equal(host.getPrimary("sess"), "dolphin");
+    assert.deepEqual(calls.order, ["setPrimary:sess:dolphin"]);
   });
 
   it("withSession touches ONLY the facade ops, never the process-level host API", async () => {
@@ -417,7 +420,7 @@ describe("switch unit — new-session switch flow", () => {
     );
     const dolphin = contributions.commands.find((c) => c.name === "dolphin");
     assert.ok(dolphin);
-    setPrimary("mola");
+    host.setPrimary("sess-switch", "mola");
 
     await dolphin.handle({
       command: "dolphin",
@@ -431,20 +434,13 @@ describe("switch unit — new-session switch flow", () => {
     // ...and NONE of it touched the process-level host API (which pi
     // invalidates on replacement).
     assert.deepEqual(hostCalls.setActiveTools, []);
-    assert.deepEqual(hostCalls.setWidget, []);
   });
 
   it("cancelled replacement → rolls back the primary and throws", async () => {
     // A host whose newSession reports cancelled: the session was never
     // created, so the primary must return to the previous value.
-    const { calls } = mockHost();
     let withSessionRan = false;
-    const cancellingHost: SwitchHost = {
-      getBaselineTools: () => [],
-      setActiveTools: (names) => calls.setActiveTools.push(names),
-      setWidget: (key, lines) => {
-        calls.withSessionWidget.push([key, lines]);
-      },
+    const { host, calls } = mockHost([], {
       newSession: async (options) => {
         withSessionRan = true;
         await options.withSession?.({
@@ -453,14 +449,14 @@ describe("switch unit — new-session switch flow", () => {
         });
         return { cancelled: true };
       },
-    };
-    setPrimary("mola");
+    });
+    host.setPrimary("sess", "mola");
     await assert.rejects(
-      () => applySwitch("dolphin", ["webfetch"], cancellingHost, "sess"),
+      () => applySwitch("dolphin", ["webfetch"], host, "sess"),
       /cancelled/,
     );
     // Rollback: the session never changed, so the primary is restored.
-    assert.equal(getPrimary(), "mola");
+    assert.equal(host.getPrimary("sess"), "mola");
     assert.equal(withSessionRan, true);
   });
 
@@ -468,22 +464,22 @@ describe("switch unit — new-session switch flow", () => {
     // A host without the replacement API must fail closed before any
     // state change: the primary stays at its previous value and no
     // post-replacement work runs.
-    const { calls } = mockHost();
+    const { host, calls } = mockHost(["webfetch", "edit"]);
     // The bare host intentionally omits `newSession` (the fail-closed
     // path); the cast models a host that predates the capability.
-    const bareHost = {
-      getBaselineTools: () => ["webfetch", "edit"],
-      setActiveTools: (names: string[]) => calls.setActiveTools.push(names),
-      setWidget: (key: string, lines: string[] | undefined) => {
-        calls.withSessionWidget.push([key, lines]);
-      },
-    } as unknown as SwitchHost;
-    setPrimary("mola");
+    const { newSession: _omitted, ...bareHost } = host;
+    host.setPrimary("sess", "mola");
     await assert.rejects(
-      () => applySwitch("dolphin", ["webfetch"], bareHost, "sess"),
+      () =>
+        applySwitch(
+          "dolphin",
+          ["webfetch"],
+          bareHost as unknown as SwitchHost,
+          "sess",
+        ),
       /newSession/,
     );
-    assert.equal(getPrimary(), "mola", "primary must not change");
+    assert.equal(host.getPrimary("sess"), "mola", "primary must not change");
     assert.deepEqual(calls.setActiveTools, [], "no trim before the check");
     assert.deepEqual(calls.withSessionWidget, []);
   });
@@ -496,16 +492,16 @@ describe("switch unit — new-session switch flow", () => {
 describe("applySwitch — new-session flow", () => {
   it("removes only the denied tools and keeps the rest in the new session", async () => {
     const { host, calls } = mockHost(["a", "b", "c", "d"]);
-    setPrimary("a");
+    host.setPrimary("sess", "a");
     await applySwitch("mola", ["b", "d"], host, "sess");
     assert.deepEqual(calls.setActiveTools, [["a", "c"]]);
-    assert.equal(getPrimary(), "mola");
+    assert.equal(host.getPrimary("sess"), "mola");
     assert.deepEqual(calls.withSessionWidget, [["zoo", ["mola"]]]);
   });
 
   it("renders the widget with the active primary in the new session", async () => {
     const { host, calls } = mockHost([]);
-    setPrimary("mola");
+    host.setPrimary("sess", "mola");
     await applySwitch("dolphin", [], host, "sess");
     assert.deepEqual(calls.withSessionWidget, [["zoo", ["dolphin"]]]);
   });
@@ -521,7 +517,7 @@ describe("applySwitch — new-session flow", () => {
       "edit",
       "bash",
     ]);
-    setPrimary("dolphin");
+    host.setPrimary("sess", "dolphin");
     await applySwitch("mola", [], host, "sess");
     assert.deepEqual(active(), ["webfetch", "websearch", "edit", "bash"]);
     await applySwitch("dolphin", ["webfetch", "websearch"], host, "sess");
@@ -533,7 +529,7 @@ describe("applySwitch — new-session flow", () => {
     // A (dolphin) denies webfetch; B (mola) does not.  After the A→B
     // switch, webfetch must be present again.
     const { host, active } = mockHost(["webfetch", "edit"]);
-    setPrimary("dolphin");
+    host.setPrimary("sess", "dolphin");
     await applySwitch("mola", [], host, "sess");
     assert.deepEqual(active(), ["webfetch", "edit"]);
     await applySwitch("dolphin", ["webfetch"], host, "sess");
@@ -542,7 +538,7 @@ describe("applySwitch — new-session flow", () => {
 
   it("a denied tool absent from the baseline stays absent", async () => {
     const { host, active } = mockHost(["edit"]);
-    setPrimary("dolphin");
+    host.setPrimary("sess", "dolphin");
     await applySwitch("mola", [], host, "sess");
     assert.deepEqual(active(), ["edit"]);
     await applySwitch("dolphin", ["webfetch", "websearch"], host, "sess");

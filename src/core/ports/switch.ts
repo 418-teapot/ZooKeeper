@@ -11,12 +11,13 @@
  * Host surfaces used by the primary-switch command.
  *
  * `getBaselineTools` / `setActiveTools` come from the host's extension
- * API; `setWidget` is read from the latest extension context's `ui`.
- * `newSession` delegates to the command context's `newSession` (the full
- * re-bind: the new session re-resolves the primary's prompt, skill filter,
- * tool trim, and widget at bind time).  The switch command unit contributes
- * no commands when this capability is absent (fail closed — OpenCode never
- * provides it, so `/<agent>` commands never register there).
+ * API; the widget and the command context belong to the session being
+ * replaced.  `newSession` delegates to the command context's `newSession`
+ * (the full re-bind: the new session re-resolves the primary's prompt,
+ * skill filter, tool trim, and widget at bind time).  The switch command
+ * unit contributes no commands when this capability is absent (fail
+ * closed — OpenCode never provides it, so `/<agent>` commands never
+ * register there).
  */
 export interface SwitchHost {
   /**
@@ -34,13 +35,19 @@ export interface SwitchHost {
   /** Replace the active tool set (used to trim denied tools). */
   setActiveTools(toolNames: string[]): void;
   /**
-   * Render a widget above the editor (e.g. the active primary).
+   * The primary one session is bound to, or `undefined` when unresolved.
    *
-   * Mirrors the host's `setWidget` shape: `lines` is the widget's
-   * single-line content rendered above the editor.  `undefined` hides the
-   * widget.
+   * The caller names the session: a host holds several live sessions at
+   * once, so no session may answer for another.
    */
-  setWidget(key: string, lines: string[] | undefined): void;
+  getPrimary(sessionID: string): string | undefined;
+  /**
+   * Bind one session to a primary.
+   *
+   * `undefined` restores the session's unresolved state; a rollback after a
+   * failed replacement of a session that had no binding uses it.
+   */
+  setPrimary(sessionID: string, name: string | undefined): void;
   /**
    * Replace the current session with a fresh one bound to the new
    * primary identity.

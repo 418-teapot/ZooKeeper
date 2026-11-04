@@ -5,8 +5,9 @@
  * `ExtensionContext`: the session id comes from the tool execution context's
  * `sessionManager`, notifications are best-effort via pi's in-session
  * `appendEntry` channel (a `zoo-notice` custom entry — persistent, never
- * part of the LLM context), and transient toasts go through the latest
- * context's `ui.notify` (silently dropped when no UI surface exists).
+ * part of the LLM context), and transient toasts go through the `ui.notify`
+ * of the session the call names (silently dropped when that session has no
+ * UI surface).
  *
  * No history read is offered: pi's `buildContextEntries()` channel is not
  * the same ordinal space the `context` event projects (compaction rewrites
@@ -14,11 +15,10 @@
  * fallback unwired.  The compress / decompress tools address the round view
  * published by the context transform instead.
  *
- * pi sessions are single-session, so the host keeps a mutable reference to
- * the latest `ExtensionContext` supplied by the pi event handlers; tool
- * execution receives a context too, but using the latest ref lets the host
- * resolve the current session manager even when only the session id is
- * available.
+ * The toast port addresses one session at a time: pi tracks several live
+ * sessions, so the ui of "the last event" would let one session's toast land
+ * on another's TUI.  The host therefore resolves the ui of the session the
+ * call names, and a session that bound no context toasts nothing.
  *
  * @module
  */
@@ -31,11 +31,11 @@ import {
 import { log } from "../../utils/logger.js";
 
 /**
- * Minimal duck-type shape of pi's `ExtensionContext` that the latest-context
- * holder keeps.
+ * Minimal duck-type shape of pi's `ExtensionContext` that the session
+ * contexts keep.
  *
  * No import from the pi package — these structural types are the only
- * contract the holder's readers rely on.  `sessionManager.getSessionId`
+ * contract the readers rely on.  `sessionManager.getSessionId`
  * serves session-id resolution, `buildContextEntries` is read by the pi
  * entry point's session-start subagent-run rescan (never by this host: it
  * offers no history read for the compression tools), and `ui` serves the
@@ -99,31 +99,33 @@ export interface PiNoticeEntryData {
 }
 
 /**
- * Mutable holder for the latest pi context.
+ * Resolver for one session's pi event context.
  *
- * pi passes a fresh `ExtensionContext` to every event handler; the tool
- * host reads the holder so it can access the current session manager and UI
- * without importing pi types.
+ * The host names the session it serves, so an interleaved second session's
+ * context is never returned.  The session contexts port satisfies it.
  */
-export interface PiContextHolder {
-  current: PiToolHostContext | undefined;
+export interface PiContextResolver {
+  /** The context bound for one session, or undefined when it bound none. */
+  forSession(sessionID: string | undefined): PiToolHostContext | undefined;
 }
 
 /**
- * Create the pi tool host backed by a mutable context holder.
+ * Create the pi tool host backed by the session contexts.
  *
- * The holder is updated by the pi event handlers
- * (`src/adapters/pi/handlers.ts`) as each handler fires.  All operations
- * are best-effort: notification failures are swallowed and logged.
+ * The toast port resolves the ui of the session the call names; the session
+ * contexts are bound by the entry paths (`src/adapters/pi/handlers.ts` and
+ * the tool / command bridges).
+ * All operations are best-effort: notification failures are swallowed and
+ * logged.
  *
- * @param contextHolder - Mutable reference to the latest pi context.
+ * @param contexts - Resolves one session's pi event context.
  * @param appendEntry - Optional pi `appendEntry` binding (extension API)
  *   that `notify` uses to post an in-session `zoo-notice` custom entry.
  *   Absent (e.g. headless mode) drops notifications with a debug log.
  * @returns The pi tool host.
  */
 export function createPiToolHost(
-  contextHolder: PiContextHolder,
+  contexts: PiContextResolver,
   appendEntry?: PiAppendEntry,
 ): ToolHost {
   return {
@@ -185,23 +187,22 @@ export function createPiToolHost(
      *
      * The message is rendered by `formatToastMessage` and the level
      * passes through as the pi notification type, so producers stay
-     * uniform across hosts.  Fire-and-forget and observational: the latest context is
-     * read from the mutable holder (refreshed on every pi event, so it
-     * is current whenever a transform runs); when the holder has no UI
-     * surface (e.g. pi print mode) the call silently drops with a debug
-     * log.  Failures are swallowed and logged as warnings.
+     * uniform across hosts.  Fire-and-forget and observational: the ui of
+     * the session this call names is resolved from the session contexts;
+     * a session that bound no UI surface (e.g. pi print mode) drops the
+     * toast with a debug log.  Failures are swallowed and logged as
+     * warnings.
      *
-     * @param _sessionId - The session identifier (logged but not used;
-     *   pi sessions are single-session and ui.notify targets the TUI).
+     * @param sessionID - The session the toast belongs to.
      * @param toast - The toast payload (source / level / text).
      */
-    toast(_sessionId: string, toast: ToastPayload): void {
-      const ui = contextHolder.current?.ui;
+    toast(sessionID: string, toast: ToastPayload): void {
+      const ui = contexts.forSession(sessionID)?.ui;
       if (ui === undefined || typeof ui.notify !== "function") {
         log.debug({
           hook: "tool-host",
           event: "toast_skipped",
-          sessionId: _sessionId,
+          sessionId: sessionID,
           reason: "ui.notify unavailable",
         });
         return;
@@ -213,7 +214,7 @@ export function createPiToolHost(
         log.warn({
           hook: "tool-host",
           event: "toast_failed",
-          sessionId: _sessionId,
+          sessionId: sessionID,
           error: String(err),
         });
       }

@@ -68,8 +68,10 @@ export interface IsolatedRoot {
   artifactsDir: string;
   /** Trace file this scenario's pi process appends to. */
   tracePath: string;
-  /** The single extension file pi discovers (real extension + probe). */
-  entryPath: string;
+  /** ZooKeeper's extension entry (the repository's real `src/pi.ts`). */
+  zooEntryPath: string;
+  /** The observation probe's extension entry. */
+  probeEntryPath: string;
 }
 
 /** Filesystem-safe scenario slug for directory names. */
@@ -108,14 +110,18 @@ export function createIsolatedRoot(options: {
   for (const dir of [agentDir, sessionDir, workDir, artifactsDir]) {
     mkdirSync(dir, { recursive: true });
   }
-  const entryPath = join(
+  // Two extension files, ZooKeeper first: the probe observes the runtime of
+  // a sub-session that loads ZooKeeper from its inline factory, so both
+  // must be loadable independently.
+  const zooEntryPath = join(repoRoot, "src", "pi.ts");
+  const probeEntryPath = join(
     repoRoot,
     "tests",
     "host",
     "pi",
     "harness",
     "extension",
-    "entry.ts",
+    "probe-entry.ts",
   );
 
   writeJson(join(agentDir, "settings.json"), {
@@ -123,7 +129,7 @@ export function createIsolatedRoot(options: {
     defaultModel: MODEL_ID,
     defaultThinkingLevel: "off",
     defaultTools: [],
-    extensions: [entryPath],
+    extensions: [zooEntryPath, probeEntryPath],
     quietStartup: true,
     retry: { enabled: false },
     compaction: { enabled: false },
@@ -174,7 +180,8 @@ export function createIsolatedRoot(options: {
     workDir,
     artifactsDir,
     tracePath: join(artifactsDir, "trace.jsonl"),
-    entryPath,
+    zooEntryPath,
+    probeEntryPath,
   };
 }
 

@@ -4,157 +4,158 @@
  * (`store.ts`).
  *
  * Each session's state is loaded from the store on first access and
- * cached for the lifetime of its entry; every `get` for the same
- * session returns the same object, so consumers mutate state in place
- * and write back explicitly with `save`.  Entries idle longer than
- * `ttlMs` are evicted on the next access — written back to the store
- * first — and `_resetForTesting` drops the whole cache for test
- * isolation.  `evict` drops a single entry silently (no write-back):
- * callers choose it when the entry must not outlive their own cleanup —
- * the deletion path (the file is already removed, so writing it back
- * would resurrect the deletion) and the runtime-release path (which
- * saves first, then evicts, so the file keeps the mutations).
+ * cached for the lifetime of its entry; every `read` of the same
+ * session observes the same committed object.  The cache has no TTL and
+ * performs no background save: an entry leaves the cache only through
+ * `release`, `evict`, or `delete`, and only `commit` writes to the
+ * store.
+ *
+ * Call-scoped work uses the permit protocol: `read` observes the
+ * committed state, `commit` runs one change on a draft and makes it the
+ * committed state only while its permit stays active.  Lifecycle
+ * cleanup uses `release`, `evict`, and `delete`.
  *
  * @module
  */
 
+import type { WorkPermit } from "../lifecycle/index.js";
+import { createSequencer, type Sequencer } from "../sequencer.js";
 import type { SessionState } from "./state.js";
 import type { StateStore } from "./store.js";
-
-/** Default idle time before an unaccessed entry is evicted (7 days). */
-const DEFAULT_TTL_MS = 7 * 24 * 60 * 60 * 1000;
-
-/**
- * Options for `createSessionStateManager`.
- */
-export interface SessionStateManagerOptions {
-  /** Idle time (ms) before an unaccessed entry is evicted. */
-  ttlMs?: number;
-  /** Clock used for TTL bookkeeping; defaults to `Date.now`. */
-  now?: () => number;
-}
 
 /**
  * Per-session registry over a store.
  *
- * The pipeline-facing surface is two verbs: `get` (load-or-cache, same
- * reference per session) and `save` (explicit write-back).  `evict`
- * and `_resetForTesting` cover silent single-session and bulk cache
- * drops; `saveAll` covers bulk write-back.  `evict` and TTL eviction
- * share the verb "evict" but differ in semantics: TTL eviction saves
- * the entry back to the store first (the entry is merely idle), while
- * `evict` never writes back — the caller has already decided what the
- * store should hold (deleted: nothing; runtime released: the save it
- * performed before evicting).
+ * `read` and `commit` are the only way to reach a session's state, so a
+ * session's work never writes another session's state.  `release`,
+ * `evict`, and `delete` cover the three lifecycle endings; none of them
+ * runs on its own.
  */
 export interface SessionStateManager {
   /** The store all cached state is loaded from and saved to. */
   readonly store: StateStore;
   /**
-   * Load-or-cache the session's state.
+   * Read the committed state of the permit's session.
    *
-   * Returns the cached object when the session is already resident
-   * (same reference on every call); otherwise loads from the store and
-   * caches the result.  Also sweeps entries idle beyond `ttlMs`,
-   * writing each back to the store before eviction.
+   * Loads from the store on first access and caches the result.  Pure
+   * read: nothing is written back, and the reader never runs when the
+   * permit already lapsed.
    */
-  get(sessionId: string): SessionState;
+  read<T>(
+    permit: WorkPermit,
+    reader: (state: SessionState) => T,
+  ): T | undefined;
   /**
-   * Write the cached state of one session back to the store.
+   * Commit one change to the permit's session.
    *
-   * Explicit dirty write-back: the caller decides when a mutation is
-   * worth persisting.  No-op when the session is not cached.
+   * Changes of one session run one at a time in submission order.  Each
+   * change runs on a draft; the draft replaces the committed cache and
+   * the store file only when the permit is still active afterwards.
+   * Returns undefined when the permit lapsed, so a caller never reports
+   * uncommitted work as committed.
    */
-  save(sessionId: string): void;
+  commit<T>(
+    permit: WorkPermit,
+    change: (state: SessionState) => T | Promise<T>,
+  ): Promise<T | undefined>;
+  /**
+   * Save the committed state of one session and drop its cache entry.
+   *
+   * Lifecycle cleanup calls it after the session's work finished.
+   */
+  release(sessionId: string): void;
   /**
    * Drop one session's cached entry without writing back.
    *
    * The caller owns the store side of the decision: the deletion path
    * removes the file first (writing the entry back would resurrect the
-   * deletion), the runtime-release path saves it first (the entry is
-   * dropped, the compression is not).  Differs from TTL eviction (which
-   * saves first because the entry is merely idle, not released);
-   * differs from `_resetForTesting` (which drops the whole cache at
-   * once).  No-op when the session is not cached; never throws.
+   * deletion).  No-op when the session is not cached; never throws.
    *
    * @param sessionId - The session identifier to drop from cache.
    */
   evict(sessionId: string): void;
-  /** Write every cached session state back to the store. */
-  saveAll(): void;
-  /** Drop the whole cache without saving (test isolation). */
-  _resetForTesting(): void;
-}
-
-/** A cached entry: the state plus its last-access timestamp. */
-interface SessionEntry {
-  state: SessionState;
-  lastAccessedAt: number;
+  /**
+   * Drop one session's cache entry and delete its store file.
+   *
+   * Nothing is written back, so a deleted session stays deleted.
+   */
+  delete(sessionId: string): void;
 }
 
 /**
  * Create an in-memory session state manager over the given store.
  *
- * The default TTL is 7 days; pass `ttlMs` to override and `now` to
- * control the clock (tests fast-forward it to force eviction).
- *
  * @param store - The store backing the registry.
- * @param opts - Optional TTL and clock overrides.
  * @returns The session state manager.
  */
 export function createSessionStateManager(
   store: StateStore,
-  opts: SessionStateManagerOptions = {},
 ): SessionStateManager {
-  const ttlMs = opts.ttlMs ?? DEFAULT_TTL_MS;
-  const clock = opts.now ?? (() => Date.now());
-  const entries = new Map<string, SessionEntry>();
+  const entries = new Map<string, SessionState>();
+  const sequencers = new Map<string, Sequencer>();
 
-  /**
-   * Evict every entry except the requested one that has been idle
-   * longer than `ttlMs`, writing each back to the store first.
-   */
-  const evictStale = (now: number, exceptSessionId?: string): void => {
-    for (const [sessionId, entry] of [...entries]) {
-      if (sessionId === exceptSessionId) continue;
-      if (now - entry.lastAccessedAt > ttlMs) {
-        store.save(sessionId, entry.state);
-        entries.delete(sessionId);
-      }
-    }
-  };
-
-  const get = (sessionId: string): SessionState => {
-    const now = clock();
-    evictStale(now, sessionId);
+  /** The committed state of one session, loaded from the store on miss. */
+  const load = (sessionId: string): SessionState => {
     const cached = entries.get(sessionId);
-    if (cached) {
-      cached.lastAccessedAt = now;
-      return cached.state;
-    }
+    if (cached !== undefined) return cached;
     const state = store.load(sessionId);
-    entries.set(sessionId, { state, lastAccessedAt: now });
+    entries.set(sessionId, state);
     return state;
   };
 
-  const save = (sessionId: string): void => {
-    const entry = entries.get(sessionId);
-    if (entry) store.save(sessionId, entry.state);
+  /** The sequencer that serialises commits of one session. */
+  const sequencerFor = (sessionId: string): Sequencer => {
+    let sequencer = sequencers.get(sessionId);
+    if (sequencer === undefined) {
+      sequencer = createSequencer();
+      sequencers.set(sessionId, sequencer);
+    }
+    return sequencer;
+  };
+
+  const read = <T>(
+    permit: WorkPermit,
+    reader: (state: SessionState) => T,
+  ): T | undefined => {
+    if (!permit.isActive()) return undefined;
+    return reader(load(permit.sessionID));
+  };
+
+  const commit = <T>(
+    permit: WorkPermit,
+    change: (state: SessionState) => T | Promise<T>,
+  ): Promise<T | undefined> => {
+    if (!permit.isActive()) return Promise.resolve(undefined);
+    const sessionId = permit.sessionID;
+    return sequencerFor(sessionId)(async () => {
+      if (!permit.isActive()) return undefined;
+      const draft: SessionState = structuredClone(load(sessionId));
+      const value = await change(draft);
+      if (!permit.isActive()) return undefined;
+      // One synchronous segment: no other commit interleaves between
+      // the file write and the cache swap.
+      store.save(sessionId, draft);
+      entries.set(sessionId, draft);
+      return value;
+    });
+  };
+
+  const release = (sessionId: string): void => {
+    const committed = entries.get(sessionId);
+    if (committed !== undefined) store.save(sessionId, committed);
+    entries.delete(sessionId);
+    sequencers.delete(sessionId);
   };
 
   const evict = (sessionId: string): void => {
     entries.delete(sessionId);
   };
 
-  const saveAll = (): void => {
-    for (const [sessionId, entry] of entries) {
-      store.save(sessionId, entry.state);
-    }
+  const remove = (sessionId: string): void => {
+    entries.delete(sessionId);
+    store.delete(sessionId);
+    sequencers.delete(sessionId);
   };
 
-  const reset = (): void => {
-    entries.clear();
-  };
-
-  return { store, get, save, evict, saveAll, _resetForTesting: reset };
+  return { store, read, commit, release, evict, delete: remove };
 }

@@ -4,30 +4,19 @@
  * Covers: freezing (region text, message metadata, the invocation table
  * and its reverse index, and summary view items all become copied data,
  * so later host or state mutations never reach a published view),
- * publish / read / clear per session, overwrite semantics, and the session
- * resource declaration that drops the record on both stop modes.
+ * publish / read / clear per session, overwrite semantics, and the
+ * isolation of two registry instances.
  */
 import assert from "node:assert/strict";
-import { afterEach, describe, it } from "node:test";
+import { describe, it } from "node:test";
 import type { HostMessage, Invocation, Projection } from "./lens.js";
 import { project, regionKey } from "./lens.js";
 import {
-  _listRoundViewSessionsForTesting,
-  _resetRoundViewsForTesting,
-  clearRoundView,
+  createRoundViewRegistry,
   freezeNumberedView,
   freezeProjection,
-  getRoundView,
-  publishRoundView,
-  roundViewResource,
 } from "./round-view.js";
-import { _resetContextStateManagerForTesting } from "./runtime.js";
 import type { NumberedItem } from "./view-refs.js";
-
-afterEach(() => {
-  _resetRoundViewsForTesting();
-  _resetContextStateManagerForTesting();
-});
 
 /** A live lens message whose single content region reads a mutable field. */
 function liveMsg(
@@ -148,61 +137,57 @@ describe("freezeNumberedView", () => {
   });
 });
 
-describe("publishRoundView / getRoundView", () => {
+describe("round-view registry", () => {
   it("freezes what it stores and reads it back per session", () => {
+    const registry = createRoundViewRegistry();
     const { snapshot, holders } = liveProjection([{ text: "hi" }]);
     const numbered: NumberedItem[] = [
       { n: 1, item: { type: "original", start: 0, end: 1 } },
     ];
-    publishRoundView("s-a", { projection: snapshot, numbered });
+    registry.publish("s-a", { projection: snapshot, numbered });
     holders[0].text = "changed";
     numbered[0].n = 42;
 
-    const view = getRoundView("s-a");
+    const view = registry.get("s-a");
     assert.ok(view);
     assert.equal(view.projection.messages[0]?.regions[0]?.get(), "hi");
     assert.equal(view.numbered[0]?.n, 1, "numbered items are copied too");
-    assert.equal(getRoundView("s-b"), undefined, "views are per session");
-    assert.deepEqual(_listRoundViewSessionsForTesting(), ["s-a"]);
+    assert.equal(registry.get("s-b"), undefined, "views are per session");
   });
 
   it("overwrites the previous round's view", () => {
-    publishRoundView("s", {
+    const registry = createRoundViewRegistry();
+    registry.publish("s", {
       projection: liveProjection([{ text: "第一轮" }]).snapshot,
       numbered: [],
     });
-    publishRoundView("s", {
+    registry.publish("s", {
       projection: liveProjection([{ text: "第二轮" }]).snapshot,
       numbered: [],
     });
-    const view = getRoundView("s");
-    assert.equal(view?.projection.messages[0]?.regions[0]?.get(), "第二轮");
-    assert.deepEqual(_listRoundViewSessionsForTesting(), ["s"]);
+    assert.equal(
+      registry.get("s")?.projection.messages[0]?.regions[0]?.get(),
+      "第二轮",
+    );
   });
 
-  it("clearRoundView drops only that session", () => {
-    publishRoundView("keep", { projection: project([], []), numbered: [] });
-    publishRoundView("drop", { projection: project([], []), numbered: [] });
-    clearRoundView("drop");
-    assert.equal(getRoundView("drop"), undefined);
-    assert.ok(getRoundView("keep"));
+  it("clear drops only that session", () => {
+    const registry = createRoundViewRegistry();
+    registry.publish("keep", { projection: project([], []), numbered: [] });
+    registry.publish("drop", { projection: project([], []), numbered: [] });
+    registry.clear("drop");
+    assert.equal(registry.get("drop"), undefined);
+    assert.ok(registry.get("keep"));
   });
-});
 
-describe("session stop", () => {
-  it("drops the cached round view on both stop modes", () => {
-    for (const stop of [roundViewResource.release, roundViewResource.delete]) {
-      const sessionID = "sess-stop-view";
-      publishRoundView(sessionID, {
-        projection: liveProjection([{ text: "x" }]).snapshot,
-        numbered: [],
-      });
-      assert.ok(getRoundView(sessionID));
-
-      stop(sessionID);
-
-      assert.equal(getRoundView(sessionID), undefined);
-      assert.deepEqual(_listRoundViewSessionsForTesting(), []);
-    }
+  it("keeps two registries independent", () => {
+    const first = createRoundViewRegistry();
+    const second = createRoundViewRegistry();
+    first.publish("s", {
+      projection: liveProjection([{ text: "x" }]).snapshot,
+      numbered: [],
+    });
+    assert.equal(second.get("s"), undefined);
+    assert.ok(first.get("s"));
   });
 });

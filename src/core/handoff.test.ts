@@ -73,7 +73,11 @@ function fakeHandoffTarget(overrides?: {
       calls.push("create");
       createArgs.push(ctx);
       // Echo the context's executor, as a host target must.
-      return { id: "new-session-1", agent: ctx.agent };
+      return {
+        id: "new-session-1",
+        agent: ctx.agent,
+        parentage: ctx.parentage,
+      };
     },
     installAgent: async (session) => {
       calls.push("install");

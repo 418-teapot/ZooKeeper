@@ -9,8 +9,8 @@
  * rules), tools (extension-tool trim), and the widget — because pi's
  * skill filtering is merge-only and cannot be retracted mid-session.
  *
- * The order is deliberate: `setPrimary(target)` runs FIRST so the new
- * session's bind-time handlers already resolve the new identity; the
+ * The order is deliberate: `setPrimary(sessionID, target)` runs FIRST so the
+ * new session's bind-time handlers already resolve the new identity; the
  * untrimmed tool baseline is captured BEFORE the replacement (the old
  * API is still valid up to `newSession`); then `newSession` replaces the
  * session with the target as parent.  All post-replacement work (tool
@@ -30,7 +30,6 @@ import type {
   SwitchHost,
   SwitchNewSessionOps,
 } from "../../core/ports/switch.js";
-import { getPrimary, setPrimary } from "../../core/subagent/identity.js";
 import { log } from "../../utils/logger.js";
 
 export type { SwitchHost } from "../../core/ports/switch.js";
@@ -38,10 +37,10 @@ export type { SwitchHost } from "../../core/ports/switch.js";
 /**
  * Apply the primary-agent switch to the pi host.
  *
- * 1. `setPrimary(name)` persists the new active primary in the identity
- *    core FIRST — it must precede `newSession` so the replacement
- *    session's bind-time `resources_discover` filter and first
- *    `before_agent_start` already resolve the new identity.
+ * 1. `setPrimary(sessionID, name)` binds the session to the new primary
+ *    FIRST — it must precede `newSession` so the replacement session's
+ *    bind-time `resources_discover` filter and first `before_agent_start`
+ *    already resolve the new identity.
  * 2. The tool baseline is captured BEFORE the replacement (the old API
  *    is still valid) and the target's trim is precomputed as
  *    `baseline minus deniedTools(target)`, where `baseline` is the full
@@ -63,9 +62,9 @@ export type { SwitchHost } from "../../core/ports/switch.js";
  *
  * Fail-closed behaviour: a missing `newSession` API throws before any
  * state change (the previous primary is left untouched).  A cancelled
- * replacement (the session was never created) rolls back the primary to
- * the previous value and throws, so the identity state stays consistent
- * with the session that actually exists.
+ * replacement (the session was never created) restores the session's
+ * previous primary and throws, so the identity state stays consistent with
+ * the session that actually exists.
  *
  * @param name - The target primary agent name.
  * @param deniedTools - The target agent's tool-level denied tool names.
@@ -81,7 +80,7 @@ export async function applySwitch(
   host: SwitchHost,
   sessionID: string,
 ): Promise<void> {
-  const previous = getPrimary();
+  const previous = host.getPrimary(sessionID);
 
   // Same-agent no-op: the identity is already the target, so no
   // replacement session is needed.
@@ -105,11 +104,10 @@ export async function applySwitch(
     );
   }
 
-  // 1. Persist the new primary FIRST — the replacement session's
-  // bind-time handlers resolve it.  `previous` is always set here (the
-  // same-agent no-op above guarantees `previous !== name`), but a
-  // defensive fallback keeps the rollback type-clean.
-  setPrimary(name);
+  // 1. Bind the session to the new primary FIRST — the replacement
+  // session's bind-time handlers resolve it.  The previous value is kept
+  // for the rollback: an unresolved session restores to unresolved.
+  host.setPrimary(sessionID, name);
 
   // 2. Capture the baseline and precompute the trim BEFORE the
   // replacement: `getBaselineTools` reads the CURRENT (still valid) API,
@@ -150,14 +148,14 @@ export async function applySwitch(
   } catch (err) {
     // The replacement threw (not merely cancelled): the session was never
     // created, so restore the previous primary before propagating.
-    if (previous !== undefined) setPrimary(previous);
+    host.setPrimary(sessionID, previous);
     throw err;
   }
 
   if (result.cancelled === true) {
     // Cancelled after setPrimary: the session never changed, so roll the
     // primary back to the value that matches the surviving session.
-    if (previous !== undefined) setPrimary(previous);
+    host.setPrimary(sessionID, previous);
     throw new Error(
       "Primary switch cancelled: the new session was not created.",
     );

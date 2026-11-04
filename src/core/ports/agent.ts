@@ -18,9 +18,9 @@ export interface AgentPort {
    *
    * Maps every agent whose `mode` field parsed successfully to
    * `"primary"` / `"subagent"`; agents with a missing or invalid `mode`
-   * are absent.  Consumed by the identity layer (e.g. `derivePrimaries`)
-   * — an empty or absent map means no primary agent is configured and
-   * the identity machinery stays disabled.
+   * are absent.  Consumed by the selection planner (`derivePrimaries`) —
+   * an empty or absent map means no primary agent is configured, so the
+   * switch commands contribute nothing.
    */
   agentModes: AgentModeMap;
   /**

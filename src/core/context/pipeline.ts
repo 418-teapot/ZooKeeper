@@ -5,12 +5,12 @@
  * core (`src/core/context/`) through an injected `HostAdapter`.  The
  * pipeline is a strict phase sequence over the turn's transcript:
  *
- * 1. **State + read** — the process-wide shared `SessionStateManager`
- *    (`getContextStateManager`) yields the session state (shared with
- *    the compress/decompress tools and the /dcp command — never a
- *    private manager); `adapter.history()` maps the host messages to
- *    lens messages, and the prompt-side token total of the last
- *    completed assistant is extracted for the release gate.
+ * 1. **State + read** — the plugin instance's `ContextRuntime`
+ *    (`runtime.ts`, injected as a capability) yields the session state
+ *    the compress/decompress tools and the /dcp command share;
+ *    `adapter.history()` maps the host messages to lens messages, and the
+ *    prompt-side token total of the last completed assistant is extracted
+ *    for the release gate.
  * 2. **Release** — `computeEdits` selects the round's region edits
  *    (effective marks plus pending marks passing the `releasedPercent`
  *    gate or the pending-view-change bypass), `adapter.applyEdits`
@@ -31,12 +31,12 @@
  *    `prunedOrdinals` predicate comes from the folded view, so the
  *    lines the model no longer sees are exactly the lines they never
  *    mark.  Marks are pending for the next turn's release.
- * 5. **Publish + materialize** — the round's folded view is numbered and
- *    published to the compression tools (`core/context/round-view.ts`,
- *    frozen), the render plan is computed over that numbering
+ * 5. **Number + materialize** — the round's folded view is numbered, the
+ *    render plan is computed over that numbering
  *    (`core/context/render-plan.ts`), and `adapter.materialize` turns the
  *    plan into the host's messages (synthetic summary messages, per-round
- *    `[mN] ` line refs).
+ *    `[mN] ` line refs).  The numbering is published to the compression
+ *    tools (`core/context/round-view.ts`, frozen) only after the commit.
  * 6. **Nudge** — `evaluateNudge` decides and renders the
  *    context-pressure reminder (transform-only synthetic message
  *    appended at the END via `adapter.appendUserMessage`, never
@@ -45,8 +45,13 @@
  * 7. **Manual compress** — the `/dcp compress` one-shot
  *    `pendingManualTrigger` flag injects the synthetic user command
  *    driving the `compress` tool.
- * 8. **Persist** — the session state is written back to the shared
- *    store, followed by the `prune_completed` summary log.
+ * 8. **Commit** — every phase runs on the draft of one
+ *    `runtime.commit(permit, ...)`: the whole read-modify-write becomes the
+ *    committed state only while the permit stays active.  The round view,
+ *    the notices, the toasts, the completion log and the returned
+ *    conversation follow the commit, and only while the permit is still
+ *    active: a lapsed permit keeps the conversation unchanged and reports
+ *    no cleanup.
  *
  * The two-turn effect ("turn N marks apply on turn N+1") means that
  * marks produced by the current turn are NOT pruned during the same
@@ -66,6 +71,7 @@
 
 import { log } from "../../utils/logger.js";
 import type { ContextPruningConfig } from "../config-types.js";
+import type { WorkPermit } from "../lifecycle/index.js";
 import type { ToastPayload, ToolHost } from "../ports/tool-host.js";
 import { MANUAL_COMPRESS_TEMPLATE } from "../prompts.js";
 import type { TransformOutput } from "../unit.js";
@@ -74,7 +80,7 @@ import { formatTokens } from "./context-report.js";
 import { type FoldExpiryReason, fold } from "./fold.js";
 import type { HostAdapter, HostMessage, Projection, ViewItem } from "./lens.js";
 import { promptSideTokens } from "./measure.js";
-import { getModelLimit, type ModelLimitInfo } from "./model-limits.js";
+import type { ModelLimitInfo } from "./model-limits.js";
 import {
   computeEligibility,
   type EligibilityConfig,
@@ -90,15 +96,12 @@ import {
   reclaimedTokens,
 } from "./release.js";
 import { planViewRender } from "./render-plan.js";
-import { publishRoundView } from "./round-view.js";
 import {
-  consumePendingViewChange,
-  getContextStateManager,
-  getRuntimeFlaggedState,
-  type RuntimeFlaggedState,
-  setPendingViewChange,
-} from "./runtime.js";
-import type { SessionStateManager } from "./session-state.js";
+  freezeNumberedView,
+  freezeProjection,
+  type RoundView,
+} from "./round-view.js";
+import type { ContextRuntime, RuntimeFlaggedState } from "./runtime.js";
 import { checkSpan } from "./spanhash.js";
 import { type Block, markStale } from "./state.js";
 import { itemInterval, type NumberedItem, numberView } from "./view-refs.js";
@@ -145,18 +148,22 @@ interface PipelinePhaseContext {
   adapter: HostAdapter<unknown>;
   /** Unified context-pruning configuration. */
   config: ContextPruningConfig;
-  /** Optional callback for user-visible release notification. */
-  notify?: (text: string) => void;
   /** Gates the nudge and manual-compress phases. */
   hasCompressTool?: boolean;
   /** Optional transient-UI port (source/level/text payload). */
   toast?: (payload: ToastPayload) => void;
-  /** Session ID extracted from the first message. */
+  /** Session the host admitted the transform for. */
   sessionId: string;
-  /** The process-wide shared session state manager. */
-  manager: SessionStateManager;
-  /** The session state (blocks, marks, runtime flags). */
+  /** The plugin instance's context records. */
+  runtime: ContextRuntime;
+  /** The permit this round runs under. */
+  permit: WorkPermit;
+  /** The draft session state the phases mutate. */
   state: RuntimeFlaggedState;
+  /** Release notices to post once the commit succeeds. */
+  notices: string[];
+  /** Transient-UI payloads to fire once the commit succeeds. */
+  toasts: ToastPayload[];
   /** The conversation array; phases replace it as they render. */
   messages: unknown;
   /** The current projection snapshot of `messages`. */
@@ -171,6 +178,8 @@ interface PipelinePhaseContext {
   contextLimit: number | undefined;
   /** This round's numbered view over the fold. */
   numbered: NumberedItem[];
+  /** The frozen round view the commit publishes to the tools. */
+  roundView: RoundView;
   /** The folded view items, read by the producers and rendered. */
   foldedItems: ViewItem[];
   /** Window protection inputs shared by the nudge, its log line, and
@@ -184,13 +193,7 @@ interface PipelinePhaseContext {
  */
 type PipelineInputs = Pick<
   PipelinePhaseContext,
-  | "adapter"
-  | "config"
-  | "notify"
-  | "hasCompressTool"
-  | "toast"
-  | "sessionId"
-  | "messages"
+  "adapter" | "config" | "hasCompressTool" | "toast" | "messages"
 >;
 
 // ---------------------------------------------------------------------------
@@ -198,23 +201,29 @@ type PipelineInputs = Pick<
 // ---------------------------------------------------------------------------
 
 /**
- * Read the shared session state and project the conversation.
+ * Read the runtime's records and project the conversation.
  *
- * The process-wide shared manager (hook/tool/dcp single instance)
- * yields the session state; `adapter.history()` maps the host messages
- * to lens messages, and the prompt-side token total of the last
- * completed assistant is extracted for the release gate.
+ * `adapter.history()` maps the host messages to lens messages, and the
+ * prompt-side token total of the last completed assistant is extracted for
+ * the release gate.  The model limit comes from the same runtime the
+ * capture hook wrote it to.
  */
-function readPhase(inputs: PipelineInputs): PipelinePhaseContext {
-  const { adapter, messages, config, sessionId } = inputs;
-  const manager = getContextStateManager();
-  const state = getRuntimeFlaggedState(sessionId);
+function readPhase(
+  runtime: ContextRuntime,
+  permit: WorkPermit,
+  state: RuntimeFlaggedState,
+  inputs: PipelineInputs,
+): PipelinePhaseContext {
+  const { adapter, messages, config } = inputs;
+  const sessionId = permit.sessionID;
   const snapshot = adapter.history(messages);
   const view = snapshot.messages;
-  const modelLimit = getModelLimit(sessionId);
+  const modelLimit = runtime.modelLimit(sessionId);
   return {
     ...inputs,
-    manager,
+    sessionId,
+    runtime,
+    permit,
     state,
     messages,
     snapshot,
@@ -223,7 +232,10 @@ function readPhase(inputs: PipelineInputs): PipelinePhaseContext {
     modelLimit,
     contextLimit: modelLimit?.context,
     numbered: [],
+    roundView: { projection: snapshot, numbered: [] },
     foldedItems: [],
+    notices: [],
+    toasts: [],
     eligibilityConfig: {
       protectedMessages: config.protectedMessages,
       protectedTokens: config.compress?.protectedTokens,
@@ -245,8 +257,8 @@ function readPhase(inputs: PipelineInputs): PipelinePhaseContext {
  * is armed (a fold view change, a compress / decompress tool call, or a
  * block that stopped folding last turn).  The flag is consumed and
  * cleared here so it forces exactly one release; it arrives only
- * through the runtime map (`setPendingViewChange`) — never through a
- * state-object field.
+ * through the runtime's flag set (`runtime.setPendingViewChange`) — never
+ * through a state-object field.
  *
  * Runs FIRST so marks written last turn take effect this turn (the
  * two-turn lifecycle).  The release edits are applied through the
@@ -257,7 +269,7 @@ function readPhase(inputs: PipelineInputs): PipelinePhaseContext {
  */
 function releasePhase(ctx: PipelinePhaseContext): void {
   const { adapter, config, state, sessionId } = ctx;
-  const bypass = consumePendingViewChange(sessionId);
+  const bypass = ctx.runtime.consumePendingViewChange(ctx.permit);
   const curPendingTokens = pendingTokens(state);
   const releaseOptions: ReleaseOptions = {
     promptTokens: ctx.promptTokens,
@@ -282,14 +294,11 @@ function releasePhase(ctx: PipelinePhaseContext): void {
       ...(released.forced ? { forced: "view_change" } : {}),
     });
 
-    // Notify the session chat with a user-visible ignored message.
-    // Fire-and-forget — the host tool host's `notify` port owns
-    // delivery and must never block the transform.
-    if (ctx.notify) {
-      ctx.notify(
-        `上下文清理：已折叠 ${released.releasedCount} 个工具调用，约回收 ${formatTokens(released.releasedTokens)} tokens`,
-      );
-    }
+    // Queue the user-visible notice: it is posted only after the commit
+    // succeeds, so a lapsed permit reports no cleanup.
+    ctx.notices.push(
+      `上下文清理：已折叠 ${released.releasedCount} 个工具调用，约回收 ${formatTokens(released.releasedTokens)} tokens`,
+    );
   }
 }
 
@@ -357,7 +366,7 @@ function foldPhase(ctx: PipelinePhaseContext): void {
     );
   }
   if (folded.viewChanged) {
-    setPendingViewChange(sessionId);
+    ctx.runtime.setPendingViewChange(ctx.permit);
   }
   ctx.foldedItems = folded.items;
 }
@@ -468,21 +477,19 @@ function producersPhase(ctx: PipelinePhaseContext): void {
 // ---------------------------------------------------------------------------
 
 /**
- * Publish and materialize the folded view.
+ * Number and materialize the folded view.
  *
  * Per-round line refs used by the nudge, the manual-compress window and
  * the compression tools (line numbers are transient — valid for this
- * round only).  Numbering and the round-view publication run BEFORE
- * the view is materialized: the frozen snapshot handed to the tools must
- * carry the transcript exactly as the fold hashed it, and materializing
- * rewrites the host messages (line-number prefixes, synthetic summary
- * messages) — publishing afterwards would capture a view the fold never
- * hashed.
+ * round only).  The numbering runs over the frozen snapshot the fold
+ * hashed, so the refs the model reads and the refs the tools resolve
+ * cannot drift apart.  The round view is frozen HERE, before materializing
+ * rewrites the host messages in place: it must carry the transcript the
+ * fold hashed, never the rendered one.  The commit publishes it (see
+ * `contextPruningTransformHandler`).
  *
  * The render plan is computed here, once, over the lens the round's
- * edits landed in; the adapter only applies it.  Numbering is the
- * published numbering, so the refs the model reads and the refs the
- * tools resolve cannot drift apart.
+ * edits landed in; the adapter only applies it.
  */
 function publishPhase(ctx: PipelinePhaseContext): void {
   const { adapter, sessionId, state } = ctx;
@@ -491,12 +498,10 @@ function publishPhase(ctx: PipelinePhaseContext): void {
     (ordinal) => ctx.view[ordinal]?.hidden ?? true,
   );
 
-  // Hand the compression tools this round's address space: the
-  // transcript snapshot the fold ran over plus the numbered view over
-  // it.  A `compress` call made mid-turn therefore addresses exactly
-  // the `mN` lines the model was shown, with no re-derivation from the
-  // host.
-  publishRoundView(sessionId, { projection: ctx.snapshot, numbered });
+  ctx.roundView = {
+    projection: freezeProjection(ctx.snapshot),
+    numbered: freezeNumberedView(numbered),
+  };
 
   // Rebuilds the host messages through the adapter: the plan says which
   // messages survive, which carries each unit's dense `[mN] ` line ref,
@@ -589,7 +594,7 @@ function nudgePhase(ctx: PipelinePhaseContext): void {
     const percent = Math.round(
       (decision.promptTokens / modelLimit.context) * 100,
     );
-    toast({
+    ctx.toasts.push({
       source: "context-pruning",
       level: decision.level === "urgent" ? "warning" : "info",
       text:
@@ -678,32 +683,31 @@ function manualCompressPhase(ctx: PipelinePhaseContext): void {
 }
 
 // ---------------------------------------------------------------------------
-// Phase 8: persist
+// Phase 8: summary
 // ---------------------------------------------------------------------------
 
-/**
- * Persist the session state and log the prune completion.
- *
- * Effective-only accounting: pending marks are not yet visible, so
- * neither the count nor the reclaimed tokens include them.
- */
-function persistPhase(ctx: PipelinePhaseContext): void {
-  const { manager, sessionId, state } = ctx;
-  manager.save(sessionId);
+/** Effective-only accounting of one committed round. */
+interface PruneSummary {
+  /** Marks that are effective after this round. */
+  prunedToolCount: number;
+  /** Tokens reclaimed by the effective marks. */
+  totalEff: number;
+}
 
+/**
+ * Summarize the committed round.
+ *
+ * Effective-only accounting: pending marks are not yet visible, so neither
+ * the count nor the reclaimed tokens include them.  The caller logs the
+ * summary only after the commit succeeded.
+ */
+function summarizePhase(ctx: PipelinePhaseContext): PruneSummary {
+  const state = ctx.state;
   let prunedToolCount = 0;
   for (const mark of state.marks.values()) {
     if (mark.effective) prunedToolCount += 1;
   }
-  const totalEff = reclaimedTokens(state);
-  log.info({
-    hook: "context-pruning",
-    event: "prune_completed",
-    sessionId,
-    prunedToolCount,
-    totalPruneTokens: totalEff,
-    totalReclaimedTokens: totalEff,
-  });
+  return { prunedToolCount, totalEff: reclaimedTokens(state) };
 }
 
 // ---------------------------------------------------------------------------
@@ -714,18 +718,22 @@ function persistPhase(ctx: PipelinePhaseContext): void {
  * Run the context-pruning pipeline over the turn's transcript.
  *
  * Runs the host-agnostic context core over the turn's transcript (see
- * the module docstring for the phase order).  All host-specific
- * operations go through `adapter`; `messages` is treated as an opaque
- * conversation.  `notify` fires exactly once per batch release with a
- * user-visible cleanup notice; the log surface keeps its event
- * contracts (`prune_completed` counts effective marks only,
- * `marks_released` carries the forced field, `nudge_injected` /
- * `manual_compress_injected` carry their payloads).
+ * the module docstring for the phase order) inside one
+ * `runtime.commit(permit, ...)`.  All host-specific operations go through
+ * `adapter`; `messages` is treated as an opaque conversation.  The
+ * user-visible notice and the nudge toast fire only after the commit
+ * succeeded, and the log surface keeps its event contracts
+ * (`prune_completed` counts effective marks only, `marks_released` carries
+ * the forced field, `nudge_injected` / `manual_compress_injected` carry
+ * their payloads).
  *
  * The returned conversation may be the input array mutated in place or a
- * replacement array produced by a pure adapter.  Callers must always use
- * the returned value and must not rely on in-place mutation.
+ * replacement array produced by a pure adapter.  A lapsed permit returns
+ * the input conversation unchanged.  Callers must always use the returned
+ * value and must not rely on in-place mutation.
  *
+ * @param runtime - The plugin instance's context records.
+ * @param permit - The permit the host admitted this transform under.
  * @param adapter - The host adapter that projects and renders the host
  *   conversation.
  * @param messages - The session messages array from the transform output.
@@ -740,40 +748,61 @@ function persistPhase(ctx: PipelinePhaseContext): void {
  *   decision point, adding no throttling state of its own.
  * @returns The conversation after pruning.
  */
-export function contextPruningTransformHandler(
+export async function contextPruningTransformHandler(
+  runtime: ContextRuntime,
+  permit: WorkPermit,
   adapter: HostAdapter<unknown>,
   messages: unknown,
   config: ContextPruningConfig,
   notify?: (text: string) => void,
   hasCompressTool?: boolean,
   toast?: (payload: ToastPayload) => void,
-): unknown {
+): Promise<unknown> {
   if (!messages || !Array.isArray(messages) || messages.length === 0) {
     return messages;
   }
+  if (!permit.isActive()) return messages;
 
-  // Extract session ID from the first message through the adapter.
-  const sessionId = adapter.sessionId(messages);
-  if (!sessionId) return messages;
-
-  const ctx = readPhase({
-    adapter,
-    messages,
-    config,
-    notify,
-    hasCompressTool,
-    toast,
-    sessionId,
+  const committed = await runtime.commit(permit, (state) => {
+    const ctx = readPhase(runtime, permit, state, {
+      adapter,
+      messages,
+      config,
+      hasCompressTool,
+      toast,
+    });
+    releasePhase(ctx);
+    foldPhase(ctx);
+    producersPhase(ctx);
+    publishPhase(ctx);
+    nudgePhase(ctx);
+    manualCompressPhase(ctx);
+    return { ctx, summary: summarizePhase(ctx) };
   });
-  releasePhase(ctx);
-  foldPhase(ctx);
-  producersPhase(ctx);
-  publishPhase(ctx);
-  nudgePhase(ctx);
-  manualCompressPhase(ctx);
-  persistPhase(ctx);
+  if (committed === undefined) return messages;
+  // A permit revoked right after the commit keeps the committed state, but
+  // the lapsed call publishes no view, posts nothing and reports nothing.
+  if (!permit.isActive()) return messages;
 
-  return ctx.messages;
+  // Hand the compression tools this round's address space: the transcript
+  // snapshot the fold ran over plus the numbered view over it.  A
+  // `compress` call made mid-turn therefore addresses exactly the `mN`
+  // lines the model was shown, with no re-derivation from the host.
+  runtime.publishRoundView(permit, committed.ctx.roundView);
+
+  for (const text of committed.ctx.notices) notify?.(text);
+  for (const payload of committed.ctx.toasts) toast?.(payload);
+
+  log.info({
+    hook: "context-pruning",
+    event: "prune_completed",
+    sessionId: permit.sessionID,
+    prunedToolCount: committed.summary.prunedToolCount,
+    totalPruneTokens: committed.summary.totalEff,
+    totalReclaimedTokens: committed.summary.totalEff,
+  });
+
+  return committed.ctx.messages;
 }
 
 // ---------------------------------------------------------------------------
@@ -789,10 +818,12 @@ export function contextPruningTransformHandler(
  * resolves the session agent before posting) and the nudge toast
  * through the optional `toast` port.  The transform output arrives as
  * the core `TransformOutput` shape; the host adapter owns the concrete
- * `messages` type and may replace the array.  The returned conversation
- * is written back into `output.messages` so downstream transform
- * contributions observe the pruned view.
+ * `messages` type and may replace the array.  The pruned conversation is
+ * written back into `output.messages` only for a committed round, so
+ * downstream transform contributions observe the pruned view.
  *
+ * @param runtime - The plugin instance's context records.
+ * @param permit - The permit the host admitted this transform under.
  * @param output - The messages transform output.
  * @param config - Unified context-pruning configuration.
  * @param toolHost - Host tool services used to post the release
@@ -802,16 +833,21 @@ export function contextPruningTransformHandler(
  * @param adapter - The host adapter for projecting and mutating the
  *   conversation.
  */
-export function handleContextPruning(
+export async function handleContextPruning(
+  runtime: ContextRuntime,
+  permit: WorkPermit,
   output: TransformOutput,
   config: ContextPruningConfig,
   toolHost: ToolHost | undefined,
   hasCompressTool: boolean | undefined,
   adapter: HostAdapter<unknown>,
-): void {
-  const sessionID = adapter.sessionId(output.messages) ?? "";
+): Promise<void> {
+  const sessionID = permit.sessionID;
+  if (!permit.isActive()) return;
   try {
-    output.messages = contextPruningTransformHandler(
+    output.messages = await contextPruningTransformHandler(
+      runtime,
+      permit,
       adapter,
       output.messages,
       config,
