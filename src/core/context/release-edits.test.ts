@@ -5,8 +5,8 @@
  * Two layers:
  * 1. **Selection** — for a given state, transcript, and options,
  *    `computeEdits` returns exactly the edits the release phase would
- *    write: effective marks always, pending marks only when the
- *    releasedPercent gate flips them, and never for unresolvable
+ *    write: unprotected effective marks always, pending marks only when
+ *    the releasedPercent gate flips them, and never for unresolvable
  *    anchors (vanished messages, out-of-range region indices, marks
  *    without a region index).  The placeholder text mirrors the
  *    release discriminator: tool-output anchors carry the output
@@ -29,6 +29,7 @@ import {
   PRUNED_TOOL_ERROR_INPUT_REPLACEMENT,
   PRUNED_TOOL_OUTPUT_REPLACEMENT,
 } from "./message-parts.js";
+import { buildProtectionMap, type ProtectionMap } from "./protection-map.js";
 import {
   computeEdits,
   flipReleasedMarks,
@@ -42,6 +43,17 @@ import { markKey, type SessionState } from "./state.js";
 
 /** Output long enough to reclaim tokens against the output placeholder. */
 const LONG_OUTPUT = "x".repeat(500);
+
+/**
+ * The round's protection map with both windows disabled: nothing is
+ * protected, so every seeded mark is eligible.
+ *
+ * @param history - The transcript.
+ * @returns The frozen protection map.
+ */
+function openProtection(history: HostMessage[]): ProtectionMap {
+  return buildProtectionMap(history, 0, 0);
+}
 
 /**
  * Seed a lens mark for the given region.
@@ -114,9 +126,13 @@ function runRelease(
   const lens = messages();
   const state = makeState();
   seed(state);
-  const edits = computeEdits(state, lens, options);
+  const roundOptions: ReleaseOptions = {
+    protection: openProtection(lens),
+    ...options,
+  };
+  const edits = computeEdits(state, lens, roundOptions);
   applyEdits(lens, edits);
-  flipReleasedMarks(state, options);
+  flipReleasedMarks(state, roundOptions);
   return regionTexts(lens);
 }
 
@@ -130,6 +146,7 @@ describe("computeEdits selection", () => {
     const lens = [makeToolMsg("bash", '{"cmd":"ls"}', LONG_OUTPUT)];
     seedMark(state, 0, 1, true, 100);
     const edits = computeEdits(state, lens, {
+      protection: openProtection(lens),
       promptTokens: 100_000,
       releasedPercent: 5,
       pendingViewChange: false,
@@ -148,6 +165,7 @@ describe("computeEdits selection", () => {
     const lens = [makeToolMsg("bash", '"ls"', "boom", { status: "error" })];
     seedMark(state, 0, 0, true, 100);
     const edits = computeEdits(state, lens, {
+      protection: openProtection(lens),
       promptTokens: 100_000,
       releasedPercent: 5,
       pendingViewChange: false,
@@ -166,6 +184,7 @@ describe("computeEdits selection", () => {
     const lens = [makeToolMsg("bash", '{"cmd":"ls"}', LONG_OUTPUT)];
     seedMark(state, 0, 1, false, 100);
     const edits = computeEdits(state, lens, {
+      protection: openProtection(lens),
       promptTokens: 100_000,
       releasedPercent: 5,
       pendingViewChange: false,
@@ -186,6 +205,7 @@ describe("computeEdits selection", () => {
     seedMark(state, 0, 1, false, 100);
     seedMark(state, 0, 3, false, 200);
     const edits = computeEdits(state, lens, {
+      protection: openProtection(lens),
       promptTokens: 100_000,
       releasedPercent: 0,
       pendingViewChange: false,
@@ -209,6 +229,7 @@ describe("computeEdits selection", () => {
     const lens = [makeToolMsg("bash", '{"cmd":"ls"}', LONG_OUTPUT)];
     seedMark(state, 0, 1, false, 100);
     const edits = computeEdits(state, lens, {
+      protection: openProtection(lens),
       promptTokens: 100_000,
       releasedPercent: 90,
       pendingViewChange: true,
@@ -231,6 +252,7 @@ describe("computeEdits selection", () => {
     seedMark(state, 0, 1, true, 100);
     seedMark(state, 1, 1, false, 100);
     const edits = computeEdits(state, lens, {
+      protection: openProtection(lens),
       promptTokens: 100_000,
       releasedPercent: undefined,
       pendingViewChange: false,
@@ -249,6 +271,7 @@ describe("computeEdits selection", () => {
     const lens = [makeToolMsg("bash", '{"cmd":"ls"}', LONG_OUTPUT)];
     seedMark(state, 3, 1, true, 100);
     const edits = computeEdits(state, lens, {
+      protection: openProtection(lens),
       promptTokens: 100_000,
       releasedPercent: 5,
       pendingViewChange: false,
@@ -261,6 +284,7 @@ describe("computeEdits selection", () => {
     const lens = [makeToolMsg("bash", '{"cmd":"ls"}', LONG_OUTPUT)];
     seedMark(state, 0, 5, true, 100);
     const edits = computeEdits(state, lens, {
+      protection: openProtection(lens),
       promptTokens: 100_000,
       releasedPercent: 5,
       pendingViewChange: false,
@@ -273,6 +297,7 @@ describe("computeEdits selection", () => {
     const lens = [makeToolMsg("bash", '{"cmd":"ls"}', LONG_OUTPUT)];
     seedMark(state, 0, undefined, true, 100);
     const edits = computeEdits(state, lens, {
+      protection: openProtection(lens),
       promptTokens: 100_000,
       releasedPercent: 5,
       pendingViewChange: false,
@@ -284,6 +309,7 @@ describe("computeEdits selection", () => {
     const state = makeState();
     seedMark(state, 0, 1, true, 100);
     const options: ReleaseOptions = {
+      protection: openProtection([]),
       promptTokens: 100_000,
       releasedPercent: 0,
       pendingViewChange: false,
@@ -299,6 +325,7 @@ describe("computeEdits selection", () => {
     seedMark(state, 0, 1, false, 100);
     const before = regionTexts(lens);
     const edits = computeEdits(state, lens, {
+      protection: openProtection(lens),
       promptTokens: 100_000,
       releasedPercent: 0,
       pendingViewChange: false,

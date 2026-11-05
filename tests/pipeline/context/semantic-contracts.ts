@@ -761,8 +761,10 @@ export async function expectPendingMarkSurvivesRestart<M>(
     // The 5000-token threshold (5 % of the 100000-token prompt) stays
     // above the 200-token mark, so only the bypass can release it.
     config: {
-      protectedMessages: 0,
+      activeMessages: 0,
+      activeTokens: 0,
       releasedPercent: 5,
+      compress: {},
       dedup: {},
       purgeErrors: {},
     },

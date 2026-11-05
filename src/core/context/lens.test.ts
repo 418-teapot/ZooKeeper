@@ -5,8 +5,7 @@
  * Covers: region read semantics (text replacement goes through the
  * testkit `setRegionText` helper), hidden/usage field shapes, ViewItem
  * discriminated-union narrowing, the three testkit constructors'
- * region-kind layouts, the region helper, and the first/last
- * non-hidden user ordinal helpers.
+ * region-kind layouts, and the region helper.
  */
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
@@ -19,12 +18,7 @@ import {
   setRegionText,
 } from "../../testkits/context.js";
 import type { HostMessage, ViewItem } from "./lens.js";
-import {
-  computeUnits,
-  findFirstUserOrdinal,
-  findLastUserOrdinal,
-  regionsOfKind,
-} from "./lens.js";
+import { computeUnits, regionsOfKind } from "./lens.js";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -404,42 +398,5 @@ describe("regionsOfKind", () => {
     );
     assert.deepEqual(regionsOfKind(msg, "tool-input").length, 1);
     assert.deepEqual(regionsOfKind(makeMsg("user", ["a"]), "thinking"), []);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// first / last user ordinal
-// ---------------------------------------------------------------------------
-
-describe("user ordinal helpers", () => {
-  it("finds the first non-hidden user message", () => {
-    const messages = [
-      makeMsg("system", ["sys"]),
-      makeMsg("user", ["hidden"], { hidden: true }),
-      makeMsg("assistant", ["a"]),
-      makeMsg("user", ["visible"]),
-    ];
-    assert.equal(findFirstUserOrdinal(messages), 3);
-  });
-
-  it("finds the last non-hidden user message, skipping hidden ones", () => {
-    const messages = [
-      makeMsg("user", ["first"]),
-      makeMsg("assistant", ["a"]),
-      makeMsg("user", ["hidden"], { hidden: true }),
-      makeMsg("user", ["last"]),
-    ];
-    assert.equal(findLastUserOrdinal(messages), 3);
-  });
-
-  it("returns -1 when no non-hidden user message exists", () => {
-    const messages = [
-      makeMsg("assistant", ["a"]),
-      makeMsg("user", ["hidden"], { hidden: true }),
-    ];
-    assert.equal(findFirstUserOrdinal(messages), -1);
-    assert.equal(findLastUserOrdinal(messages), -1);
-    assert.equal(findFirstUserOrdinal([]), -1);
-    assert.equal(findLastUserOrdinal([]), -1);
   });
 });

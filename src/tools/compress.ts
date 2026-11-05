@@ -17,12 +17,14 @@
  * 3. Reads the round view published by the context transform — the
  *    frozen transcript snapshot plus the numbered fold the model was
  *    shown this round — so the refs it accepts address exactly the view
- *    the model sees.  Only when no round view exists yet (a call made
- *    before any transform ran) does it fall back to a host that
- *    guarantees a same-source history read, folding that snapshot
- *    itself; a host without that guarantee leaves the fallback unwired
- *    and the call fails as a tool error (unself-healable within the
- *    round, so it is never reported as a success-shaped string).
+ *    the model sees, with the same protection map the reminder used.
+ *    Only when no round view exists yet (a call made before any
+ *    transform ran) does it fall back to a host that guarantees a
+ *    same-source history read, folding that snapshot and building the
+ *    protection map once from it; a host without that guarantee leaves
+ *    the fallback unwired and the call fails as a tool error
+ *    (unself-healable within the round, so it is never reported as a
+ *    success-shaped string).
  * 4. Drives the core batch pipeline (resolve → validate → apply).  Every
  *    range is validated against the same snapshot; any invalid range
  *    rejects the whole call, leaving the state untouched.
@@ -59,6 +61,10 @@ import { formatTokens } from "../core/context/context-report.js";
 import { fold } from "../core/context/fold.js";
 import type { Projection } from "../core/context/lens.js";
 import { creditReclaim } from "../core/context/nudge.js";
+import {
+  buildProtectionMap,
+  type ProtectionMap,
+} from "../core/context/protection-map.js";
 import type { ContextRuntime } from "../core/context/runtime.js";
 import type { Block, SessionState } from "../core/context/state.js";
 import { type NumberedItem, numberView } from "../core/context/view-refs.js";
@@ -278,27 +284,30 @@ export function createCompressTool(
       // with NO fallbacks — config.toml is the single source of truth.
       // The registration gate only registers the tool when the profile's
       // tools list names it, so reaching execute means the tool is
-      // enabled by the profile; the token thresholds AND max_ranges are
-      // guaranteed present by the strict parse.  `protectedMessages` is
-      // a lenient top-level key and may still be missing → loud config
-      // guidance error.
+      // enabled by the profile; `threshold_tokens` and `max_ranges` are
+      // guaranteed present by the strict compress parse, and the shared
+      // active keys are lenient top-level keys → loud config guidance
+      // error when either is missing.
       const compressCfg = contextConfig.compress;
       if (
         !compressCfg ||
-        compressCfg.protectedTokens === undefined ||
         compressCfg.thresholdTokens === undefined ||
         compressCfg.maxRanges === undefined
       ) {
         throw new Error(
           "[zoo.context.compress] 段缺失或非法：请在 config.toml 配置 " +
-            "threshold_tokens、protected_tokens（非负整数）与 max_ranges（正整数），" +
+            "threshold_tokens（非负整数）与 max_ranges（正整数），" +
             "并重新安装生效。配置错误不会因重试本工具而消失：请停止重试并告知用户修正配置。",
         );
       }
-      if (contextConfig.protectedMessages === undefined) {
+
+      // Captured protection inputs for the history fallback.  The
+      // round view carries them packaged as a map.
+      const { activeMessages, activeTokens } = contextConfig;
+      if (activeMessages === undefined || activeTokens === undefined) {
         throw new Error(
-          "[zoo.context] protected_messages 缺失或非法：请在 config.toml 的 " +
-            "[zoo.context] 段配置 protected_messages（非负整数），并重新安装生效。" +
+          "[zoo.context] 段缺失或非法：请在 config.toml 的 [zoo.context] 段配置 " +
+            "active_messages 与 active_tokens（非负整数），并重新安装生效。" +
             "配置错误不会因重试本工具而消失：请停止重试并告知用户修正配置。",
         );
       }
@@ -306,8 +315,6 @@ export function createCompressTool(
       // Compression options straight from the parsed config — no
       // fallbacks, config.toml is the single source of truth.
       const options: CompressOptions = {
-        protectedMessages: contextConfig.protectedMessages,
-        protectedTokens: compressCfg.protectedTokens,
         thresholdTokens: compressCfg.thresholdTokens,
         maxRanges: compressCfg.maxRanges,
       };
@@ -327,15 +334,30 @@ export function createCompressTool(
         const cached = runtime.roundView(sessionID);
         let snapshot: Projection;
         let numbered: NumberedItem[];
+        let protection: ProtectionMap;
         if (cached !== undefined) {
+          if (cached.protection === undefined) {
+            throw new Error(
+              "无法压缩：当轮上下文视图没有保护范围（active_messages 或 " +
+                "active_tokens 未配置）。请修正 config.toml 后重新安装生效；" +
+                "配置错误不会因重试本工具而消失。",
+            );
+          }
           snapshot = cached.projection;
           numbered = cached.numbered;
+          protection = cached.protection;
         } else if (host.fetchHistory !== undefined) {
           snapshot = await host.fetchHistory(sessionID);
           const { items } = fold(snapshot, state);
           numbered = numberView(
             items,
             (ordinal) => snapshot.messages[ordinal].hidden,
+          );
+          // A legal fallback builds the map once from the same snapshot.
+          protection = buildProtectionMap(
+            snapshot.messages,
+            activeMessages,
+            activeTokens,
           );
         } else {
           log.warn({
@@ -366,6 +388,7 @@ export function createCompressTool(
           snapshot,
           numbered,
           state,
+          protection,
           options,
           ranges,
         );

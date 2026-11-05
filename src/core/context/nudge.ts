@@ -48,9 +48,10 @@
  * reclaim estimate all live in the numbered view, never in raw transcript
  * ordinals — a folded interval still holds its original text in the raw
  * transcript, so measuring there would advertise tokens the view no
- * longer shows.  Only the protection boundary stays in ordinal space,
+ * longer shows.  Only the protection map stays in ordinal space,
  * because that is the space the `compress` gates are defined in; it is
- * translated to view lines by requiring a line to sit ENTIRELY below it.
+ * translated to view lines by requiring a line to stay entirely free of
+ * instructions and the active tail.
  * Lines folded into a summary contribute no reclaim (their tokens are
  * already spent), which keeps the estimate at what a new compression
  * could still free.
@@ -59,14 +60,13 @@
  */
 
 import { CONTEXT_NUDGE_LEVELS, CONTEXT_NUDGE_TEMPLATE } from "../prompts.js";
-import { computeProtectedStartOrdinal } from "./compress.js";
 import type { HostMessage } from "./lens.js";
-import { findFirstUserOrdinal, findLastUserOrdinal } from "./lens.js";
 import {
   estimateMessageHeuristic,
   findLastCompletedAssistant,
   promptSideTokens,
 } from "./measure.js";
+import { isProtectedRange, type ProtectionMap } from "./protection-map.js";
 import type { SessionState } from "./state.js";
 import type { NumberedItem } from "./view-refs.js";
 import { itemInterval } from "./view-refs.js";
@@ -113,18 +113,13 @@ export interface NudgeThresholds {
 export type NudgeLevel = "gentle" | "urgent";
 
 /**
- * Configuration for the compressible-window computation.
+ * Configuration for the compressible-work computation.
  *
- * The window the nudge advertises is exactly the window the compress
- * path would accept (message-count protection, token-budget protection,
- * phantom threshold), so it consumes the same triple-protection inputs
- * as the compression gates.
+ * The window the nudge advertises is exactly a maximal work segment the
+ * compress path accepts, so it shares the round's protection map and
+ * the same phantom threshold as the compression gates.
  */
 export interface EligibilityConfig {
-  /** Number of most recent non-hidden messages to protect. */
-  protectedMessages?: number;
-  /** Token budget protected from the end of the session (CJK heuristic). */
-  protectedTokens?: number;
   /** Minimum estimated tokens a window must carry to bypass the phantom gate. */
   thresholdTokens?: number;
 }
@@ -132,12 +127,12 @@ export interface EligibilityConfig {
 /**
  * Eligibility payload for a nudge message.
  *
- * `startRef` / `endRef` address the compressible window — the same
- * protection boundaries the `compress` tool enforces, with the first user
- * message excluded — as per-round view lines.  Both refs are INCLUSIVE
- * window bounds; the model picks its own contiguous sub-range inside
- * them.  `reclaimTokens` estimates what compressing the whole window
- * would free, counting only the content the view still shows in full.
+ * `startRef` / `endRef` address one maximal compressible work segment in
+ * per-round view lines: no user instruction and no active-tail line lies
+ * inside it.  Both refs are INCLUSIVE window bounds; the model picks its
+ * own contiguous sub-range inside them.  `reclaimTokens` estimates what
+ * compressing the whole segment would free, counting only the content
+ * the view still shows in full.
  */
 export interface NudgeEligibility {
   /** Ref of the first view line of the window (inclusive). */
@@ -152,8 +147,7 @@ export interface NudgeEligibility {
  * Context inputs for one nudge evaluation.
  *
  * Bundles the model context window (percentage resolution + header
- * percent) with the compressible-window inputs and this round's numbered
- * view.
+ * percent) with this round's protection map and numbered view.
  */
 export interface NudgeInjectOptions extends EligibilityConfig {
   /** The current model context window (tokens). */
@@ -161,6 +155,8 @@ export interface NudgeInjectOptions extends EligibilityConfig {
   /** This round's numbered folded view — the `mN` address space the model
    * holds, and the coordinate system the window is measured in. */
   numbered: NumberedItem[];
+  /** This round's protection map; absent when the config defines none. */
+  protection?: ProtectionMap;
 }
 
 // ---------------------------------------------------------------------------
@@ -505,7 +501,12 @@ export function evaluateNudge(
     };
   }
 
-  const eligibility = computeEligibility(messages, options.numbered, options);
+  const eligibility = computeEligibility(
+    options.protection,
+    messages,
+    options.numbered,
+    options,
+  );
   if (eligibility === null) {
     return {
       promptTokens,
@@ -597,81 +598,72 @@ function viewLines(
 /**
  * Compute the eligibility payload for a nudge message.
  *
- * The window is a run of VIEW LINES, measured in this round's numbered
- * view — the same `mN` address space the model sees and the `compress`
- * tool resolves.  Its bounds come from the SAME gates the compress path
- * enforces (protection window + last-user cap from the end, first-user
- * exclusion from the start), which are defined over transcript ordinals;
- * a line joins the window only when the interval it stands for sits
- * entirely inside them, so the advertised range can never be one
- * `compress` would reject as reaching into protection or clipping an
- * active block.
+ * The window is one MAXIMAL compressible work segment measured over this
+ * round's numbered view — a run of adjacent view lines with no user
+ * instruction and no active-tail content inside it.  Instructions and
+ * the active tail both cut the segments, so the advertised range can
+ * never be one the `compress` tool rejects for reaching into protection.
  *
- * `reclaimTokens` sums the not-yet-folded content of the window: an
- * interval that is already a summary contributes nothing, so repeated
- * compressions never re-bill the same tokens.
+ * `reclaimTokens` sums the not-yet-folded content of the segment: an
+ * already folded summary contributes nothing, so repeated compressions
+ * never re-bill the same tokens.  The segment that frees the MOST tokens
+ * among those reaching `thresholdTokens` is returned; a tie goes to the
+ * later segment in view order, which sits closer to the active tail.
  *
- * Returns `null` when a protection input is missing, there is no user
- * message, no view line, the window is empty, or the estimate falls
- * below `config.thresholdTokens` (a compress in this window would be a
- * no-op the gates reject).
+ * Returns `null` when the protection map or the phantom threshold is
+ * unconfigured, no segment exists, or no segment reaches the threshold
+ * (a compress there would be rejected as a no-op).
  *
+ * @param protection - This round's protection map; absent when the
+ *   config defines none.
  * @param history - The transcript the view was folded from.
  * @param numbered - This round's numbered folded view.
- * @param config - Window protection configuration (message count, token
- *   budget, phantom threshold).
+ * @param config - The phantom threshold.
  * @returns The eligibility payload, or `null`.
  */
 export function computeEligibility(
+  protection: ProtectionMap | undefined,
   history: HostMessage[],
   numbered: NumberedItem[],
   config: EligibilityConfig,
 ): NudgeEligibility | null {
-  if (
-    config.protectedMessages === undefined ||
-    config.protectedTokens === undefined ||
-    config.thresholdTokens === undefined
-  ) {
+  if (protection === undefined || config.thresholdTokens === undefined) {
     return null;
   }
-  const lastUser = findLastUserOrdinal(history);
-  const boundary = Math.min(
-    computeProtectedStartOrdinal(
-      history,
-      config.protectedMessages,
-      config.protectedTokens,
-    ),
-    lastUser >= 0 ? lastUser : history.length,
-  );
-  const firstUserIdx = findFirstUserOrdinal(history);
-  if (firstUserIdx < 0) return null;
-
-  // Both gates are monotone over the ascending lines, so they cut a
-  // prefix (at or below the first user message) and a suffix (reaching
-  // into the protection boundary) off one contiguous window.
   const lines = viewLines(history, numbered);
-  let from = 0;
-  while (from < lines.length && lines[from].start <= firstUserIdx) from += 1;
-  let to = lines.length;
-  while (to > from && lines[to - 1].end > boundary) to -= 1;
-  if (from >= to) return null;
 
-  let reclaimTokens = 0;
-  for (let i = from; i < to; i++) {
-    reclaimTokens += lines[i].reclaimTokens;
+  // A protected line cuts the work: instructions and the active tail
+  // each split the view into maximal compressible segments.
+  const segments: ViewLine[][] = [];
+  let current: ViewLine[] = [];
+  for (const line of lines) {
+    if (isProtectedRange(protection, line.start, line.end)) {
+      if (current.length > 0) {
+        segments.push(current);
+        current = [];
+      }
+      continue;
+    }
+    current.push(line);
   }
+  if (current.length > 0) segments.push(current);
 
-  // Nothing left to free: the window is folded content only, so a
-  // compress here would be rejected for bringing no new content.
-  if (reclaimTokens <= 0) return null;
-
-  // Phantom alignment: a compress inside this window would be rejected
-  // as a no-op, so the nudge stays silent.
-  if (reclaimTokens < config.thresholdTokens) return null;
-
-  return {
-    startRef: lines[from].ref,
-    endRef: lines[to - 1].ref,
-    reclaimTokens,
-  };
+  // Advertise the segment that pays back the most.  A segment of folded
+  // content only frees nothing new; one below the phantom threshold would
+  // be rejected as a no-op.  Between two equally profitable segments the
+  // later one wins, because it sits closer to the active tail.
+  let best: NudgeEligibility | null = null;
+  for (const segment of segments) {
+    let reclaimTokens = 0;
+    for (const line of segment) reclaimTokens += line.reclaimTokens;
+    if (reclaimTokens <= 0) continue;
+    if (reclaimTokens < config.thresholdTokens) continue;
+    if (best !== null && reclaimTokens < best.reclaimTokens) continue;
+    best = {
+      startRef: segment[0].ref,
+      endRef: segment[segment.length - 1].ref,
+      reclaimTokens,
+    };
+  }
+  return best;
 }

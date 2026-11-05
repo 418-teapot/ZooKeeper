@@ -34,13 +34,13 @@ const SID = "golden-pi-g-comp-01";
 /** Shared compress/decompress config for the compress scenarios. */
 export function compressConfig() {
   return {
-    protectedMessages: 20,
+    activeMessages: 20,
+    activeTokens: 20000,
     releasedPercent: 10,
     dedup: {},
     purgeErrors: {},
     compress: {
       thresholdTokens: 2000,
-      protectedTokens: 20000,
       maxRanges: 8,
     },
     decompress: { maxFillPercent: 90 },
@@ -248,7 +248,8 @@ export const G_COMP_04: Scenario = {
   id: "G-COMP-04",
   sessionID: "golden-pi-g-comp-04",
   config: {
-    protectedMessages: 20,
+    activeMessages: 20,
+    activeTokens: 300,
     releasedPercent: 10,
     dedup: {},
     purgeErrors: {},
@@ -259,7 +260,6 @@ export const G_COMP_04: Scenario = {
       // phantom threshold sits between [1, 8) (~84, phantom passes) and
       // smaller ranges.
       thresholdTokens: 80,
-      protectedTokens: 300,
       maxRanges: 8,
     },
     decompress: { maxFillPercent: 90 },
@@ -297,12 +297,12 @@ export const G_COMP_04: Scenario = {
       },
     },
     {
-      label: "gate-first-user",
+      label: "gate-user-instruction",
       messages: shortConversation("golden-pi-g-comp-04"),
       action: {
         kind: "compress-tool",
-        // makeRange(0, 4) → [0, 9): contains the first user message.
-        ranges: [makeRange(0, 4, "first-user")],
+        // makeRange(0, 4) → [0, 9): contains the user instruction.
+        ranges: [makeRange(0, 4, "user-instruction")],
       },
     },
     {

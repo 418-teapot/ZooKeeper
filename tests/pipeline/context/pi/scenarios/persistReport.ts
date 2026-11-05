@@ -52,7 +52,7 @@ export const G_PERSIST_01: Scenario = {
   id: "G-PERSIST-01",
   sessionID: SID,
   config: {
-    protectedMessages: 0,
+    activeMessages: 0,
     releasedPercent: 0,
     dedup: { minMessages: 20, thresholdContext: 100000 },
     purgeErrors: {},

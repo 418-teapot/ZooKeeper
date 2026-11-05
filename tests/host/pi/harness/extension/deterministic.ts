@@ -42,6 +42,7 @@ import {
   CONTEXT_FILL_PROMPT,
   CONTEXT_SUMMARY_BODY,
   CONTEXT_TARGET_PROMPT,
+  CONTEXT_TARGET_REPLY_CHARS,
   CONTEXT_TARGET_TAGS,
   VIEW_TAGS,
 } from "../constants.js";
@@ -200,32 +201,35 @@ function lastTagged(view: readonly ViewMessage[], tag: string): number {
 }
 
 /**
- * The endpoint refs of the two target segments of a context scenario.
+ * The single work reply the context scenarios compress.
  *
- * The start is the line the first target message was shown on; the end is
- * the line of the message right after the second target (its reply), so the
- * range covers both target prompts and their replies.
+ * Both target tags live in one assistant reply, so the range addresses that
+ * one view line and never reaches a user instruction.
  *
  * @param view - Analysed request messages.
- * @returns The refs, or null when a target or its follow-up is not visible.
+ * @returns The refs, or null when the tagged reply is not visible.
  */
 function targetRange(
   view: readonly ViewMessage[],
 ): { fromRef: string; toRef: string } | null {
   const first = lastTagged(view, CONTEXT_TARGET_TAGS[0]);
   const second = lastTagged(view, CONTEXT_TARGET_TAGS[1]);
-  if (first < 0 || second <= first) return null;
-  const from = view[first]?.ref ?? null;
-  let to: string | null = null;
-  for (let index = second + 1; index < view.length; index += 1) {
-    const ref = view[index]?.ref ?? null;
-    if (ref !== null) {
-      to = ref;
-      break;
-    }
-  }
-  if (from === null || to === null) return null;
-  return { fromRef: from, toRef: to };
+  if (first < 0 || first !== second) return null;
+  const ref = view[first]?.ref ?? null;
+  return ref === null ? null : { fromRef: ref, toRef: ref };
+}
+
+/**
+ * Long target work reply carrying both sentinel tags.
+ *
+ * @returns The reply text.
+ */
+function targetWorkReply(): string {
+  const head = `${CONTEXT_TARGET_TAGS.join(" ")}: `;
+  const unit = "目标工作回复内容。";
+  let text = head;
+  while (text.length < CONTEXT_TARGET_REPLY_CHARS) text += unit;
+  return text.slice(0, Math.max(CONTEXT_TARGET_REPLY_CHARS, head.length));
 }
 
 /**
@@ -337,10 +341,8 @@ export function decide(view: readonly ViewMessage[]): Decision {
     return { kind: "text", text: "ANCHOR-ACK" };
   }
 
-  const targetTag = CONTEXT_TARGET_TAGS.find((tag) => userText.includes(tag));
-  if (targetTag !== undefined && userText.includes(CONTEXT_TARGET_PROMPT)) {
-    const position = targetTag.replace("CTX-TARGET-", "");
-    return { kind: "text", text: `TARGET-ACK:${position}` };
+  if (userText.includes(CONTEXT_TARGET_PROMPT)) {
+    return { kind: "text", text: targetWorkReply() };
   }
 
   if (userText.includes(CONTEXT_FILL_PROMPT)) {

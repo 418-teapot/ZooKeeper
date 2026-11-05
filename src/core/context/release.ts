@@ -11,18 +11,34 @@
  *
  * The release gate decides whether pending marks flip this turn:
  *
+ *   eligible    = pending marks anchored outside the protection map
  *   gate opens  = pendingViewChange || (promptTokens > 0 && releasedPercent !== undefined)
  *   threshold   = releasedPercent !== undefined ? promptTokens * releasedPercent / 100 : 0
- *   release     = pendingViewChange || pendingTokens >= threshold
+ *   release     = pendingViewChange || eligibleTokens >= threshold
  *
  * `promptTokens` is the prompt-side total (last completed assistant's
  * input + cache read + cache write), the gate denominator — not the model
  * limit.  A `pendingViewChange` flag bypasses the gate entirely: when the
  * view changed last turn (fold debut, a block turning stale, a compress or
- * decompress tool call) the cache is broken anyway, so every pending mark
- * flushes unconditionally, even with `promptTokens === 0` or an undefined
- * `releasedPercent`.  The flag is read here but owned by the caller, which
- * clears it after the phase.
+ * decompress tool call) the cache is broken anyway, so every eligible
+ * pending mark flushes unconditionally, even with `promptTokens === 0` or
+ * an undefined `releasedPercent`.  The flag bypasses the batch threshold
+ * only — it never bypasses protection.  The flag is read here but owned by
+ * the caller, which clears it after the phase.
+ *
+ * Protection applies when the phase takes effect: a mark anchored at a
+ * protected ordinal (the active tail or a user instruction, per
+ * `isProtectedOrdinal`) writes no placeholder and does not flip.  An
+ * ordinal outside the round's transcript is not protected — the anchor
+ * vanished, so the mark still flips but writes no edit.  A protected
+ * effective mark keeps its record and is re-applied once its ordinal
+ * leaves the protected region; a protected pending mark stays pending.
+ * Without the round's protection map the phase fails closed — no edit is
+ * generated and no pending mark flips.
+ *
+ * The whole phase runs off one internal release plan, shared by
+ * `computeEdits` and `flipReleasedMarks`, so the edit set and the flip set
+ * always agree.
  *
  * The module never touches `state.nudges`: the nudge watermark is updated
  * by the nudge phase independently, so release and nudge watermarks do not
@@ -31,7 +47,8 @@
  * `materializeEffectiveMarks` is the read-side twin of `computeEdits`: a
  * consumer that reports over storage overlays the effective marks through
  * it so the report counts exactly what the release phase writes into the
- * model-bound copy.
+ * model-bound copy.  It reads the same protection map, so a protected
+ * mark is reported with its stored text.
  *
  * @module
  */
@@ -41,6 +58,7 @@ import {
   PRUNED_TOOL_ERROR_INPUT_REPLACEMENT,
   PRUNED_TOOL_OUTPUT_REPLACEMENT,
 } from "./measure.js";
+import { isProtectedOrdinal, type ProtectionMap } from "./protection-map.js";
 import type { Mark, SessionState } from "./state.js";
 
 // ---------------------------------------------------------------------------
@@ -108,10 +126,15 @@ export interface ReleaseOptions {
    */
   releasedPercent?: number;
   /**
-   * View-change flag: when true the gate is bypassed and all pending
-   * marks flush unconditionally.
+   * View-change flag: when true the gate is bypassed and every eligible
+   * pending mark flushes unconditionally.  It never bypasses protection.
    */
   pendingViewChange: boolean;
+  /**
+   * This round's protection map.  Undefined fails closed: no edit is
+   * generated and no pending mark flips.
+   */
+  protection?: ProtectionMap;
   /**
    * Timestamp for marks flipped by this call; defaults to `Date.now()`.
    */
@@ -153,41 +176,67 @@ function placeholderFor(region: TextRegion): string {
 }
 
 /**
- * Evaluate the releasedPercent gate.
+ * The gate's release plan for this call.
+ *
+ * Shared by the edit selection and the mark flip, so both always operate
+ * on the same eligible pending marks.
+ */
+interface ReleasePlan {
+  /** True when the view-change bypass opened the gate. */
+  forced: boolean;
+  /** Pending marks released by this call, in collection order. */
+  marks: Mark[];
+}
+
+/**
+ * Build the release plan for this call.
  *
  * The gate formula, shared by the edit selection and the mark flip:
  *
+ *   eligible    = pending marks anchored outside the protection map
  *   gate opens  = pendingViewChange || (promptTokens > 0 && releasedPercent !== undefined)
  *   threshold   = releasedPercent !== undefined ? promptTokens * releasedPercent / 100 : 0
- *   release     = pendingViewChange || pendingTokens >= threshold
+ *   release     = pendingViewChange || eligibleTokens >= threshold
  *
- * A closed gate (no bypass, no releasedPercent, promptTokens 0, zero
- * pending tokens, or pending tokens below the threshold) yields `null`.
+ * The batch threshold measures the eligible tokens only: a pending mark
+ * sitting in the protected region never counts toward releasing the
+ * others.  A closed gate — an absent protection map, no bypass and no
+ * releasedPercent, `promptTokens` 0, or no eligible tokens — yields
+ * `null`.
  *
- * @param state - The session state; only the pending-token total is read.
+ * @param state - The session state; only the marks are read.
  * @param options - Gate inputs, as for `computeEdits`.
- * @returns The forced flag, or null when the gate stays closed.
+ * @returns The release plan, or null when the gate stays closed.
  */
-function gateDecision(
+function releasePlan(
   state: SessionState,
   options: ReleaseOptions,
-): { forced: boolean } | null {
+): ReleasePlan | null {
+  const protection = options.protection;
+  if (protection === undefined) return null;
   if (
     !options.pendingViewChange &&
     !(options.promptTokens > 0 && options.releasedPercent !== undefined)
   ) {
     return null;
   }
-  const curPendingTokens = pendingTokens(state);
-  if (curPendingTokens <= 0) return null;
+  const marks: Mark[] = [];
+  let eligibleTokens = 0;
+  for (const mark of state.marks.values()) {
+    if (mark.effective) continue;
+    if (isProtectedOrdinal(protection, mark.anchorOrdinal)) continue;
+    marks.push(mark);
+    eligibleTokens += mark.contentTokens ?? 0;
+  }
+  if (eligibleTokens <= 0) return null;
   const batchThreshold =
     options.releasedPercent !== undefined
       ? (options.promptTokens * options.releasedPercent) / 100
       : 0;
-  if (!options.pendingViewChange && curPendingTokens < batchThreshold) {
+  if (!options.pendingViewChange && eligibleTokens < batchThreshold) {
     return null;
   }
-  return { forced: options.pendingViewChange };
+  return { forced: options.pendingViewChange, marks };
 }
 
 /**
@@ -218,18 +267,20 @@ function editFor(messages: HostMessage[], mark: Mark): RegionEdit | undefined {
  * applying them.
  *
  * Pure selection: for the given state, transcript, and options it
- * returns every effective mark's placeholder plus every pending mark
- * the releasedPercent gate would flip this call.  Unresolvable anchors
- * produce no edit (see `editFor`).  The gate decision is shared with
- * `flipReleasedMarks`, so the edit set and the flip set always agree on
- * which pending marks are released.
+ * returns every unprotected effective mark's placeholder plus the
+ * placeholder of every pending mark the release plan flips this call.
+ * An effective mark whose anchor is currently protected writes nothing
+ * this round (its record stays).  Unresolvable anchors produce no edit
+ * (see `editFor`).  An absent protection map yields no edits.  The plan
+ * is shared with `flipReleasedMarks`, so the edit set and the flip set
+ * always agree on which pending marks are released.
  *
  * The function never mutates `state` or `messages`: it only reads them
  * to select the edits; applying the result is the caller's job.
  *
  * @param state - The session state; only `marks` is read.
  * @param messages - The transcript; only anchor regions are read.
- * @param options - Gate inputs.
+ * @param options - Gate inputs, including this round's protection map.
  * @returns The edits the release phase would write.
  */
 export function computeEdits(
@@ -237,26 +288,29 @@ export function computeEdits(
   messages: HostMessage[] | undefined | null,
   options: ReleaseOptions,
 ): RegionEdit[] {
+  const protection = options.protection;
+  if (protection === undefined) return [];
   if (!messages || messages.length === 0) return [];
   const edits: RegionEdit[] = [];
 
-  // Apply phase: every effective mark (flipped in an earlier turn)
-  // writes its placeholder.  Host reloads restore the original text
-  // each turn, so effective marks always participate.
+  // Apply phase: every unprotected effective mark (flipped in an earlier
+  // turn) writes its placeholder.  Host reloads restore the original text
+  // each turn, so effective marks participate every round until their
+  // ordinal enters the protected region.
   for (const mark of state.marks.values()) {
     if (!mark.effective) continue;
+    if (isProtectedOrdinal(protection, mark.anchorOrdinal)) continue;
     const edit = editFor(messages, mark);
     if (edit !== undefined) edits.push(edit);
   }
 
-  // Release phase: pending marks that the gate would flip this call
+  // Release phase: the pending marks the release plan flips this call
   // join the edit batch.
-  if (gateDecision(state, options) !== null) {
-    for (const mark of state.marks.values()) {
-      if (mark.effective) continue;
-      const edit = editFor(messages, mark);
-      if (edit !== undefined) edits.push(edit);
-    }
+  const plan = releasePlan(state, options);
+  if (plan === null) return edits;
+  for (const mark of plan.marks) {
+    const edit = editFor(messages, mark);
+    if (edit !== undefined) edits.push(edit);
   }
 
   return edits;
@@ -271,25 +325,34 @@ export function computeEdits(
  * — so a consumer that reports over storage (the sidebar, `/dcp`) counts
  * a pruned tool call as `input + placeholder` instead of the stored
  * original output.  Both share the `(ordinal, regionIndex)` address
- * vocabulary and `placeholderFor`, so the report and the transform always
- * agree on what was pruned.
+ * vocabulary, `isProtectedOrdinal` and `placeholderFor`, so the report
+ * and the transform always agree on what was pruned and where.
  *
- * Pending marks are not overlaid — they are not yet written to any view.
- * An unresolvable anchor (missing message or region, or a mark without a
- * region index) is skipped, exactly as `editFor` does, and a transcript
- * with no effective mark is returned by reference.
+ * The overlay follows the release phase's protection: an effective mark
+ * inside the protection map writes nothing, so it is not overlaid here
+ * either and its stored original stays visible.  Pending marks are not
+ * overlaid — they are not yet written to any view.  An unresolvable
+ * anchor (missing message or region, or a mark without a region index)
+ * is skipped, exactly as `editFor` does, and a transcript with no
+ * overlaid mark is returned by reference.
  *
  * @param messages - The transcript; ordinals must align with the marks.
  * @param state - The session state holding the mark map.
- * @returns The transcript with effective-mark regions overlaid.
+ * @param protection - The protection map of the same snapshot;
+ *   undefined overlays nothing (fail-closed: no known write target).
+ * @returns The transcript with the unprotected effective marks
+ *   overlaid.
  */
 export function materializeEffectiveMarks(
   messages: HostMessage[],
   state: SessionState,
+  protection: ProtectionMap | undefined,
 ): HostMessage[] {
+  if (protection === undefined) return messages;
   const indicesByOrdinal = new Map<number, number[]>();
   for (const mark of state.marks.values()) {
     if (!mark.effective || mark.regionIndex === undefined) continue;
+    if (isProtectedOrdinal(protection, mark.anchorOrdinal)) continue;
     const indices = indicesByOrdinal.get(mark.anchorOrdinal);
     if (indices) indices.push(mark.regionIndex);
     else indicesByOrdinal.set(mark.anchorOrdinal, [mark.regionIndex]);
@@ -317,19 +380,20 @@ export function materializeEffectiveMarks(
 }
 
 /**
- * Flip the pending marks the release gate releases, with no region
+ * Flip the pending marks the release plan releases, with no region
  * writes.
  *
- * The state half of the release phase: every pending mark is marked
- * effective (with `effectiveAt` / `releasedAt`) when the gate opens —
- * even a mark whose anchor is unresolvable on the transcript, matching
- * the two-turn lifecycle where the flip is independent of the write.
- * The placeholder text for flipped marks is produced by `computeEdits`;
- * applying those edits is the caller's job.
+ * The state half of the release phase: every pending mark of the plan is
+ * marked effective (with `effectiveAt` / `releasedAt`) — even a mark
+ * whose anchor is unresolvable on the transcript, matching the two-turn
+ * lifecycle where the flip is independent of the write.  A pending mark
+ * anchored inside the protection map is not part of the plan and stays
+ * pending.  The placeholder text for flipped marks is produced by
+ * `computeEdits`; applying those edits is the caller's job.
  *
- * The gate evaluation is shared with `computeEdits` (see
- * `gateDecision`), so the flipped set and the edit set never diverge.
- * A closed gate leaves every pending mark pending.
+ * The plan is shared with `computeEdits` (see `releasePlan`), so the
+ * flipped set and the edit set never diverge.  A closed gate leaves
+ * every pending mark pending.
  *
  * @param state - The session state; pending marks are flipped in place.
  * @param options - Gate inputs and the optional flip timestamp.
@@ -339,19 +403,19 @@ export function flipReleasedMarks(
   state: SessionState,
   options: ReleaseOptions,
 ): ReleaseResult {
-  if (gateDecision(state, options) === null) {
+  const plan = releasePlan(state, options);
+  if (plan === null) {
     return { releasedCount: 0, releasedTokens: 0, forced: false };
   }
   const now = options.now ?? Date.now();
   let releasedCount = 0;
   let releasedTokens = 0;
-  for (const mark of state.marks.values()) {
-    if (mark.effective) continue;
+  for (const mark of plan.marks) {
     mark.effective = true;
     mark.effectiveAt = now;
     mark.releasedAt = now;
     releasedCount++;
     releasedTokens += mark.contentTokens ?? 0;
   }
-  return { releasedCount, releasedTokens, forced: options.pendingViewChange };
+  return { releasedCount, releasedTokens, forced: plan.forced };
 }

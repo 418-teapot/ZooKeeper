@@ -120,9 +120,10 @@ function duplicateTurn(inputTokens: number, output: string): Turn {
 
 /** Producer gates for the dedup scenario. */
 const DEDUP_CONFIG = {
-  protectedMessages: 0,
+  activeMessages: 0,
+  activeTokens: 0,
   releasedPercent: 0,
-  compress: { protectedTokens: 0, thresholdTokens: 0 },
+  compress: { thresholdTokens: 0 },
   dedup: { minMessages: 20, thresholdContext: 100000 },
   purgeErrors: {},
 };
@@ -138,7 +139,7 @@ const DEDUP_CONFIG = {
  * - `gate-closed-below-threshold`: 99000 input tokens leave the total
  *   below the floor — nothing is marked, nothing announced.
  * - `protected-window-skips`: the same view over the floor, but
- *   `protectedMessages: 2` puts the pair inside the protection window.
+ *   `activeMessages: 2` puts the pair inside the protection window.
  * - `gate-open-marks-created-not-applied`: the gate opens at equality;
  *   the producer writes a pending mark and the turn itself prunes
  *   nothing (release runs before the producers).
@@ -163,7 +164,7 @@ export const G_MS_01: Scenario = {
     {
       label: "protected-window-skips",
       messages: longView([duplicateTurn(100000, LONG)]),
-      config: { ...DEDUP_CONFIG, protectedMessages: 2 },
+      config: { ...DEDUP_CONFIG, activeMessages: 2 },
     },
     {
       label: "gate-open-marks-created-not-applied",
@@ -195,9 +196,10 @@ export const G_MS_01: Scenario = {
 
 /** Producer gates for the purge-errors scenario. */
 const PURGE_CONFIG = {
-  protectedMessages: 0,
+  activeMessages: 0,
+  activeTokens: 0,
   releasedPercent: 0,
-  compress: { protectedTokens: 0, thresholdTokens: 0 },
+  compress: { thresholdTokens: 0 },
   dedup: {},
   purgeErrors: { minMessages: 20, thresholdContext: 100000 },
 };
@@ -343,8 +345,10 @@ export const G_MS_04: Scenario = {
   id: "G-MS-04",
   sessionID: "golden-pi-g-ms-04",
   config: {
-    protectedMessages: 0,
+    activeMessages: 0,
+    activeTokens: 0,
     releasedPercent: 5,
+    compress: {},
     dedup: {},
     purgeErrors: {},
   },

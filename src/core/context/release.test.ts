@@ -10,8 +10,8 @@
  *    two-turn flow driving the lens dedup producer.
  * 2. **Lens-specific semantics** — the two-turn lifecycle (turn N marks
  *    stay pending and invisible; turn N+1 flips and applies), defensive
- *    anchors (vanished messages, out-of-range regions), idempotent
- *    re-release, and the derived stats.
+ *    anchors (vanished messages flip without an edit, out-of-range
+ *    regions), idempotent re-release, and the derived stats.
  */
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
@@ -29,6 +29,11 @@ import {
   PRUNED_TOOL_OUTPUT_REPLACEMENT,
 } from "./message-parts.js";
 import { runDedup } from "./producers/dedup.js";
+import {
+  buildProtectionMap,
+  freezeProtectionMap,
+  type ProtectionMap,
+} from "./protection-map.js";
 import {
   computeEdits,
   flipReleasedMarks,
@@ -125,7 +130,7 @@ function newTurn(
     minMessages: 0,
     contextLimit: MODEL_LIMIT,
     thresholdContext: 0,
-    protectedStartOrdinal: messages.length,
+    protection: buildProtectionMap(messages, 0, 0),
     protectedTools: [],
   });
 }
@@ -136,19 +141,25 @@ function newTurn(
  * The full release contract: `computeEdits` selects the round's region
  * edits, they are applied through the testkit backing (the pure
  * counterpart of the adapter edit application), and `flipReleasedMarks`
- * flips the released marks effective.  Returns the flip result.
+ * flips the released marks effective.  Every call runs with an explicit
+ * protection map — the fixture default disables both windows, and a test
+ * that needs protection passes its own.  Returns the flip result.
  */
 function releasePhase(
   state: SessionState,
   messages: HostMessage[],
   options: ReleaseOptions,
 ): ReleaseResult {
-  const edits = computeEdits(state, messages, options);
+  const roundOptions: ReleaseOptions = {
+    protection: buildProtectionMap(messages, 0, 0),
+    ...options,
+  };
+  const edits = computeEdits(state, messages, roundOptions);
   for (const edit of edits) {
     if (edit.regionIndex === undefined) continue;
     setRegionText(messages[edit.messageOrdinal], edit.regionIndex, edit.text);
   }
-  return flipReleasedMarks(state, options);
+  return flipReleasedMarks(state, roundOptions);
 }
 
 // ===========================================================================
@@ -561,18 +572,19 @@ describe("pendingViewChange bypass", () => {
 // ===========================================================================
 
 describe("defensive anchors", () => {
-  it("vanished anchor message — flip still happens, apply skipped", () => {
+  it("vanished anchor message — flips without an edit", () => {
     const state = makeState();
     const lens = [makeToolMsg("bash", '{"cmd":"ls"}', LONG_OUTPUT)];
-    // Anchor ordinal 3 does not exist in a one-message transcript.
+    // Anchor ordinal 3 does not exist in a one-message transcript.  An
+    // invalid ordinal is not part of the active tail, so the mark is
+    // eligible: the flip happens, the write has no target.
     rawSeed(state, 3, 1, 100, false);
     const r = releasePhase(state, lens, {
       promptTokens: 100_000,
       releasedPercent: 0,
-      pendingViewChange: false,
+      pendingViewChange: true,
     });
     assert.equal(r.releasedCount, 1);
-    assert.equal(r.releasedTokens, 100);
     assert.equal(state.marks.get(markKey(3, 1))?.effective, true);
     assert.equal(lens[0].regions[1].get(), LONG_OUTPUT, "region untouched");
   });
@@ -662,5 +674,204 @@ describe("defensive anchors", () => {
     });
     assert.equal(lens[0].regions[1].get(), PRUNED_TOOL_OUTPUT_REPLACEMENT);
     assert.equal(lens[0].regions[3].get(), PRUNED_TOOL_OUTPUT_REPLACEMENT);
+  });
+});
+
+// ===========================================================================
+// Protection map (lens-only)
+// ===========================================================================
+
+describe("protection", () => {
+  /** Three messages with one bash call each (in/out region pairs). */
+  function threeCalls(): HostMessage[] {
+    return [
+      makeToolMsg("bash", '{"cmd":"ls"}', LONG_OUTPUT),
+      makeToolMsg("bash", '{"cmd":"pwd"}', LONG_OUTPUT),
+      makeToolMsg("bash", '{"cmd":"date"}', LONG_OUTPUT),
+    ];
+  }
+
+  /** A map protecting the active tail from `activeStart` upward. */
+  function tailFrom(activeStart: number, messageCount = 3): ProtectionMap {
+    return freezeProtectionMap({ activeStart, messageCount, instructions: [] });
+  }
+
+  it("keeps a pending mark in the active tail pending", () => {
+    const state = makeState();
+    const lens = [makeToolMsg("bash", '{"cmd":"ls"}', LONG_OUTPUT)];
+    rawSeed(state, 0, 1, 100, false);
+    const r = releasePhase(state, lens, {
+      promptTokens: 100_000,
+      releasedPercent: 0,
+      pendingViewChange: false,
+      protection: tailFrom(0),
+    });
+    assert.equal(r.releasedCount, 0);
+    assert.equal(state.marks.get(markKey(0, 1))?.effective, false);
+    assert.equal(lens[0].regions[1].get(), LONG_OUTPUT, "region untouched");
+  });
+
+  it("writes no edit for an effective mark in the active tail", () => {
+    const state = makeState();
+    const lens = [
+      makeToolMsg("bash", '{"cmd":"ls"}', LONG_OUTPUT),
+      makeToolMsg("bash", '{"cmd":"pwd"}', LONG_OUTPUT),
+    ];
+    rawSeed(state, 0, 1, 100, true);
+    rawSeed(state, 1, 1, 100, true);
+    const edits = computeEdits(state, lens, {
+      promptTokens: 100_000,
+      releasedPercent: 0,
+      pendingViewChange: false,
+      protection: tailFrom(1),
+    });
+    assert.deepEqual(edits, [
+      {
+        messageOrdinal: 0,
+        regionIndex: 1,
+        text: PRUNED_TOOL_OUTPUT_REPLACEMENT,
+      },
+    ]);
+    assert.equal(lens[1].regions[1].get(), LONG_OUTPUT, "tail untouched");
+    assert.equal(
+      state.marks.get(markKey(1, 1))?.effective,
+      true,
+      "the record is retained",
+    );
+  });
+
+  it("protects a mark anchored at a user instruction ordinal", () => {
+    const state = makeState();
+    const lens = [
+      makeToolMsg("bash", '{"cmd":"ls"}', LONG_OUTPUT),
+      makeToolMsg("bash", '{"cmd":"pwd"}', LONG_OUTPUT),
+    ];
+    rawSeed(state, 0, 1, 100, true);
+    rawSeed(state, 0, 0, 100, false);
+    rawSeed(state, 1, 1, 100, false);
+    const protection = freezeProtectionMap({
+      activeStart: lens.length,
+      messageCount: lens.length,
+      instructions: [0],
+    });
+    const edits = computeEdits(state, lens, {
+      promptTokens: 100_000,
+      releasedPercent: 0,
+      pendingViewChange: false,
+      protection,
+    });
+    assert.deepEqual(edits, [
+      {
+        messageOrdinal: 1,
+        regionIndex: 1,
+        text: PRUNED_TOOL_OUTPUT_REPLACEMENT,
+      },
+    ]);
+    const r = flipReleasedMarks(state, {
+      promptTokens: 100_000,
+      releasedPercent: 0,
+      pendingViewChange: false,
+      protection,
+    });
+    assert.equal(r.releasedCount, 1);
+    assert.equal(
+      state.marks.get(markKey(0, 0))?.effective,
+      false,
+      "the instruction mark stays pending",
+    );
+  });
+
+  it("does not count protected pending tokens toward the batch threshold", () => {
+    const state = makeState();
+    const lens = [
+      makeToolMsg("bash", '{"cmd":"ls"}', LONG_OUTPUT),
+      makeToolMsg("bash", '{"cmd":"pwd"}', LONG_OUTPUT),
+    ];
+    // 100_000 prompt tokens at 10% → a 10_000-token batch threshold.
+    rawSeed(state, 1, 1, 9_000, false);
+    rawSeed(state, 0, 1, 5_000, false);
+    assert.equal(pendingTokens(state), 14_000, "the full total is unchanged");
+    const options: ReleaseOptions = {
+      promptTokens: 100_000,
+      releasedPercent: 10,
+      pendingViewChange: false,
+      protection: tailFrom(1),
+    };
+    assert.deepEqual(flipReleasedMarks(state, options), {
+      releasedCount: 0,
+      releasedTokens: 0,
+      forced: false,
+    });
+    assert.equal(pendingCount(state), 2, "both marks stay pending");
+
+    // With the tail lifted, the full total clears the threshold.
+    const released = flipReleasedMarks(state, {
+      ...options,
+      protection: tailFrom(lens.length),
+    });
+    assert.equal(released.releasedCount, 2);
+    assert.equal(released.releasedTokens, 14_000);
+  });
+
+  it("the view-change bypass does not bypass protection", () => {
+    const state = makeState();
+    rawSeed(state, 1, 1, 100, false);
+    rawSeed(state, 0, 1, 100, false);
+    const bypassed = flipReleasedMarks(state, {
+      promptTokens: 0,
+      releasedPercent: undefined,
+      pendingViewChange: true,
+      protection: tailFrom(1),
+    });
+    assert.equal(bypassed.releasedCount, 1, "only the unprotected mark");
+    assert.equal(bypassed.forced, true);
+    assert.equal(state.marks.get(markKey(1, 1))?.effective, false);
+  });
+
+  it("fails closed without a protection map", () => {
+    const state = makeState();
+    const lens = [makeToolMsg("bash", '{"cmd":"ls"}', LONG_OUTPUT)];
+    rawSeed(state, 0, 1, 100, false);
+    const options: ReleaseOptions = {
+      promptTokens: 100_000,
+      releasedPercent: 0,
+      pendingViewChange: true,
+    };
+    assert.deepEqual(computeEdits(state, lens, options), []);
+    assert.deepEqual(flipReleasedMarks(state, options), {
+      releasedCount: 0,
+      releasedTokens: 0,
+      forced: false,
+    });
+    assert.equal(pendingCount(state), 1);
+    assert.equal(lens[0].regions[1].get(), LONG_OUTPUT);
+  });
+
+  it("selects the same pending marks for edits and flips", () => {
+    const state = makeState();
+    const lens = threeCalls();
+    rawSeed(state, 0, 1, 100, false);
+    rawSeed(state, 1, 1, 100, false);
+    rawSeed(state, 2, 1, 100, true);
+    rawSeed(state, 0, 0, 100, true);
+    const options: ReleaseOptions = {
+      promptTokens: 100_000,
+      releasedPercent: 0,
+      pendingViewChange: false,
+      protection: tailFrom(1),
+    };
+    const pendingBefore = [...state.marks.entries()].filter(
+      ([, mark]) => !mark.effective,
+    );
+    const edits = computeEdits(state, lens, options);
+    const result = flipReleasedMarks(state, options);
+
+    assert.equal(result.releasedCount, 1);
+    for (const [key, mark] of pendingBefore) {
+      const edited = edits.some(
+        (edit) => markKey(edit.messageOrdinal, edit.regionIndex) === key,
+      );
+      assert.equal(mark.effective, edited, `mark ${key} flips iff edited`);
+    }
   });
 });

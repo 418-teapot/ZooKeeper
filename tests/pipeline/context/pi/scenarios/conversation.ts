@@ -78,7 +78,7 @@ export function lastRefFor(v1Index: number): string {
  * assistant `toolCall` + `toolResult` pair) + last user + final
  * assistant.
  *
- * With protectedMessages=20 / protectedTokens=20000 / threshold=2000
+ * With activeMessages=20 / activeTokens=20000 / threshold=2000
  * the pi protection boundary lands at ordinal 38 (the token-budget
  * window: 10 tool exchanges from the end ≈ 20000 tokens), so valid
  * ranges live inside [1, 38).

@@ -74,7 +74,8 @@ const POLY_PROFILE = {
 const POLY_ZOO: Record<string, unknown> = {
   validation: { context_word_limit: 200, prompt_word_limit: 500 },
   context: {
-    protected_messages: 20,
+    active_messages: 20,
+    active_tokens: 20000,
     released_percent: 10,
     dedup: { min_messages: 20, threshold_context: 100000, protected_tools: [] },
     purge_errors: {
@@ -84,7 +85,6 @@ const POLY_ZOO: Record<string, unknown> = {
     },
     compress: {
       threshold_tokens: 2000,
-      protected_tokens: 20000,
       max_ranges: 8,
     },
     decompress: { max_fill_percent: 90 },

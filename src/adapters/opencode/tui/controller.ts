@@ -12,14 +12,18 @@
  * Session state is read through the host-agnostic core's store
  * (`createStateStore().load`) — a read-only disk load that never
  * mutates or caches, matching the panel's display-only role; the
- * persisted blocks fold the transcript and the persisted effective
- * prune marks overlay the storage text, so the category breakdown
- * reflects the model-visible view.  The report and the sidebar
- * statistics all come from the core lens pipeline.
+ * persisted blocks fold the transcript and the persisted unprotected
+ * effective prune marks overlay the storage text, so the category
+ * breakdown reflects the model-visible view.  The overlay protection
+ * follows the release phase: the controller builds the map from the
+ * current history snapshot and the injected parsed config, and overlays
+ * nothing when that config defines no protection inputs.  The report and
+ * the sidebar statistics all come from the core lens pipeline.
  *
  * @module
  */
 
+import type { ContextPruningConfig } from "../../../core/config-types.js";
 import { formatPercent } from "../../../core/context/context-report.js";
 import {
   computeContextReportLens,
@@ -33,6 +37,7 @@ import {
   computeTokenBreakdown,
   type TokenBreakdownResult,
 } from "../../../core/context/lens-stats.js";
+import { configuredProtectionMap } from "../../../core/context/protection-map.js";
 import { materializeEffectiveMarks } from "../../../core/context/release.js";
 import { createStateStore } from "../../../core/context/store.js";
 import { log } from "../../../utils/logger.js";
@@ -53,6 +58,12 @@ export interface ContextControllerDeps {
   };
   /** State slice — read for session token aggregates in the cumulative rate. */
   state: unknown;
+  /**
+   * Parsed context-pruning config — sizes the protection map the report
+   * overlay uses.  Both protection inputs must be present; otherwise the
+   * controller overlays no mark (fail-closed).
+   */
+  contextConfig: ContextPruningConfig;
   /** Cache hit-rate display string setter (tui() scope signal). */
   setCache: (v: string) => void;
   /** Category breakdown setter (tui() scope signal). */
@@ -105,6 +116,7 @@ export function createContextController(
   const {
     client,
     state: stateSlice,
+    contextConfig,
     setCache,
     setCategories,
     setError,
@@ -174,13 +186,24 @@ export function createContextController(
       let folded: HostMessage[] | undefined;
       try {
         const persisted = store.load(sessionId);
-        // Overlay the persisted effective prune marks first: storage
-        // holds the pre-prune original text, so without this the tool
-        // category would count full outputs for pruned calls.  Folding
-        // still runs over the untouched view (span hashes validate the
-        // stored content), and the folded transcript copies from the
-        // overlaid messages so ordinals stay aligned.
-        reportMessages = materializeEffectiveMarks(view.messages, persisted);
+        // Overlay the persisted unprotected effective prune marks first:
+        // storage holds the pre-prune original text, so without this the
+        // tool category would count full outputs for pruned calls.  The
+        // map comes from the same snapshot and the parsed config, so a
+        // protected mark keeps its stored text — exactly what the release
+        // phase writes; without a map nothing is overlaid.  Folding still
+        // runs over the untouched view (span hashes validate the stored
+        // content), and the folded transcript copies from the overlaid
+        // messages so ordinals stay aligned.
+        const protection = configuredProtectionMap(
+          view.messages,
+          contextConfig,
+        );
+        reportMessages = materializeEffectiveMarks(
+          view.messages,
+          persisted,
+          protection,
+        );
         // Apply compression-block folding so the category breakdown
         // shows the model-visible (folded) numbers.  Pure read-only —
         // fold never mutates the state or the transcript.

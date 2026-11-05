@@ -82,7 +82,7 @@ describe("pi lane smoke — production-entry transform", () => {
     await host.runTransform(
       SID,
       msgs,
-      { protectedMessages: 0, dedup: {}, purgeErrors: {} },
+      { activeMessages: 0, dedup: {}, purgeErrors: {} },
       false,
       () => {},
     );
@@ -108,7 +108,7 @@ describe("pi lane smoke — production-entry transform", () => {
     await host.runTransform(
       "pi-smoke-empty",
       msgs,
-      { protectedMessages: 0, dedup: {}, purgeErrors: {} },
+      { activeMessages: 0, dedup: {}, purgeErrors: {} },
       false,
       () => {},
     );

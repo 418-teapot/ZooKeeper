@@ -29,13 +29,13 @@ const SID = "golden-g-comp-01";
 /** Shared compress/decompress config for the compress scenarios. */
 export function compressConfig() {
   return {
-    protectedMessages: 20,
+    activeMessages: 20,
+    activeTokens: 20000,
     releasedPercent: 10,
     dedup: {},
     purgeErrors: {},
     compress: {
       thresholdTokens: 2000,
-      protectedTokens: 20000,
       maxRanges: 8,
     },
     decompress: { maxFillPercent: 90 },
@@ -160,7 +160,7 @@ export const G_COMP_02: Scenario = {
  * `--- b1: 第一段 ---`, net token arithmetic, b1 moved to consumed).  A
  * third generation swallows b2 into b3, re-absorbing the retained b1.
  *
- * The scenario lowers `protectedMessages` from the shared 20 to 10 so
+ * The scenario lowers `activeMessages` from the shared 20 to 10 so
  * the combined protection boundary lands at 18 instead of 11 — with
  * boundary 11 the wider round and the third generation resolve past the
  * window and are rejected, so the documented consumption never
@@ -172,7 +172,7 @@ export const G_COMP_02: Scenario = {
 export const G_COMP_03: Scenario = {
   id: "G-COMP-03",
   sessionID: "golden-g-comp-03",
-  config: { ...compressConfig(), protectedMessages: 10 },
+  config: { ...compressConfig(), activeMessages: 10 },
   rounds: [
     {
       label: "baseline-refs",
@@ -220,7 +220,7 @@ export const G_COMP_03: Scenario = {
  *
  * Uses a short-output conversation so the phantom gate and the
  * negative-benefit gate fire on small ranges.  Rounds 2-5 reject with
- * zero state change (reversed order, protection zone, first user,
+ * zero state change (reversed order, active tail, user instruction,
  * phantom); round 6 creates b1; rounds 7-8 reject against b1
  * (negative benefit, no-new-content); round 9 swallows b1 into b2;
  * rounds 10-12 reject against b2 (protection, stale ref, unknown ref).
@@ -237,7 +237,8 @@ export const G_COMP_04: Scenario = {
   id: "G-COMP-04",
   sessionID: "golden-g-comp-04",
   config: {
-    protectedMessages: 20,
+    activeMessages: 20,
+    activeTokens: 300,
     releasedPercent: 10,
     dedup: {},
     purgeErrors: {},
@@ -248,7 +249,6 @@ export const G_COMP_04: Scenario = {
       // threshold sits between [1,3) (~56, phantom) and [1,4) (~84,
       // overlap/negative-benefit probes).
       thresholdTokens: 80,
-      protectedTokens: 300,
       maxRanges: 8,
     },
     decompress: { maxFillPercent: 90 },
@@ -282,7 +282,7 @@ export const G_COMP_04: Scenario = {
       },
     },
     {
-      label: "gate-first-user",
+      label: "gate-user-instruction",
       messages: shortConversation("golden-g-comp-04"),
       action: {
         kind: "compress-tool",

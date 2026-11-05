@@ -466,35 +466,3 @@ export function regionsOfKind(
 ): TextRegion[] {
   return msg.regions.filter((region) => region.kind === kind);
 }
-
-/**
- * Find the ordinal of the first non-hidden user message.
- *
- * Hidden messages are skipped; the result is the transcript position of
- * the first user message that is not hidden.
- *
- * @param messages - The transcript.
- * @returns The ordinal, or -1 when no non-hidden user message exists.
- */
-export function findFirstUserOrdinal(messages: HostMessage[]): number {
-  for (let i = 0; i < messages.length; i++) {
-    if (messages[i].role === "user" && !messages[i].hidden) return i;
-  }
-  return -1;
-}
-
-/**
- * Find the ordinal of the last non-hidden user message.
- *
- * Hidden messages are skipped; the result is the transcript position of
- * the last user message that is not hidden.
- *
- * @param messages - The transcript.
- * @returns The ordinal, or -1 when no non-hidden user message exists.
- */
-export function findLastUserOrdinal(messages: HostMessage[]): number {
-  for (let i = messages.length - 1; i >= 0; i--) {
-    if (messages[i].role === "user" && !messages[i].hidden) return i;
-  }
-  return -1;
-}

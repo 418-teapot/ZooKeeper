@@ -8,15 +8,15 @@
  *    the whole section (undefined + one `<section>_config_invalid`
  *    warn carrying the offending key); an absent section is
  *    undefined with no warn.
- *  - C11-02 zero values preserved: protected_messages:0 /
- *    released_percent:0 / compress.threshold_tokens:0 /
- *    compress.protected_tokens:0 are accepted without warns.
+ *  - C11-02 zero values preserved: active_messages:0 /
+ *    active_tokens:0 / released_percent:0 /
+ *    compress.threshold_tokens:0 are accepted without warns.
  *  - C11-03 released_percent top-level priority: only the top-level
  *    `[zoo.context].released_percent` is read; the legacy
  *    `[zoo.context.dedup].released_percent` is silently ignored.
  *    Bounds 0–100; out-of-range / non-finite / non-numeric invalidate
  *    the core group.
- *  - C11-04 strict section validation: compress requires all three
+ *  - C11-04 strict section validation: compress requires both of its
  *    keys, max_ranges must be a positive integer; decompress requires
  *    max_fill_percent as integer 1–100; the legacy
  *    `reject_percent` is silently ignored.
@@ -66,30 +66,67 @@ function warnCount(event: string): number {
 
 describe("C11-01 fail-to-skip", () => {
   describe("core group ([zoo.context])", () => {
-    it("returns undefined fields and logs context_config_invalid for string protected_messages", () => {
+    it("returns undefined fields and logs context_config_invalid for string active_messages", () => {
       const result = parseContextConfig({
-        context: { protected_messages: "abc", released_percent: 10 },
+        context: { active_messages: "abc", released_percent: 10 },
       });
-      assert.equal(result.protectedMessages, undefined);
+      assert.equal(result.activeMessages, undefined);
+      assert.equal(result.activeTokens, undefined);
       // The valid sibling key is dropped too — the group fails as a whole.
       assert.equal(result.releasedPercent, undefined);
 
       const warns = warnsOf("context_config_invalid");
       assert.equal(warns.length, 1, "exactly one warn for the section");
-      assert.equal(warns[0].key, "protected_messages");
+      assert.equal(warns[0].key, "active_messages");
       assert.equal(warns[0].value, "abc");
     });
 
     it("returns undefined fields and logs context_config_invalid for non-finite released_percent", () => {
       const result = parseContextConfig({
-        context: { protected_messages: 3, released_percent: NaN },
+        context: { active_messages: 3, released_percent: NaN },
       });
-      assert.equal(result.protectedMessages, undefined);
+      assert.equal(result.activeMessages, undefined);
+      assert.equal(result.activeTokens, undefined);
       assert.equal(result.releasedPercent, undefined);
 
       const warns = warnsOf("context_config_invalid");
       assert.equal(warns.length, 1);
       assert.equal(warns[0].key, "released_percent");
+    });
+
+    it("reads active_tokens from the core group", () => {
+      const result = parseContextConfig({
+        context: { active_messages: 20, active_tokens: 20000 },
+      });
+      assert.equal(result.activeMessages, 20);
+      assert.equal(result.activeTokens, 20000);
+      assert.equal(warnCount("context_config_invalid"), 0);
+    });
+
+    it("leaves active_tokens undefined when the key is absent", () => {
+      const result = parseContextConfig({
+        context: { active_messages: 20, released_percent: 10 },
+      });
+      assert.equal(result.activeMessages, 20);
+      assert.equal(result.activeTokens, undefined);
+      assert.equal(warnCount("context_config_invalid"), 0);
+    });
+
+    it("drops the whole core group for negative active_tokens", () => {
+      const result = parseContextConfig({
+        context: {
+          active_messages: 20,
+          active_tokens: -1,
+          released_percent: 10,
+        },
+      });
+      assert.equal(result.activeMessages, undefined);
+      assert.equal(result.activeTokens, undefined);
+      assert.equal(result.releasedPercent, undefined);
+
+      const warns = warnsOf("context_config_invalid");
+      assert.equal(warns.length, 1);
+      assert.equal(warns[0].key, "active_tokens");
     });
   });
 
@@ -194,7 +231,6 @@ describe("C11-01 fail-to-skip", () => {
         context: {
           compress: {
             threshold_tokens: -5,
-            protected_tokens: 200,
             max_ranges: 3,
           },
         },
@@ -274,7 +310,8 @@ describe("C11-01 fail-to-skip", () => {
   describe("absent section → no warn", () => {
     it("does not log any *_config_invalid when [zoo.context] is entirely absent", () => {
       const result = parseContextConfig({});
-      assert.equal(result.protectedMessages, undefined);
+      assert.equal(result.activeMessages, undefined);
+      assert.equal(result.activeTokens, undefined);
       assert.equal(result.releasedPercent, undefined);
       assert.equal(result.dedup, undefined);
       assert.equal(result.purgeErrors, undefined);
@@ -295,7 +332,8 @@ describe("C11-01 fail-to-skip", () => {
 
     it("does not log any *_config_invalid when [zoo.context] is present but empty", () => {
       const result = parseContextConfig({ context: {} });
-      assert.equal(result.protectedMessages, undefined);
+      assert.equal(result.activeMessages, undefined);
+      assert.equal(result.activeTokens, undefined);
       assert.equal(result.releasedPercent, undefined);
       assert.equal(result.dedup, undefined);
       assert.equal(result.purgeErrors, undefined);
@@ -319,7 +357,7 @@ describe("C11-01 fail-to-skip", () => {
     it("invalid core group does not affect dedup / compress / decompress", () => {
       const result = parseContextConfig({
         context: {
-          protected_messages: "abc",
+          active_messages: "abc",
           dedup: {
             min_messages: 20,
             threshold_context: 100,
@@ -327,14 +365,14 @@ describe("C11-01 fail-to-skip", () => {
           },
           compress: {
             threshold_tokens: 1000,
-            protected_tokens: 200,
             max_ranges: 3,
           },
           decompress: { max_fill_percent: 50 },
         },
       });
       // Core group dropped.
-      assert.equal(result.protectedMessages, undefined);
+      assert.equal(result.activeMessages, undefined);
+      assert.equal(result.activeTokens, undefined);
       assert.equal(result.releasedPercent, undefined);
       // Other sub-sections remain valid.
       assert.deepEqual(result.dedup, {
@@ -344,7 +382,6 @@ describe("C11-01 fail-to-skip", () => {
       });
       assert.deepEqual(result.compress, {
         thresholdTokens: 1000,
-        protectedTokens: 200,
         maxRanges: 3,
       });
       assert.deepEqual(result.decompress, { maxFillPercent: 50 });
@@ -359,7 +396,8 @@ describe("C11-01 fail-to-skip", () => {
     it("invalid compress does not affect core / dedup / decompress", () => {
       const result = parseContextConfig({
         context: {
-          protected_messages: 3,
+          active_messages: 3,
+          active_tokens: 200,
           released_percent: 10,
           dedup: {
             min_messages: 20,
@@ -368,14 +406,14 @@ describe("C11-01 fail-to-skip", () => {
           },
           compress: {
             threshold_tokens: 1000,
-            protected_tokens: 200,
             max_ranges: 0,
           },
           decompress: { max_fill_percent: 50 },
         },
       });
       // Core & dedup & decompress remain valid.
-      assert.equal(result.protectedMessages, 3);
+      assert.equal(result.activeMessages, 3);
+      assert.equal(result.activeTokens, 200);
       assert.equal(result.releasedPercent, 10);
       assert.deepEqual(result.dedup, {
         minMessages: 20,
@@ -396,17 +434,17 @@ describe("C11-01 fail-to-skip", () => {
 });
 
 // =============================================================================
-// C11-02 zero values preserved: protected_messages:0 / released_percent:0 /
-// compress.threshold_tokens:0 / compress.protected_tokens:0 are accepted
-// without warns and round-trip as 0.
+// C11-02 zero values preserved: active_messages:0 / active_tokens:0 /
+// released_percent:0 / compress.threshold_tokens:0 are accepted without
+// warns and round-trip as 0.
 // =============================================================================
 
 describe("C11-02 zero values preserved", () => {
-  it("accepts protected_messages: 0 (no warn, returns 0)", () => {
+  it("accepts active_messages: 0 (no warn, returns 0)", () => {
     const result = parseContextConfig({
-      context: { protected_messages: 0 },
+      context: { active_messages: 0 },
     });
-    assert.equal(result.protectedMessages, 0);
+    assert.equal(result.activeMessages, 0);
     assert.equal(warnCount("context_config_invalid"), 0);
   });
 
@@ -421,43 +459,34 @@ describe("C11-02 zero values preserved", () => {
   it("accepts compress.threshold_tokens: 0 (no warn, returns 0)", () => {
     const result = parseContextConfig({
       context: {
-        compress: { threshold_tokens: 0, protected_tokens: 200, max_ranges: 3 },
+        compress: { threshold_tokens: 0, max_ranges: 3 },
       },
     });
     assert.deepEqual(result.compress, {
       thresholdTokens: 0,
-      protectedTokens: 200,
       maxRanges: 3,
     });
     assert.equal(warnCount("compress_config_invalid"), 0);
   });
 
-  it("accepts compress.protected_tokens: 0 (no warn, returns 0)", () => {
+  it("accepts active_tokens: 0 (no warn, returns 0)", () => {
     const result = parseContextConfig({
-      context: {
-        compress: {
-          threshold_tokens: 1000,
-          protected_tokens: 0,
-          max_ranges: 3,
-        },
-      },
+      context: { active_tokens: 0 },
     });
-    assert.deepEqual(result.compress, {
-      thresholdTokens: 1000,
-      protectedTokens: 0,
-      maxRanges: 3,
-    });
-    assert.equal(warnCount("compress_config_invalid"), 0);
+    assert.equal(result.activeTokens, 0);
+    assert.equal(warnCount("context_config_invalid"), 0);
   });
 
   it("accepts all-zero core group together (no warn)", () => {
     const result = parseContextConfig({
       context: {
-        protected_messages: 0,
+        active_messages: 0,
+        active_tokens: 0,
         released_percent: 0,
       },
     });
-    assert.equal(result.protectedMessages, 0);
+    assert.equal(result.activeMessages, 0);
+    assert.equal(result.activeTokens, 0);
     assert.equal(result.releasedPercent, 0);
     assert.equal(warnCount("context_config_invalid"), 0);
   });
@@ -591,17 +620,17 @@ describe("C11-03 released_percent precedence and bounds", () => {
 });
 
 // =============================================================================
-// C11-04 strict section validation: compress requires all three keys +
+// C11-04 strict section validation: compress requires both of its keys +
 // max_ranges must be a positive integer; decompress requires max_fill_percent
 // as integer 1–100; legacy `reject_percent` is silently ignored.
 // =============================================================================
 
 describe("C11-04 strict section validation", () => {
-  describe("compress — three keys all required", () => {
+  describe("compress — both keys required", () => {
     it("drops compress when threshold_tokens is missing", () => {
       const result = parseContextConfig({
         context: {
-          compress: { protected_tokens: 200, max_ranges: 3 },
+          compress: { max_ranges: 3 },
         },
       });
       assert.equal(result.compress, undefined);
@@ -610,22 +639,37 @@ describe("C11-04 strict section validation", () => {
       assert.equal(warns[0].key, "threshold_tokens");
     });
 
-    it("drops compress when protected_tokens is missing", () => {
+    it("accepts compress with only threshold_tokens and max_ranges", () => {
       const result = parseContextConfig({
         context: {
           compress: { threshold_tokens: 1000, max_ranges: 3 },
         },
       });
-      assert.equal(result.compress, undefined);
-      const warns = warnsOf("compress_config_invalid");
-      assert.equal(warns.length, 1);
-      assert.equal(warns[0].key, "protected_tokens");
+      assert.deepEqual(result.compress, {
+        thresholdTokens: 1000,
+        maxRanges: 3,
+      });
+      assert.equal(warnCount("compress_config_invalid"), 0);
+    });
+
+    it("ignores active_tokens inside [zoo.context.compress]", () => {
+      const result = parseContextConfig({
+        context: {
+          compress: { threshold_tokens: 1000, max_ranges: 3, active_tokens: 5 },
+        },
+      });
+      assert.equal(result.activeTokens, undefined);
+      assert.deepEqual(result.compress, {
+        thresholdTokens: 1000,
+        maxRanges: 3,
+      });
+      assert.equal(warnCount("context_config_invalid"), 0);
     });
 
     it("drops compress when max_ranges is missing", () => {
       const result = parseContextConfig({
         context: {
-          compress: { threshold_tokens: 1000, protected_tokens: 200 },
+          compress: { threshold_tokens: 1000 },
         },
       });
       assert.equal(result.compress, undefined);
@@ -635,7 +679,7 @@ describe("C11-04 strict section validation", () => {
     });
 
     it("does not log warn when compress section is absent entirely", () => {
-      const result = parseContextConfig({ context: { protected_messages: 3 } });
+      const result = parseContextConfig({ context: { active_messages: 3 } });
       assert.equal(result.compress, undefined);
       assert.equal(warnCount("compress_config_invalid"), 0);
     });
@@ -647,7 +691,6 @@ describe("C11-04 strict section validation", () => {
         context: {
           compress: {
             threshold_tokens: 1000,
-            protected_tokens: 200,
             max_ranges: 0,
           },
         },
@@ -663,7 +706,6 @@ describe("C11-04 strict section validation", () => {
         context: {
           compress: {
             threshold_tokens: 1000,
-            protected_tokens: 200,
             max_ranges: -1,
           },
         },
@@ -679,7 +721,6 @@ describe("C11-04 strict section validation", () => {
         context: {
           compress: {
             threshold_tokens: 1000,
-            protected_tokens: 200,
             max_ranges: "abc",
           },
         },
@@ -695,7 +736,6 @@ describe("C11-04 strict section validation", () => {
         context: {
           compress: {
             threshold_tokens: 1000,
-            protected_tokens: 200,
             max_ranges: 1.5,
           },
         },
@@ -711,7 +751,6 @@ describe("C11-04 strict section validation", () => {
         context: {
           compress: {
             threshold_tokens: 1000,
-            protected_tokens: 200,
             max_ranges: Infinity,
           },
         },
@@ -727,14 +766,12 @@ describe("C11-04 strict section validation", () => {
         context: {
           compress: {
             threshold_tokens: 1000,
-            protected_tokens: 200,
             max_ranges: 1,
           },
         },
       });
       assert.deepEqual(result.compress, {
         thresholdTokens: 1000,
-        protectedTokens: 200,
         maxRanges: 1,
       });
       assert.equal(warnCount("compress_config_invalid"), 0);
@@ -789,7 +826,7 @@ describe("C11-04 strict section validation", () => {
     });
 
     it("does not log warn when decompress section is absent entirely", () => {
-      const result = parseContextConfig({ context: { protected_messages: 3 } });
+      const result = parseContextConfig({ context: { active_messages: 3 } });
       assert.equal(result.decompress, undefined);
       assert.equal(warnCount("decompress_config_invalid"), 0);
     });
@@ -1014,7 +1051,7 @@ describe("C11-05 nudge strict validation", () => {
 
   it("does not log warn when nudge section is absent entirely", () => {
     const result = parseContextConfig({
-      context: { protected_messages: 3 },
+      context: { active_messages: 3 },
     });
     assert.equal(result.nudge, undefined);
     assert.equal(warnCount("nudge_config_invalid"), 0);
@@ -1030,13 +1067,31 @@ describe("C11-06 unknown keys ignored", () => {
   it("ignores unknown top-level key in [zoo.context]", () => {
     const result = parseContextConfig({
       context: {
-        protected_messages: 3,
+        active_messages: 3,
         future_field: "ignored",
         legacy_key: 42,
       },
     });
-    assert.equal(result.protectedMessages, 3);
+    assert.equal(result.activeMessages, 3);
     assert.equal(warnCount("context_config_invalid"), 0);
+  });
+
+  it("never maps an unknown budget key to the active fields", () => {
+    const result = parseContextConfig({
+      context: {
+        active_messages: 3,
+        legacy_token_budget: 20000,
+        compress: { threshold_tokens: 1000, max_ranges: 3, legacy_budget: 5 },
+      },
+    });
+    assert.equal(result.activeMessages, 3);
+    assert.equal(result.activeTokens, undefined);
+    assert.deepEqual(result.compress, {
+      thresholdTokens: 1000,
+      maxRanges: 3,
+    });
+    assert.equal(warnCount("context_config_invalid"), 0);
+    assert.equal(warnCount("compress_config_invalid"), 0);
   });
 
   it("ignores unknown key in [zoo.context.dedup]", () => {
@@ -1066,7 +1121,7 @@ describe("C11-06 unknown keys ignored", () => {
           min_messages: 20,
           threshold_context: 50,
           protected_tools: ["webfetch"],
-          legacy_protected_messages: 5,
+          legacy_active_messages: 5,
         },
       },
     });
@@ -1083,7 +1138,6 @@ describe("C11-06 unknown keys ignored", () => {
       context: {
         compress: {
           threshold_tokens: 1000,
-          protected_tokens: 200,
           max_ranges: 3,
           legacy_max_messages: 10,
         },
@@ -1091,7 +1145,6 @@ describe("C11-06 unknown keys ignored", () => {
     });
     assert.deepEqual(result.compress, {
       thresholdTokens: 1000,
-      protectedTokens: 200,
       maxRanges: 3,
     });
     assert.equal(warnCount("compress_config_invalid"), 0);
@@ -1140,7 +1193,7 @@ describe("C11-06 unknown keys ignored", () => {
         some_other_field: 42,
       },
     });
-    assert.equal(result.protectedMessages, undefined);
+    assert.equal(result.activeMessages, undefined);
     assert.equal(result.releasedPercent, undefined);
     assert.equal(result.dedup, undefined);
     assert.equal(result.purgeErrors, undefined);
@@ -1157,6 +1210,139 @@ describe("C11-06 unknown keys ignored", () => {
 });
 
 // =============================================================================
+// Removed-key migration warns: `[zoo.context].protected_messages` and
+// `[zoo.context.compress].protected_tokens` are no longer read. Each
+// present removed key logs one structured migration warn naming its
+// replacement; no value is restored and no field is mapped.
+// =============================================================================
+
+describe("removed key migration warns", () => {
+  it("warns for the root old key and leaves activeMessages undefined", () => {
+    const result = parseContextConfig({
+      context: { protected_messages: 20 },
+    });
+    assert.equal(result.activeMessages, undefined);
+    assert.equal(result.activeTokens, undefined);
+
+    const warns = warnsOf("context_config_key_removed");
+    assert.equal(warns.length, 1);
+    assert.equal(warns[0].key, "protected_messages");
+    assert.equal(warns[0].from, "[zoo.context].protected_messages");
+    assert.equal(warns[0].to, "[zoo.context].active_messages");
+    // The removed key never invalidates the core group.
+    assert.equal(warnCount("context_config_invalid"), 0);
+  });
+
+  it("warns for the compress old key and leaves activeTokens undefined", () => {
+    const result = parseContextConfig({
+      context: {
+        compress: {
+          threshold_tokens: 1000,
+          max_ranges: 3,
+          protected_tokens: 20000,
+        },
+      },
+    });
+    assert.deepEqual(result.compress, {
+      thresholdTokens: 1000,
+      maxRanges: 3,
+    });
+    assert.equal(result.activeTokens, undefined);
+
+    const warns = warnsOf("context_config_key_removed");
+    assert.equal(warns.length, 1);
+    assert.equal(warns[0].key, "protected_tokens");
+    assert.equal(warns[0].from, "[zoo.context.compress].protected_tokens");
+    assert.equal(warns[0].to, "[zoo.context].active_tokens");
+    assert.equal(warnCount("compress_config_invalid"), 0);
+  });
+
+  it("uses the new keys when old and new are both present", () => {
+    const result = parseContextConfig({
+      context: {
+        protected_messages: 5,
+        active_messages: 20,
+        active_tokens: 20000,
+        compress: {
+          threshold_tokens: 1000,
+          max_ranges: 3,
+          protected_tokens: 1,
+        },
+      },
+    });
+    assert.equal(result.activeMessages, 20);
+    assert.equal(result.activeTokens, 20000);
+
+    const warns = warnsOf("context_config_key_removed");
+    assert.equal(warns.length, 2);
+    const keys = warns.map((w) => w.key);
+    assert.deepEqual(keys, ["protected_messages", "protected_tokens"]);
+    assert.equal(warnCount("context_config_invalid"), 0);
+    assert.equal(warnCount("compress_config_invalid"), 0);
+  });
+
+  it("reports both removed keys with a complete guidance pair", () => {
+    const result = parseContextConfig({
+      context: {
+        protected_messages: 20,
+        compress: {
+          threshold_tokens: 1000,
+          max_ranges: 3,
+          protected_tokens: 20000,
+        },
+      },
+    });
+    assert.equal(result.activeMessages, undefined);
+    assert.equal(result.activeTokens, undefined);
+
+    const warns = warnsOf("context_config_key_removed");
+    assert.equal(warns.length, 2);
+    assert.deepEqual(
+      warns.map((w) => [w.key, w.from, w.to]),
+      [
+        [
+          "protected_messages",
+          "[zoo.context].protected_messages",
+          "[zoo.context].active_messages",
+        ],
+        [
+          "protected_tokens",
+          "[zoo.context.compress].protected_tokens",
+          "[zoo.context].active_tokens",
+        ],
+      ],
+    );
+  });
+
+  it("keeps the new key fail-closed while the old key still warns", () => {
+    const result = parseContextConfig({
+      context: { protected_messages: 5, active_messages: "abc" },
+    });
+    assert.equal(result.activeMessages, undefined);
+    assert.equal(result.activeTokens, undefined);
+    assert.equal(result.releasedPercent, undefined);
+
+    assert.equal(warnCount("context_config_key_removed"), 1);
+    const invalid = warnsOf("context_config_invalid");
+    assert.equal(invalid.length, 1);
+    assert.equal(invalid[0].key, "active_messages");
+  });
+
+  it("logs no migration warn when only the new keys are present", () => {
+    const result = parseContextConfig({
+      context: {
+        active_messages: 20,
+        active_tokens: 20000,
+        compress: { threshold_tokens: 1000, max_ranges: 3 },
+      },
+    });
+    assert.equal(result.activeMessages, 20);
+    assert.equal(result.activeTokens, 20000);
+    assert.equal(warnCount("context_config_key_removed"), 0);
+  });
+});
+
+// =============================================================================
 // Smoke: fully valid config produces all sub-sections with no warns.
 // =============================================================================
 
@@ -1164,7 +1350,7 @@ describe("parseContextConfig — fully valid config", () => {
   it("returns all sub-sections and no warns for a complete config", () => {
     const result = parseContextConfig({
       context: {
-        protected_messages: 3,
+        active_messages: 3,
         released_percent: 10,
         dedup: {
           min_messages: 20,
@@ -1185,13 +1371,12 @@ describe("parseContextConfig — fully valid config", () => {
         },
         compress: {
           threshold_tokens: 1000,
-          protected_tokens: 200,
           max_ranges: 3,
         },
         decompress: { max_fill_percent: 50 },
       },
     });
-    assert.equal(result.protectedMessages, 3);
+    assert.equal(result.activeMessages, 3);
     assert.equal(result.releasedPercent, 10);
     assert.deepEqual(result.dedup, {
       minMessages: 20,
@@ -1212,7 +1397,6 @@ describe("parseContextConfig — fully valid config", () => {
     });
     assert.deepEqual(result.compress, {
       thresholdTokens: 1000,
-      protectedTokens: 200,
       maxRanges: 3,
     });
     assert.deepEqual(result.decompress, { maxFillPercent: 50 });

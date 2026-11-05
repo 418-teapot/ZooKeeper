@@ -22,13 +22,13 @@ const SID = "golden-pi-g-tool-01";
 /** Full tool config with a relaxed protection window (boundary ~38). */
 function toolConfig() {
   return {
-    protectedMessages: 5,
+    activeMessages: 5,
+    activeTokens: 20000,
     releasedPercent: 10,
     dedup: {},
     purgeErrors: {},
     compress: {
       thresholdTokens: 2000,
-      protectedTokens: 20000,
       maxRanges: 8,
     },
     decompress: { maxFillPercent: 90 },
@@ -148,7 +148,7 @@ export const G_TOOL_01: Scenario = {
       },
       config: {
         compress: undefined,
-        protectedMessages: 5,
+        activeMessages: 5,
         dedup: {},
         purgeErrors: {},
       },
@@ -159,7 +159,7 @@ export const G_TOOL_01: Scenario = {
       action: { kind: "decompress-tool", blockId: "b1" },
       config: {
         decompress: undefined,
-        protectedMessages: 5,
+        activeMessages: 5,
         dedup: {},
         purgeErrors: {},
       },

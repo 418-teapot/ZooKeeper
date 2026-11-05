@@ -23,6 +23,7 @@ import {
 } from "../session/resources.js";
 import { PRUNED_TOOL_OUTPUT_REPLACEMENT } from "./message-parts.js";
 import { contextPruningTransformHandler } from "./pipeline.js";
+import { buildProtectionMap } from "./protection-map.js";
 import { type ContextRuntime, createContextRuntime } from "./runtime.js";
 import { markKey } from "./state.js";
 import { createStateStore, type StateStore } from "./store.js";
@@ -73,11 +74,12 @@ function transcript(sessionID: string): FixtureMessage[] {
 
 /** The transform config of these tests: release everything pending. */
 const CONFIG: ContextPruningConfig = {
-  protectedMessages: 1,
+  activeMessages: 1,
+  activeTokens: 0,
   releasedPercent: 0,
   dedup: {},
   purgeErrors: {},
-  compress: { protectedTokens: 0, thresholdTokens: 0, maxRanges: 8 },
+  compress: { thresholdTokens: 0, maxRanges: 8 },
 };
 
 /** The adapter the transform and the tool share. */
@@ -168,13 +170,15 @@ describe("one session, overlapping entries", () => {
     seedPendingMark(runtime, sessionID, 1);
     // The published view is the address space the tool resolves its refs
     // in; publish the same transcript both entries operate on.
+    const published = adapter.history(messages);
     runtime.publishRoundView(sessionID, {
-      projection: adapter.history(messages),
+      projection: published,
       numbered: [
         { n: 1, item: { type: "original", start: 0, end: 1 } },
         { n: 2, item: { type: "original", start: 1, end: 2 } },
         { n: 3, item: { type: "original", start: 2, end: 3 } },
       ],
+      protection: buildProtectionMap(published.messages, 1, 0),
     });
     const tool = createCompressTool(
       {

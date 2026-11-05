@@ -65,15 +65,21 @@ export const PLAN_OPS = ["init", "done", "done", "done", "view"] as const;
 /** First user turn of the context scenarios (anchored, never compressed). */
 export const CONTEXT_ANCHOR_PROMPT = "E2E-CTX-ANCHOR: 上下文基线开场";
 
-/** Prompt prefix of a compressible target segment (`-1`, `-2`). */
+/** Prompt prefix of the compressible target turn. */
 export const CONTEXT_TARGET_PROMPT = "E2E-CTX-TARGET";
 
+/** Number of target turns pushed before the filler tail. */
+export const CONTEXT_TARGET_TURNS = 1;
+
 /**
- * Unique tags inside the target segments.  The assertions search the model
+ * Unique tags inside the target work reply.  The assertions search the model
  * request for them, so "covered" means the real pipeline removed the text,
  * not that the harness stopped asking for it.
  */
 export const CONTEXT_TARGET_TAGS = ["CTX-TARGET-1", "CTX-TARGET-2"] as const;
+
+/** CJK characters in the target work reply; clears the phantom threshold. */
+export const CONTEXT_TARGET_REPLY_CHARS = 4500;
 
 /** Prompt prefix of a history filler turn (` 1`, ` 2`, ...). */
 export const CONTEXT_FILL_PROMPT = "E2E-CTX-FILL";
@@ -82,33 +88,32 @@ export const CONTEXT_FILL_PROMPT = "E2E-CTX-FILL";
 export const CONTEXT_FILL_TURNS = 13;
 
 /**
- * CJK filler characters per target / filler message.  The estimator counts
- * CJK at 1.5 characters per token, so this is about 2000 tokens per message:
- * the target range clears `threshold_tokens` (2000) and the filler tail
- * clears the `protected_tokens` budget (20000).
+ * CJK filler characters per filler message.  The estimator counts CJK at
+ * 1.5 characters per token, so this is about 2000 tokens per message: the
+ * filler tail clears the `active_tokens` budget (20000).
  */
 export const CONTEXT_SEGMENT_CHARS = 3000;
 
 /** Prompt that makes the model call the real `compress` tool. */
-export const CONTEXT_COMPRESS_PROMPT = "E2E-CTX-COMPRESS: 压缩两条目标指令";
+export const CONTEXT_COMPRESS_PROMPT = "E2E-CTX-COMPRESS: 压缩目标工作回复";
 
 /** Prompt that makes the model call the real `decompress` tool. */
 export const CONTEXT_DECOMPRESS_PROMPT = "E2E-CTX-DECOMPRESS: 恢复刚压缩的块";
 
 /** Title the model writes for the block the target range becomes. */
-export const CONTEXT_BLOCK_TITLE = "目标段：两条指令与回复";
+export const CONTEXT_BLOCK_TITLE = "目标段：助手工作回复";
 
 /** Sentinel the model writes into the summary body. */
 export const CONTEXT_SUMMARY_TAG = "TARGET-SUMMARY-BODY";
 
 /** Summary body the model writes; the folded view must carry it verbatim. */
-export const CONTEXT_SUMMARY_BODY = `${CONTEXT_SUMMARY_TAG}: 两条目标指令及其回复已折叠为摘要。`;
+export const CONTEXT_SUMMARY_BODY = `${CONTEXT_SUMMARY_TAG}: 目标工作回复已折叠为摘要。`;
 
 /** Id of the block the target range becomes (first block of the session). */
 export const CONTEXT_BLOCK_ID = "b1";
 
-/** Messages the target range covers: two prompts, each with its reply. */
-export const CONTEXT_BLOCK_MESSAGES = 4;
+/** Messages the target range covers: the single target work reply. */
+export const CONTEXT_BLOCK_MESSAGES = 1;
 
 /**
  * Block label the folded view must carry, in the product's own format

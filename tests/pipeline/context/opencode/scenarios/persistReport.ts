@@ -25,7 +25,7 @@ export const G_PERSIST_01: Scenario = {
   id: "G-PERSIST-01",
   sessionID: SID,
   config: {
-    protectedMessages: 0,
+    activeMessages: 0,
     releasedPercent: 0,
     dedup: { minMessages: 20, thresholdContext: 100000 },
     purgeErrors: {},
@@ -121,8 +121,12 @@ export const G_REPORT_01: Scenario = {
   id: "G-REPORT-01",
   sessionID: RPT_SID,
   config: {
-    protectedMessages: 0,
+    // Both protection inputs size the round's map; here both windows are
+    // empty, so the report overlays every effective mark.
+    activeMessages: 0,
+    activeTokens: 0,
     releasedPercent: 0,
+    compress: {},
     dedup: { minMessages: 20, thresholdContext: 100000 },
     purgeErrors: {},
   },

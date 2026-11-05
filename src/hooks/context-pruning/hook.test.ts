@@ -217,6 +217,8 @@ const TEST_SESSION_IDS = [
   "sess-persist-roundtrip",
   "sess-release-notify",
   "sess-release-below",
+  "sess-protection-tail",
+  "sess-protection-release",
   "sess-log-effective",
   "sess-release-forced",
   "sess-nudge-basic",
@@ -316,6 +318,19 @@ const FAILED_INPUT = "very long command ".repeat(50);
 
 /** Model limit used to open the producer context gates in flow runs. */
 const MODEL_LIMIT = 1_000_000;
+
+/**
+ * Protection inputs with both windows empty.
+ *
+ * The release phase fails closed without the round's protection map, so
+ * every fixture that expects marks to be applied supplies these keys; the
+ * user instructions stay protected through the map.
+ */
+const NO_PROTECTION = {
+  activeMessages: 0,
+  activeTokens: 0,
+  compress: {},
+};
 
 // ---------------------------------------------------------------------------
 // Block staleness — span-hash invalidation keeps the record
@@ -522,7 +537,7 @@ describe("retained terminal blocks do not force every release", () => {
   it("arms the bypass for the expiry round only", async () => {
     // releasedPercent is unset, so the percentage gate stays closed and a
     // release can only come from the view-change bypass.
-    const config = { dedup: {}, purgeErrors: {} };
+    const config = { ...NO_PROTECTION, dedup: {}, purgeErrors: {} };
     const state = stateOf(sessionID);
     state.blocks.set(1, {
       start: 0,
@@ -570,7 +585,7 @@ describe("retained terminal blocks do not force every release", () => {
   });
 
   it("treats a terminal record in the map as steady state every round", async () => {
-    const config = { dedup: {}, purgeErrors: {} };
+    const config = { ...NO_PROTECTION, dedup: {}, purgeErrors: {} };
     const state = stateOf(sessionID);
     // A block that stopped folding but stayed in the map (restored or
     // swallowed by a wider block) — exactly what retention now leaves
@@ -693,7 +708,8 @@ describe("robustness", () => {
     const result = (await transform(adapter, messages, {
       dedup: { minMessages: 20, thresholdContext: 100000 },
       purgeErrors: { minMessages: 20, thresholdContext: 100000 },
-      compress: { protectedTokens: 0, thresholdTokens: 0 },
+      activeTokens: 0,
+      compress: { thresholdTokens: 0 },
     })) as TestMessageEntry[];
     assert.equal(result.length, 1, "no synthetic message is appended");
     assert.ok(
@@ -791,6 +807,7 @@ describe("persistence round-trip via the shared store", () => {
     // Turn 1: effective mark applied + block folded + state saved.
     const turnOneMessages = buildTurn();
     await transform(adapter, turnOneMessages, {
+      ...NO_PROTECTION,
       dedup: {},
       purgeErrors: {},
     });
@@ -810,6 +827,7 @@ describe("persistence round-trip via the shared store", () => {
     // still fold the block and apply the effective mark.
     const turnTwoMessages = buildTurn();
     await transform(adapter, turnTwoMessages, {
+      ...NO_PROTECTION,
       dedup: {},
       purgeErrors: {},
     });
@@ -852,10 +870,7 @@ describe("release notification", () => {
     const notify = (text: string) => {
       notifyCalls.push(text);
     };
-    const config = {
-      protectedMessages: 0,
-      releasedPercent: 0,
-    };
+    const config = { ...NO_PROTECTION, releasedPercent: 0 };
 
     // Seed one pending mark; the release phase of the first turn flips
     // it under the open percentage gate and notifies exactly once.
@@ -917,7 +932,7 @@ describe("release notification", () => {
       effective: false,
       markedAt: 1000,
     });
-    const config = { protectedMessages: 0 };
+    const config = { ...NO_PROTECTION };
     for (let turn = 0; turn < 2; turn++) {
       const notifyCalls: string[] = [];
       await transform(adapter, buildTurn(), config, (t) => notifyCalls.push(t));
@@ -926,6 +941,116 @@ describe("release notification", () => {
     const marks = [...state.marks.values()];
     assert.equal(marks.length, 1, "the mark persists");
     assert.equal(marks[0]?.effective, false, "never released");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Protection at effect time
+// ---------------------------------------------------------------------------
+
+describe("protection at effect time", () => {
+  /** One user turn plus one tool call; the mark anchors on the output. */
+  function buildTurn(sessionID: string): TestMessageEntry[] {
+    return [
+      msg("user", "u1", [textPart("do it")], sessionID),
+      msg("assistant", "a1", [toolPart(LONG_OUTPUT)], undefined, {
+        input: 800000,
+        output: 200,
+      }),
+    ];
+  }
+
+  /** Seed one pending output mark on the tool call's output region. */
+  function seedPendingMark(sessionID: string): void {
+    stateOf(sessionID).marks.set(markKey(1, 1), {
+      anchorOrdinal: 1,
+      regionIndex: 1,
+      content: LONG_OUTPUT,
+      contentTokens: 400,
+      effective: false,
+      markedAt: 1000,
+    });
+  }
+
+  /** The tool-output text the host sees in a rendered turn. */
+  function toolOutput(messages: TestMessageEntry[]): unknown {
+    return (messages[1].parts?.[0] as { state?: { output?: unknown } })?.state
+      ?.output;
+  }
+
+  it("keeps a pending mark in the active tail pending and unapplied", async () => {
+    const sessionID = "sess-protection-tail";
+    setLimit(sessionID, MODEL_LIMIT, "test-model");
+    seedPendingMark(sessionID);
+    const notifyCalls: string[] = [];
+    // Two protected messages cover the whole view, so the mark is inside
+    // the active tail: no flip, no placeholder, no notice.
+    const config = {
+      activeMessages: 2,
+      releasedPercent: 0,
+      activeTokens: 0,
+      compress: {},
+    };
+    const messages = buildTurn(sessionID);
+    await transform(adapter, messages, config, (t) => notifyCalls.push(t));
+
+    assert.equal(notifyCalls.length, 0, "no release notice");
+    assert.equal(
+      stateOf(sessionID).marks.get(markKey(1, 1))?.effective,
+      false,
+      "the mark stays pending",
+    );
+    assert.ok(
+      !String(toolOutput(messages)).includes(PRUNED_TOOL_OUTPUT_REPLACEMENT),
+      "the output keeps its text",
+    );
+  });
+
+  it("re-applies an effective mark once its ordinal leaves the active tail", async () => {
+    const sessionID = "sess-protection-release";
+    setLimit(sessionID, MODEL_LIMIT, "test-model");
+    const state = stateOf(sessionID);
+    state.marks.set(markKey(1, 1), {
+      anchorOrdinal: 1,
+      regionIndex: 1,
+      content: LONG_OUTPUT,
+      contentTokens: 400,
+      effective: true,
+      markedAt: 1000,
+    });
+
+    // Round 1: the tail covers the mark — the record is retained, the
+    // output keeps its text.
+    const activeMessages = buildTurn(sessionID);
+    await transform(adapter, activeMessages, {
+      activeMessages: 2,
+      activeTokens: 0,
+      compress: {},
+    });
+    assert.ok(
+      !String(toolOutput(activeMessages)).includes(
+        PRUNED_TOOL_OUTPUT_REPLACEMENT,
+      ),
+      "a protected effective mark writes no placeholder",
+    );
+    assert.equal(
+      stateOf(sessionID).marks.get(markKey(1, 1))?.effective,
+      true,
+      "the record is retained",
+    );
+
+    // Round 2: an empty window leaves the mark unprotected — the
+    // placeholder lands.
+    const unprotected = buildTurn(sessionID);
+    await transform(adapter, unprotected, {
+      activeMessages: 0,
+      activeTokens: 0,
+      compress: {},
+    });
+    assert.ok(
+      String(toolOutput(unprotected)).includes(PRUNED_TOOL_OUTPUT_REPLACEMENT),
+      "the placeholder lands once the tail moved",
+    );
   });
 });
 
@@ -1010,8 +1135,11 @@ describe("log field sets", () => {
       }),
     ];
     const notifyCalls: string[] = [];
-    await transform(adapter, messages, { dedup: {}, purgeErrors: {} }, (t) =>
-      notifyCalls.push(t),
+    await transform(
+      adapter,
+      messages,
+      { ...NO_PROTECTION, dedup: {}, purgeErrors: {} },
+      (t) => notifyCalls.push(t),
     );
 
     const entry = _getBufferForTesting().find(
@@ -1047,11 +1175,12 @@ describe("context-nudge injection", () => {
   };
 
   /** Token/threshold protections disabled; only message count protects. */
-  function nudgeTransformConfig(protectedMessages: number) {
+  function nudgeTransformConfig(activeMessages: number) {
     return {
-      protectedMessages,
+      activeMessages,
       nudge: NUDGE_CONFIG,
-      compress: { protectedTokens: 0, thresholdTokens: 0 },
+      activeTokens: 0,
+      compress: { thresholdTokens: 0 },
       dedup: {},
       purgeErrors: {},
     };
@@ -1114,8 +1243,8 @@ describe("context-nudge injection", () => {
       text.includes("**CONTEXT GROWING — 150000 (75% of 200000 window)**"),
       "header filled from the gentle slots",
     );
-    // protectedMessages=2 + first-user exclusion → window is a1 only,
-    // whose per-round line ref is m2 (dense line numbering).
+    // activeMessages=2 + the instruction before it → the window is
+    // a1 only, whose per-round line ref is m2 (dense line numbering).
     assert.ok(
       text.includes("Compressible window: m2–m2"),
       "window refs placed in text",
@@ -1384,8 +1513,9 @@ describe("context-nudge injection", () => {
     const sessionID = "sess-nudge-no-section";
     setLimit(sessionID, NUDGE_LIMIT, "test-model");
     const noNudgeConfig = {
-      protectedMessages: 2,
-      compress: { protectedTokens: 0, thresholdTokens: 0 },
+      activeMessages: 2,
+      activeTokens: 0,
+      compress: { thresholdTokens: 0 },
       dedup: {},
       purgeErrors: {},
     };
@@ -1421,7 +1551,7 @@ describe("context-nudge injection", () => {
     const sessionID3 = "sess-nudge-no-window";
     setLimit(sessionID3, NUDGE_LIMIT, "test-model");
     const noWindowConfig = {
-      protectedMessages: 2,
+      activeMessages: 2,
       nudge: NUDGE_CONFIG,
       dedup: {},
       purgeErrors: {},
@@ -1537,10 +1667,11 @@ describe("manual compress trigger", () => {
     ];
   }
 
-  function manualConfig(protectedMessages: number) {
+  function manualConfig(activeMessages: number) {
     return {
-      protectedMessages,
-      compress: { protectedTokens: 0, thresholdTokens: 0 },
+      activeMessages,
+      activeTokens: 0,
+      compress: { thresholdTokens: 0 },
       dedup: {},
       purgeErrors: {},
     };
@@ -1564,7 +1695,8 @@ describe("manual compress trigger", () => {
       text.startsWith("请立即使用 compress 工具压缩历史上下文"),
       "user-instruction tone opener",
     );
-    // protectedMessages=2 + first-user exclusion → window is a1 only (m2).
+    // activeMessages=2 + the instruction before it → window is a1
+    // only (m2).
     assert.ok(text.includes("可压缩窗口：m2–m2"), "window payload attached");
     // One-shot: the flag is cleared after injection.
     assert.equal(
@@ -1581,6 +1713,42 @@ describe("manual compress trigger", () => {
     assert.equal(entry.startRef, "m2");
     assert.equal(entry.endRef, "m2");
     assert.equal(typeof entry.reclaimTokens, "number");
+  });
+
+  it("clears a stale flag without injecting when active_messages is missing", async () => {
+    const sessionID = "sess-manual-no-active-messages";
+    const state = stateOf(sessionID);
+    state.pendingManualTrigger = true;
+
+    const messages = manualMessages(sessionID);
+    await transform(
+      adapter,
+      messages,
+      {
+        activeTokens: 0,
+        compress: { thresholdTokens: 0 },
+        dedup: {},
+        purgeErrors: {},
+      },
+      undefined,
+      true,
+    );
+
+    assert.equal(
+      messages.length,
+      4,
+      "no injection without the shared active keys",
+    );
+    assert.equal(
+      stateOf(sessionID).pendingManualTrigger,
+      false,
+      "stale flag cleared",
+    );
+    const entries = _getBufferForTesting();
+    assert.ok(
+      entries.some((e) => e.event === "manual_compress_skipped"),
+      "manual_compress_skipped warn event",
+    );
   });
 
   it("clears a stale flag without injecting when the compress tool is absent", async () => {
@@ -1677,8 +1845,13 @@ describe("config gating combinations", () => {
 
   it("skips dedup entirely when thresholdContext is not configured", async () => {
     const sessionID = "sess-dedup-gated";
+    setLimit(sessionID, MODEL_LIMIT, "test-model");
+    // Both active keys keep the round's protection map, so the producer
+    // gate is reached; only `threshold_context` is missing.
     await transform(adapter, dedupTranscript(sessionID), {
-      protectedMessages: 0,
+      activeMessages: 0,
+      activeTokens: 0,
+      dedup: { minMessages: 20 },
     });
     const state = stateOf(sessionID);
     assert.equal(state.marks.size, 0, "no marks without the dedup gate");
@@ -1693,8 +1866,9 @@ describe("config gating combinations", () => {
     const sessionID = "sess-dedup-no-min-messages";
     setLimit(sessionID, MODEL_LIMIT, "test-model");
     await transform(adapter, dedupTranscript(sessionID), {
-      protectedMessages: 0,
-      compress: { protectedTokens: 0, thresholdTokens: 0 },
+      activeMessages: 0,
+      activeTokens: 0,
+      compress: { thresholdTokens: 0 },
       dedup: { thresholdContext: 100000 },
       purgeErrors: {},
     });
@@ -1710,7 +1884,7 @@ describe("config gating combinations", () => {
     const sessionID = "sess-dedup-no-compress";
     setLimit(sessionID, MODEL_LIMIT, "test-model");
     await transform(adapter, dedupTranscript(sessionID), {
-      protectedMessages: 0,
+      activeMessages: 0,
       dedup: { minMessages: 20, thresholdContext: 100000 },
       purgeErrors: {},
     });
@@ -1728,8 +1902,9 @@ describe("config gating combinations", () => {
 
     // The compress section supplies the token-protection layer.
     const config = {
-      protectedMessages: 0,
-      compress: { protectedTokens: 0, thresholdTokens: 0 },
+      activeMessages: 0,
+      activeTokens: 0,
+      compress: { thresholdTokens: 0 },
       dedup: { minMessages: 20, thresholdContext: 100000 },
       purgeErrors: {},
     };
@@ -1759,9 +1934,10 @@ describe("config gating combinations", () => {
     const sessionID = "sess-dedup-pending";
     setLimit(sessionID, MODEL_LIMIT, "test-model");
     const config = {
-      protectedMessages: 0,
+      activeMessages: 0,
       releasedPercent: 0,
-      compress: { protectedTokens: 0, thresholdTokens: 0 },
+      activeTokens: 0,
+      compress: { thresholdTokens: 0 },
       dedup: { minMessages: 20, thresholdContext: 100000 },
       purgeErrors: {},
     };
@@ -1782,8 +1958,9 @@ describe("config gating combinations", () => {
     const control = "sess-purge-control";
     setLimit(control, MODEL_LIMIT, "test-model");
     await transform(adapter, purgeErrorsTranscript(control), {
-      protectedMessages: 0,
-      compress: { protectedTokens: 0, thresholdTokens: 0 },
+      activeMessages: 0,
+      activeTokens: 0,
+      compress: { thresholdTokens: 0 },
       dedup: {},
       purgeErrors: { minMessages: 20, thresholdContext: 100000 },
     });
@@ -1796,8 +1973,9 @@ describe("config gating combinations", () => {
     const sessionID = "sess-purge-no-min-messages";
     setLimit(sessionID, MODEL_LIMIT, "test-model");
     await transform(adapter, purgeErrorsTranscript(sessionID), {
-      protectedMessages: 0,
-      compress: { protectedTokens: 0, thresholdTokens: 0 },
+      activeMessages: 0,
+      activeTokens: 0,
+      compress: { thresholdTokens: 0 },
       dedup: {},
       purgeErrors: { thresholdContext: 100000 },
     });
@@ -1817,8 +1995,9 @@ describe("config gating combinations", () => {
     const control = "sess-dedup-model-control";
     setLimit(control, MODEL_LIMIT, "test-model");
     await transform(adapter, dedupTranscript(control), {
-      protectedMessages: 0,
-      compress: { protectedTokens: 0, thresholdTokens: 0 },
+      activeMessages: 0,
+      activeTokens: 0,
+      compress: { thresholdTokens: 0 },
       dedup: { minMessages: 20, thresholdContext: 100000 },
       purgeErrors: {},
     });
@@ -1830,8 +2009,9 @@ describe("config gating combinations", () => {
 
     const sessionID = "sess-dedup-no-model-limit";
     await transform(adapter, dedupTranscript(sessionID), {
-      protectedMessages: 0,
-      compress: { protectedTokens: 0, thresholdTokens: 0 },
+      activeMessages: 0,
+      activeTokens: 0,
+      compress: { thresholdTokens: 0 },
       dedup: { minMessages: 20, thresholdContext: 100000 },
       purgeErrors: {},
     });
@@ -1970,7 +2150,7 @@ describe("an uncommitted round leaves nothing behind", () => {
   }
 
   /** The config that opens the release gate for the fixture turn. */
-  const CONFIG = { protectedMessages: 0, releasedPercent: 0 };
+  const CONFIG = { activeMessages: 0, releasedPercent: 0 };
 
   /**
    * Assert the round left no trace.
@@ -2132,8 +2312,10 @@ describe("pure adapter pipeline support", () => {
     history(messages) {
       return project(
         messages.map(
-          (m): HostMessage => ({
-            role: "user",
+          (m, ordinal): HostMessage => ({
+            // Alternating roles: the first message is the user instruction
+            // (protected), the assistant work after it is not.
+            role: ordinal % 2 === 0 ? "user" : "assistant",
             hidden: false,
             regions: [
               {
@@ -2198,7 +2380,7 @@ describe("pure adapter pipeline support", () => {
       permitFor(sessionID),
       mockAdapter as HostAdapter<unknown>,
       original,
-      { dedup: {}, purgeErrors: {} },
+      { ...NO_PROTECTION, dedup: {}, purgeErrors: {} },
     )) as MockMessage[];
 
     assert.notEqual(result, original, "handler returned a new array");

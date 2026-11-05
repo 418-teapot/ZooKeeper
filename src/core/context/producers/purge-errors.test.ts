@@ -10,7 +10,7 @@
  *    calls (idempotent re-runs), and honours the message-count
  *    protection window.
  * 2. **Lens-specific semantics** — explicit self-gating parameters
- *    (minMessages, thresholdContext), the protected-window fail-safe, the
+ *    (minMessages, thresholdContext), the protection map fail-closed, the
  *    folded/
  *    pruned ordinal predicate, the call-level idempotency across both
  *    region keys, and the canon-invariance linkage (acceptance:
@@ -37,6 +37,7 @@ import {
   netReclaimTokens,
 } from "../measure.js";
 import { PRUNED_TOOL_ERROR_INPUT_REPLACEMENT } from "../message-parts.js";
+import { buildProtectionMap, freezeProtectionMap } from "../protection-map.js";
 import { markKey, type SessionState } from "../state.js";
 import {
   type PurgeErrorsProducerOptions,
@@ -142,7 +143,7 @@ function purgeOptions(
     minMessages: 0,
     contextLimit: MODEL_LIMIT,
     thresholdContext: 0,
-    protectedStartOrdinal: messages.length,
+    protection: buildProtectionMap(messages, 0, 0),
     ...overrides,
   };
 }
@@ -230,24 +231,43 @@ describe("purge semantics", () => {
       lensMsg([errCall("bash", "call-c".repeat(20), "out-c")]),
       lensMsg([errCall("bash", "call-d".repeat(20), "out-d")]),
     ];
-    const { keys, tokens } = runOpen(lens, { protectedStartOrdinal: 2 });
+    const { keys, tokens } = runOpen(lens, {
+      protection: buildProtectionMap(lens, 2, 0),
+    });
     assert.deepEqual(keys, [markKey(0, 0), markKey(1, 0)]);
     assert.equal(tokens, 24);
   });
 
   it("protects all messages when the window covers the whole transcript", () => {
     const lens = [lensMsg([errCall()]), lensMsg([errCall()])];
-    assert.deepEqual(runOpen(lens, { protectedStartOrdinal: 0 }), {
-      keys: [],
-      tokens: 0,
-    });
+    const protection = buildProtectionMap(lens, lens.length, 0);
+    assert.deepEqual(runOpen(lens, { protection }), { keys: [], tokens: 0 });
   });
 
   it("an empty protection window disables the protection", () => {
     const lens = [lensMsg([errCall()]), lensMsg([errCall()])];
-    const { keys, tokens } = runOpen(lens, { protectedStartOrdinal: 2 });
+    const { keys, tokens } = runOpen(lens, {
+      protection: buildProtectionMap(lens, 0, 0),
+    });
     assert.deepEqual(keys, [markKey(0, 0), markKey(1, 0)]);
     assert.equal(tokens, 2 * INPUT_MARK_TOKENS);
+  });
+
+  it("protects a tool region anchored at a user instruction ordinal", () => {
+    // The map protects instruction ordinals outside the active tail too,
+    // so the middle failed call is skipped.
+    const lens = [
+      lensMsg([errCall()]),
+      lensMsg([errCall()]),
+      lensMsg([errCall()]),
+    ];
+    const protection = freezeProtectionMap({
+      activeStart: lens.length,
+      messageCount: lens.length,
+      instructions: [1],
+    });
+    const { keys } = runOpen(lens, { protection });
+    assert.deepEqual(keys, [markKey(0, 0), markKey(2, 0)]);
   });
 
   it("skips tools in the protectedTools list", () => {
@@ -321,7 +341,7 @@ describe("purge semantics", () => {
 // ===========================================================================
 
 describe("lens-specific gating semantics", () => {
-  it("fail-safe: undefined protectedStartOrdinal skips with zero side effects", () => {
+  it("fail-closed: an absent protection map skips with zero side effects", () => {
     const state = makeState();
     const lens = [lensMsg([errCall()])];
     const result = runPurgeErrors(state, projectMessages(lens), {
@@ -342,7 +362,7 @@ describe("lens-specific gating semantics", () => {
       minMessages: 20,
       contextLimit: MODEL_LIMIT,
       thresholdContext: 0,
-      protectedStartOrdinal: atTwenty.length,
+      protection: buildProtectionMap(atTwenty, 0, 0),
     });
     assert.equal(r20.created, 0);
     assert.equal(state20.marks.size, 0);
@@ -356,7 +376,7 @@ describe("lens-specific gating semantics", () => {
       minMessages: 20,
       contextLimit: MODEL_LIMIT,
       thresholdContext: 0,
-      protectedStartOrdinal: above.length,
+      protection: buildProtectionMap(above, 0, 0),
     });
     assert.equal(r21.created, 21); // one input mark per error call
   });
@@ -370,7 +390,7 @@ describe("lens-specific gating semantics", () => {
       minMessages: 0,
       contextLimit: MODEL_LIMIT,
       thresholdContext: 0.5,
-      protectedStartOrdinal: lens.length,
+      protection: buildProtectionMap(lens, 0, 0),
     });
     assert.equal(rBelow.created, 0);
 
@@ -380,7 +400,7 @@ describe("lens-specific gating semantics", () => {
       minMessages: 0,
       contextLimit: total,
       thresholdContext: 1,
-      protectedStartOrdinal: lens.length,
+      protection: buildProtectionMap(lens, 0, 0),
     });
     assert.equal(rAt.created, 1);
 
@@ -389,7 +409,7 @@ describe("lens-specific gating semantics", () => {
       minMessages: 0,
       contextLimit: 1,
       thresholdContext: 0.5,
-      protectedStartOrdinal: lens.length,
+      protection: buildProtectionMap(lens, 0, 0),
     });
     assert.equal(rAbove.created, 1);
   });
@@ -405,7 +425,7 @@ describe("lens-specific gating semantics", () => {
       minMessages: 0,
       contextLimit: 2 * total,
       thresholdContext: 0.5,
-      protectedStartOrdinal: lens.length,
+      protection: buildProtectionMap(lens, 0, 0),
     });
     assert.equal(rAt.created, 1);
 
@@ -415,7 +435,7 @@ describe("lens-specific gating semantics", () => {
       minMessages: 0,
       contextLimit: 3 * total,
       thresholdContext: 0.5,
-      protectedStartOrdinal: lens.length,
+      protection: buildProtectionMap(lens, 0, 0),
     });
     assert.equal(rBelow.created, 0);
   });
@@ -426,7 +446,7 @@ describe("lens-specific gating semantics", () => {
     const result = runPurgeErrors(state, projectMessages(lens), {
       minMessages: 0,
       thresholdContext: 0.5,
-      protectedStartOrdinal: lens.length,
+      protection: buildProtectionMap(lens, 0, 0),
     });
     assert.equal(result.created, 0);
     assert.equal(state.marks.size, 0);
@@ -439,7 +459,7 @@ describe("lens-specific gating semantics", () => {
       minMessages: 0,
       contextLimit: MODEL_LIMIT,
       thresholdContext: 0,
-      protectedStartOrdinal: lens.length,
+      protection: buildProtectionMap(lens, 0, 0),
     });
     assert.equal(result.created, 1);
   });
@@ -457,7 +477,7 @@ describe("lens-specific skip and mark semantics", () => {
       minMessages: 0,
       contextLimit: MODEL_LIMIT,
       thresholdContext: 0,
-      protectedStartOrdinal: lens.length,
+      protection: buildProtectionMap(lens, 0, 0),
       prunedOrdinals: (ordinal) => ordinal === 0,
     });
     assert.equal(result.created, 1); // only the second call survives
@@ -478,7 +498,7 @@ describe("lens-specific skip and mark semantics", () => {
       minMessages: 0,
       contextLimit: MODEL_LIMIT,
       thresholdContext: 0,
-      protectedStartOrdinal: lens.length,
+      protection: buildProtectionMap(lens, 0, 0),
     });
     assert.equal(result.created, 2);
     assert.ok(state.marks.has(markKey(0, 0)));
@@ -501,7 +521,7 @@ describe("lens-specific skip and mark semantics", () => {
       minMessages: 0,
       contextLimit: MODEL_LIMIT,
       thresholdContext: 0,
-      protectedStartOrdinal: lens.length,
+      protection: buildProtectionMap(lens, 0, 0),
     });
     assert.equal(rA.created, 0);
     assert.equal(stateA.marks.size, 1);
@@ -521,7 +541,7 @@ describe("lens-specific skip and mark semantics", () => {
       minMessages: 0,
       contextLimit: MODEL_LIMIT,
       thresholdContext: 0,
-      protectedStartOrdinal: lens.length,
+      protection: buildProtectionMap(lens, 0, 0),
     });
     assert.equal(rB.created, 0);
     assert.equal(stateB.marks.size, 1);
@@ -534,7 +554,7 @@ describe("lens-specific skip and mark semantics", () => {
       minMessages: 0,
       contextLimit: MODEL_LIMIT,
       thresholdContext: 0,
-      protectedStartOrdinal: lens.length,
+      protection: buildProtectionMap(lens, 0, 0),
     });
     assert.equal(result.created, 1);
     assert.ok(state.marks.has(markKey(0, 0)));
@@ -548,7 +568,7 @@ describe("lens-specific skip and mark semantics", () => {
       minMessages: 0,
       contextLimit: MODEL_LIMIT,
       thresholdContext: 0,
-      protectedStartOrdinal: lens.length,
+      protection: buildProtectionMap(lens, 0, 0),
     });
 
     const inputMark = state.marks.get(markKey(0, 0));
@@ -570,7 +590,7 @@ describe("lens-specific skip and mark semantics", () => {
       minMessages: 0,
       contextLimit: MODEL_LIMIT,
       thresholdContext: 0,
-      protectedStartOrdinal: lens.length,
+      protection: buildProtectionMap(lens, 0, 0),
     });
     assert.equal(result.created, 1);
     const inputMark = state.marks.get(markKey(0, 0));
@@ -725,7 +745,7 @@ describe("canon invariance under purge-errors", () => {
       minMessages: 0,
       contextLimit: MODEL_LIMIT,
       thresholdContext: 0,
-      protectedStartOrdinal: lens.length,
+      protection: buildProtectionMap(lens, 0, 0),
     });
     assert.equal(result.created, 1);
 

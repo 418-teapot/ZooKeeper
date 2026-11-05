@@ -60,6 +60,7 @@ import {
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { after, afterEach, beforeEach, describe, it } from "node:test";
+import type { ContextPruningConfig } from "../../../core/config-types.js";
 import { computeSpanHash } from "../../../core/context/spanhash.js";
 import { textPart } from "../../../testkits/opencode-messages.js";
 import { history } from "../history.js";
@@ -164,7 +165,10 @@ interface SignalFrame {
  * that need a non-empty transcript pass a custom `client` and reset
  * the frame.
  */
-function captureDeps(client?: ContextControllerDeps["client"]): {
+function captureDeps(
+  client?: ContextControllerDeps["client"],
+  contextConfig: ContextPruningConfig = {},
+): {
   deps: ContextControllerDeps;
   frame: SignalFrame;
   reset(): void;
@@ -186,6 +190,7 @@ function captureDeps(client?: ContextControllerDeps["client"]): {
         messages: async () => ({ data: [] }),
       },
     },
+    contextConfig,
     state: {},
     setCache: (v) => {
       frame.cache.push(v);
@@ -475,19 +480,31 @@ describe("effective prune marks over storage", () => {
   const SID = "tui-ctrl-marks-001";
   const statePath = join(storageDir(), `${SID}.json`);
 
+  /**
+   * Both protection windows disabled: no ordinal is protected, so every
+   * effective mark is overlaid — the release phase writes there too.
+   */
+  const OPEN_PROTECTION: ContextPruningConfig = {
+    activeMessages: 0,
+    activeTokens: 0,
+    compress: {},
+  };
+
+  /** Two messages, the tool call at ordinal 1 with its output stored. */
+  const output = "z".repeat(400);
+  const messages = [
+    msg("user", "u0", [textPart("x")]),
+    msg("assistant", "a0", [toolPart("echo hi", output, "call_1")], {
+      input: 500,
+      output: 100,
+    }),
+  ];
+
   after(() => {
     if (existsSync(statePath)) rmSync(statePath);
   });
 
   it("counts a pruned tool output as input plus placeholder", async () => {
-    const output = "z".repeat(400);
-    const messages = [
-      msg("user", "u0", [textPart("x")]),
-      msg("assistant", "a0", [toolPart("echo hi", output, "call_1")], {
-        input: 500,
-        output: 100,
-      }),
-    ];
     writeStateFile(SID, {
       schema: 2,
       blocks: {},
@@ -504,7 +521,10 @@ describe("effective prune marks over storage", () => {
     });
 
     try {
-      const { deps, frame, reset } = captureDeps(fakeClient(messages));
+      const { deps, frame, reset } = captureDeps(
+        fakeClient(messages),
+        OPEN_PROTECTION,
+      );
       reset();
       const controller = createContextController(deps);
       await controller.compute(SID);
@@ -518,6 +538,73 @@ describe("effective prune marks over storage", () => {
       assert.equal(cat.total, 600);
       assert.deepEqual(frame.loaded, [true]);
       assert.deepEqual(frame.error, [false]);
+    } finally {
+      if (existsSync(statePath)) rmSync(statePath);
+    }
+  });
+
+  it("keeps a protected effective mark's stored output", async () => {
+    writeStateFile(SID, {
+      schema: 2,
+      blocks: {},
+      marks: {
+        "1:1": {
+          anchorOrdinal: 1,
+          regionIndex: 1,
+          content: output,
+          effective: true,
+          markedAt: 123,
+        },
+      },
+      lastUpdated: new Date().toISOString(),
+    });
+
+    try {
+      // The last message is the active tail: release writes no
+      // placeholder there, so the sidebar reports the stored output.
+      const { deps, frame, reset } = captureDeps(fakeClient(messages), {
+        activeMessages: 1,
+        activeTokens: 0,
+        compress: {},
+      });
+      reset();
+      const controller = createContextController(deps);
+      await controller.compute(SID);
+
+      const cat = frame.categories[0] as CategoryInfo;
+      // tool = input (2) + raw output (400 → 100) = 102
+      assert.equal(cat.tool, 102);
+    } finally {
+      if (existsSync(statePath)) rmSync(statePath);
+    }
+  });
+
+  it("overlays no effective mark without a protection map", async () => {
+    writeStateFile(SID, {
+      schema: 2,
+      blocks: {},
+      marks: {
+        "1:1": {
+          anchorOrdinal: 1,
+          regionIndex: 1,
+          content: output,
+          effective: true,
+          markedAt: 123,
+        },
+      },
+      lastUpdated: new Date().toISOString(),
+    });
+
+    try {
+      // No protection config → no map → fail-closed: the stored output
+      // stands, exactly as release writes nothing.
+      const { deps, frame, reset } = captureDeps(fakeClient(messages));
+      reset();
+      const controller = createContextController(deps);
+      await controller.compute(SID);
+
+      const cat = frame.categories[0] as CategoryInfo;
+      assert.equal(cat.tool, 102);
     } finally {
       if (existsSync(statePath)) rmSync(statePath);
     }

@@ -155,6 +155,35 @@ describe("round-view registry", () => {
     assert.equal(registry.get("s-b"), undefined, "views are per session");
   });
 
+  it("freezes the published protection map", () => {
+    const registry = createRoundViewRegistry();
+    const protection = {
+      activeStart: 2,
+      messageCount: 3,
+      instructions: [0, 1],
+    };
+    registry.publish("s", {
+      projection: liveProjection([{ text: "x" }]).snapshot,
+      numbered: [],
+      protection,
+    });
+    protection.instructions[1] = 9;
+    protection.activeStart = 9;
+    protection.messageCount = 9;
+
+    const view = registry.get("s");
+    assert.deepEqual(view?.protection, {
+      activeStart: 2,
+      messageCount: 3,
+      instructions: [0, 1],
+    });
+    assert.ok(Object.isFrozen(view?.protection), "map is frozen");
+    assert.ok(
+      Object.isFrozen(view?.protection?.instructions),
+      "list is frozen",
+    );
+  });
+
   it("overwrites the previous round's view", () => {
     const registry = createRoundViewRegistry();
     registry.publish("s", {

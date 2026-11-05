@@ -242,8 +242,9 @@ describe("producer coverage from the folded view", () => {
     ]);
 
     await runRound(pi, sessionID, dedupTurn(), {
-      protectedMessages: 0,
-      compress: { protectedTokens: 0, thresholdTokens: 0 },
+      activeMessages: 0,
+      activeTokens: 0,
+      compress: { thresholdTokens: 0 },
       dedup: { minMessages: 20, thresholdContext: 100000 },
       purgeErrors: {},
     });

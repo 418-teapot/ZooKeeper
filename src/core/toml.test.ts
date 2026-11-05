@@ -108,10 +108,12 @@ describe("vendor smol-toml — config.toml zoo section", () => {
       context_word_limit: 200,
       prompt_word_limit: 500,
     });
-    assert.equal(zoo.context.protected_messages, 20);
+    assert.equal(zoo.context.active_messages, 20);
+    assert.equal(zoo.context.active_tokens, 20000);
     assert.equal(zoo.context.dedup.threshold_context, 100000);
     assert.deepEqual(zoo.context.dedup.protected_tools, []);
     assert.equal(zoo.context.compress.max_ranges, 8);
+    assert.equal(zoo.context.compress.active_tokens, undefined);
     assert.equal(zoo.continuation.max_wakes, 3);
     assert.equal(zoo.context.nudge.min_context, "60%");
     assert.deepEqual(zoo.logging, {

@@ -91,10 +91,11 @@ export interface ProducerGateConfig {
 /**
  * Per-subsystem gate config for the compression strategy.
  *
- * Strictly parsed: the section is absent (`undefined`) unless all three
- * keys are present and valid.  Enablement is decided exclusively by the
- * mode profile — the section itself carries no on/off switch.  The token
- * thresholds are defined whenever the section is returned.
+ * Strictly parsed: the section is absent (`undefined`) unless both keys
+ * are present and valid.  Enablement is decided exclusively by the mode
+ * profile — the section itself carries no on/off switch.  Both keys are
+ * defined whenever the section is returned.  The trailing token budget
+ * lives in the shared core group (`ContextPruningConfig.activeTokens`).
  */
 export interface CompressConfig {
   /**
@@ -102,11 +103,6 @@ export interface CompressConfig {
    * gate.  Present whenever the section is returned.
    */
   thresholdTokens?: number;
-  /**
-   * Token budget to protect from the end of the session (CJK heuristic).
-   * Present whenever the section is returned.
-   */
-  protectedTokens?: number;
   /**
    * Upper bound on the number of ranges accepted per compress tool call
    * (strictly parsed positive integer).  Present whenever the section is
@@ -212,7 +208,10 @@ export type AgentColorMap = Record<string, string>;
  * Unified context-pruning configuration.
  *
  * Each producer (dedup, purge-errors) has its own gate sub-config;
- * `protectedMessages` and `releasedPercent` remain shared.
+ * `activeMessages`, `activeTokens` and `releasedPercent` form the shared
+ * core group.  Together the two active keys size the round's protection
+ * map: without both no map is built, so the producers skip and the
+ * release phase fails closed.
  * Enablement is decided exclusively by the mode profile: registering
  * the `context-pruning` hook unit runs the whole pipeline, and
  * registering the `compress` tool gates the nudge / manual-compress
@@ -221,12 +220,20 @@ export type AgentColorMap = Record<string, string>;
 export interface ContextPruningConfig {
   /**
    * Number of most recent non-ignored messages to protect (shared).
-   * Undefined → skip all producers (they early-return).
+   * Undefined → no protection map is built: the producers skip and the
+   * release phase writes no edit and flips no mark.
    */
-  protectedMessages?: number;
+  activeMessages?: number;
   /**
-   * Minimum percentage of prompt-side total that pending marks must
-   * reach before batch release.  Undefined → skip release check.
+   * Trailing token budget to protect from the end of the session (CJK
+   * heuristic).  Undefined → no protection map is built: the producers
+   * skip and the release phase writes no edit and flips no mark.
+   */
+  activeTokens?: number;
+  /**
+   * Minimum percentage of prompt-side total that the unprotected pending
+   * marks must reach before batch release.  Undefined → only the
+   * view-change bypass releases.
    */
   releasedPercent?: number;
   /**

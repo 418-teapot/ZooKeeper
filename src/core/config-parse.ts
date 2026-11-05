@@ -75,6 +75,59 @@ function warnSectionInvalid(section: string, bad: KeyCheck): void {
   });
 }
 
+/**
+ * A removed config key and the key that replaces it.
+ *
+ * `from` / `to` are full TOML paths so the migration warn names both the
+ * dead location and the live one.
+ */
+type RemovedKey = { key: string; from: string; to: string };
+
+/** Keys removed from the `[zoo.context]` core group. */
+const REMOVED_CONTEXT_KEYS: readonly RemovedKey[] = [
+  {
+    key: "protected_messages",
+    from: "[zoo.context].protected_messages",
+    to: "[zoo.context].active_messages",
+  },
+];
+
+/** Keys removed from the `[zoo.context.compress]` section. */
+const REMOVED_COMPRESS_KEYS: readonly RemovedKey[] = [
+  {
+    key: "protected_tokens",
+    from: "[zoo.context.compress].protected_tokens",
+    to: "[zoo.context].active_tokens",
+  },
+];
+
+/**
+ * Log one migration warn per removed key that is still present.
+ *
+ * Event name is `context_config_key_removed`, carrying the removed key
+ * and its replacement path.  The removed value is never read: the warn
+ * only reports that the key is dead.
+ *
+ * @param table - The raw config table that may still carry removed keys.
+ * @param removed - The removed keys this table used to hold.
+ */
+function warnRemovedKeys(table: unknown, removed: readonly RemovedKey[]): void {
+  if (table === null || typeof table !== "object" || Array.isArray(table)) {
+    return;
+  }
+  const raw = table as Record<string, unknown>;
+  for (const entry of removed) {
+    if (!Object.hasOwn(raw, entry.key)) continue;
+    log.warn({
+      hook: "config",
+      event: "context_config_key_removed",
+      key: entry.key,
+      from: entry.from,
+      to: entry.to,
+    });
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Mode state file (multi-profile selection)
 // ---------------------------------------------------------------------------
@@ -699,10 +752,10 @@ function isValidNudgeThreshold(v: unknown): boolean {
  * section — the mode profile decides whether the pruning pipeline and
  * the compress / decompress tools load at all:
  *
- *  - The core group (`protected_messages`, `released_percent`) — keys
- *    are individually optional; any PRESENT invalid key invalidates the
- *    whole group (both become `undefined`) with one
- *    `context_config_invalid` warn.
+ *  - The core group (`active_messages`, `active_tokens`,
+ *    `released_percent`) — keys are individually optional; any PRESENT
+ *    invalid key invalidates the whole group (all become `undefined`)
+ *    with one `context_config_invalid` warn.
  *  - `dedup` / `purge_errors` — keys individually optional; any present
  *    invalid key drops the whole sub-section (`undefined`) with one
  *    `dedup_config_invalid` / `purge_errors_config_invalid` warn.
@@ -711,7 +764,13 @@ function isValidNudgeThreshold(v: unknown): boolean {
  *    whole sub-section with one `nudge_config_invalid` /
  *    `compress_config_invalid` / `decompress_config_invalid` warn.
  *
- * Unknown keys are silently ignored.  An absent key never gets a
+ * Unknown keys are silently ignored, except the removed keys
+ * `[zoo.context].protected_messages` and
+ * `[zoo.context.compress].protected_tokens`: each present removed key
+ * logs one `context_config_key_removed` migration warn naming its
+ * replacement (`active_messages` / `active_tokens` in the core group).
+ * Their values are never read and never mapped, and the new keys win
+ * when both old and new are present.  An absent key never gets a
  * default: every field of this config stays `undefined` when absent.
  *
  * @param zooConfig - The `zoo` section of the parsed config.toml.
@@ -720,20 +779,28 @@ function isValidNudgeThreshold(v: unknown): boolean {
 export function parseContextConfig(zooConfig: any): ContextPruningConfig {
   const c = (zooConfig.context ?? {}) as Record<string, unknown>;
 
-  // ── Core group (protected_messages / released_percent) ───────────────
+  // Removed keys are dead config: warn about each one, then parse the
+  // live keys exactly as before.
+  warnRemovedKeys(c, REMOVED_CONTEXT_KEYS);
+  warnRemovedKeys(c.compress, REMOVED_COMPRESS_KEYS);
+
+  // ── Core group (active_messages / active_tokens / released_percent) ──
   // Keys are individually optional; a PRESENT invalid key invalidates the
   // whole group (fail to skip) and logs exactly one warn.
-  let protectedMessages: number | undefined;
+  let activeMessages: number | undefined;
+  let activeTokens: number | undefined;
   let releasedPercent: number | undefined;
   const coreChecks: KeyCheck[] = [
-    ["protected_messages", c.protected_messages, isOptionalNonNegativeNumber],
+    ["active_messages", c.active_messages, isOptionalNonNegativeNumber],
+    ["active_tokens", c.active_tokens, isOptionalNonNegativeNumber],
     ["released_percent", c.released_percent, isOptionalPercent],
   ];
   const badCore = findBadKey(coreChecks);
   if (badCore) {
     warnSectionInvalid("context", badCore);
   } else {
-    protectedMessages = c.protected_messages as number | undefined;
+    activeMessages = c.active_messages as number | undefined;
+    activeTokens = c.active_tokens as number | undefined;
     releasedPercent = c.released_percent as number | undefined;
   }
 
@@ -820,7 +887,7 @@ export function parseContextConfig(zooConfig: any): ContextPruningConfig {
   }
 
   // ── Compress section ──────────────────────────────────────────────────
-  // Strict: all three keys are required when the section is present.
+  // Strict: both keys are required when the section is present.
   let compress: CompressConfig | undefined;
   if (c.compress !== undefined) {
     const cm = c.compress as Record<string, unknown>;
@@ -828,11 +895,6 @@ export function parseContextConfig(zooConfig: any): ContextPruningConfig {
       [
         "threshold_tokens",
         cm.threshold_tokens,
-        (v) => typeof v === "number" && Number.isFinite(v) && v >= 0,
-      ],
-      [
-        "protected_tokens",
-        cm.protected_tokens,
         (v) => typeof v === "number" && Number.isFinite(v) && v >= 0,
       ],
       [
@@ -847,7 +909,6 @@ export function parseContextConfig(zooConfig: any): ContextPruningConfig {
     } else {
       compress = {
         thresholdTokens: cm.threshold_tokens as number,
-        protectedTokens: cm.protected_tokens as number,
         maxRanges: cm.max_ranges as number,
       };
     }
@@ -877,7 +938,8 @@ export function parseContextConfig(zooConfig: any): ContextPruningConfig {
   }
 
   return {
-    protectedMessages,
+    activeMessages,
+    activeTokens,
     releasedPercent,
     nudge,
     dedup,

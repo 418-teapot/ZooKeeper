@@ -36,6 +36,7 @@ import {
   PRUNED_TOOL_ERROR_INPUT_REPLACEMENT,
   PRUNED_TOOL_OUTPUT_REPLACEMENT,
 } from "../../core/context/message-parts.js";
+import { buildProtectionMap } from "../../core/context/protection-map.js";
 import {
   computeEdits,
   type ReleaseOptions,
@@ -161,7 +162,8 @@ function materializeRound(
  * @param buildEntries - Builds a fresh v1 fixture.
  * @param seed - Seeds blocks and marks on the state (projection for
  *   span hashes).
- * @param options - Release gate inputs.
+ * @param options - Release gate inputs.  Every round runs with an
+ *   explicit protection map: the fixture default disables both windows.
  * @returns The rendered v1 messages array.
  */
 function runRound(
@@ -173,7 +175,11 @@ function runRound(
   const snapshot = history(entries);
   const state = makeState();
   seed(state, snapshot);
-  const edits = computeEdits(state, snapshot.messages, options);
+  const roundOptions: ReleaseOptions = {
+    protection: buildProtectionMap(snapshot.messages, 0, 0),
+    ...options,
+  };
+  const edits = computeEdits(state, snapshot.messages, roundOptions);
   applyEdits(entries, edits);
   const items = fold(snapshot, state).items;
   return materializeRound(entries, items, state);
@@ -680,7 +686,10 @@ describe("host adapter immutability", () => {
     const snapshot = history(entries);
     seedBlock(state, snapshot, 1, 0, 2, "第一段", "摘要正文");
     seedMark(state, 3, 1, true, 100);
-    const edits = computeEdits(state, snapshot.messages, options);
+    const edits = computeEdits(state, snapshot.messages, {
+      ...options,
+      protection: buildProtectionMap(snapshot.messages, 0, 0),
+    });
     const withEdits = adapter.applyEdits(
       entries,
       edits,
@@ -745,6 +754,7 @@ describe("render behavior", () => {
       promptTokens: 100_000,
       releasedPercent: 0,
       pendingViewChange: false,
+      protection: buildProtectionMap(snapshot.messages, 0, 0),
     });
     const items = fold(snapshot, state).items;
 

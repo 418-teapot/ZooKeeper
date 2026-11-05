@@ -1,16 +1,18 @@
 /**
  * Tests for the ordinal-based compression core (`compress.ts`).
  *
- * Covers the combined protection window (message-count and token-budget
- * dimensions), endpoint resolution via line refs (original / summary /
+ * Covers endpoint resolution via line refs (original / summary /
  * reversed-pair order error / actionable errors with the
  * covered-content hint), every validation gate with one positive and
- * one negative case each (protection zone, first user, overlap, swallow,
- * phantom), the apply-time gates (no-new-content, negative benefit),
+ * one negative case each (active tail, user instructions, overlap,
+ * swallow, phantom), the apply-time gates (no-new-content, negative
+ * benefit),
  * block creation with spanHash self-validation, pending-mark token
  * accounting via `clearConsumedBlockRange`, and batch semantics
  * (three-range batch, same-snapshot validation, cross-range rules,
- * atomicity, maxRanges, title rules).
+ * atomicity, maxRanges, title rules).  The active-tail and instruction
+ * windows themselves are covered by `protection-map.test.ts`; here the
+ * fixtures supply the round's protection map.
  */
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
@@ -27,7 +29,6 @@ import {
   type CompressOptions,
   type CompressRangeInput,
   compressRanges,
-  computeProtectedStartOrdinal,
   resolveSpan,
   SUPERSEDED_BLOCKS_LEAD_IN,
   validateRange,
@@ -36,6 +37,8 @@ import { fold } from "./fold.js";
 import type { HostMessage, Projection } from "./lens.js";
 import { project } from "./lens.js";
 import { estimateMessageHeuristic } from "./measure.js";
+import { computeEligibility } from "./nudge.js";
+import { buildProtectionMap } from "./protection-map.js";
 import { computeSpanHash, validateBlock } from "./spanhash.js";
 import type { SessionState } from "./state.js";
 import { markKey } from "./state.js";
@@ -47,20 +50,20 @@ import { numberView } from "./view-refs.js";
 // ---------------------------------------------------------------------------
 
 /**
- * Alternating user/assistant text messages.
+ * A transcript with ONE user instruction at ordinal 0 and assistant work
+ * after it.
  *
- * User messages ("prompt N " + 60 chars) estimate to 18 heuristic tokens,
- * assistant ones ("reply N " + 60 chars) to 17.  A 10-message transcript
- * has its last non-hidden user at ordinal 8.
+ * The user message ("prompt 0 " + 60 chars) estimates to 18 heuristic
+ * tokens, every assistant ("reply N " + 60 chars) to 17.  Tests that
+ * need several user instructions build their own transcript.
  */
 function makeTranscript(count: number): HostMessage[] {
   const msgs: HostMessage[] = [];
-  for (let i = 0; i < count; i++) {
-    msgs.push(
-      i % 2 === 0
-        ? makeMsg("user", [`prompt ${i} ${"x".repeat(60)}`])
-        : makeAssistantMsg({ text: `reply ${i} ${"x".repeat(60)}` }),
-    );
+  if (count > 0) {
+    msgs.push(makeMsg("user", [`prompt 0 ${"x".repeat(60)}`]));
+  }
+  for (let i = 1; i < count; i++) {
+    msgs.push(makeAssistantMsg({ text: `reply ${i} ${"x".repeat(60)}` }));
   }
   return msgs;
 }
@@ -113,96 +116,38 @@ function compressRange(
   toOrdinal: number,
   title: string,
   summary: string,
-  options: CompressOptions = OPTIONS,
 ) {
   const fromRef = ordinalLine(items, fromOrdinal);
   const toRef = ordinalLine(items, toOrdinal);
   assert.ok(fromRef !== null, `ordinal ${fromOrdinal} must be visible`);
   assert.ok(toRef !== null, `ordinal ${toOrdinal} must be visible`);
-  return compressRanges(projectMessages(history), items, state, options, [
-    { fromRef, toRef, title, summary },
-  ]);
+  return compressRanges(
+    projectMessages(history),
+    items,
+    state,
+    buildProtectionMap(history, ACTIVE_MESSAGES, ACTIVE_TOKENS),
+    OPTIONS,
+    [{ fromRef, toRef, title, summary }],
+  );
 }
 
 /**
- * Gate config for the standard transcript: protection boundary 8 with a
- * 10-message history, phantom threshold well below a 4-message segment.
+ * Trailing messages protected in the standard fixture transcript: the
+ * protection boundary of a 10-message history sits at ordinal 8.
  */
-const OPTIONS: CompressOptions = {
-  protectedMessages: 2,
-  protectedTokens: 30,
-  thresholdTokens: 20,
-};
+const ACTIVE_MESSAGES = 2;
+
+/** Trailing token budget of the standard fixture transcript. */
+const ACTIVE_TOKENS = 30;
+
+/**
+ * Gate config for the standard transcript: phantom threshold well below
+ * a 4-message segment.
+ */
+const OPTIONS: CompressOptions = { thresholdTokens: 20 };
 
 // ---------------------------------------------------------------------------
-// 1. Protection window — message-count and token-budget dimensions
-// ---------------------------------------------------------------------------
-
-describe("computeProtectedStartOrdinal", () => {
-  it("counts back protectedMessages non-hidden messages", () => {
-    const history = makeTranscript(6);
-    assert.equal(computeProtectedStartOrdinal(history, 2, 0), 4);
-  });
-
-  it("accumulates protectedTokens from the end", () => {
-    // ~10 tokens per message; a 16-token budget covers the last two.
-    const history = [
-      makeMsg("user", ["x".repeat(40)]),
-      makeAssistantMsg({ text: "x".repeat(40) }),
-      makeMsg("user", ["x".repeat(40)]),
-      makeAssistantMsg({ text: "x".repeat(40) }),
-    ];
-    assert.equal(computeProtectedStartOrdinal(history, 0, 16), 2);
-  });
-
-  it("skips hidden messages in the message-count window", () => {
-    const history = [
-      makeMsg("user", ["x".repeat(40)]),
-      makeAssistantMsg({ text: "x".repeat(40) }),
-      makeMsg("user", ["x".repeat(40)]),
-      makeAssistantMsg({ text: "x".repeat(40) }),
-      makeMsg("user", ["injected report"], { hidden: true }),
-      makeMsg("user", ["injected report"], { hidden: true }),
-    ];
-    assert.equal(computeProtectedStartOrdinal(history, 2, 0), 2);
-  });
-
-  it("skips hidden messages in the token window", () => {
-    const history = [
-      makeMsg("user", ["x".repeat(40)]),
-      makeAssistantMsg({ text: "x".repeat(40) }),
-      makeMsg("user", ["x".repeat(40)]),
-      makeAssistantMsg({ text: "x".repeat(40) }),
-      makeMsg("user", ["x".repeat(100)], { hidden: true }),
-      makeMsg("user", ["x".repeat(100)], { hidden: true }),
-    ];
-    assert.equal(computeProtectedStartOrdinal(history, 0, 16), 2);
-  });
-
-  it("unions both windows at the earlier boundary", () => {
-    const history = [
-      makeMsg("user", ["x".repeat(40)]),
-      makeAssistantMsg({ text: "x".repeat(40) }),
-      makeMsg("user", ["x".repeat(40)]),
-      makeAssistantMsg({ text: "x".repeat(40) }),
-    ];
-    // Count window starts at 3 (1 message), token window at 2 → union 2.
-    assert.equal(computeProtectedStartOrdinal(history, 1, 16), 2);
-  });
-
-  it("returns history.length when both windows are disabled", () => {
-    const history = makeTranscript(4);
-    assert.equal(computeProtectedStartOrdinal(history, 0, 0), 4);
-  });
-
-  it("returns 0 when the budget covers the whole session", () => {
-    const history = [makeMsg("user", ["hi"]), makeAssistantMsg({ text: "yo" })];
-    assert.equal(computeProtectedStartOrdinal(history, 10, 1_000_000), 0);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// 2. resolveSpan — endpoint resolution gate
+// 1. resolveSpan — endpoint resolution gate
 // ---------------------------------------------------------------------------
 
 describe("resolveSpan — endpoint resolution", () => {
@@ -279,7 +224,7 @@ describe("resolveSpan — endpoint resolution", () => {
 });
 
 // ---------------------------------------------------------------------------
-// 3. validateRange — protection-zone gate
+// 2. validateRange — protection-zone gate
 // ---------------------------------------------------------------------------
 
 describe("validateRange — protection-zone gate", () => {
@@ -290,6 +235,7 @@ describe("validateRange — protection-zone gate", () => {
       projectMessages(history),
       numberedView(history, state),
       state,
+      buildProtectionMap(history, ACTIVE_MESSAGES, ACTIVE_TOKENS),
       OPTIONS,
       1,
       9,
@@ -299,7 +245,7 @@ describe("validateRange — protection-zone gate", () => {
     // address space: ordinals 1..8 are m2..m9, the last compressible line
     // is m8, and the internal half-open interval never leaks.
     assert.ok(
-      result.error.includes("包含受到保护的最近对话内容"),
+      result.error.includes("包含受保护的最近活跃对话内容"),
       result.error,
     );
     assert.ok(result.error.includes("范围 m2 至 m9"), result.error);
@@ -315,6 +261,7 @@ describe("validateRange — protection-zone gate", () => {
       projectMessages(history),
       numberedView(history, state),
       state,
+      buildProtectionMap(history, ACTIVE_MESSAGES, ACTIVE_TOKENS),
       OPTIONS,
       1,
       8,
@@ -351,15 +298,12 @@ describe("validateRange — protection-zone gate", () => {
 
     const state = makeState();
     const items = numberedView(history, state);
-    const options: CompressOptions = {
-      protectedMessages: 5,
-      protectedTokens: 0,
-      thresholdTokens: 20,
-    };
+    const options: CompressOptions = { thresholdTokens: 20 };
     const result = validateRange(
       projectMessages(history),
       items,
       state,
+      buildProtectionMap(history, 5, 0),
       options,
       1,
       6,
@@ -376,44 +320,89 @@ describe("validateRange — protection-zone gate", () => {
 });
 
 // ---------------------------------------------------------------------------
-// 4. validateRange — first-user gate
+// 3. validateRange — user-instruction gate
 // ---------------------------------------------------------------------------
 
-describe("validateRange — first-user gate", () => {
-  it("rejects a range containing the first user message", () => {
+describe("validateRange — user-instruction gate", () => {
+  it("rejects a range containing the first user instruction", () => {
     const history = makeTranscript(10);
     const state = makeState();
     const result = validateRange(
       projectMessages(history),
       numberedView(history, state),
       state,
+      buildProtectionMap(history, ACTIVE_MESSAGES, ACTIVE_TOKENS),
       OPTIONS,
       0,
       5,
     );
     assert.ok(result.error !== null);
-    assert.ok(result.error.includes("第一条用户消息"));
-    // The first user message (ordinal 0) is named by its line, not its ordinal.
+    assert.ok(result.error.includes("用户指令"), result.error);
+    assert.ok(
+      result.error.includes("所有非隐藏用户指令都受保护"),
+      result.error,
+    );
+    // The instruction (ordinal 0) is named by its line, not its ordinal.
     assert.ok(result.error.includes("（m1）"), result.error);
   });
 
-  it("accepts a range strictly after the first user message", () => {
+  it("accepts work strictly after the user instruction", () => {
     const history = makeTranscript(10);
     const state = makeState();
     const result = validateRange(
       projectMessages(history),
       numberedView(history, state),
       state,
+      buildProtectionMap(history, ACTIVE_MESSAGES, ACTIVE_TOKENS),
       OPTIONS,
       1,
       6,
     );
     assert.equal(result.error, null);
   });
+
+  it("rejects a middle user instruction and names it", () => {
+    const history = makeTranscript(10);
+    history[4] = makeMsg("user", ["middle instruction"]);
+    const state = makeState();
+    const result = validateRange(
+      projectMessages(history),
+      numberedView(history, state),
+      state,
+      buildProtectionMap(history, ACTIVE_MESSAGES, 0),
+      OPTIONS,
+      3,
+      6,
+    );
+    assert.ok(result.error !== null);
+    assert.ok(result.error.includes("用户指令"), result.error);
+    assert.ok(result.error.includes("（m5）"), result.error);
+    assert.ok(
+      result.error.includes("所有非隐藏用户指令都受保护"),
+      result.error,
+    );
+  });
+
+  it("does not treat the last user instruction as a protected suffix", () => {
+    // A single instruction at ordinal 0 and work up to the active start:
+    // the whole work run is compressible.
+    const history = makeTranscript(10);
+    const state = makeState();
+    const result = validateRange(
+      projectMessages(history),
+      numberedView(history, state),
+      state,
+      buildProtectionMap(history, ACTIVE_MESSAGES, ACTIVE_TOKENS),
+      OPTIONS,
+      1,
+      8,
+    );
+    assert.equal(result.error, null);
+  });
 });
 
 // ---------------------------------------------------------------------------
-// 5. validateRange — overlap gate
+// 4. validateRange — overlap gate
 // ---------------------------------------------------------------------------
 
 describe("validateRange — overlap gate", () => {
@@ -425,6 +414,7 @@ describe("validateRange — overlap gate", () => {
       projectMessages(history),
       numberedView(history, state),
       state,
+      buildProtectionMap(history, ACTIVE_MESSAGES, ACTIVE_TOKENS),
       OPTIONS,
       4,
       8,
@@ -447,6 +437,7 @@ describe("validateRange — overlap gate", () => {
       projectMessages(history),
       numberedView(history, state),
       state,
+      buildProtectionMap(history, ACTIVE_MESSAGES, ACTIVE_TOKENS),
       OPTIONS,
       6,
       8,
@@ -456,7 +447,7 @@ describe("validateRange — overlap gate", () => {
 });
 
 // ---------------------------------------------------------------------------
-// 6. validateRange — swallow gate
+// 5. validateRange — swallow gate
 // ---------------------------------------------------------------------------
 
 describe("validateRange — swallow gate", () => {
@@ -468,6 +459,7 @@ describe("validateRange — swallow gate", () => {
       projectMessages(history),
       numberedView(history, state),
       state,
+      buildProtectionMap(history, ACTIVE_MESSAGES, ACTIVE_TOKENS),
       OPTIONS,
       2,
       8,
@@ -489,6 +481,7 @@ describe("validateRange — swallow gate", () => {
       projectMessages(history),
       numberedView(history, state),
       state,
+      buildProtectionMap(history, ACTIVE_MESSAGES, ACTIVE_TOKENS),
       OPTIONS,
       2,
       8,
@@ -509,6 +502,7 @@ describe("validateRange — swallow gate", () => {
       projectMessages(history),
       numberedView(history, state),
       state,
+      buildProtectionMap(history, ACTIVE_MESSAGES, ACTIVE_TOKENS),
       OPTIONS,
       4,
       8,
@@ -520,7 +514,7 @@ describe("validateRange — swallow gate", () => {
 });
 
 // ---------------------------------------------------------------------------
-// 7. validateRange — phantom gate
+// 6. validateRange — phantom gate
 // ---------------------------------------------------------------------------
 
 describe("validateRange — phantom gate", () => {
@@ -528,19 +522,20 @@ describe("validateRange — phantom gate", () => {
     const history = [
       makeMsg("user", ["开场"]),
       makeAssistantMsg({ text: "好的" }),
-      makeMsg("user", ["继续"]),
       makeAssistantMsg({ text: "收到" }),
-      makeMsg("user", ["明白"]),
       makeAssistantMsg({ text: "完成" }),
-      makeMsg("user", ["最后问题"]),
-      makeAssistantMsg({ text: "回复完毕" }),
+      makeAssistantMsg({ text: "继续" }),
+      makeAssistantMsg({ text: "明白" }),
+      makeAssistantMsg({ text: "最后" }),
+      makeAssistantMsg({ text: "回复" }),
     ];
     const state = makeState();
     const result = validateRange(
       projectMessages(history),
       numberedView(history, state),
       state,
-      { protectedMessages: 0, protectedTokens: 0, thresholdTokens: 50 },
+      buildProtectionMap(history, 0, 0),
+      { thresholdTokens: 50 },
       1,
       5,
     );
@@ -560,6 +555,7 @@ describe("validateRange — phantom gate", () => {
       projectMessages(history),
       numberedView(history, state),
       state,
+      buildProtectionMap(history, ACTIVE_MESSAGES, ACTIVE_TOKENS),
       OPTIONS,
       1,
       3,
@@ -617,14 +613,10 @@ function makePairTranscript(): Projection {
 }
 
 /**
- * Gate options for the pair-transcript tests: no protection window and
- * no phantom threshold, so only the range-shape gates remain in play.
+ * Gate options for the pair-transcript tests: no phantom threshold, so
+ * only the range-shape gates remain in play.
  */
-const PAIR_OPTIONS: CompressOptions = {
-  protectedMessages: 0,
-  protectedTokens: 0,
-  thresholdTokens: 0,
-};
+const PAIR_OPTIONS: CompressOptions = { thresholdTokens: 0 };
 
 describe("validateRange — full unit coverage", () => {
   it("resolves a pair line to the whole call/result unit interval", () => {
@@ -646,6 +638,7 @@ describe("validateRange — full unit coverage", () => {
       transcript,
       numberedViewOf(transcript, state),
       state,
+      buildProtectionMap(transcript.messages, 0, 0),
       PAIR_OPTIONS,
       1,
       3,
@@ -663,9 +656,14 @@ describe("compressRanges — full unit coverage", () => {
       (ordinal) => transcript.messages[ordinal].hidden,
     );
     // m2 addresses unit [1, 3) — call-1 plus its result, indivisible.
-    const result = compressRanges(transcript, items, state, PAIR_OPTIONS, [
-      { fromRef: "m2", toRef: "m2", title: "整对", summary: "摘要。" },
-    ]);
+    const result = compressRanges(
+      transcript,
+      items,
+      state,
+      buildProtectionMap(transcript.messages, 0, 0),
+      PAIR_OPTIONS,
+      [{ fromRef: "m2", toRef: "m2", title: "整对", summary: "摘要。" }],
+    );
     assert.equal(result.failed.length, 0);
     assert.equal(result.created.length, 1);
     assert.equal(result.created[0].start, 1);
@@ -674,7 +672,7 @@ describe("compressRanges — full unit coverage", () => {
 });
 
 // ---------------------------------------------------------------------------
-// 8. compressRanges — block creation with spanHash
+// 7. compressRanges — block creation with spanHash
 // ---------------------------------------------------------------------------
 
 describe("compressRanges — block creation", () => {
@@ -714,7 +712,7 @@ describe("compressRanges — block creation", () => {
 });
 
 // ---------------------------------------------------------------------------
-// 9. compressRanges — pending-mark accounting (clearConsumedBlockRange)
+// 8. compressRanges — pending-mark accounting (clearConsumedBlockRange)
 // ---------------------------------------------------------------------------
 
 describe("compressRanges — pending-mark accounting", () => {
@@ -750,7 +748,7 @@ describe("compressRanges — pending-mark accounting", () => {
 });
 
 // ---------------------------------------------------------------------------
-// 10. compressRanges — batch semantics
+// 9. compressRanges — batch semantics
 // ---------------------------------------------------------------------------
 
 describe("compressRanges — batch semantics", () => {
@@ -762,6 +760,7 @@ describe("compressRanges — batch semantics", () => {
       projectMessages(history),
       items,
       state,
+      buildProtectionMap(history, ACTIVE_MESSAGES, ACTIVE_TOKENS),
       OPTIONS,
       [
         { fromRef: "m2", toRef: "m3", title: "主题A", summary: "摘要A。" },
@@ -799,6 +798,7 @@ describe("compressRanges — batch semantics", () => {
       projectMessages(history),
       items,
       state,
+      buildProtectionMap(history, ACTIVE_MESSAGES, ACTIVE_TOKENS),
       OPTIONS,
       [
         { fromRef: "m2", toRef: "m4", title: "主题A", summary: "摘要A。" },
@@ -820,6 +820,7 @@ describe("compressRanges — batch semantics", () => {
       projectMessages(history),
       items,
       state,
+      buildProtectionMap(history, ACTIVE_MESSAGES, ACTIVE_TOKENS),
       OPTIONS,
       [
         { fromRef: "m2", toRef: "m4", title: "主题A", summary: "摘要A。" },
@@ -830,7 +831,7 @@ describe("compressRanges — batch semantics", () => {
     assert.equal(result.failed.length, 1);
     assert.equal(result.failed[0].index, 2);
     assert.ok(
-      result.failed[0].error.includes("包含受到保护的最近对话内容"),
+      result.failed[0].error.includes("包含受保护的最近活跃对话内容"),
       result.failed[0].error,
     );
     assert.equal(state.blocks.size, 0);
@@ -847,6 +848,7 @@ describe("compressRanges — batch semantics", () => {
       projectMessages(history),
       items,
       state,
+      buildProtectionMap(history, ACTIVE_MESSAGES, ACTIVE_TOKENS),
       OPTIONS,
       [
         // [1, 6) fully covers block 1 [2, 4) → consumed in the batch.
@@ -899,6 +901,7 @@ describe("compressRanges — batch semantics", () => {
       projectMessages(history),
       items,
       state,
+      buildProtectionMap(history, ACTIVE_MESSAGES, ACTIVE_TOKENS),
       OPTIONS,
       [
         // [1, 6) fully covers block 1 [2, 4) → consumed in the batch.
@@ -932,7 +935,7 @@ describe("compressRanges — batch semantics", () => {
 });
 
 // ---------------------------------------------------------------------------
-// 11. compressRanges — maxRanges and title rules
+// 10. compressRanges — maxRanges and title rules
 // ---------------------------------------------------------------------------
 
 describe("compressRanges — maxRanges and title rules", () => {
@@ -944,6 +947,7 @@ describe("compressRanges — maxRanges and title rules", () => {
       projectMessages(history),
       items,
       state,
+      buildProtectionMap(history, ACTIVE_MESSAGES, ACTIVE_TOKENS),
       { ...OPTIONS, maxRanges: 1 },
       [
         { fromRef: "m2", toRef: "m3", title: "A", summary: "s" },
@@ -965,6 +969,7 @@ describe("compressRanges — maxRanges and title rules", () => {
       projectMessages(history),
       items,
       state,
+      buildProtectionMap(history, ACTIVE_MESSAGES, ACTIVE_TOKENS),
       OPTIONS,
       [{ fromRef: "m2", toRef: "m3", title: "   ", summary: "s" }],
     );
@@ -983,6 +988,7 @@ describe("compressRanges — maxRanges and title rules", () => {
       projectMessages(history),
       items,
       state,
+      buildProtectionMap(history, ACTIVE_MESSAGES, ACTIVE_TOKENS),
       OPTIONS,
       [{ fromRef: "m2", toRef: "m3", title: "a\nb", summary: "s" }],
     );
@@ -998,6 +1004,7 @@ describe("compressRanges — maxRanges and title rules", () => {
       projectMessages(history),
       items,
       state,
+      buildProtectionMap(history, ACTIVE_MESSAGES, ACTIVE_TOKENS),
       OPTIONS,
       [{ fromRef: "m2", toRef: "m3", title: "a---b", summary: "s" }],
     );
@@ -1013,6 +1020,7 @@ describe("compressRanges — maxRanges and title rules", () => {
       projectMessages(history),
       items,
       state,
+      buildProtectionMap(history, ACTIVE_MESSAGES, ACTIVE_TOKENS),
       OPTIONS,
       [{ fromRef: "m2", toRef: "m3", title: "x".repeat(81), summary: "s" }],
     );
@@ -1028,6 +1036,7 @@ describe("compressRanges — maxRanges and title rules", () => {
       projectMessages(history),
       items,
       state,
+      buildProtectionMap(history, ACTIVE_MESSAGES, ACTIVE_TOKENS),
       OPTIONS,
       [{ fromRef: "m2", toRef: "m3", title: "  主题  ", summary: "s" }],
     );
@@ -1037,7 +1046,7 @@ describe("compressRanges — maxRanges and title rules", () => {
 });
 
 // ---------------------------------------------------------------------------
-// 12. compressRanges — apply-time gates
+// 11. compressRanges — apply-time gates
 // ---------------------------------------------------------------------------
 
 describe("compressRanges — apply-time gates", () => {
@@ -1054,6 +1063,7 @@ describe("compressRanges — apply-time gates", () => {
       projectMessages(history),
       items,
       state,
+      buildProtectionMap(history, ACTIVE_MESSAGES, ACTIVE_TOKENS),
       OPTIONS,
       [
         {
@@ -1084,6 +1094,7 @@ describe("compressRanges — apply-time gates", () => {
       projectMessages(history),
       items,
       state,
+      buildProtectionMap(history, ACTIVE_MESSAGES, ACTIVE_TOKENS),
       OPTIONS,
       [
         {
@@ -1114,6 +1125,7 @@ describe("compressRanges — apply-time gates", () => {
       projectMessages(history),
       items,
       state,
+      buildProtectionMap(history, ACTIVE_MESSAGES, ACTIVE_TOKENS),
       OPTIONS,
       [
         {
@@ -1182,6 +1194,7 @@ describe("compressRanges — apply-time gates", () => {
       projectMessages(history),
       thirdItems,
       state,
+      buildProtectionMap(history, ACTIVE_MESSAGES, ACTIVE_TOKENS),
       OPTIONS,
       [
         {
@@ -1231,6 +1244,7 @@ describe("compressRanges — apply-time gates", () => {
       projectMessages(history),
       items,
       state,
+      buildProtectionMap(history, ACTIVE_MESSAGES, ACTIVE_TOKENS),
       OPTIONS,
       [
         {
@@ -1275,6 +1289,7 @@ describe("compressRanges — apply-time gates", () => {
       projectMessages(history),
       items,
       state,
+      buildProtectionMap(history, ACTIVE_MESSAGES, ACTIVE_TOKENS),
       OPTIONS,
       [
         {
@@ -1314,6 +1329,7 @@ describe("compressRanges — apply-time gates", () => {
       projectMessages(history),
       items,
       state,
+      buildProtectionMap(history, ACTIVE_MESSAGES, ACTIVE_TOKENS),
       OPTIONS,
       [
         {
@@ -1331,7 +1347,7 @@ describe("compressRanges — apply-time gates", () => {
 });
 
 // ---------------------------------------------------------------------------
-// 13. End-to-end gate-decision pins
+// 12. End-to-end gate-decision pins
 // ---------------------------------------------------------------------------
 
 /**
@@ -1342,6 +1358,7 @@ function runNewBatch(
   history: HostMessage[],
   state: SessionState,
   ranges: CompressRangeInput[],
+  protection = buildProtectionMap(history, ACTIVE_MESSAGES, ACTIVE_TOKENS),
   options: CompressOptions = OPTIONS,
 ): { ok: boolean; error?: string; count?: number } {
   const items = numberedView(history, state);
@@ -1349,6 +1366,7 @@ function runNewBatch(
     projectMessages(history),
     items,
     state,
+    protection,
     options,
     ranges,
   );
@@ -1373,42 +1391,36 @@ describe("end-to-end gate decisions", () => {
     ]);
     assert.equal(result.ok, false);
     assert.ok(
-      result.error?.includes("包含受到保护的最近对话内容"),
+      result.error?.includes("包含受保护的最近活跃对话内容"),
       result.error,
     );
   });
 
-  it("rejects a range containing the first user message", () => {
+  it("rejects a range containing a user instruction", () => {
     const result = runNewBatch(makeTranscript(10), makeState(), [
       { fromRef: "m1", toRef: "m5", title: "主题", summary: "摘要。" },
     ]);
     assert.equal(result.ok, false);
-    assert.ok(result.error?.includes("第一条用户消息"));
+    assert.ok(result.error?.includes("用户指令"), result.error);
   });
 
   it("rejects a phantom range below the threshold", () => {
-    const short = [
-      "开场",
-      "好的",
-      "继续",
-      "收到",
-      "明白",
-      "完成",
-      "最后问题",
-      "回复完毕",
+    const newHistory: HostMessage[] = [
+      makeMsg("user", ["开场"]),
+      makeAssistantMsg({ text: "好的" }),
+      makeAssistantMsg({ text: "继续" }),
+      makeAssistantMsg({ text: "收到" }),
+      makeAssistantMsg({ text: "明白" }),
+      makeAssistantMsg({ text: "完成" }),
+      makeAssistantMsg({ text: "最后" }),
+      makeAssistantMsg({ text: "回复" }),
     ];
-    const newHistory: HostMessage[] = short.map((text, i) =>
-      i % 2 === 0 ? makeMsg("user", [text]) : makeAssistantMsg({ text }),
-    );
-    const phantomOptions: CompressOptions = {
-      protectedMessages: 0,
-      protectedTokens: 0,
-      thresholdTokens: 50,
-    };
+    const phantomOptions: CompressOptions = { thresholdTokens: 50 };
     const result = runNewBatch(
       newHistory,
       makeState(),
       [{ fromRef: "m2", toRef: "m5", title: "主题", summary: "摘要。" }],
+      buildProtectionMap(newHistory, 0, 0),
       phantomOptions,
     );
     assert.equal(result.ok, false);
@@ -1424,6 +1436,7 @@ describe("end-to-end gate decisions", () => {
       projectMessages(history),
       numberedView(history, state),
       state,
+      buildProtectionMap(history, ACTIVE_MESSAGES, ACTIVE_TOKENS),
       OPTIONS,
       4,
       8,
@@ -1488,5 +1501,46 @@ describe("end-to-end gate decisions", () => {
     // rejected and the model is guided to pick the earlier ref first.
     assert.equal(result.ok, false);
     assert.ok(result.error?.includes("顺序颠倒"));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 13. Nudge alignment — the advertised window passes the compress gates
+// ---------------------------------------------------------------------------
+
+describe("nudge alignment", () => {
+  it("advertises a window the compression gates accept", () => {
+    // One instruction, 20 assistant steps, and an active tail of the
+    // last two messages.  The window the reminder would advertise must
+    // resolve and pass every gate the compress tool enforces.
+    const history: HostMessage[] = [makeMsg("user", ["instruction"])];
+    for (let i = 1; i <= 20; i++) {
+      history.push(makeAssistantMsg({ text: `step ${i} ${"x".repeat(60)}` }));
+    }
+    const state = makeState();
+    const items = numberedView(history, state);
+    const protection = buildProtectionMap(history, 2, 0);
+    const eligibility = computeEligibility(protection, history, items, {
+      thresholdTokens: 0,
+    });
+    assert.ok(eligibility !== null, "a work segment is advertised");
+
+    const span = resolveSpan(
+      items,
+      state,
+      eligibility.startRef,
+      eligibility.endRef,
+    );
+    assert.ok(!("error" in span), "the advertised refs resolve");
+    const result = validateRange(
+      projectMessages(history),
+      items,
+      state,
+      protection,
+      { thresholdTokens: 0 },
+      span.start,
+      span.end,
+    );
+    assert.equal(result.error, null, "the advertised window passes the gates");
   });
 });

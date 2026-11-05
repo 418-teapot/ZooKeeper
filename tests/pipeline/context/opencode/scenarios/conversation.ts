@@ -3,7 +3,7 @@
  *
  * Mirrors the message shapes used by the compress tool tests
  * (`src/tools/compress.test.ts`) so ranges resolve against the real
- * protection gates (protectedMessages / protectedTokens / threshold).
+ * protection gates (activeMessages / activeTokens / threshold).
  *
  * @module
  */
@@ -29,7 +29,7 @@ export function refFor(index: number): string {
  * A 31-message conversation: first user + 28 tool-heavy exchanges +
  * last user + final assistant.
  *
- * With protectedMessages=20 / protectedTokens=20000 / threshold=2000
+ * With activeMessages=20 / activeTokens=20000 / threshold=2000
  * the protection boundary lands at index 11, so valid ranges live
  * inside [1, 11).
  *

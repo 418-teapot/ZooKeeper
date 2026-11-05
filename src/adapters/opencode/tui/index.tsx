@@ -3,6 +3,8 @@
 import type { TuiPluginModule } from "@opencode-ai/plugin/tui";
 import { type RGBA, TextAttributes } from "@opentui/core";
 import { createSignal, onCleanup, onMount } from "solid-js";
+import config from "../../../../config.toml" with { type: "toml" };
+import { parseContextConfig } from "../../../core/config-parse.js";
 import {
   formatPercent,
   formatTokens,
@@ -35,6 +37,12 @@ import { formatDuration } from "./subagent.js";
  *    2-second debounce.
  * 2. Each event triggers a debounced recalculation.
  *
+ * The panel reads this repository's `config.toml` and parses the `zoo`
+ * section with the same strict parser as the server entry, so the
+ * report overlay follows the release phase's protection window.  A
+ * missing or invalid section yields no protection map and the overlay
+ * stays off.
+ *
  * @module
  */
 
@@ -45,6 +53,14 @@ const plugin: TuiPluginModule = {
     // host): entries carry their own session id per call, so the flush
     // timer is the only process-level requirement here.
     initLogger("opencode");
+
+    // The sidebar overlays the pruned regions the release phase actually
+    // writes, so it needs the same protection inputs.  Parse the `zoo`
+    // section of this repository's config.toml through the strict parser
+    // the server entry uses; an absent or invalid section yields no
+    // protection map and the controller then overlays no mark.
+    const zooConfig = (config as { zoo?: unknown }).zoo ?? {};
+    const contextConfig = parseContextConfig(zooConfig);
 
     // ── Shared panel signals (tui() scope) ──────────────────────────
     const [getCache, setCache] = createSignal<string>("—");
@@ -75,6 +91,7 @@ const plugin: TuiPluginModule = {
     const controller = createContextController({
       client: api.client,
       state: api.state,
+      contextConfig,
       setCache,
       setCategories,
       setError,

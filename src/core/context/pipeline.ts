@@ -13,11 +13,13 @@
  *    for the release gate.
  * 2. **Release** — `computeEdits` selects the round's region edits
  *    (effective marks plus pending marks passing the `releasedPercent`
- *    gate or the pending-view-change bypass), `adapter.applyEdits`
- *    writes them through the adapter lens, and `flipReleasedMarks`
- *    flips the released marks effective.  Runs FIRST so marks written
- *    last turn take effect this turn (the two-turn lifecycle).  The
- *    notify callback and the `marks_released` log fire on a flip.
+ *    gate or the pending-view-change bypass),
+ *    `adapter.applyEdits` writes them through the adapter lens, and
+ *    `flipReleasedMarks` flips the released marks effective.  Both read
+ *    the round's protection map: a mark anchored at a protected ordinal
+ *    writes no placeholder and does not flip.  Runs FIRST so marks
+ *    written last turn take effect this turn (the two-turn lifecycle).
+ *    The notify callback and the `marks_released` log fire on a flip.
  * 3. **Fold** — `fold` computes the folded view; every active block
  *    that does not render is retired: a block whose span no longer
  *    validates or whose interval does not resolve against the unit grid
@@ -27,10 +29,12 @@
  *    BEFORE the producers so they read this round's view.
  * 4. **Producers** — dedup / purge-errors run only when both their
  *    configured `thresholdContext` and `minMessages` are defined; a
- *    missing gate key skips the producer entirely.  Their
- *    `prunedOrdinals` predicate comes from the folded view, so the
- *    lines the model no longer sees are exactly the lines they never
- *    mark.  Marks are pending for the next turn's release.
+ *    missing gate key skips the producer entirely.  They consume the
+ *    round's protection map, so a region in the active tail or at a
+ *    user instruction is never marked.  Their `prunedOrdinals` predicate
+ *    comes from the folded view, so the lines the model no longer sees
+ *    are exactly the lines they never mark.  Marks are pending for the
+ *    next turn's release.
  * 5. **Number + materialize** — the round's folded view is numbered, the
  *    render plan is computed over that numbering
  *    (`core/context/render-plan.ts`), and `adapter.materialize` turns the
@@ -77,7 +81,6 @@ import type { WorkPermit } from "../lifecycle/index.js";
 import type { ToastPayload, ToolHost } from "../ports/tool-host.js";
 import { MANUAL_COMPRESS_TEMPLATE } from "../prompts.js";
 import type { TransformOutput } from "../unit.js";
-import { computeProtectedStartOrdinal } from "./compress.js";
 import { formatTokens } from "./context-report.js";
 import { type FoldExpiryReason, fold } from "./fold.js";
 import type { HostAdapter, HostMessage, Projection, ViewItem } from "./lens.js";
@@ -90,6 +93,10 @@ import {
 } from "./nudge.js";
 import { runDedup } from "./producers/dedup.js";
 import { runPurgeErrors } from "./producers/purge-errors.js";
+import {
+  configuredProtectionMap,
+  type ProtectionMap,
+} from "./protection-map.js";
 import {
   computeEdits,
   flipReleasedMarks,
@@ -195,10 +202,14 @@ interface PipelinePhaseContext {
   numbered: NumberedItem[];
   /** The frozen round view the commit publishes to the tools. */
   roundView: RoundView;
+  /** The frozen protection map shared by the nudge, the manual-compress
+   * window and the compress tool; absent when the config defines no
+   * protection inputs. */
+  protection?: ProtectionMap;
   /** The folded view items, read by the producers and rendered. */
   foldedItems: ViewItem[];
-  /** Window protection inputs shared by the nudge, its log line, and
-   * the manual-compress window. */
+  /** The phantom threshold shared by the nudge and the manual-compress
+   * window. */
   eligibilityConfig: EligibilityConfig;
 }
 
@@ -234,6 +245,10 @@ function readPhase(
   const snapshot = adapter.history(messages);
   const view = snapshot.messages;
   const modelLimit = runtime.modelLimit(sessionId);
+  // The protection map is one round snapshot built BEFORE the release
+  // edits rewrite text: release changes placeholders, never ordinals, so
+  // every later phase reads the same boundaries the reminder used.
+  const protection = configuredProtectionMap(view, config);
   return {
     ...inputs,
     sessionId,
@@ -245,14 +260,13 @@ function readPhase(
     modelLimit,
     contextLimit: modelLimit?.context,
     numbered: [],
-    roundView: { projection: snapshot, numbered: [] },
+    roundView: { projection: snapshot, numbered: [], protection },
+    protection,
     foldedItems: [],
     notices: [],
     toasts: [],
     logs: [],
     eligibilityConfig: {
-      protectedMessages: config.protectedMessages,
-      protectedTokens: config.compress?.protectedTokens,
       thresholdTokens: config.compress?.thresholdTokens,
     },
   };
@@ -279,6 +293,11 @@ function readPhase(
  * scan — those read region text (context gates, placeholder-prefixed
  * skip, reclaim estimates) and must observe the placeholder text.  The
  * notify callback and the `marks_released` log fire on a flip.
+ *
+ * Both halves read the round's protection map: a mark anchored at a
+ * protected ordinal writes no placeholder and does not flip, so the
+ * model never sees the round's own live conversation pruned.  Without a
+ * map the phase fails closed — no edit, no flip.
  */
 function releasePhase(ctx: PipelinePhaseContext): void {
   const { adapter, config, state, sessionId } = ctx;
@@ -289,6 +308,7 @@ function releasePhase(ctx: PipelinePhaseContext): void {
     promptTokens: ctx.promptTokens,
     releasedPercent: config.releasedPercent,
     pendingViewChange: bypass,
+    protection: ctx.protection,
   };
   const releaseEdits = computeEdits(state, ctx.view, releaseOptions);
   ctx.messages = adapter.applyEdits(ctx.messages, releaseEdits);
@@ -402,19 +422,13 @@ function foldPhase(ctx: PipelinePhaseContext): void {
  *
  * Runs AFTER the fold: the `prunedOrdinals` predicate is the union of
  * this round's summary intervals, so a producer never marks a line the
- * model cannot read.
+ * model cannot read.  Both producers consume the round's protection
+ * map, so the active tail and every user instruction stay unmarked; an
+ * absent map skips them with zero side effects.
  */
 function producersPhase(ctx: PipelinePhaseContext): void {
   const { config, sessionId, state, snapshot } = ctx;
-  const protectedTokens = config.compress?.protectedTokens;
-  const protectedStartOrdinal =
-    config.protectedMessages === undefined || protectedTokens === undefined
-      ? undefined
-      : computeProtectedStartOrdinal(
-          ctx.view,
-          config.protectedMessages,
-          protectedTokens,
-        );
+  const protection = ctx.protection;
   // Coverage comes from this round's view: the ordinals a summary item
   // replaced are exactly the ones the model no longer reads, so the
   // predicate cannot drift from what was rendered.
@@ -440,7 +454,7 @@ function producersPhase(ctx: PipelinePhaseContext): void {
         minMessages: dedupGate.minMessages,
         thresholdContext,
         contextLimit: ctx.contextLimit,
-        protectedStartOrdinal,
+        protection,
         protectedTools: dedupGate.protectedTools,
         prunedOrdinals,
       });
@@ -471,7 +485,7 @@ function producersPhase(ctx: PipelinePhaseContext): void {
         minMessages: purgeGate.minMessages,
         thresholdContext,
         contextLimit: ctx.contextLimit,
-        protectedStartOrdinal,
+        protection,
         protectedTools: purgeGate.protectedTools,
         prunedOrdinals,
       });
@@ -500,9 +514,10 @@ function producersPhase(ctx: PipelinePhaseContext): void {
  * the compression tools (line numbers are transient — valid for this
  * round only).  The numbering runs over the frozen snapshot the fold
  * hashed, so the refs the model reads and the refs the tools resolve
- * cannot drift apart.  The round view is frozen HERE, before materializing
- * renders the conversation: it must carry the transcript the fold hashed,
- * never the rendered one.  The commit publishes it (see
+ * cannot drift apart.  The round view — including the protection map the
+ * read phase built — is frozen HERE, before materializing renders the
+ * conversation: it must carry the transcript the fold hashed, never the
+ * rendered one.  The commit publishes it (see
  * `contextPruningTransformHandler`).
  *
  * The render plan is computed here, once, over the lens the round's
@@ -518,6 +533,7 @@ function publishPhase(ctx: PipelinePhaseContext): void {
   ctx.roundView = {
     projection: freezeProjection(ctx.snapshot),
     numbered: freezeNumberedView(numbered),
+    protection: ctx.protection,
   };
 
   // Rebuilds the host messages through the adapter: the plan says which
@@ -569,6 +585,7 @@ function nudgePhase(ctx: PipelinePhaseContext): void {
   const decision = evaluateNudge(state, view, nudgeConfig, {
     contextLimit: modelLimit.context,
     numbered,
+    protection: ctx.protection,
     ...ctx.eligibilityConfig,
   });
   if (decision === null || decision.text === null) return;
@@ -636,27 +653,23 @@ function nudgePhase(ctx: PipelinePhaseContext): void {
  * message never enters ref numbering, and never calls session.prompt
  * (transform-only, invisible in storage).  The flag is cleared after
  * the phase — one-shot, never re-injected on later turns.  A stale
- * trigger (compress tool unregistered or thresholds missing) is
- * cleared so it never fires later.
+ * trigger (compress tool unregistered, either shared active key or the
+ * compress threshold missing) is cleared so it never fires later.
  */
 function manualCompressPhase(ctx: PipelinePhaseContext): void {
   const { adapter, config, sessionId, state, view } = ctx;
-  const manualCfg = config.compress;
+  const compressCfg = config.compress;
   if (state.pendingManualTrigger !== true) return;
 
   if (
     ctx.hasCompressTool &&
-    manualCfg?.protectedTokens !== undefined &&
-    manualCfg?.thresholdTokens !== undefined
+    config.activeMessages !== undefined &&
+    config.activeTokens !== undefined &&
+    compressCfg?.thresholdTokens !== undefined
   ) {
-    const eligibility =
-      config.protectedMessages === undefined
-        ? null
-        : computeEligibility(view, ctx.numbered, {
-            protectedMessages: config.protectedMessages,
-            protectedTokens: manualCfg.protectedTokens,
-            thresholdTokens: manualCfg.thresholdTokens,
-          });
+    const eligibility = computeEligibility(ctx.protection, view, ctx.numbered, {
+      thresholdTokens: compressCfg.thresholdTokens,
+    });
     const windowLine = eligibility
       ? `可压缩窗口：${eligibility.startRef}–${eligibility.endRef}（约 ${eligibility.reclaimTokens} tokens，两端 ref 均为包含边界）。你可以在此窗口内选择连续子范围，fromRef 与 toRef 都指向要压缩的消息本身。`
       : "未检测到明确的可压缩窗口（全部内容均在保护区内）。如你判断仍有已完成且无需逐字保留的历史，请自行选择合适的范围压缩。";
@@ -686,16 +699,16 @@ function manualCompressPhase(ctx: PipelinePhaseContext): void {
       },
     });
   } else {
-    // Compress tool / section unavailable — a stale trigger can never
-    // produce a meaningful command.  Clear the flag so it never fires
-    // later (the /dcp compress registration gate normally prevents
+    // Compress tool / protection inputs unavailable — a stale trigger
+    // can never produce a meaningful command.  Clear the flag so it never
+    // fires later (the /dcp compress registration gate normally prevents
     // this state).
     state.pendingManualTrigger = false;
     log.warn({
       hook: "context-pruning",
       event: "manual_compress_skipped",
       sessionId,
-      reason: "compress tool not registered or thresholds missing",
+      reason: "compress tool not registered or protection inputs missing",
     });
   }
 }

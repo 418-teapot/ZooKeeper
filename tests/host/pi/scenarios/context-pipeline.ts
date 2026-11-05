@@ -6,8 +6,8 @@
  * receives: the pipeline's `[mN] ` line refs, the `[Block bN · K 条]` label
  * and the model-written summary body are read back from it, and the covered
  * originals must be gone from the same request.  No probe-only marker can
- * satisfy these checks — the tags are user text that the pipeline either
- * folds away or keeps repeating.
+ * satisfy these checks — the tags are assistant work text that the pipeline
+ * either folds away or keeps repeating.
  *
  * The fold itself is created by the real `compress` tool, so the block the
  * assertions see was written by the shipped tool through the round view the
@@ -63,10 +63,10 @@ export const contextPipeline: ScenarioDefinition = {
         : CONTEXT_TARGET_TAGS.map((tag) => taggedIndices(baseline.view, tag));
     ctx.checks.add({
       id: "targets_before_fold",
-      title: "压缩前的模型请求完整包含两条目标原文（各占一条独立消息）",
+      title: "压缩前的模型请求完整包含目标工作回复的两个标记",
       status:
         taggedBefore.every((hits) => hits.length === 1) &&
-        taggedBefore[0]?.[0] !== taggedBefore[1]?.[0] &&
+        taggedBefore[0]?.[0] === taggedBefore[1]?.[0] &&
         baseline !== undefined &&
         viewHeaders(baseline.view).length === 0,
       detail:

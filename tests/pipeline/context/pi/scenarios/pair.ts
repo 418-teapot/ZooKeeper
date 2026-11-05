@@ -43,7 +43,8 @@ function pairView(): PiAgentMessage[] {
 }
 
 const BASE_CONFIG = {
-  protectedMessages: 0,
+  activeMessages: 0,
+  activeTokens: 0,
   dedup: {},
   purgeErrors: {},
   compress: {
@@ -53,7 +54,6 @@ const BASE_CONFIG = {
     // of the pair narrative, which is about unit addressing rather
     // than token mass.
     thresholdTokens: 5,
-    protectedTokens: 0,
     maxRanges: 8,
   },
   decompress: { maxFillPercent: 90 },

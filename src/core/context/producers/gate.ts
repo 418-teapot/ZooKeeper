@@ -2,8 +2,8 @@
  * Shared producer gate over the host-agnostic context lens.
  *
  * Both prune producers (`producers/dedup.ts`, `producers/purge-errors.ts`)
- * open with the same gating prelude: an absent protected window skips
- * everything (fail-safe), then the message-count floor, then the
+ * open with the same gating prelude: an absent protection map skips
+ * everything (fail-closed), then the message-count floor, then the
  * context-fraction threshold.  This module is that prelude, so the gate
  * order and its equality semantics live in exactly one place; the
  * producers keep only their scan logic.
@@ -13,6 +13,7 @@
 
 import type { Projection } from "../lens.js";
 import { measureMessages } from "../measure.js";
+import type { ProtectionMap } from "../protection-map.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -42,13 +43,11 @@ export interface ProducerGateOptions {
    */
   contextLimit?: number;
   /**
-   * First protected ordinal (inclusive): regions at or after this
-   * ordinal are never marked.  Computed by the caller from the
-   * protected-messages / protected-tokens window; undefined skips
-   * the producer entirely (fail-safe when the window is not
-   * configured).  `messages.length` is an empty window.
+   * This round's protection map: a region anchored at a protected
+   * ordinal is never marked.  Undefined skips the producer entirely
+   * with zero side effects (fail-closed when the round has no map).
    */
-  protectedStartOrdinal?: number;
+  protection?: ProtectionMap;
   /**
    * Tool names excluded from the producer, matched case-sensitively.
    * Undefined → empty list (neutral — no tool names are protected).
@@ -79,7 +78,7 @@ export interface ProducerRunResult {
 /**
  * Run the shared producer gate over the projection snapshot.
  *
- * Gate order: an absent protected window skips everything (fail-safe),
+ * Gate order: an absent protection map skips everything (fail-closed),
  * then the empty transcript, then the message-count floor (equality
  * skips — `messageCount <= minMessages`), then the context-fraction
  * threshold (unknown model limit closes the gate fail-closed; equality
@@ -88,17 +87,17 @@ export interface ProducerRunResult {
  * @param snapshot - The projection snapshot: the region view the gate
  *   measures over.
  * @param options - The producer's gate options.
- * @returns The gate outcome carrying `protectedStartOrdinal`, or null
- *   when the producer must skip (zero side effects).
+ * @returns The gate outcome carrying the round's protection map, or
+ *   null when the producer must skip (zero side effects).
  */
 export function checkProducerGate(
   snapshot: Projection,
   options: ProducerGateOptions,
-): { protectedStartOrdinal: number } | null {
-  // Fail-safe: without a protection window the producer is skipped with
-  // zero side effects.
-  if (options.protectedStartOrdinal === undefined) return null;
-  const protectedStartOrdinal = options.protectedStartOrdinal;
+): { protection: ProtectionMap } | null {
+  // Fail-closed: without the round's protection map the producer is
+  // skipped with zero side effects.
+  const protection = options.protection;
+  if (protection === undefined) return null;
 
   const messages = snapshot.messages;
   if (!messages || messages.length === 0) return null;
@@ -110,5 +109,5 @@ export function checkProducerGate(
   if (measured.total < options.contextLimit * options.thresholdContext) {
     return null;
   }
-  return { protectedStartOrdinal };
+  return { protection };
 }

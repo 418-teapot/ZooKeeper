@@ -36,9 +36,9 @@ function nudgeMessages(sessionID: string, inputTokens: number) {
 }
 
 /** Transform config with the nudge section attached. */
-function nudgeConfig(protectedMessages: number) {
+function nudgeConfig(activeMessages: number) {
   return {
-    protectedMessages,
+    activeMessages,
     nudge: {
       minContext: "60%",
       minContextCap: 200000,
@@ -46,7 +46,8 @@ function nudgeConfig(protectedMessages: number) {
       maxContextCap: 300000,
       growthTokens: "5%",
     },
-    compress: { protectedTokens: 0, thresholdTokens: 0 },
+    activeTokens: 0,
+    compress: { thresholdTokens: 0 },
     dedup: {},
     purgeErrors: {},
   };
@@ -95,8 +96,9 @@ export const G_NUDGE_01: Scenario = {
       label: "gate-closed-no-nudge-config",
       messages: nudgeMessages(SID, 165000),
       config: {
-        protectedMessages: 2,
-        compress: { protectedTokens: 0, thresholdTokens: 0 },
+        activeMessages: 2,
+        activeTokens: 0,
+        compress: { thresholdTokens: 0 },
         dedup: {},
         purgeErrors: {},
       },
@@ -137,7 +139,7 @@ function refMessages(sessionID: string) {
 export const G_REF_01: Scenario = {
   id: "G-REF-01",
   sessionID: REF_SID,
-  config: { protectedMessages: 0, dedup: {}, purgeErrors: {} },
+  config: { activeMessages: 0, dedup: {}, purgeErrors: {} },
   rounds: [
     {
       label: "injection-branches",

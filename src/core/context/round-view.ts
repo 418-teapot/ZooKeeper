@@ -1,12 +1,13 @@
 /**
  * The current round's frozen view — the single snapshot compression tools read.
  *
- * The context-pruning transform builds the folded view and its dense
- * `mN` line numbering every round; that pair IS the history address
- * space the model holds while it runs.  A compression tool invoked
- * mid-turn must therefore see the SAME view — re-deriving it from the
- * host risks addressing a different ordinal space than the one the
- * model was shown (the failure mode behind mismatched `mN` refs).
+ * The context-pruning transform builds the folded view, its dense `mN`
+ * line numbering and the protection map every round; that snapshot IS
+ * the history address space the model holds while it runs.  A
+ * compression tool invoked mid-turn must therefore see the SAME view —
+ * re-deriving it from the host risks addressing a different ordinal
+ * space than the one the model was shown (the failure mode behind
+ * mismatched `mN` refs).
  *
  * This module is that hand-off: the `RoundViewRegistry` holds the
  * snapshot, the transform publishes it through the per-instance
@@ -29,6 +30,7 @@
 
 import type { HostMessage, Invocation, Projection } from "./lens.js";
 import { project } from "./lens.js";
+import { freezeProtectionMap, type ProtectionMap } from "./protection-map.js";
 import type { NumberedItem } from "./view-refs.js";
 
 /**
@@ -40,6 +42,9 @@ export interface RoundView {
   projection: Projection;
   /** The frozen numbered view items — the round's `mN` address space. */
   numbered: NumberedItem[];
+  /** The round's frozen protection map; absent when the config defines
+   * no protection inputs. */
+  protection?: ProtectionMap;
 }
 
 /**
@@ -147,6 +152,9 @@ export function createRoundViewRegistry(): RoundViewRegistry {
       views.set(sessionId, {
         projection: freezeProjection(view.projection),
         numbered: freezeNumberedView(view.numbered),
+        ...(view.protection === undefined
+          ? {}
+          : { protection: freezeProtectionMap(view.protection) }),
       });
     },
     get(sessionId) {

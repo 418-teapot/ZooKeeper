@@ -16,10 +16,13 @@
  * reads the session state and the published round view through the same
  * runtime the hook and the tools use, and the fold/measure/release layers
  * drive the report.  Pruned tool calls are recognized by their placeholder
- * text, and storage-borne originals are overlaid with the state's effective
- * marks (`materializeEffectiveMarks`) so the report counts the
- * model-visible `input + placeholder`.  A missing or lapsed permit reads no
- * history, sends no notification and changes no state.
+ * text, and storage-borne originals are overlaid with the state's
+ * unprotected effective marks (`materializeEffectiveMarks`) so the report
+ * counts the model-visible `input + placeholder`.  The overlay uses the
+ * protection map built from the same snapshot and the parsed config, so it
+ * agrees with the release phase: without a map nothing is overlaid.  A
+ * missing or lapsed permit reads no history, sends no notification and
+ * changes no state.
  *
  * @module
  */
@@ -32,6 +35,7 @@ import {
 } from "../../core/context/context-report-lens.js";
 import { fold } from "../../core/context/fold.js";
 import type { Projection } from "../../core/context/lens.js";
+import { configuredProtectionMap } from "../../core/context/protection-map.js";
 import {
   materializeEffectiveMarks,
   pendingCount,
@@ -170,17 +174,22 @@ export async function handleDcpCommand(
         formatted: string;
       }
     | undefined;
+  // The protection map of the snapshot just read: the overlay below
+  // follows the same boundaries the release phase uses, so a protected
+  // effective mark keeps its stored text.  Both protection inputs are
+  // required; without them no map exists and nothing is overlaid.
+  const protection = configuredProtectionMap(view, contextConfig);
   try {
     computed = runtime.read(permit, (state) => {
       // Dual-scope message counts: the folded view versus storage.
       const { items } = fold(snapshot, state);
       const counts = countFoldedMessages(items, view);
       // OpenCode's `fetchHistory` returns the stored original text, so
-      // overlay the state's effective marks before reporting: a pruned
-      // tool output then counts as `input + placeholder`, what the model
-      // sees, instead of the stored original.
+      // overlay the state's unprotected effective marks before reporting:
+      // a pruned tool output then counts as `input + placeholder`, what
+      // the model sees, instead of the stored original.
       const report = computeContextReportLens(
-        materializeEffectiveMarks(view, state),
+        materializeEffectiveMarks(view, state, protection),
       );
       return {
         report,
@@ -269,19 +278,21 @@ async function handleCompressSubcommand(
   hasCompressTool: boolean,
 ): Promise<void> {
   // ── Registration gate ────────────────────────────────────────────
-  // The compress section must be strictly parsed AND the `compress`
-  // tool must be listed in the active mode profile's tools.  Absent
-  // section, an invalid section (config parse dropped it), or a profile
-  // that does not register the tool all refuse (the config parse already
-  // warned once for bad keys).
+  // The compress tool must be listed in the active mode profile's tools,
+  // both shared active keys must be configured (the protection map needs
+  // them), and the compress section must be strictly parsed.  Absent
+  // section, an invalid section (config parse dropped it), a missing
+  // active key, or a profile that does not register the tool all refuse
+  // (the config parse already warned once for bad keys).
   const compressCfg = contextConfig.compress;
   if (
     !hasCompressTool ||
-    compressCfg?.protectedTokens === undefined ||
+    contextConfig.activeMessages === undefined ||
+    contextConfig.activeTokens === undefined ||
     compressCfg?.thresholdTokens === undefined
   ) {
     const msg =
-      "压缩功能未启用：compress 工具未在当前 mode profile 的 tools 中注册，或 [zoo.context.compress] 段缺少 threshold_tokens / protected_tokens。";
+      "压缩功能未启用：compress 工具未在当前 mode profile 的 tools 中注册，或 [zoo.context] 段缺少 active_messages / active_tokens，或 [zoo.context.compress] 段缺少 threshold_tokens。";
     await toolHost?.notify(sessionID, msg);
     return;
   }

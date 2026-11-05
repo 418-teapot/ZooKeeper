@@ -14,14 +14,15 @@
  * rewrites any region text.
  *
  * Gating is shared with the dedup producer through `producers/gate.ts`:
- * the producer skips entirely without a caller-computed protected
- * window, below the message-count floor, and below the context-fraction
- * threshold; a `prunedOrdinals` predicate excludes messages already
- * folded or pruned.  All other semantics — error-status determination,
- * skip rules, the input zero-benefit gate, and the placeholder — are
- * defined below: only the failed call's input is pruned, never its
- * output.  The mark write itself is the shared first-write-wins
- * `addPendingMark` in `state.ts`.
+ * the producer skips entirely without this round's protection map, below
+ * the message-count floor, and below the context-fraction threshold; a
+ * `prunedOrdinals` predicate excludes messages already folded or pruned.
+ * A region anchored at a protected ordinal (the active tail or a user
+ * instruction, per `isProtectedOrdinal`) is never marked.  All other
+ * semantics — error-status determination, skip rules, the input
+ * zero-benefit gate, and the placeholder — are defined below: only the
+ * failed call's input is pruned, never its output.  The mark write itself
+ * is the shared first-write-wins `addPendingMark` in `state.ts`.
  *
  * **Idempotency.**  A call whose region already holds a mark is never
  * re-marked.  The check covers both region keys of the call — the
@@ -43,6 +44,7 @@
 import type { Projection } from "../lens.js";
 import { netReclaimTokens } from "../measure.js";
 import { PRUNED_TOOL_ERROR_INPUT_REPLACEMENT } from "../message-parts.js";
+import { isProtectedOrdinal } from "../protection-map.js";
 import { addPendingMark, markKey, type SessionState } from "../state.js";
 import type { ProducerGateOptions, ProducerRunResult } from "./gate.js";
 import { checkProducerGate } from "./gate.js";
@@ -70,13 +72,13 @@ export type PurgeErrorsRunResult = ProducerRunResult;
  * Run purge-errors over the transcript: scan the invocation table for
  * error-status calls and write pending marks for their input regions.
  *
- * Gating order: an absent protected window skips everything (fail-safe),
+ * Gating order: an absent protection map skips everything (fail-closed),
  * then the message-count floor, then the context-fraction threshold.
  * Hidden messages still participate in the scan; the message-count floor
  * counts non-hidden messages.
  *
  * Per error call the skip chain is:
- * 1. Protected window / already-folded-or-pruned ordinal → skip.
+ * 1. Protected ordinal / already-folded-or-pruned ordinal → skip.
  * 2. Tool name in `protectedTools` → skip (undefined means no
  *    exclusions — neutral, never a default list).
  * 3. A mark already held by either of the call's regions — its
@@ -107,7 +109,7 @@ export function runPurgeErrors(
 
   const gate = checkProducerGate(snapshot, options);
   if (gate === null) return { created: 0, tokens: 0 };
-  const protectedStartOrdinal = gate.protectedStartOrdinal;
+  const protection = gate.protection;
 
   let created = 0;
   let tokens = 0;
@@ -120,7 +122,7 @@ export function runPurgeErrors(
     if (invocation.status !== "error") continue;
     const inputRef = invocation.input;
     if (prunedOrdinals?.(inputRef.ordinal)) continue;
-    if (inputRef.ordinal >= protectedStartOrdinal) continue;
+    if (isProtectedOrdinal(protection, inputRef.ordinal)) continue;
     if (options.protectedTools?.includes(invocation.name)) continue;
 
     const inputRegion =

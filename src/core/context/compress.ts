@@ -37,8 +37,8 @@
  */
 
 import type { HostMessage, Projection } from "./lens.js";
-import { findFirstUserOrdinal, findLastUserOrdinal } from "./lens.js";
 import { estimateMessageHeuristic, estimateTokenCount } from "./measure.js";
+import type { ProtectionMap } from "./protection-map.js";
 import { computeSpanHash } from "./spanhash.js";
 import type { Block, SessionState } from "./state.js";
 import { allocateBlockId, clearConsumedBlockRange } from "./state.js";
@@ -86,15 +86,11 @@ export interface CompressRangeInput {
 /**
  * Compression configuration for the gate layer.
  *
- * The fields mirror the parsed `[zoo.context]` configuration the tool
- * adapter supplies — the protection windows and the phantom threshold —
- * plus the optional per-call range upper bound.
+ * The phantom threshold and the optional per-call range upper bound
+ * mirror the parsed `[zoo.context.compress]` configuration.  The
+ * protection inputs travel separately as the round's `ProtectionMap`.
  */
 export interface CompressOptions {
-  /** Number of most recent non-hidden messages to protect. */
-  protectedMessages: number;
-  /** Token budget protected from the end of the session (CJK heuristic). */
-  protectedTokens: number;
   /** Minimum estimated tokens a range must carry to pass the phantom gate. */
   thresholdTokens: number;
   /** Upper bound on ranges per call; excess ranges fail the whole call. */
@@ -257,85 +253,6 @@ function lastFreeRef(
 }
 
 // ---------------------------------------------------------------------------
-// Protection window
-// ---------------------------------------------------------------------------
-
-/**
- * Start ordinal of the message-count protection window.
- *
- * Counts back `n` non-hidden messages from the end of the transcript; a
- * hidden message never occupies a protection slot.  The returned ordinal
- * is inclusive: `[boundary, history.length)` is the protected window.
- * `n <= 0` yields `history.length` (empty window); an `n` larger than
- * the available non-hidden messages yields `0` (protect everything).
- *
- * @param history - The transcript.
- * @param n - Number of trailing messages to protect.
- * @returns Start ordinal of the message-count window.
- */
-function messageCountBoundary(history: HostMessage[], n: number): number {
-  if (n <= 0) return history.length;
-  let count = 0;
-  for (let i = history.length - 1; i >= 0; i--) {
-    if (history[i].hidden) continue;
-    count += 1;
-    if (count >= n) return i;
-  }
-  return 0;
-}
-
-/**
- * Start ordinal of the token-budget protection window.
- *
- * Accumulates the heuristic estimate of messages from the end (backward)
- * until the cumulative total reaches `protectedTokens`; hidden messages
- * contribute nothing.  `protectedTokens <= 0` or an empty transcript
- * yields `history.length` (empty window); a budget exceeding the whole
- * session yields `0` (protect everything).
- *
- * @param history - The transcript.
- * @param protectedTokens - Token budget to protect from the end.
- * @returns Start ordinal of the token window.
- */
-function tokenCountBoundary(
-  history: HostMessage[],
-  protectedTokens: number,
-): number {
-  if (protectedTokens <= 0 || history.length === 0) return history.length;
-  let accumulated = 0;
-  for (let i = history.length - 1; i >= 0; i--) {
-    if (history[i].hidden) continue;
-    accumulated += estimateMessageHeuristic(history[i]);
-    if (accumulated >= protectedTokens) return i;
-  }
-  return 0;
-}
-
-/**
- * Compute the start ordinal of the combined protection window.
- *
- * Both windows extend to the end of the transcript, so their union starts
- * at the earlier of the two boundaries.  Hidden messages are skipped by
- * the message-count window and contribute no tokens to the token window.
- *
- * @param history - The transcript.
- * @param protectedMessages - Trailing message count to protect.
- * @param protectedTokens - Trailing token budget to protect.
- * @returns Start ordinal of the protected window; `history.length` when
- *   both windows are empty.
- */
-export function computeProtectedStartOrdinal(
-  history: HostMessage[],
-  protectedMessages: number,
-  protectedTokens: number,
-): number {
-  return Math.min(
-    messageCountBoundary(history, protectedMessages),
-    tokenCountBoundary(history, protectedTokens),
-  );
-}
-
-// ---------------------------------------------------------------------------
 // resolveSpan — endpoint refs → ordinal interval
 // ---------------------------------------------------------------------------
 
@@ -427,12 +344,10 @@ function estimateIntervalTokens(
  *
  * Gates, in evaluation order:
  *
- * 1. **Protection zone** — the range must not reach into the protected
- *    window: the start of the union of the trailing message-count and
- *    token-budget windows, itself limited by the ordinal of the last
- *    non-hidden user message.
- * 2. **First user** — the range must not contain the first non-hidden
- *    user message.
+ * 1. **Active tail** — the range must end at or before the active tail's
+ *    start ordinal.
+ * 2. **User instructions** — the range must not contain any non-hidden
+ *    user instruction; every instruction is permanently protected.
  * 3. **Overlap / swallow** — an active block intersecting the range must
  *    be fully covered (swallowed) or the range is rejected as a partial
  *    overlap; a fully-covered block in a terminal status is carried on
@@ -457,7 +372,8 @@ function estimateIntervalTokens(
  * @param items - The numbered view items of the current round (the
  *   address space the rejected range is reported back in).
  * @param state - The session state (block collection, read-only here).
- * @param options - Protection windows and the phantom threshold.
+ * @param protection - This round's protection map.
+ * @param options - The phantom threshold.
  * @param start - First ordinal (inclusive).
  * @param end - Last ordinal (exclusive).
  * @returns The gate outcome.
@@ -466,6 +382,7 @@ export function validateRange(
   snapshot: Projection,
   items: NumberedItem[],
   state: SessionState,
+  protection: ProtectionMap,
   options: CompressOptions,
   start: number,
   end: number,
@@ -478,45 +395,44 @@ export function validateRange(
   });
   const span = spanLabel(items, start, end);
 
-  // ── Protection-zone gate ───────────────────────────────────────────
-  const protectedStart = computeProtectedStartOrdinal(
-    history,
-    options.protectedMessages,
-    options.protectedTokens,
-  );
-  const lastUser = findLastUserOrdinal(history);
-  const lastUserBoundary = lastUser >= 0 ? lastUser : history.length;
-  const boundary = Math.min(protectedStart, lastUserBoundary);
-  if (end > boundary) {
-    // `boundary` is exclusive: the last compressible line is the last
-    // unit ending at or before it (the unit crossing the boundary is
-    // protected), and the model needs that line (or the knowledge that
-    // no such line exists) rather than the raw boundary ordinal.
-    const lastFree = lastFreeRef(items, boundary);
+  // ── Active-tail gate ───────────────────────────────────────────────
+  if (end > protection.activeStart) {
+    // `activeStart` is exclusive for the free zone: the last compressible
+    // line is the last unit ending at or before it (the unit crossing the
+    // boundary is protected), and the model needs that line (or the
+    // knowledge that no such line exists) rather than the raw ordinal.
+    const lastFree = lastFreeRef(items, protection.activeStart);
     if (lastFree === undefined) {
       return failed(
-        `${span} 无法压缩：本轮可见的最近对话内容都在保护范围内。` +
+        `${span} 无法压缩：本轮可见的最近对话内容都在活跃保护区内。` +
           `请等对话继续产生更多历史后再选择范围；本轮内重复提交不会成功。`,
       );
     }
-    const firstProtected = refAtOrdinal(items, boundary);
+    const firstProtected = refAtOrdinal(items, protection.activeStart);
     return failed(
-      `${span} 包含受到保护的最近对话内容` +
+      `${span} 包含受保护的最近活跃对话内容` +
         `${firstProtected === undefined ? "" : `（从 ${firstProtected} 开始）`}，不能压缩。` +
         `请将终点改为 ${lastFree} 或更早。`,
     );
   }
 
-  // ── First-user gate ────────────────────────────────────────────────
-  const firstUser = findFirstUserOrdinal(history);
-  if (firstUser >= 0 && start <= firstUser && firstUser < end) {
-    const ref = refAtOrdinal(items, firstUser);
+  // ── User-instruction gate ──────────────────────────────────────────
+  const instructions = protection.instructions.filter(
+    (ordinal) => start <= ordinal && ordinal < end,
+  );
+  if (instructions.length > 0) {
+    const refs = instructions
+      .map((ordinal) => refAtOrdinal(items, ordinal))
+      .filter((ref): ref is string => ref !== undefined);
+    const missing = refs.length < instructions.length;
+    const named = refs.length > 0 ? `（${refs.join("、")}）` : "";
     return failed(
-      `${span} 包含会话的第一条用户消息` +
-        (ref === undefined
-          ? "（该消息不占当轮视图行号，无法按行号定位）。"
-          : `（${ref}）。`) +
-        `第一条用户消息不可压缩，请将起点调整到该消息之后。`,
+      `${span} 包含用户指令${named}` +
+        (missing
+          ? "（部分指令不占当前视图行号，无法按行号完整定位）。"
+          : "。") +
+        `所有非隐藏用户指令都受保护、不可压缩。` +
+        `请把范围调整为不含用户指令的连续工作内容：从该指令之后开始，或到该指令之前结束。`,
     );
   }
 
@@ -907,7 +823,8 @@ interface ValidatedRange {
  *   invocation table feeding the span hashes).
  * @param items - The numbered view items of the current round.
  * @param state - The session state (mutated only on full-batch success).
- * @param options - Protection windows, phantom threshold, range bound.
+ * @param protection - This round's protection map.
+ * @param options - Phantom threshold and range bound.
  * @param ranges - The requested ranges, in order.
  * @returns The created blocks, the per-range failures, and the swallowed
  *   pending-mark count.
@@ -916,6 +833,7 @@ export function compressRanges(
   snapshot: Projection,
   items: NumberedItem[],
   state: SessionState,
+  protection: ProtectionMap,
   options: CompressOptions,
   ranges: CompressRangeInput[],
 ): CompressResult {
@@ -972,6 +890,7 @@ export function compressRanges(
       snapshot,
       items,
       state,
+      protection,
       options,
       entry.start,
       entry.end,

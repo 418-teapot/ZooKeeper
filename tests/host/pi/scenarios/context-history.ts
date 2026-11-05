@@ -1,12 +1,12 @@
 /**
  * History priming shared by the two context scenarios.
  *
- * The production pipeline only compresses history outside its protection
- * windows: the trailing `protected_messages` (20) and the trailing
- * `protected_tokens` budget (20000), and never the first user message.  A
- * scenario therefore drives real prompts — one anchored opening turn, two
- * long target turns, then enough long filler turns — so the target turns sit
- * outside both windows when the model later compresses them.
+ * The production pipeline only compresses work outside its protection
+ * windows: the trailing `active_messages` (20), the trailing
+ * `active_tokens` budget (20000) and every user instruction.  A scenario
+ * therefore drives real prompts — one anchored opening turn, one target work
+ * reply, then enough long filler turns — so the target work sits outside both
+ * windows when the model later compresses it.
  *
  * Every turn is answered by the in-process deterministic provider: no
  * network, no fixture transcript, and the resulting messages are the ones the
@@ -19,7 +19,7 @@ import {
   CONTEXT_FILL_TURNS,
   CONTEXT_SEGMENT_CHARS,
   CONTEXT_TARGET_PROMPT,
-  CONTEXT_TARGET_TAGS,
+  CONTEXT_TARGET_TURNS,
 } from "../harness/constants.js";
 import type { ScenarioContext } from "../harness/scenario-runtime.js";
 
@@ -40,14 +40,16 @@ function segmentBody(tag: string): string {
 }
 
 /**
- * Prompt of one compressible target turn.
+ * Prompt of the compressible target turn.
  *
- * @param position - 1-based target position (one prompt per target tag).
+ * The prompt is a short instruction; the long tagged work lives in the
+ * assistant reply, which is what the model later compresses.
+ *
+ * @param position - 1-based target position.
  * @returns The prompt text.
  */
 export function targetPrompt(position: number): string {
-  const tag = CONTEXT_TARGET_TAGS[position - 1] ?? "";
-  return `${CONTEXT_TARGET_PROMPT}-${position}: ${segmentBody(tag)}`;
+  return `${CONTEXT_TARGET_PROMPT}: 执行这项历史工作 ${position}`;
 }
 
 /**
@@ -67,11 +69,7 @@ export function fillerPrompt(turn: number): string {
  */
 export async function primeContextHistory(ctx: ScenarioContext): Promise<void> {
   await ctx.pi.prompt(CONTEXT_ANCHOR_PROMPT);
-  for (
-    let position = 1;
-    position <= CONTEXT_TARGET_TAGS.length;
-    position += 1
-  ) {
+  for (let position = 1; position <= CONTEXT_TARGET_TURNS; position += 1) {
     await ctx.pi.prompt(targetPrompt(position));
   }
   for (let turn = 1; turn <= CONTEXT_FILL_TURNS; turn += 1) {
@@ -81,6 +79,6 @@ export async function primeContextHistory(ctx: ScenarioContext): Promise<void> {
   ctx.checks.info(
     "history_primed",
     "真实对话已跨过压缩保护窗口",
-    `turns=${CONTEXT_TARGET_TAGS.length + CONTEXT_FILL_TURNS + 1} messages=${state.messageCount} charsPerSegment=${CONTEXT_SEGMENT_CHARS}`,
+    `turns=${CONTEXT_TARGET_TURNS + CONTEXT_FILL_TURNS + 1} messages=${state.messageCount} charsPerSegment=${CONTEXT_SEGMENT_CHARS}`,
   );
 }

@@ -25,9 +25,10 @@
  * actually sees after pruning.  A consumer that reports over a storage
  * transcript (which keeps the pre-prune original text) overlays the
  * state's effective marks with `materializeEffectiveMarks` first; the
- * overlaid placeholder then flows through this same recognition, so the
- * mark signal and the text signal are complementary and never
- * double-counted.
+ * overlay skips the marks the release phase protects, so the report
+ * measures the same regions the model holds.  The overlaid placeholder
+ * then flows through this same recognition, so the mark signal and the
+ * text signal are complementary and never double-counted.
  *
  * Compaction boundary: category statistics (user/tool/assistant) only
  * reflect messages at/after the last message marked `compaction` (a

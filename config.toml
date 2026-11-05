@@ -675,8 +675,10 @@ max_wakes = 3
 # ── Context ───────────────────────────────────────────────────────────────────
 
 [zoo.context]
-# 消息条数保护：从末尾倒数 N 条非 ignored 消息计入保护区
-protected_messages = 20
+# 共享活跃区（消息条数）：从末尾倒数 N 条非 ignored 消息计入
+active_messages = 20
+# 共享活跃区（tokens）：末尾累计达到此值后不压缩
+active_tokens = 20000
 # 批量释放阈值（百分比）：pending 标记合计达到上下文长度该百分比时统一批量释放
 released_percent = 10
 
@@ -695,8 +697,6 @@ protected_tools = []
 [zoo.context.compress]
 # 压缩阈值（tokens）：小于此值的段跳过压缩（幻影门禁）
 threshold_tokens = 2000
-# 压缩保护区（tokens）：末尾累计达到此值后不压缩
-protected_tokens = 20000
 # 单次批量压缩调用允许的最大范围数：超限报错引导分批提交
 max_ranges = 8
 

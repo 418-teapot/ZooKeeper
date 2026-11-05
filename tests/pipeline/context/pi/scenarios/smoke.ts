@@ -61,9 +61,8 @@ function usageView(inputTokens: number) {
 /**
  * View for the nudge rounds.
  *
- * Carries a second user message so the nudge eligibility window
- * `[firstUser + 1, lastUser)` is non-empty (the tool-call / tool-result
- * pair is compressible).
+ * Carries a second user message so more than one work segment exists;
+ * the work after it is a non-empty, compressible segment.
  */
 function nudgeView(inputTokens: number) {
   return [
@@ -84,15 +83,18 @@ function nudgeView(inputTokens: number) {
 
 /** Base config: release gate at 0 %, no producers, no model limit. */
 const BASE_CONFIG = {
-  protectedMessages: 0,
+  activeMessages: 0,
+  activeTokens: 0,
   releasedPercent: 0,
+  compress: {},
   dedup: {},
   purgeErrors: {},
 };
 
 /** Config carrying the nudge section (used by the model-limit rounds). */
 const NUDGE_CONFIG = {
-  protectedMessages: 0,
+  activeMessages: 0,
+  activeTokens: 0,
   nudge: {
     minContext: "60%",
     minContextCap: 200000,
@@ -100,7 +102,7 @@ const NUDGE_CONFIG = {
     maxContextCap: 300000,
     growthTokens: "5%",
   },
-  compress: { protectedTokens: 0, thresholdTokens: 0 },
+  compress: { thresholdTokens: 0 },
   dedup: {},
   purgeErrors: {},
 };

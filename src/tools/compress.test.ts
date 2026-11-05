@@ -11,7 +11,7 @@
  * G-TOOL-01 Chinese guidance text (missing/empty/non-array ranges,
  * non-object items, non-string fields, empty/control/hyphen/overlong
  * titles), core-gate rejections naming the 1-based range index (unknown
- * ref, reversed order, overlap, first-user protection), the config
+ * ref, reversed order, overlap, user-instruction protection), the config
  * guidance errors, the best-effort notify failure, and the registration
  * gate (tool hooks + primary_tools).
  */
@@ -25,6 +25,7 @@ import type { ModeProfile } from "../core/config-types.js";
 import { fold } from "../core/context/fold.js";
 import type { HostMessage, Projection } from "../core/context/lens.js";
 import { project } from "../core/context/lens.js";
+import { buildProtectionMap } from "../core/context/protection-map.js";
 import {
   type ContextRuntime,
   createContextRuntime,
@@ -145,7 +146,7 @@ function makeToolLensMsg(): HostMessage {
 
 /**
  * A 31-message conversation heavy enough to pass the real config gates
- * (protectedMessages=20, protectedTokens=20000, thresholdTokens=2000).
+ * (activeMessages=20, activeTokens=20000, thresholdTokens=2000).
  *
  * Indices: u0 (first user) + 28 tool-heavy exchanges + last user + final
  * assistant.  The protection boundary lands at index 11, so valid ranges
@@ -306,7 +307,18 @@ function publishViewOf(messages: HostMessage[]): void {
     items,
     (ordinal) => snapshot.messages[ordinal].hidden,
   );
-  runtime.publishRoundView(TEST_SESSION_ID, { projection: snapshot, numbered });
+  const activeMessages = PARSED_CONFIG.activeMessages;
+  const activeTokens = PARSED_CONFIG.activeTokens;
+  assert.ok(activeMessages !== undefined && activeTokens !== undefined);
+  runtime.publishRoundView(TEST_SESSION_ID, {
+    projection: snapshot,
+    numbered,
+    protection: buildProtectionMap(
+      snapshot.messages,
+      activeMessages,
+      activeTokens,
+    ),
+  });
 }
 
 /**
@@ -411,6 +423,37 @@ describe("compress tool execute — history source", () => {
     assert.equal(calls.length, 1, "the fallback read runs once");
     assert.equal(stateOf().blocks.size, 1);
     assert.ok(result.includes("已压缩"));
+  });
+
+  it("fails closed with guidance when the cached view carries no protection map", async () => {
+    // A view published while the shared active keys were unconfigured: no
+    // protection map exists, so the tool refuses instead of compressing
+    // an unprotected transcript.
+    const snapshot = project(makeMessages(), []);
+    const { items } = fold(snapshot, stateOf());
+    runtime.publishRoundView(TEST_SESSION_ID, {
+      projection: snapshot,
+      numbered: numberView(
+        items,
+        (ordinal) => snapshot.messages[ordinal].hidden,
+      ),
+    });
+    const { host, notifyCalls } = sourceHost({});
+
+    const tool = createCompressTool(host, PARSED_CONFIG, runtime);
+    await assert.rejects(
+      () => tool.execute({ ranges: [makeRange(1, 9)] }, call()),
+      (err: unknown) =>
+        err instanceof Error &&
+        /无法压缩/.test(err.message) &&
+        /没有保护范围/.test(err.message),
+    );
+    assert.equal(
+      stateOf().blocks.size,
+      0,
+      "state untouched — nothing was compressed",
+    );
+    assert.deepEqual(notifyCalls, [], "no notification for a refused call");
   });
 
   it("fails closed with guidance when neither a view nor a fallback exists", async () => {
@@ -606,7 +649,7 @@ describe("compress tool execute — happy path", () => {
 // ---------------------------------------------------------------------------
 
 describe("compress tool execute — protection gates", () => {
-  it("rejects a range containing the session's first user message", async () => {
+  it("rejects a range containing a user instruction", async () => {
     const messages = makeMessages();
     const { host } = fakeHost(messages);
     const tool = createCompressTool(host, PARSED_CONFIG, runtime);
@@ -614,7 +657,9 @@ describe("compress tool execute — protection gates", () => {
     await assert.rejects(
       () => tool.execute({ ranges: [makeRange(0, 5)] }, call()),
       (err: unknown) =>
-        err instanceof Error && /第一条用户消息/.test(err.message),
+        err instanceof Error &&
+        /用户指令/.test(err.message) &&
+        /所有非隐藏用户指令都受保护/.test(err.message),
     );
     const state = sessionState();
     assert.equal(state.blocks.size, 0);
@@ -913,15 +958,15 @@ describe("compress tool execute — error paths", () => {
     );
   });
 
-  it("throws a loud config error when protected_messages is missing (defensive)", async () => {
+  it("throws a loud config error when active_messages is missing (defensive)", async () => {
     const hooks = composeToolHooks(
       {},
       {
         dedup: {},
         purgeErrors: {},
+        activeTokens: 20000,
         compress: {
           thresholdTokens: 2000,
-          protectedTokens: 20000,
           maxRanges: 8,
         },
       },
@@ -931,7 +976,29 @@ describe("compress tool execute — error paths", () => {
 
     await assert.rejects(
       () => hooks.compress.execute({ ranges: [makeRange(1, 9)] }, call()),
-      /protected_messages/,
+      /active_messages/,
+    );
+  });
+
+  it("throws a loud config error when active_tokens is missing (defensive)", async () => {
+    const hooks = composeToolHooks(
+      {},
+      {
+        dedup: {},
+        purgeErrors: {},
+        activeMessages: 20,
+        compress: {
+          thresholdTokens: 2000,
+          maxRanges: 8,
+        },
+      },
+      ["compress"],
+    );
+    assert.ok(hooks?.compress);
+
+    await assert.rejects(
+      () => hooks.compress.execute({ ranges: [makeRange(1, 9)] }, call()),
+      /active_tokens/,
     );
   });
 

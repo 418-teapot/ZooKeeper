@@ -28,6 +28,7 @@ import {
 } from "./context-report-lens.js";
 import type { HostMessage, ViewItem } from "./lens.js";
 import { PRUNED_TOOL_OUTPUT_REPLACEMENT } from "./message-parts.js";
+import { buildProtectionMap, type ProtectionMap } from "./protection-map.js";
 import { materializeEffectiveMarks } from "./release.js";
 import { markKey, type SessionState } from "./state.js";
 
@@ -183,8 +184,9 @@ describe("computeContextReportLens", () => {
  * placeholder only into the model-bound copy, so a report over storage
  * must overlay the effective marks itself.  These tests run the exact
  * caller pipeline (`computeContextReportLens(materializeEffectiveMarks(
- * messages, state))`) and assert the tool category against hand-computed
- * literals: pruned calls count `input + placeholder`, pending or absent
+ * messages, state, protection))`) and assert the tool category against
+ * hand-computed literals: an unprotected pruned call counts `input +
+ * placeholder`, a protected one keeps its raw output, pending or absent
  * marks leave the raw output in place, and a region that is already a
  * placeholder is not counted twice.
  */
@@ -192,8 +194,11 @@ describe("computeContextReportLens over a marks-overlaid transcript", () => {
   const reportOver = (
     messages: HostMessage[],
     state: SessionState,
+    protection: ProtectionMap | undefined,
   ): ReturnType<typeof computeContextReportLens> =>
-    computeContextReportLens(materializeEffectiveMarks(messages, state));
+    computeContextReportLens(
+      materializeEffectiveMarks(messages, state, protection),
+    );
 
   /** A user turn plus one tool call whose output is still the original. */
   function rawToolTranscript(): HostMessage[] {
@@ -204,6 +209,11 @@ describe("computeContextReportLens over a marks-overlaid transcript", () => {
         usage: { input: 500, output: 100 },
       }),
     ];
+  }
+
+  /** Both protection windows disabled: ordinal 1 is outside the tail. */
+  function emptyWindow(messages: HostMessage[]): ProtectionMap {
+    return buildProtectionMap(messages, 0, 0);
   }
 
   it("counts an effective mark's raw tool output as input plus placeholder", () => {
@@ -218,7 +228,8 @@ describe("computeContextReportLens over a marks-overlaid transcript", () => {
       }),
     );
 
-    const report = reportOver(rawToolTranscript(), state);
+    const messages = rawToolTranscript();
+    const report = reportOver(messages, state, emptyWindow(messages));
 
     // tool = input "echo pruned" (3) + placeholder (77 → 20) = 23
     assert.equal(report.categories.tool, 23);
@@ -238,14 +249,78 @@ describe("computeContextReportLens over a marks-overlaid transcript", () => {
       }),
     );
 
-    const report = reportOver(rawToolTranscript(), state);
+    const messages = rawToolTranscript();
+    const report = reportOver(messages, state, emptyWindow(messages));
 
     // tool = input "echo pruned" (3) + raw output (15 → 4) = 7
     assert.equal(report.categories.tool, 7);
   });
 
   it("counts the raw output when no mark addresses it", () => {
-    const report = reportOver(rawToolTranscript(), makeState());
+    const messages = rawToolTranscript();
+    const report = reportOver(messages, makeState(), emptyWindow(messages));
+    assert.equal(report.categories.tool, 7);
+  });
+
+  it("keeps a protected effective mark's raw output", () => {
+    const messages = rawToolTranscript();
+    const state = makeState();
+    state.marks.set(
+      markKey(1, 1),
+      makeMark({
+        anchorOrdinal: 1,
+        regionIndex: 1,
+        content: "raw output text",
+        effective: true,
+      }),
+    );
+
+    // The last message is the active tail, so release writes no
+    // placeholder there and the mark's raw output stays visible.
+    const report = reportOver(
+      messages,
+      state,
+      buildProtectionMap(messages, 1, 0),
+    );
+
+    // tool = input "echo pruned" (3) + raw output (15 → 4) = 7
+    assert.equal(report.categories.tool, 7);
+  });
+
+  it("shows the placeholder once the mark's ordinal leaves the active tail", () => {
+    const messages = rawToolTranscript();
+    const state = makeState();
+    state.marks.set(
+      markKey(1, 1),
+      makeMark({
+        anchorOrdinal: 1,
+        regionIndex: 1,
+        content: "raw output text",
+        effective: true,
+      }),
+    );
+
+    const report = reportOver(messages, state, emptyWindow(messages));
+
+    // tool = input "echo pruned" (3) + placeholder (77 → 20) = 23
+    assert.equal(report.categories.tool, 23);
+  });
+
+  it("overlays nothing without a protection map", () => {
+    const state = makeState();
+    state.marks.set(
+      markKey(1, 1),
+      makeMark({
+        anchorOrdinal: 1,
+        regionIndex: 1,
+        content: "raw output text",
+        effective: true,
+      }),
+    );
+
+    const report = reportOver(rawToolTranscript(), state, undefined);
+
+    // No map means no known write target: the stored original stands.
     assert.equal(report.categories.tool, 7);
   });
 
@@ -267,7 +342,7 @@ describe("computeContextReportLens over a marks-overlaid transcript", () => {
       }),
     );
 
-    const report = reportOver(messages, state);
+    const report = reportOver(messages, state, emptyWindow(messages));
 
     // placeholder counted once: input 3 + placeholder 20 = 23 (not 40).
     assert.equal(report.categories.tool, 23);

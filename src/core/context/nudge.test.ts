@@ -30,6 +30,7 @@ import {
   type NudgeInjectOptions,
   readLevel,
 } from "./nudge.js";
+import { buildProtectionMap } from "./protection-map.js";
 import type { NumberedItem } from "./view-refs.js";
 import { numberView } from "./view-refs.js";
 
@@ -87,8 +88,7 @@ function summaryItem(start: number, end: number): ViewItem {
 function parityOpts(messages: HostMessage[]): NudgeInjectOptions {
   return {
     contextLimit: 200000,
-    protectedMessages: 0,
-    protectedTokens: 0,
+    protection: buildProtectionMap(messages, 0, 0),
     thresholdTokens: 0,
     numbered: numberedOf(messages),
   };
@@ -98,8 +98,7 @@ function parityOpts(messages: HostMessage[]): NudgeInjectOptions {
 function injectOpts(messages: HostMessage[]): NudgeInjectOptions {
   return {
     contextLimit: 200000,
-    protectedMessages: 2,
-    protectedTokens: 0,
+    protection: buildProtectionMap(messages, 2, 0),
     thresholdTokens: 0,
     numbered: numberedOf(messages),
   };
@@ -174,11 +173,11 @@ describe("evaluateNudge gates", () => {
   });
 
   it("persists the anchor but injects nothing when no window is eligible", () => {
-    // protectedMessages covers the whole view → empty window.
+    // activeMessages covers the whole view → empty window.
     const state = makeState();
     const opts = (messages: HostMessage[]): NudgeInjectOptions => ({
       ...injectOpts(messages),
-      protectedMessages: 100,
+      protection: buildProtectionMap(messages, 100, 0),
     });
     assert.equal(
       evaluateNudge(
@@ -203,7 +202,7 @@ describe("evaluateNudge gates", () => {
     const state = makeState();
     const opts = (messages: HostMessage[]): NudgeInjectOptions => ({
       ...injectOpts(messages),
-      protectedMessages: undefined,
+      protection: undefined,
     });
     evaluateNudge(
       state,
@@ -264,8 +263,8 @@ describe("nudge text assembly", () => {
       text.includes("**CONTEXT GROWING — 150000 (75% of 200000 window)**"),
       "gentle header with tokens and percent",
     );
-    // The window is the single line between the first user message and
-    // the protection boundary — a1's dense line 2, ~4 tokens.
+    // The window is the single line between the first instruction and
+    // the active tail — a1's dense line 2, ~4 tokens.
     assert.ok(
       text.includes(
         "Compressible window: m2–m2 (~4 tokens), both refs inclusive.",
@@ -336,52 +335,124 @@ describe("computeEligibility", () => {
     makeMsg("assistant", ["hhhhhhhhhhhhhhhhhhhhhhhhhhhhhh"]),
   ];
 
-  /** Config with the phantom gate and token protection disabled. */
-  const baseConfig = {
-    protectedMessages: 2,
-    protectedTokens: 0,
-    thresholdTokens: 0,
-  };
+  /** The fixture transcript's unfolded view, one line per message. */
+  const lensEligNumbered = numberedOf(lensEligMessages);
 
-  it("returns null when a protection input is unconfigured", () => {
-    const numbered = numberedOf(lensEligMessages);
-    const missing: EligibilityConfig[] = [
-      { protectedTokens: 0, thresholdTokens: 0 },
-      { protectedMessages: 2, thresholdTokens: 0 },
-      { protectedMessages: 2, protectedTokens: 0 },
+  /** Protection map of the fixture: a 2-message tail, no token tail. */
+  const lensEligProtection = buildProtectionMap(lensEligMessages, 2, 0);
+
+  /** Gate config with the phantom threshold disabled. */
+  const gate: EligibilityConfig = { thresholdTokens: 0 };
+
+  /**
+   * A transcript whose earlier work segment frees 100 tokens and whose
+   * later one frees 10, split by a middle instruction and followed by a
+   * two-message active tail.
+   */
+  function bigThenSmall(): HostMessage[] {
+    return [
+      makeMsg("user", ["instruction"]),
+      makeMsg("assistant", ["x".repeat(400)]),
+      makeMsg("user", ["middle instruction"]),
+      makeMsg("assistant", ["y".repeat(40)]),
+      makeMsg("assistant", ["tail one"]),
+      makeMsg("assistant", ["tail two"]),
     ];
-    for (const config of missing) {
-      assert.equal(
-        computeEligibility(lensEligMessages, numbered, config),
-        null,
-        "an unconfigured layer fails closed",
-      );
-    }
+  }
+
+  it("returns null when the protection map is absent", () => {
+    assert.equal(
+      computeEligibility(undefined, lensEligMessages, lensEligNumbered, gate),
+      null,
+      "an absent protection map fails closed",
+    );
   });
 
-  it("computes the window between the first-user boundary and the protection", () => {
-    // Unfolded view: one line per message, so the window is lines m2..m6
-    // (ordinals 1..5) = 2+3+4+5+6 = 20 tokens.
+  it("returns null when the phantom threshold is unconfigured", () => {
+    assert.equal(
+      computeEligibility(
+        lensEligProtection,
+        lensEligMessages,
+        lensEligNumbered,
+        {},
+      ),
+      null,
+      "an unconfigured threshold fails closed",
+    );
+  });
+
+  it("advertises the highest-reclaim work segment", () => {
+    // Active tail starts at ordinal 6.  Instructions cut the work at
+    // ordinals 0, 2 and 4, leaving the runs m2 (2 tokens), m4 (4) and
+    // m6 (6): the assistant at ordinal 5 frees the most.
     assert.deepEqual(
       computeEligibility(
+        lensEligProtection,
         lensEligMessages,
-        numberedOf(lensEligMessages),
-        baseConfig,
+        lensEligNumbered,
+        gate,
       ),
       {
-        startRef: "m2",
+        startRef: "m6",
         endRef: "m6",
-        reclaimTokens: 20,
+        reclaimTokens: 6,
       },
+    );
+  });
+
+  it("advertises the earlier segment when it frees more tokens", () => {
+    // Both segments clear the phantom gate, and the earlier one frees ten
+    // times more than the later one, so view order does not decide.
+    const history = bigThenSmall();
+    assert.deepEqual(
+      computeEligibility(
+        buildProtectionMap(history, 2, 0),
+        history,
+        numberedOf(history),
+        gate,
+      ),
+      { startRef: "m2", endRef: "m2", reclaimTokens: 100 },
+    );
+  });
+
+  it("advertises the later segment when both free the same tokens", () => {
+    // A tie goes to the newer segment: m4 sits closer to the active tail.
+    const history = bigThenSmall();
+    history[3] = makeMsg("assistant", ["z".repeat(400)]);
+    assert.deepEqual(
+      computeEligibility(
+        buildProtectionMap(history, 2, 0),
+        history,
+        numberedOf(history),
+        gate,
+      ),
+      { startRef: "m4", endRef: "m4", reclaimTokens: 100 },
+    );
+  });
+
+  it("skips a segment below the phantom threshold", () => {
+    // The later segment frees 10 tokens, below the 50-token gate, so it
+    // does not compete with the 100-token segment.
+    const history = bigThenSmall();
+    assert.deepEqual(
+      computeEligibility(
+        buildProtectionMap(history, 2, 0),
+        history,
+        numberedOf(history),
+        { thresholdTokens: 50 },
+      ),
+      { startRef: "m2", endRef: "m2", reclaimTokens: 100 },
     );
   });
 
   it("returns null when the protected window covers everything", () => {
     assert.equal(
-      computeEligibility(lensEligMessages, numberedOf(lensEligMessages), {
-        ...baseConfig,
-        protectedMessages: 100,
-      }),
+      computeEligibility(
+        buildProtectionMap(lensEligMessages, 100, 0),
+        lensEligMessages,
+        lensEligNumbered,
+        gate,
+      ),
       null,
     );
   });
@@ -397,68 +468,82 @@ describe("computeEligibility", () => {
     ];
     assert.equal(
       computeEligibility(
+        buildProtectionMap(lensEligMessages, 100, 0),
         lensEligMessages,
         numberedOf(lensEligMessages, items),
-        { ...baseConfig, protectedMessages: 100 },
+        gate,
       ),
       null,
     );
   });
 
   it("shrinks the window when token protection is tighter than message count", () => {
-    // Boundary ordinal 5 (the trailing 16 tokens reach the 16-token
-    // budget) → window lines m2..m5 = 2+3+4+5 = 14 tokens.
+    // The 16-token budget reaches ordinal 5, so the active tail starts
+    // there.  The last work segment is the assistant at ordinal 3 — dense
+    // line m4, 4 heuristic tokens.
     assert.deepEqual(
-      computeEligibility(lensEligMessages, numberedOf(lensEligMessages), {
-        ...baseConfig,
-        protectedTokens: 16,
-      }),
-      { startRef: "m2", endRef: "m5", reclaimTokens: 14 },
+      computeEligibility(
+        buildProtectionMap(lensEligMessages, 2, 16),
+        lensEligMessages,
+        lensEligNumbered,
+        gate,
+      ),
+      { startRef: "m4", endRef: "m4", reclaimTokens: 4 },
     );
   });
 
-  it("protects the last user message even when nothing else is protected", () => {
+  it("does not protect a suffix after the last user instruction", () => {
+    // Nothing is protected but the instructions: the work after the last
+    // instruction is still compressible, so the freshest run is m8.
     assert.deepEqual(
-      computeEligibility(lensEligMessages, numberedOf(lensEligMessages), {
-        ...baseConfig,
-        protectedMessages: 0,
-      }),
-      { startRef: "m2", endRef: "m6", reclaimTokens: 20 },
+      computeEligibility(
+        buildProtectionMap(lensEligMessages, 0, 0),
+        lensEligMessages,
+        lensEligNumbered,
+        gate,
+      ),
+      { startRef: "m8", endRef: "m8", reclaimTokens: 8 },
     );
   });
 
-  it("excludes the first user message from the window start", () => {
+  it("never advertises a user instruction", () => {
     const result = computeEligibility(
+      buildProtectionMap(lensEligMessages, 0, 0),
       lensEligMessages,
-      numberedOf(lensEligMessages),
-      { ...baseConfig, protectedMessages: 0 },
+      lensEligNumbered,
+      gate,
     );
-    assert.equal(result?.startRef, "m2", "never m1");
+    assert.equal(result?.startRef, "m8", "never an instruction line");
   });
 
   it("returns null when the window estimate falls below thresholdTokens", () => {
     assert.equal(
-      computeEligibility(lensEligMessages, numberedOf(lensEligMessages), {
-        ...baseConfig,
-        thresholdTokens: 100,
-      }),
+      computeEligibility(
+        lensEligProtection,
+        lensEligMessages,
+        lensEligNumbered,
+        { thresholdTokens: 100 },
+      ),
       null,
     );
   });
 
   it("gives no line (and no ref) to a hidden message inside the window", () => {
-    // Ordinal 5 is hidden: it occupies no line, so the window's last ref
-    // is the line before it while the hidden message adds no reclaim.
+    // Ordinal 5 is hidden: it occupies no line, so the final work segment
+    // after the last instruction starts at ordinal 6 and keeps its own
+    // ref, while the hidden message adds no reclaim.
     const dirty = [...lensEligMessages];
     dirty[5] = makeMsg("assistant", ["ffffffffffffffffffffff"], {
       hidden: true,
     });
     assert.deepEqual(
-      computeEligibility(dirty, numberedOf(dirty), {
-        ...baseConfig,
-        protectedMessages: 0,
-      }),
-      { startRef: "m2", endRef: "m5", reclaimTokens: 14 },
+      computeEligibility(
+        buildProtectionMap(dirty, 0, 0),
+        dirty,
+        numberedOf(dirty),
+        gate,
+      ),
+      { startRef: "m7", endRef: "m7", reclaimTokens: 8 },
     );
   });
 
@@ -474,18 +559,20 @@ describe("computeEligibility", () => {
     ];
     assert.equal(
       computeEligibility(
+        lensEligProtection,
         lensEligMessages,
         numberedOf(lensEligMessages, items),
-        baseConfig,
+        gate,
       ),
       null,
     );
   });
 
-  it("addresses a folded line but counts only its uncompressed neighbours", () => {
-    // Ordinals 1..3 are folded; the window is the summary line (m2) plus
-    // ordinals 4 and 5 (m3, m4), so reclaim is 5+6 = 11 while the window
-    // still starts at the summary's ref — the address the model holds.
+  it("addresses only the work segment after the final instruction", () => {
+    // Ordinals 1..3 are folded and ordinal 4 is an instruction.  The
+    // summary line holds no instruction, so it is work, but the active
+    // tail starts at ordinal 6 and the last free run is the assistant at
+    // ordinal 5 — line m4, 6 heuristic tokens.
     const items: ViewItem[] = [
       { type: "original", start: 0, end: 1 },
       summaryItem(1, 4),
@@ -496,11 +583,12 @@ describe("computeEligibility", () => {
     ];
     assert.deepEqual(
       computeEligibility(
+        lensEligProtection,
         lensEligMessages,
         numberedOf(lensEligMessages, items),
-        baseConfig,
+        gate,
       ),
-      { startRef: "m2", endRef: "m4", reclaimTokens: 11 },
+      { startRef: "m4", endRef: "m4", reclaimTokens: 6 },
     );
   });
 
@@ -514,62 +602,135 @@ describe("computeEligibility", () => {
     ];
     assert.equal(
       computeEligibility(
+        lensEligProtection,
         lensEligMessages,
         numberedOf(lensEligMessages, items),
-        baseConfig,
+        gate,
       ),
       null,
     );
   });
 
   it("numbers the window in the folded view, not in transcript ordinals", () => {
-    // Folding 20 messages of the tail into one line pulls the window's
-    // last ref far below the ordinal it would address unfolded.
-    const many: HostMessage[] = [];
-    many.push(makeMsg("user", ["aaaa"]));
-    for (let i = 1; i < 21; i++) {
+    // One instruction at ordinal 0, then 21 assistants.  Folding the
+    // middle of the work into one line pulls the end ref far below the
+    // ordinal it would address unfolded, and the folded content is not
+    // billed as reclaim again.
+    const many: HostMessage[] = [makeMsg("user", ["aaaa"])];
+    for (let i = 1; i < 22; i++) {
       many.push(makeMsg("assistant", ["x".repeat(i * 4)]));
     }
-    many.push(makeMsg("user", ["gggggggggggggggggggggggggg"]));
-    many.push(makeMsg("assistant", ["hhhhhhhhhhhhhhhhhhhhhhhhhhhhhh"]));
     const unfolded = numberedOf(many);
     const foldedItems: ViewItem[] = [
       { type: "original", start: 0, end: 1 },
       { type: "original", start: 1, end: 2 },
       summaryItem(2, 21),
       { type: "original", start: 21, end: 22 },
-      { type: "original", start: 22, end: 23 },
     ];
     const folded = numberedOf(many, foldedItems);
-    const cfg = { ...baseConfig, protectedMessages: 0 };
+    const protection = buildProtectionMap(many, 0, 0);
 
-    const before = computeEligibility(many, unfolded, cfg);
-    const after = computeEligibility(many, folded, cfg);
+    const before = computeEligibility(protection, many, unfolded, gate);
+    const after = computeEligibility(protection, many, folded, gate);
     assert.ok(before && after, "both windows eligible");
-    // Unfolded the window ends at the line addressing ordinal 19; folded
-    // the same content is one summary line, so the end ref is m3 and the
-    // 18 folded messages contribute no reclaim.
+    // Unfolded the window ends at the line addressing ordinal 21; folded
+    // the same content is one summary line, so the end ref is m4 and the
+    // 19 folded messages contribute no reclaim.
     assert.equal(after.startRef, "m2");
-    assert.equal(after.endRef, "m3");
+    assert.equal(after.endRef, "m4");
     assert.ok(
       (after?.reclaimTokens ?? 0) < (before?.reclaimTokens ?? 0),
       "folded content is not billed as reclaim again",
     );
   });
 
-  it("returns null when the session has no user message", () => {
+  it("returns null when the active tail covers the whole transcript", () => {
     const assistantOnly = [
       makeMsg("assistant", ["bbbbbbbb"]),
       makeMsg("assistant", ["dddddddddddddddd"]),
     ];
     assert.equal(
-      computeEligibility(assistantOnly, numberedOf(assistantOnly), baseConfig),
+      computeEligibility(
+        buildProtectionMap(assistantOnly, 2, 0),
+        assistantOnly,
+        numberedOf(assistantOnly),
+        gate,
+      ),
       null,
     );
   });
 
+  it("advertises work in a transcript without a user message", () => {
+    // No instruction exists, so nothing was ever protected by a
+    // first-user-only rule: the whole work run is eligible.
+    const assistantOnly = [
+      makeMsg("assistant", ["bbbbbbbb"]),
+      makeMsg("assistant", ["dddddddddddddddd"]),
+    ];
+    assert.deepEqual(
+      computeEligibility(
+        buildProtectionMap(assistantOnly, 0, 0),
+        assistantOnly,
+        numberedOf(assistantOnly),
+        gate,
+      ),
+      { startRef: "m1", endRef: "m2", reclaimTokens: 6 },
+    );
+  });
+
+  it("keeps 200 steps of work after a single instruction eligible", () => {
+    // One instruction, 200 assistant steps, and an active tail of the
+    // last 10 messages: the work that already left the active tail is
+    // compressible, addressed in dense view lines.
+    const history: HostMessage[] = [makeMsg("user", ["instruction"])];
+    for (let i = 1; i <= 200; i++) {
+      history.push(makeMsg("assistant", ["brief step"]));
+    }
+    const result = computeEligibility(
+      buildProtectionMap(history, 10, 0),
+      history,
+      numberedOf(history),
+      gate,
+    );
+    assert.equal(result?.startRef, "m2");
+    assert.equal(result?.endRef, "m191");
+    assert.ok((result?.reclaimTokens ?? 0) > 0);
+  });
+
+  it("splits work segments at a middle user instruction", () => {
+    // ordinals 1..3 are large work, ordinal 4 is a middle instruction,
+    // ordinals 5..9 are small work, and the active tail starts at 10.
+    // The last segment is below the phantom threshold, so the earlier
+    // segment is advertised — and it must stop before the instruction.
+    const history: HostMessage[] = [makeMsg("user", ["instruction"])];
+    for (let i = 1; i <= 3; i++) {
+      history.push(makeMsg("assistant", ["x".repeat(400)]));
+    }
+    history.push(makeMsg("user", ["middle instruction"]));
+    for (let i = 5; i <= 9; i++) {
+      history.push(makeMsg("assistant", ["z".repeat(40)]));
+    }
+    history.push(makeMsg("assistant", ["tail one"]));
+    history.push(makeMsg("assistant", ["tail two"]));
+    const result = computeEligibility(
+      buildProtectionMap(history, 2, 0),
+      history,
+      numberedOf(history),
+      { thresholdTokens: 100 },
+    );
+    assert.equal(result?.startRef, "m2");
+    assert.equal(result?.endRef, "m4");
+    assert.ok(
+      (result?.reclaimTokens ?? 0) >= 100,
+      "the advertised segment clears the threshold",
+    );
+  });
+
   it("returns null for an empty message array", () => {
-    assert.equal(computeEligibility([], [], baseConfig), null);
+    assert.equal(
+      computeEligibility(buildProtectionMap([], 0, 0), [], [], gate),
+      null,
+    );
   });
 });
 

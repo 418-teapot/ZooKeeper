@@ -47,6 +47,7 @@ const PERSIST_TEST_SESSION_IDS = [
   "sess-compress-test",
   "sess-compress-disabled",
   "sess-compress-absent",
+  "sess-compress-no-active-messages",
 ];
 
 /** Sandbox store directory of this suite. */
@@ -222,6 +223,16 @@ describe("/dcp context subcommand", () => {
 describe("effective prune marks over storage", () => {
   const SID = "sess-marks-report";
 
+  /**
+   * Both protection windows disabled: no ordinal is protected, so every
+   * effective mark is overlaid — the release phase writes there too.
+   */
+  const OPEN_PROTECTION: ContextPruningConfig = {
+    activeMessages: 0,
+    activeTokens: 0,
+    compress: {},
+  };
+
   afterEach(() => {
     store.delete(SID);
   });
@@ -246,13 +257,65 @@ describe("effective prune marks over storage", () => {
     });
 
     const { toolHost, notifyCalls } = mockToolHost(view);
-    await dcp(toolHost, SID, "context", {});
+    await dcp(toolHost, SID, "context", OPEN_PROTECTION);
 
     assert.equal(notifyCalls.length, 1);
     // Raw total = exact 600 + tail (input 4 + output 100) = 704.
     // Marked total = 600 + (input 4 + placeholder 20) = 624.
     assert.match(notifyCalls[0].text, /~624 tokens/);
     assert.doesNotMatch(notifyCalls[0].text, /~704 tokens/);
+  });
+
+  it("keeps a protected effective mark's stored output", async () => {
+    const output = "y".repeat(400);
+    const view: HostMessage[] = [
+      makeAssistantMsg({ text: "Hi", usage: { input: 500, output: 100 } }),
+      makeToolMsg("bash", "echo hello world", output),
+    ];
+    const state = stateOf(SID);
+    state.marks.set(markKey(1, 1), {
+      anchorOrdinal: 1,
+      regionIndex: 1,
+      content: output,
+      contentTokens: 100,
+      effective: true,
+      markedAt: 1,
+    });
+
+    const { toolHost, notifyCalls } = mockToolHost(view);
+    // The last message is the active tail: release writes no placeholder
+    // there, so the report counts the stored original output.
+    await dcp(toolHost, SID, "context", {
+      activeMessages: 1,
+      activeTokens: 0,
+      compress: {},
+    });
+
+    assert.match(notifyCalls[0].text, /~704 tokens/);
+  });
+
+  it("overlays no effective mark without a protection map", async () => {
+    const output = "y".repeat(400);
+    const view: HostMessage[] = [
+      makeAssistantMsg({ text: "Hi", usage: { input: 500, output: 100 } }),
+      makeToolMsg("bash", "echo hello world", output),
+    ];
+    const state = stateOf(SID);
+    state.marks.set(markKey(1, 1), {
+      anchorOrdinal: 1,
+      regionIndex: 1,
+      content: output,
+      contentTokens: 100,
+      effective: true,
+      markedAt: 1,
+    });
+
+    const { toolHost, notifyCalls } = mockToolHost(view);
+    // No map (both protection inputs missing) → fail-closed: the stored
+    // original stands, exactly as release writes nothing.
+    await dcp(toolHost, SID, "context", {});
+
+    assert.match(notifyCalls[0].text, /~704 tokens/);
   });
 
   it("does not double count a round-view placeholder a mark also addresses", async () => {
@@ -285,7 +348,7 @@ describe("effective prune marks over storage", () => {
       },
     };
     try {
-      await dcp(toolHost, sid, "context", {});
+      await dcp(toolHost, sid, "context", OPEN_PROTECTION);
       assert.equal(notices.length, 1);
       // 600 + (input 4 + placeholder 20) = 624 — the placeholder is
       // counted once, never twice.
@@ -353,7 +416,11 @@ describe("lapsed permit", () => {
         toolHost,
         sessionID,
         "compress",
-        { compress: { thresholdTokens: 1, protectedTokens: 1 } },
+        {
+          activeMessages: 2,
+          activeTokens: 1,
+          compress: { thresholdTokens: 1 },
+        },
         true,
       );
       assert.deepEqual(notices, [], "no host notification");
@@ -387,7 +454,11 @@ describe("lapsed permit", () => {
         toolHost,
         sessionID,
         "compress",
-        { compress: { thresholdTokens: 1, protectedTokens: 1 } },
+        {
+          activeMessages: 2,
+          activeTokens: 1,
+          compress: { thresholdTokens: 1 },
+        },
         true,
       );
       assert.deepEqual(notices, [], "no host notification");
@@ -526,8 +597,9 @@ describe("/dcp compress subcommand", () => {
   const compressConfig: Parameters<typeof dcp>[3] = {
     dedup: {},
     purgeErrors: {},
-    protectedMessages: 2,
-    compress: { thresholdTokens: 1, protectedTokens: 1 },
+    activeMessages: 2,
+    activeTokens: 1,
+    compress: { thresholdTokens: 1 },
   };
 
   it("compress tool not registered → command refuses with notice, no state writes", async () => {
@@ -541,7 +613,8 @@ describe("/dcp compress subcommand", () => {
       {
         dedup: {},
         purgeErrors: {},
-        compress: { thresholdTokens: 1, protectedTokens: 1 },
+        activeTokens: 1,
+        compress: { thresholdTokens: 1 },
       },
       false,
     );
@@ -554,6 +627,36 @@ describe("/dcp compress subcommand", () => {
     // State should be empty (no flag, no writes).
     const state = stateOf("sess-compress-disabled");
     assert.equal(state.blocks.size, 0);
+    assert.equal(state.pendingManualTrigger, undefined);
+  });
+
+  it("active_messages missing → command refuses, notice names both active keys", async () => {
+    const { toolHost, notifyCalls } = mockToolHost([]);
+
+    // Tool registered and the compress section parsed, but the shared
+    // active group lacks `active_messages`.
+    await dcp(
+      toolHost,
+      "sess-compress-no-active-messages",
+      "compress",
+      {
+        dedup: {},
+        purgeErrors: {},
+        activeTokens: 1,
+        compress: { thresholdTokens: 1 },
+      },
+      true,
+    );
+
+    assert.ok(
+      notifyCalls[0].text.includes("压缩功能未启用"),
+      `expected "压缩功能未启用" in notify, got: ${notifyCalls[0].text}`,
+    );
+    // The notice names both keys of the shared active group, so the user
+    // fixes the config before the next turn drops the trigger.
+    assert.ok(notifyCalls[0].text.includes("active_messages"));
+    assert.ok(notifyCalls[0].text.includes("active_tokens"));
+    const state = stateOf("sess-compress-no-active-messages");
     assert.equal(state.pendingManualTrigger, undefined);
   });
 

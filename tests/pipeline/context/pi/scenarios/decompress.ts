@@ -23,13 +23,13 @@ const SID = "golden-pi-g-dec-01";
 /** Compress + decompress config shared by both scenarios. */
 function decConfig(maxFillPercent: number) {
   return {
-    protectedMessages: 15,
+    activeMessages: 15,
+    activeTokens: 20000,
     releasedPercent: 10,
     dedup: {},
     purgeErrors: {},
     compress: {
       thresholdTokens: 2000,
-      protectedTokens: 20000,
       maxRanges: 8,
     },
     decompress: { maxFillPercent },

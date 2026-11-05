@@ -48,7 +48,7 @@ export const POLY_PROFILE = {
 /** A full zoo config carrying the poly profile. */
 export const POLY_ZOO = {
   validation: { context_word_limit: 200, prompt_word_limit: 500 },
-  context: { protected_messages: 20, released_percent: 10 },
+  context: { active_messages: 20, active_tokens: 20000, released_percent: 10 },
   mode: { poly: POLY_PROFILE },
 };
 

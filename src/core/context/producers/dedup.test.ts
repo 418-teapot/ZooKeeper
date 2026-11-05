@@ -11,7 +11,7 @@
  *    protection window, and re-run idempotency.
  * 2. **Lens-specific semantics** — explicit self-gating parameters
  *    (minMessages, thresholdContext, protectedTools), the protected
- *    window fail-safe, folded-message skipping, parse-failure inputs,
+ *    map fail-closed, folded-message skipping, parse-failure inputs,
  *    mark content truncation, and the first-write-wins clamp.
  */
 import assert from "node:assert/strict";
@@ -26,6 +26,7 @@ import {
 } from "../../../testkits/context.js";
 import type { HostMessage } from "../lens.js";
 import { measureMessages } from "../measure.js";
+import { buildProtectionMap, freezeProtectionMap } from "../protection-map.js";
 import { markKey } from "../state.js";
 import { type DedupProducerOptions, runDedup } from "./dedup.js";
 
@@ -77,7 +78,7 @@ function dedupOptions(
     minMessages: 0,
     contextLimit: MODEL_LIMIT,
     thresholdContext: 0,
-    protectedStartOrdinal: messages.length,
+    protection: buildProtectionMap(messages, 0, 0),
     protectedTools: [],
     ...overrides,
   };
@@ -241,7 +242,9 @@ describe("dedup semantics", () => {
       lensMsg([bash({ cmd: "ls" })]),
       lensMsg([bash({ cmd: "ls" })]),
     ];
-    const result = runOpen(lens, { protectedStartOrdinal: 2 });
+    const result = runOpen(lens, {
+      protection: buildProtectionMap(lens, 2, 0),
+    });
     assert.deepEqual(result.keys, [markKey(0, 1)]);
     assert.equal(result.tokens, MARK_TOKENS);
   });
@@ -251,10 +254,8 @@ describe("dedup semantics", () => {
       lensMsg([bash({ cmd: "ls" })]),
       lensMsg([bash({ cmd: "ls" })]),
     ];
-    assert.deepEqual(runOpen(lens, { protectedStartOrdinal: 0 }), {
-      keys: [],
-      tokens: 0,
-    });
+    const protection = buildProtectionMap(lens, lens.length, 0);
+    assert.deepEqual(runOpen(lens, { protection }), { keys: [], tokens: 0 });
   });
 
   it("an empty protection window disables the protection", () => {
@@ -262,7 +263,27 @@ describe("dedup semantics", () => {
       lensMsg([bash({ cmd: "ls" })]),
       lensMsg([bash({ cmd: "ls" })]),
     ];
-    const result = runOpen(lens, { protectedStartOrdinal: 2 });
+    const result = runOpen(lens, {
+      protection: buildProtectionMap(lens, 0, 0),
+    });
+    assert.deepEqual(result.keys, [markKey(0, 1)]);
+    assert.equal(result.tokens, MARK_TOKENS);
+  });
+
+  it("protects a tool region anchored at a user instruction ordinal", () => {
+    // The map protects instruction ordinals outside the active tail too,
+    // so the middle duplicate is skipped and only the oldest is marked.
+    const lens = [
+      lensMsg([bash({ cmd: "ls" })]),
+      lensMsg([bash({ cmd: "ls" })]),
+      lensMsg([bash({ cmd: "ls" })]),
+    ];
+    const protection = freezeProtectionMap({
+      activeStart: lens.length,
+      messageCount: lens.length,
+      instructions: [1],
+    });
+    const result = runOpen(lens, { protection });
     assert.deepEqual(result.keys, [markKey(0, 1)]);
     assert.equal(result.tokens, MARK_TOKENS);
   });
@@ -303,7 +324,7 @@ describe("dedup semantics", () => {
 // ===========================================================================
 
 describe("lens-specific gating semantics", () => {
-  it("fail-safe: undefined protectedStartOrdinal skips with zero side effects", () => {
+  it("fail-closed: an absent protection map skips with zero side effects", () => {
     const state = makeState();
     const lens = [
       lensMsg([bash({ cmd: "ls" })]),
@@ -327,7 +348,7 @@ describe("lens-specific gating semantics", () => {
       minMessages: 20,
       contextLimit: MODEL_LIMIT,
       thresholdContext: 0,
-      protectedStartOrdinal: atTwenty.length,
+      protection: buildProtectionMap(atTwenty, 0, 0),
     });
     assert.equal(r20.created, 0);
     assert.equal(state20.marks.size, 0);
@@ -341,7 +362,7 @@ describe("lens-specific gating semantics", () => {
       minMessages: 20,
       contextLimit: MODEL_LIMIT,
       thresholdContext: 0,
-      protectedStartOrdinal: above.length,
+      protection: buildProtectionMap(above, 0, 0),
     });
     assert.equal(r21.created, 20);
   });
@@ -358,7 +379,7 @@ describe("lens-specific gating semantics", () => {
       minMessages: 0,
       contextLimit: MODEL_LIMIT,
       thresholdContext: 0.4,
-      protectedStartOrdinal: lens.length,
+      protection: buildProtectionMap(lens, 0, 0),
     });
     assert.equal(rBelow.created, 0);
 
@@ -368,7 +389,7 @@ describe("lens-specific gating semantics", () => {
       minMessages: 0,
       contextLimit: total,
       thresholdContext: 1,
-      protectedStartOrdinal: lens.length,
+      protection: buildProtectionMap(lens, 0, 0),
     });
     assert.equal(rAt.created, 1);
 
@@ -377,7 +398,7 @@ describe("lens-specific gating semantics", () => {
       minMessages: 0,
       contextLimit: 1,
       thresholdContext: 0.4,
-      protectedStartOrdinal: lens.length,
+      protection: buildProtectionMap(lens, 0, 0),
     });
     assert.equal(rAbove.created, 1);
   });
@@ -391,7 +412,7 @@ describe("lens-specific gating semantics", () => {
     const result = runDedup(state, projectMessages(lens), {
       minMessages: 0,
       thresholdContext: 0.4,
-      protectedStartOrdinal: lens.length,
+      protection: buildProtectionMap(lens, 0, 0),
     });
     assert.equal(result.created, 0);
     assert.equal(state.marks.size, 0);
@@ -413,7 +434,7 @@ describe("lens-specific skip and dedup semantics", () => {
       minMessages: 0,
       contextLimit: MODEL_LIMIT,
       thresholdContext: 0,
-      protectedStartOrdinal: lens.length,
+      protection: buildProtectionMap(lens, 0, 0),
     });
     assert.equal(result.created, 1);
   });
@@ -428,7 +449,7 @@ describe("lens-specific skip and dedup semantics", () => {
       minMessages: 0,
       contextLimit: MODEL_LIMIT,
       thresholdContext: 0,
-      protectedStartOrdinal: lens.length,
+      protection: buildProtectionMap(lens, 0, 0),
     });
     assert.equal(result.created, 1);
   });
@@ -443,7 +464,7 @@ describe("lens-specific skip and dedup semantics", () => {
       minMessages: 0,
       contextLimit: MODEL_LIMIT,
       thresholdContext: 0,
-      protectedStartOrdinal: lens.length,
+      protection: buildProtectionMap(lens, 0, 0),
     });
     assert.equal(result.created, 1);
   });
@@ -458,7 +479,7 @@ describe("lens-specific skip and dedup semantics", () => {
       minMessages: 0,
       contextLimit: MODEL_LIMIT,
       thresholdContext: 0,
-      protectedStartOrdinal: lens.length,
+      protection: buildProtectionMap(lens, 0, 0),
     });
     assert.equal(result.created, 1);
     assert.ok(state.marks.has(markKey(0, 1)));
@@ -474,7 +495,7 @@ describe("lens-specific skip and dedup semantics", () => {
       minMessages: 0,
       contextLimit: MODEL_LIMIT,
       thresholdContext: 0,
-      protectedStartOrdinal: lens.length,
+      protection: buildProtectionMap(lens, 0, 0),
       prunedOrdinals: (ordinal) => ordinal === 0,
     });
     assert.equal(result.created, 0);
@@ -492,7 +513,7 @@ describe("lens-specific skip and dedup semantics", () => {
         minMessages: 0,
         contextLimit: MODEL_LIMIT,
         thresholdContext: 0,
-        protectedStartOrdinal: lensSame.length,
+        protection: buildProtectionMap(lensSame, 0, 0),
       }).created,
       1,
     );
@@ -507,7 +528,7 @@ describe("lens-specific skip and dedup semantics", () => {
         minMessages: 0,
         contextLimit: MODEL_LIMIT,
         thresholdContext: 0,
-        protectedStartOrdinal: lensDiff.length,
+        protection: buildProtectionMap(lensDiff, 0, 0),
       }).created,
       0,
     );
@@ -524,7 +545,7 @@ describe("lens-specific skip and dedup semantics", () => {
       minMessages: 0,
       contextLimit: MODEL_LIMIT,
       thresholdContext: 0,
-      protectedStartOrdinal: lens.length,
+      protection: buildProtectionMap(lens, 0, 0),
     });
     assert.equal(result.created, 1);
     const mark = state.marks.get(markKey(0, 1));
@@ -555,7 +576,7 @@ describe("lens-specific skip and dedup semantics", () => {
       minMessages: 0,
       contextLimit: MODEL_LIMIT,
       thresholdContext: 0,
-      protectedStartOrdinal: lens.length,
+      protection: buildProtectionMap(lens, 0, 0),
     });
     assert.equal(result.created, 0);
     assert.equal(result.tokens, 0);
@@ -578,7 +599,7 @@ describe("lens-specific skip and dedup semantics", () => {
       minMessages: 0,
       contextLimit: MODEL_LIMIT,
       thresholdContext: 0,
-      protectedStartOrdinal: lens.length,
+      protection: buildProtectionMap(lens, 0, 0),
     });
     assert.equal(lens[0].regions[0].get(), '{"cmd":"ls"}');
     assert.equal(lens[1].regions[0].get(), '{"cmd":"ls"}');

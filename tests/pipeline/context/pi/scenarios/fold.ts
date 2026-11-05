@@ -32,7 +32,13 @@ import {
 } from "../messages.js";
 import type { Scenario } from "../types.js";
 
-const BASE_CONFIG = { dedup: {}, purgeErrors: {} };
+const BASE_CONFIG = {
+  activeMessages: 0,
+  activeTokens: 0,
+  compress: {},
+  dedup: {},
+  purgeErrors: {},
+};
 
 /**
  * A short pi conversation: first user + 8 tool exchanges (each an

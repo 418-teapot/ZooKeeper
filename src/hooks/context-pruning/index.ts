@@ -27,7 +27,7 @@ export { contextPruningTransformHandler, handleContextPruning };
  * `adapter`, `contextConfig` and `contextRuntime` as needs, so composition
  * skips it when the host wires no adapter or no runtime.  The unit is otherwise enabled
  * unconditionally: the whole pipeline runs on every host and session
- * kind (the first-user message stays protected by `validateRange`
+ * kind (every user instruction stays protected by `validateRange`
  * unconditionally, independent of config; the release notification
  * routes through `caps.toolHost` and is skipped when the host wires no
  * tool host or the session agent cannot be resolved).  `hasCompressTool`

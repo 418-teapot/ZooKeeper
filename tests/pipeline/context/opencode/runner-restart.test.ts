@@ -54,7 +54,7 @@ const SCENARIO: Scenario = {
   id: "TEST-RESTART-ROUNDTRIP",
   sessionID: TEST_SID,
   config: {
-    protectedMessages: 0,
+    activeMessages: 0,
     releasedPercent: 0,
     dedup: { minMessages: 20, thresholdContext: 100000 },
     purgeErrors: {},

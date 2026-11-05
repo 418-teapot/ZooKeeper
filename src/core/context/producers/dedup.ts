@@ -13,16 +13,17 @@
  * lenses and never rewrites any region text.
  *
  * Gating is shared with the purge-errors producer through
- * `producers/gate.ts`: the producer skips entirely below the
- * message-count floor and below the context-fraction threshold, and it
- * honours a caller-computed protected window (`protectedStartOrdinal`)
- * plus a predicate for messages already folded or pruned.  All gate
- * parameters (`minMessages`, `thresholdContext`) are required options
- * supplied by the caller from config.toml — the producer carries no
- * defaults and refuses to run when either is absent.  All other
- * semantics — signature normalisation, skip rules, and the
- * first-write-wins mark clamp (the shared `addPendingMark` in
- * `state.ts`) — are defined below.
+ * `producers/gate.ts`: the producer skips entirely without this round's
+ * protection map, below the message-count floor and below the
+ * context-fraction threshold, and it honours a predicate for messages
+ * already folded or pruned.  A region anchored at a protected ordinal
+ * (the active tail or a user instruction, per `isProtectedOrdinal`) is
+ * never marked.  All gate parameters (`minMessages`,
+ * `thresholdContext`) are required options supplied by the caller from
+ * config.toml — the producer carries no defaults and refuses to run when
+ * either is absent.  All other semantics — signature normalisation,
+ * skip rules, and the first-write-wins mark clamp (the shared
+ * `addPendingMark` in `state.ts`) — are defined below.
  *
  * @module
  */
@@ -30,6 +31,7 @@
 import type { Projection } from "../lens.js";
 import { netReclaimTokens } from "../measure.js";
 import { PRUNED_TOOL_OUTPUT_REPLACEMENT } from "../message-parts.js";
+import { isProtectedOrdinal } from "../protection-map.js";
 import { addPendingMark, markKey, type SessionState } from "../state.js";
 import type { ProducerGateOptions, ProducerRunResult } from "./gate.js";
 import { checkProducerGate } from "./gate.js";
@@ -142,7 +144,7 @@ function makeSignature(tool: string, input: unknown): string {
  * paired calls by signature, and write pending marks for every duplicate
  * except the newest.
  *
- * Gating order: an absent protected window skips everything (fail-safe),
+ * Gating order: an absent protection map skips everything (fail-closed),
  * then the message-count floor, then the context-fraction threshold.
  * Hidden messages still participate in the scan; the message-count floor
  * counts non-hidden messages.
@@ -165,7 +167,7 @@ export function runDedup(
 
   const gate = checkProducerGate(snapshot, options);
   if (gate === null) return { created: 0, tokens: 0 };
-  const protectedStartOrdinal = gate.protectedStartOrdinal;
+  const protection = gate.protection;
 
   // Phase 1: positions already claimed by a mark (pending or effective)
   // never get a second mark.
@@ -186,7 +188,7 @@ export function runDedup(
     const inputRegion = messages[input.ordinal]?.regions[input.regionIndex];
     if (inputRegion?.kind !== "tool-input") continue;
     if (prunedOrdinals?.(output.ordinal)) continue;
-    if (output.ordinal >= protectedStartOrdinal) continue;
+    if (isProtectedOrdinal(protection, output.ordinal)) continue;
 
     // Skip rules.
     const status = invocation.status;

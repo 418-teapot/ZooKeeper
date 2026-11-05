@@ -1,7 +1,7 @@
 /**
  * Core scenario: the real `compress` and `decompress` tools round trip
- * through one live session, and the restore is visible in the next model
- * request.
+ * through one live session on an assistant work reply, and the restore is
+ * visible in the next model request.
  *
  * The model decides both calls itself (the deterministic provider reads the
  * block label out of the request it receives), so the tool arguments are the
@@ -151,11 +151,11 @@ export const compressionTools: ScenarioDefinition = {
           );
     ctx.checks.add({
       id: "restore_in_model_input",
-      title: "恢复后的模型请求重新带上两条原文且不再有块标签",
+      title: "恢复后的模型请求重新带上目标工作回复且不再有块标签",
       status:
         restoreRequest !== undefined &&
         restoreHits.every((hits) => hits.length === 1) &&
-        restoreHits[0]?.[0] !== restoreHits[1]?.[0] &&
+        restoreHits[0]?.[0] === restoreHits[1]?.[0] &&
         viewHeaders(restoreRequest.view).length === 0 &&
         refsAreDense(restoreRequest.view),
       detail:
