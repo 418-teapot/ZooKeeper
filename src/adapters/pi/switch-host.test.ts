@@ -168,13 +168,11 @@ describe("createPiSwitchHost — session replacement", () => {
     // Nothing applied yet: the trim waits for the new session's host.
     assert.deepEqual(oldHost.applied, []);
 
-    // The fresh session's host shares the store and drains the queued trim.
-    const freshHost = makeDeps();
-    createPiSwitchHost(freshHost.deps, store).drainPendingOps();
-    assert.deepEqual(freshHost.applied, [["edit"]]);
+    // The fresh session's host shares the store and takes the queued trim.
+    const fresh = createPiSwitchHost(makeDeps().deps, store);
+    assert.deepEqual(fresh.drainPendingOps(), ["edit"]);
     // Drained once: a second drain finds nothing.
-    createPiSwitchHost(freshHost.deps, store).drainPendingOps();
-    assert.deepEqual(freshHost.applied, [["edit"]]);
+    assert.deepEqual(fresh.drainPendingOps(), undefined);
   });
 
   it("clears stale queued operations before a replacement", async () => {
@@ -186,15 +184,20 @@ describe("createPiSwitchHost — session replacement", () => {
 
     await host.newSession({ parentSession: "sess-old" });
 
-    const freshHost = makeDeps();
-    createPiSwitchHost(freshHost.deps, store).drainPendingOps();
-    assert.deepEqual(freshHost.applied, [], "the stale trim must be dropped");
+    const fresh = createPiSwitchHost(makeDeps().deps, store);
+    assert.equal(
+      fresh.drainPendingOps(),
+      undefined,
+      "the stale trim is dropped",
+    );
   });
 
   it("draining with nothing queued is a no-op", () => {
     const h = makeDeps();
-    createPiSwitchHost(h.deps, createSwitchOpsStore()).drainPendingOps();
-    assert.deepEqual(h.applied, []);
+    assert.equal(
+      createPiSwitchHost(h.deps, createSwitchOpsStore()).drainPendingOps(),
+      undefined,
+    );
   });
 
   it("a cancelled replacement revokes only its pending primary", async () => {
@@ -213,10 +216,11 @@ describe("createPiSwitchHost — session replacement", () => {
     // switch.
     assert.equal(store.pendingPrimary(), undefined);
     // The queued trim is not the target: the session that drains it still
-    // applies it.
-    const freshHost = makeDeps();
-    createPiSwitchHost(freshHost.deps, store).drainPendingOps();
-    assert.deepEqual(freshHost.applied, [["lynx"]]);
+    // takes it.
+    assert.deepEqual(
+      createPiSwitchHost(makeDeps().deps, store).drainPendingOps(),
+      ["lynx"],
+    );
   });
 });
 
@@ -231,8 +235,9 @@ describe("createPiSwitchHost — process handoff slot", () => {
     });
 
     const freshHost = makeDeps();
-    createPiSwitchHost(freshHost.deps).drainPendingOps();
-    assert.deepEqual(freshHost.applied, [["lynx"]]);
+    assert.deepEqual(createPiSwitchHost(freshHost.deps).drainPendingOps(), [
+      "lynx",
+    ]);
   });
 
   it("the reset hook clears the process handoff slot", async () => {
@@ -247,7 +252,9 @@ describe("createPiSwitchHost — process handoff slot", () => {
     _resetPendingSwitchOpsForTesting();
 
     const freshHost = makeDeps();
-    createPiSwitchHost(freshHost.deps).drainPendingOps();
-    assert.deepEqual(freshHost.applied, []);
+    assert.equal(
+      createPiSwitchHost(freshHost.deps).drainPendingOps(),
+      undefined,
+    );
   });
 });

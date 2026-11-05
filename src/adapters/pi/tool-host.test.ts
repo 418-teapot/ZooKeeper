@@ -32,19 +32,6 @@ function sessionCtx(notices: string[]): unknown {
 }
 
 describe("createPiToolHost", () => {
-  it("resolves the session id from the tool execution context", () => {
-    const host = createPiToolHost(createPiSessionContexts());
-    const sessionId = host.resolveSessionId({
-      sessionManager: { getSessionId: () => "sess-pi-42" },
-    });
-    assert.equal(sessionId, "sess-pi-42");
-  });
-
-  it("returns undefined when the tool context has no sessionManager", () => {
-    const host = createPiToolHost(createPiSessionContexts());
-    assert.equal(host.resolveSessionId({}), undefined);
-  });
-
   it("offers no history fallback (the tools read the transform's round view)", () => {
     // pi's buildContextEntries channel is a different ordinal space than
     // the one the context event projects, so the host must not expose it

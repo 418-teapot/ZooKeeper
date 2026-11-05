@@ -54,7 +54,9 @@ import {
   type SessionScope,
   type WorkPermit,
 } from "../../core/lifecycle/index.js";
+import { isRecord } from "../../core/records.js";
 import type { SessionResourceCatalog } from "../../core/session/resources.js";
+import type { ToolCallContext, ToolResult } from "../../core/unit.js";
 import { log } from "../../utils/logger.js";
 import {
   createOpenCodeLifecycleMapping,
@@ -217,19 +219,26 @@ function eventSessionID(event: unknown): string | null {
   return typeof candidate === "string" ? candidate : null;
 }
 
-/** The host-forwarded tool surface the wrapper extends. */
-interface ToolHostContext {
-  [field: string]: unknown;
-  signal?: AbortSignal;
-  permit?: WorkPermit;
-}
-
 /** One registered tool as the host calls it. */
 type ToolExecute = (
   args: unknown,
-  toolCtx: unknown,
-  hostCtx?: ToolHostContext,
-) => Promise<string>;
+  call: ToolCallContext,
+) => Promise<ToolResult>;
+
+/** The result shape OpenCode accepts from a tool. */
+type OpenCodeToolResult =
+  | string
+  | {
+      output: string;
+      metadata: Record<string, unknown>;
+    };
+
+/** The host tool context fields the wrapper reads. */
+interface OpenCodeToolContext {
+  sessionID?: unknown;
+  sessionId?: unknown;
+  abort?: unknown;
+}
 
 /** The tool-registry entry shape this module wraps. */
 interface ToolEntry {
@@ -238,13 +247,28 @@ interface ToolEntry {
 }
 
 /**
+ * Map a tool result onto the host's result shape.
+ *
+ * A result without a structured payload stays the plain string the host
+ * already received; one with a payload reports it as the host's
+ * `metadata`.
+ *
+ * @param result - The tool's structured result.
+ * @returns The host result.
+ */
+function toHostResult(result: ToolResult): OpenCodeToolResult {
+  return isRecord(result.data)
+    ? { output: result.text, metadata: result.data }
+    : result.text;
+}
+
+/**
  * Wrap one tool so each call is admitted under its session's permit.
  *
- * The tool context's `abort` is the caller's cancellation.  The admitted
- * permit's signal replaces it, so the tool stops when the session or the
- * extension stops.  The third argument keeps the host's fields and adds
- * the permit for tools that need it.  A refused call returns an empty
- * string and never runs the tool.
+ * The host context's `abort` is the caller's cancellation.  The admitted
+ * permit supplies the signal and the permit of the host-neutral call
+ * context, so the tool stops when the session or the extension stops.  A
+ * refused call returns an empty string and never runs the tool.
  *
  * @param entry - The tool contribution as the registry holds it.
  * @param run - Admits the call.
@@ -256,12 +280,11 @@ function withSessionTool(entry: unknown, run: SessionWorkRunner): unknown {
   if (typeof execute !== "function") return entry;
   return {
     ...tool,
-    async execute(args: unknown, toolCtx: unknown, hostCtx?: ToolHostContext) {
-      const context = (toolCtx ?? {}) as {
-        sessionID?: unknown;
-        sessionId?: unknown;
-        abort?: unknown;
-      };
+    async execute(
+      args: unknown,
+      toolCtx: unknown,
+    ): Promise<OpenCodeToolResult> {
+      const context = (toolCtx ?? {}) as OpenCodeToolContext;
       const sessionID =
         typeof context.sessionID === "string"
           ? context.sessionID
@@ -273,14 +296,14 @@ function withSessionTool(entry: unknown, run: SessionWorkRunner): unknown {
       const result = await run.runSession(
         sessionID,
         (permit) =>
-          execute(
-            args,
-            { ...context, abort: permit.signal },
-            { ...hostCtx, signal: permit.signal, permit },
-          ),
+          execute(args, {
+            sessionID: permit.sessionID,
+            signal: permit.signal,
+            permit,
+          }),
         caller,
       );
-      return result ?? "";
+      return result === undefined ? "" : toHostResult(result);
     },
   };
 }

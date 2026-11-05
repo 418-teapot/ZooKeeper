@@ -14,43 +14,39 @@
  * every one of them requires an explicit target at this boundary.
  *
  * The transcript is the single source of truth.  Every successful mutating
- * call writes a fresh `{ op, phases }` snapshot into the host-forwarded
- * `hostCtx.details` slot (the pi bridge persists tool-result details into the
- * session record), so a restart, a branch, or a compaction restores exactly
- * the state that was in effect at that point — and nothing is ever written to
- * a file.  The in-memory store is only a cache; it is the host-owned
- * `Capabilities.todoStore` instance, fed through the store's own single restore
- * path.
+ * call returns a fresh `{ op, phases }` snapshot as the result's structured
+ * `data` (a host persists it with the tool result), so a restart, a branch,
+ * or a compaction restores exactly the state that was in effect at that
+ * point — and nothing is ever written to a file.  The in-memory store is only
+ * a cache; it is the host-owned `Capabilities.todoStore` instance, fed
+ * through the store's own single restore path.
  *
  * A call is one read-modify-write cycle over that cache, so the whole cycle
  * runs inside the store's gate (`store.serialize`): concurrent calls cannot
  * lose updates, and the tool asks nothing of the host's scheduler, leaving
  * unrelated calls in the same turn concurrent.
  *
- * The unit contributes the `todo` tool ONLY when the host supplies both a
- * todo state store (`todoStore`) and tool services (`toolHost`).  A host
- * without them (OpenCode) gets zero tools — the tool never registers there
- * (fail-closed, the subagent precedent).  The optional `todoRenderer` port is
- * attached the same way `subagentRenderer` is.
+ * The unit contributes the `todo` tool ONLY when the host supplies a todo
+ * state store (`todoStore`).  A host without one (OpenCode) gets zero tools —
+ * the tool never registers there (fail-closed, the subagent precedent).
  *
  * Each execution:
  * 1. Parses the raw arguments (op vocabulary, per-op field whitelist, field
  *    types, empty content) with loud Chinese guidance; every rejection names
  *    the offending field and ends with a copy-ready example call, and a
  *    rejected call never touches the state.
- * 2. Resolves the session ID from the tool context through the host.
+ * 2. Reads the call's session ID from the host-neutral call context.
  * 3. Reads the session's state from the host-owned store (restoring from
  *    the transcript on a cache miss).
  * 4. Applies the parsed entry — the parser produces exactly one entry per
  *    call, so the whole state transition is a single atomic step.
- * 5. On a clean mutating call, stores the new state, writes the snapshot
- *    detail, and returns the model-facing summary.  `view` is read-only: it
- *    neither stores nor writes a detail, because nothing changed to record.
+ * 5. On a clean mutating call, stores the new state, returns the model-facing
+ *    summary and the snapshot as the result's `data`.  `view` is read-only:
+ *    it neither stores nor returns data, because nothing changed to record.
  *
  * @module
  */
 
-import type { ToolHost } from "../core/ports/tool-host.js";
 import { isRecord } from "../core/records.js";
 import { applyEntries } from "../core/todo/apply.js";
 import { serializeSnapshot } from "../core/todo/serialize.js";
@@ -62,7 +58,12 @@ import type {
   TodoOperation,
   TodoPhase,
 } from "../core/todo/types.js";
-import { defineTool, type ToolDefinition } from "../core/unit.js";
+import {
+  defineTool,
+  type ToolCallContext,
+  type ToolDefinition,
+  type ToolResult,
+} from "../core/unit.js";
 import { log } from "../utils/logger.js";
 
 /** The nine operations accepted by the state machine. */
@@ -529,26 +530,12 @@ export function parseTodoArgs(args: unknown): TodoEntry[] {
 // ---------------------------------------------------------------------------
 
 /**
- * Build the `todo` tool contribution over the host's tool services.
+ * Build the `todo` tool contribution over the host's todo store.
  *
- * @param host - Host tool services (session resolution).
  * @param store - The host-owned todo state store (this session's cache).
- * @param renderer - Optional host transcript-card renderer port.
  * @returns The todo tool definition.
  */
-export function createTodoTool(
-  host: ToolHost,
-  store: TodoStateStore,
-  renderer?: {
-    renderCall(args: unknown, theme: unknown, context?: unknown): unknown;
-    renderResult(
-      result: unknown,
-      options: unknown,
-      theme: unknown,
-      context?: unknown,
-    ): unknown;
-  },
-): ToolDefinition {
+export function createTodoTool(store: TodoStateStore): ToolDefinition {
   return {
     description: TODO_DESCRIPTION,
     args: {
@@ -585,29 +572,23 @@ export function createTodoTool(
     // and the example-carrying errors live — a harness-level required
     // rejection would make that unreachable.
     required: [],
-    ...(renderer !== undefined
-      ? { renderCall: renderer.renderCall, renderResult: renderer.renderResult }
-      : {}),
-    async execute(args, toolCtx, hostCtx) {
+    async execute(args, call: ToolCallContext): Promise<ToolResult> {
       // Every todo call is a read-modify-write cycle over the store cache,
       // so the cycle runs through the store's own gate: one call at a time
       // per store, with no host-level restriction on what else may run in
       // the same turn.
       return store.serialize(async () => {
-        if (hostCtx?.signal?.aborted) {
+        if (call.signal.aborted) {
           throw new Error("todo 调用在排队期间已被中断。");
         }
         const entries = parseTodoArgs(args);
         const op = entries[0].op;
-        const sessionID = host.resolveSessionId(toolCtx);
-        if (sessionID === undefined) {
-          throw new Error("无法确定会话 ID：工具上下文缺少 sessionID。");
-        }
+        const sessionID = call.sessionID;
         const state: TodoPhase[] = await store.get(sessionID);
         const result = applyEntries(state, entries);
 
         // The core returned the input state untouched, so nothing is stored
-        // and no snapshot is written — the transcript keeps pointing at the
+        // and no snapshot is returned — the transcript keeps pointing at the
         // last state that actually took effect.
         if (result.errors.length > 0) {
           log.info({
@@ -617,14 +598,14 @@ export function createTodoTool(
             op,
             errors: result.errors.length,
           });
-          return formatSummary(state, result.errors);
+          return { text: formatSummary(state, result.errors) };
         }
 
         // `view` is read-only by contract: the state is echoed back
-        // verbatim, so there is no change to record and no detail to write.
-        // Skipping the write keeps the transcript's snapshot chain equal to
-        // the mutating calls only (which is also what the restore scan walks
-        // back through).
+        // verbatim, so there is no change to record and no snapshot to
+        // return.  Skipping it keeps the transcript's snapshot chain equal
+        // to the mutating calls only (which is also what the restore scan
+        // walks back through).
         if (op === "view") {
           log.info({
             hook: "todo-tool",
@@ -632,20 +613,20 @@ export function createTodoTool(
             sessionId: sessionID,
             tasks: result.phases.reduce((n, p) => n + p.tasks.length, 0),
           });
-          return formatSummary(result.phases, [], true);
+          return { text: formatSummary(result.phases, [], true) };
         }
 
         store.set(sessionID, result.phases);
-        if (hostCtx !== undefined) {
-          hostCtx.details = serializeSnapshot(op, result.phases);
-        }
         log.info({
           hook: "todo-tool",
           event: "applied",
           sessionId: sessionID,
           op,
         });
-        return formatSummary(result.phases, []);
+        return {
+          text: formatSummary(result.phases, []),
+          data: serializeSnapshot(op, result.phases),
+        };
       });
     },
   };
@@ -655,15 +636,14 @@ export function createTodoTool(
  * Todo tool unit descriptor.
  *
  * `name` doubles as the registry key and the tool key.  The unit is
- * fail-closed: without the host's todo state store or tool services it
- * contributes no tools, so the `todo` tool never registers on a host that
- * cannot restore todo state from its transcript.
+ * fail-closed: without the host's todo state store it contributes no tools,
+ * so the `todo` tool never registers on a host that cannot restore todo
+ * state from its transcript.
  */
 export const unit = defineTool({
   name: "todo",
-  needs: ["todoStore", "toolHost"],
-  wants: ["todoRenderer"],
+  needs: ["todoStore"],
   create(caps) {
-    return createTodoTool(caps.toolHost, caps.todoStore, caps.todoRenderer);
+    return createTodoTool(caps.todoStore);
   },
 });

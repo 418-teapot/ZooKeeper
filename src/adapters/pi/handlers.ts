@@ -10,10 +10,11 @@
  *
  *  - `session_start` forwards the real start notice with pi's own reason
  *    (a lifecycle control entry that no permit governs), then seeds the
- *    `zoo` widget and the todo column at startup / resume, trims the active
- *    tool set by the primary's denies, and rebuilds the run registry from
- *    the persisted transcript.  A start notice is not a stop, so it
- *    releases no session record.
+ *    `zoo` widget and the todo column at startup / resume, applies the
+ *    session's active tool set (its primary's denies plus the ask
+ *    visibility rule), and rebuilds the run registry from the persisted
+ *    transcript.  A start notice is not a stop, so it releases no session
+ *    record.
  *  - `session_shutdown` stops that scope (nested sessions first, then the
  *    extension services) and reports every cleanup failure: pi replaces its
  *    extension runtime, so the session resources must not outlive it.  It is
@@ -33,7 +34,7 @@
  *    through untouched.  The event is registered only when the profile
  *    composes a delegation gate (see `hasGateHandlers`).
  *  - `session_tree` drops this session's cached todo view after a tree
- *    navigation.
+ *    navigation and re-applies its active tool set.
  *  - `agent_end`, `agent_before_settle`, `agent_settled`,
  *    `ui_prompt_start` and `ui_prompt_end` drive the loop settle wiring:
  *    `agent_end` records the finished run's terminal messages, the
@@ -65,7 +66,6 @@ import { flushLogs, log } from "../../utils/logger.js";
 import type { PiLifecycleOutcome } from "./lifecycle.js";
 import type { PiSessionContexts } from "./session-contexts.js";
 import {
-  askWentUnanswered,
   boundaryEntries,
   countTurnToolCalls,
   readActivityOutcome,
@@ -81,7 +81,7 @@ import type { PiBoundaryResult, PiEventHandlers } from "./types.js";
  *
  * Everything the handlers cannot derive from the composed result is
  * injected here: the extension-scope session contexts, the loop engine and
- * the wiring-layer callbacks (`applyPrimaryToolTrim`, the widget and todo
+ * the wiring-layer callbacks (`applyActiveTools`, the widget and todo
  * refresh hooks, the switch drain, the todo cache invalidator, and the
  * lifecycle operations).
  */
@@ -111,12 +111,15 @@ export interface PiEventHandlerDeps {
   /** Resolve the absolute paths of the existing profile skill directories. */
   collectSkillPaths(names: string[]): string[];
   /**
-   * Apply the named session's primary tool denies to the active tool set.
+   * Apply the named session's active tool set: its primary's denies, then
+   * the ask visibility rule of the event's own context.
    *
-   * The session id comes from the event being handled, so the trim never
-   * applies one session's denies on another's behalf.
+   * The session id and the context come from the event being handled, so
+   * the trim never applies one session's denies on another's behalf, and
+   * the question channel is probed with the context that will run the
+   * turn.
    */
-  applyPrimaryToolTrim(sessionID: string): void;
+  applyActiveTools(sessionID: string, ctx: unknown): void;
   /**
    * Register (or re-seed) one session's `zoo` fleet widget.  An absent or
    * unknown id registers nothing.
@@ -128,8 +131,11 @@ export interface PiEventHandlerDeps {
   refreshTodoView(sessionID: string | undefined): void;
   /** Seed one session's todo column once (the `before_agent_start` fallback). */
   seedTodoView(sessionID: string | undefined): void;
-  /** Drain post-replacement switch operations in the new session closure. */
-  drainPendingSwitchOps(): void;
+  /**
+   * Take and apply the pending post-replacement switch operations for the
+   * session this call's context names.
+   */
+  drainPendingSwitchOps(sessionID: string, ctx: unknown): void;
   /**
    * Admit one unit of work for the session this call's context names.
    *
@@ -231,14 +237,14 @@ export function createPiEventHandlers(
         // replacement.  The tool trim was deferred from `withSession` (to
         // avoid touching the stale action bindings) and is applied here
         // exactly once at the new session's first turn.
-        deps.drainPendingSwitchOps();
-        // Re-apply the session's primary deny trim.  `session_start`
+        deps.drainPendingSwitchOps(permit.sessionID, ctx);
+        // Re-apply the session's active tool set.  `session_start`
         // already does this at bind time; this fallback covers flows where
         // a session begins without one (and keeps the active set
         // authoritative after a deferred switch drain).  Idempotent — it
         // always filters the fixed baseline, so repeated calls never
         // accumulate denies.
-        deps.applyPrimaryToolTrim(permit.sessionID);
+        deps.applyActiveTools(permit.sessionID, ctx);
         // Fallback seed: covers flows where `session_start` fires before
         // the identity is set, or a session begins without a
         // `session_start` in some flows.  Registration is idempotent —
@@ -277,13 +283,13 @@ export function createPiEventHandlers(
       await deps.startSession(evt, ctx);
       await deps.runSession(ctx, (permit) => {
         sessionContexts.bind(permit.sessionID, ctx);
-        // Trim the session's active tool set by its primary's denies at
-        // bind time (startup / reload / resume / replacement), so the deny
-        // list takes effect from the first turn — before the /<agent>
-        // switch path or a /go handoff would otherwise be the first place
-        // it applied.  `before_agent_start` runs it again as a fallback
-        // (idempotent).
-        deps.applyPrimaryToolTrim(permit.sessionID);
+        // Set the session's active tools at bind time (startup / reload /
+        // resume / replacement): the primary's denies take effect from the
+        // first turn, before the /<agent> switch path or a /go handoff
+        // would otherwise be the first place they applied, and the ask
+        // tool becomes visible only when this session can ask.
+        // `before_agent_start` runs it again as a fallback (idempotent).
+        deps.applyActiveTools(permit.sessionID, ctx);
         // Register the fleet widget at session startup / resume (before any
         // LLM turn), so the current primary shows immediately.
         // `before_agent_start` runs the same registration as a fallback.
@@ -443,6 +449,10 @@ export function createPiEventHandlers(
         // Re-read the invalidated cache so the widget shows the branch the
         // navigation moved to.
         deps.refreshTodoView(permit.sessionID);
+        // A navigation can land on a branch whose turn runs in another
+        // mode (a resumed headless branch, an interactive one): correct
+        // the ask tool's visibility for this session.
+        deps.applyActiveTools(permit.sessionID, ctx);
       });
     },
     hasSettledHandlers: deps.engine !== undefined,
@@ -518,16 +528,12 @@ export function createPiEventHandlers(
               lastRunMessages.get(permit.sessionID) ?? [],
             );
             const hadActivity = countTurnToolCalls(turn) > 0;
-            // A headless ask could not reach the user (no UI to draw on), so
-            // the turn ends with the question unanswered: stop and let the
-            // user read it after the process exits rather than
-            // auto-continuing into unwanted work.
-            const askUnanswered = askWentUnanswered(turn);
+            // A run that ends behind an open blocking prompt is waiting on
+            // the user, not finished: no wake may continue it.
             const cause: StopCause =
               outcome !== "completed"
                 ? "aborted"
-                : (uiPromptDepths.get(permit.sessionID) ?? 0) > 0 ||
-                    askUnanswered
+                : (uiPromptDepths.get(permit.sessionID) ?? 0) > 0
                   ? "awaiting-input"
                   : "settled";
             log.debug({

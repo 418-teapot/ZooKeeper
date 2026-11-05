@@ -8,11 +8,18 @@
  * termination: timeout, abort, or no UI).
  *
  * This module has zero host dependencies — no pi/OpenCode types, no I/O, no
- * timer logic. Host adapters implement `AskFormHost` and own scheduling,
- * rendering, and timeout enforcement.
+ * timer logic. Host adapters implement {@link QuestionChannel} and own
+ * scheduling, rendering, and timeout enforcement.
  *
  * @module
  */
+
+// ---------------------------------------------------------------------------
+// Tool identity
+// ---------------------------------------------------------------------------
+
+/** The ask tool's registered name, shared by the unit and every host. */
+export const ASK_TOOL_NAME = "ask";
 
 // ---------------------------------------------------------------------------
 // Question types
@@ -85,33 +92,35 @@ export type AskResult =
   | { status: "unavailable"; reason: "timeout" | "aborted" | "no-ui" };
 
 // ---------------------------------------------------------------------------
-// Form-host contract (implemented by host adapters)
+// Question channel (implemented by host adapters)
 // ---------------------------------------------------------------------------
 
+/** One question request handed to a host's question channel. */
+export interface AskRequest {
+  /** The questions to ask, in ask order. */
+  questions: AskFormQuestion[];
+  /** The call's cancellation signal. */
+  signal: AbortSignal;
+  /** The wait budget in seconds; omitted → wait indefinitely. */
+  timeoutSeconds?: number;
+}
+
 /**
- * Presentation contract for the ask protocol.
+ * Host-neutral port for asking the user a set of questions.
  *
- * A host adapter mounts its form, blocks for the user's decisions, and
- * returns one result per question. Timeout, abort, and no-UI handling are
- * the adapter's responsibility — this contract only fixes the call and
- * result shapes. `custom` is the host's own component-mounting surface,
- * opaque to this layer.
+ * A local terminal UI implements it over its own dialog; a remote IPC host
+ * implements the same port over its wire protocol.  Timeout, abort and
+ * no-UI handling are the implementation's responsibility — this contract
+ * only fixes the call and result shapes.
  */
-export interface AskFormHost {
+export interface QuestionChannel {
   /**
-   * Mount the form and wait for the user's decisions.
+   * Ask the questions and wait for the user's decisions.
    *
-   * @param opts - The {@link AskFormQuestion}s (normalized questions plus
-   * the form's `recommended` hint), the host's custom-component surface, an
-   * optional timeout in seconds, and an optional abort signal.
+   * @param request - The questions, the wait budget and the signal.
    * @returns One result per question, in question order.
    */
-  present(opts: {
-    questions: AskFormQuestion[];
-    custom: (factory: unknown, options?: unknown) => unknown;
-    timeoutSeconds?: number;
-    signal?: AbortSignal;
-  }): Promise<AskResult[]>;
+  ask(request: AskRequest): Promise<AskResult[]>;
 }
 
 // ---------------------------------------------------------------------------

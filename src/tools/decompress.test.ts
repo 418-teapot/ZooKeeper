@@ -36,6 +36,7 @@ import {
 } from "../core/context/state.js";
 import { createStateStore } from "../core/context/store.js";
 import type { ToolHost } from "../core/ports/tool-host.js";
+import type { ToolCallContext } from "../core/unit.js";
 import { composeForTest } from "../testkits/compose.js";
 import {
   composeToolHooks,
@@ -44,7 +45,7 @@ import {
   polyHostConfig,
 } from "../testkits/config.js";
 import { projectMessages } from "../testkits/context.js";
-import { permitFor } from "../testkits/context-runtime.js";
+import { callFor, permitFor } from "../testkits/context-runtime.js";
 import { makeTmpDir } from "../testkits/tmp.js";
 import { _resetForTesting } from "../utils/logger.js";
 import { createDecompressTool, unit as decompressUnit } from "./decompress.js";
@@ -122,12 +123,6 @@ function fakeHost(messages: HostMessage[]): {
 } {
   const notifyCalls: Array<{ sessionID: string; text: string }> = [];
   const host: ToolHost = {
-    resolveSessionId(toolCtx: unknown): string | undefined {
-      const ctx = toolCtx as { sessionID?: unknown; sessionId?: unknown };
-      const id = ctx.sessionID ?? ctx.sessionId;
-      if (typeof id !== "string" || id.length === 0) return undefined;
-      return id;
-    },
     async fetchHistory(_sessionId: string): Promise<Projection> {
       return projectMessages(messages);
     },
@@ -179,24 +174,13 @@ function mockClient(messages: any[]): {
   return { client, promptCalls };
 }
 
-/** The host execution surface a tool call receives. */
-const hostContext = {
-  get permit() {
-    return permit;
-  },
-};
-
-/** Hand-written minimal OpenCode ToolContext shape. */
-const mockToolContext = {
-  sessionID: TEST_SESSION_ID,
-  messageID: "msg-decompress",
-  agent: "dolphin",
-  directory: "/tmp",
-  worktree: "/tmp",
-  abort: new AbortController().signal,
-  metadata: () => {},
-  ask: async () => {},
-};
+/**
+ * The call context a decompress call receives, admitted under the current
+ * permit unless a case overrides it.
+ */
+function call(overrides: Partial<ToolCallContext> = {}): ToolCallContext {
+  return callFor(TEST_SESSION_ID, { permit, ...overrides });
+}
 
 /** Valid decompress config (mirrors the parsed config.toml). */
 const ENABLED_CONFIG: ContextPruningConfig = {
@@ -250,7 +234,6 @@ function sourceHost(options: {
   calls?: number[];
 }): ToolHost {
   const host: ToolHost = {
-    resolveSessionId: () => TEST_SESSION_ID,
     async notify(): Promise<void> {},
   };
   if (options.history !== undefined) {
@@ -279,9 +262,10 @@ describe("decompress tool execute — permit lapses after the commit", () => {
     };
     const tool = createDecompressTool(host, PARSED_CONFIG, stopping);
 
-    const result = await tool.execute({ blockId: "b1" }, mockToolContext, {
-      permit: permitFor(TEST_SESSION_ID, controller.signal),
-    });
+    const { text: result } = await tool.execute(
+      { blockId: "b1" },
+      call({ permit: permitFor(TEST_SESSION_ID, controller.signal) }),
+    );
 
     // The committed restore stands.
     assert.equal(stateOf().blocks.get(1)?.status, "consumed");
@@ -308,7 +292,7 @@ describe("decompress tool execute — one commit for state and view change", () 
 
     try {
       await assert.rejects(
-        () => tool.execute({ blockId: "b1" }, mockToolContext, hostContext),
+        () => tool.execute({ blockId: "b1" }, call()),
         "an unwritten restore is never reported as applied",
       );
     } finally {
@@ -346,11 +330,7 @@ describe("decompress tool execute — history source", () => {
       PARSED_CONFIG,
       runtime,
     );
-    const result = await tool.execute(
-      { blockId: "b1" },
-      mockToolContext,
-      hostContext,
-    );
+    const { text: result } = await tool.execute({ blockId: "b1" }, call());
 
     assert.equal(
       calls.length,
@@ -368,7 +348,7 @@ describe("decompress tool execute — history source", () => {
     const tool = createDecompressTool(sourceHost({}), PARSED_CONFIG, runtime);
 
     await assert.rejects(
-      () => tool.execute({ blockId: "b1" }, mockToolContext, hostContext),
+      () => tool.execute({ blockId: "b1" }, call()),
       /无法解压：尚未取得当轮上下文视图/,
     );
     assert.equal(
@@ -391,11 +371,7 @@ describe("decompress tool execute — restore happy path", () => {
 
     const tool = createDecompressTool(host, PARSED_CONFIG, runtime);
 
-    const result = await tool.execute(
-      { blockId: "b1" },
-      mockToolContext,
-      hostContext,
-    );
+    const { text: result } = await tool.execute({ blockId: "b1" }, call());
 
     // (1) Block moved to consumed in the instance's session state.
     const state = stateOf();
@@ -457,11 +433,7 @@ describe("decompress tool execute — recall path", () => {
     });
 
     const tool = createDecompressTool(host, PARSED_CONFIG, runtime);
-    const result = await tool.execute(
-      { blockId: "b1" },
-      mockToolContext,
-      hostContext,
-    );
+    const { text: result } = await tool.execute({ blockId: "b1" }, call());
 
     // The body is always framed by a note naming the block id and saying
     // out loud that no original text is restored — a bare body would read
@@ -495,11 +467,7 @@ describe("decompress tool execute — recall path", () => {
     });
 
     const tool = createDecompressTool(host, PARSED_CONFIG, runtime);
-    const result = await tool.execute(
-      { blockId: "b1" },
-      mockToolContext,
-      hostContext,
-    );
+    const { text: result } = await tool.execute({ blockId: "b1" }, call());
 
     // The recall note is one line; the truncated body follows it.
     assert.ok(result.startsWith("【仅返回摘要，未恢复原文】"));
@@ -529,7 +497,7 @@ describe("decompress tool execute — gate rejection", () => {
 
     const tool = createDecompressTool(host, PARSED_CONFIG, runtime);
     await assert.rejects(
-      () => tool.execute({ blockId: "b1" }, mockToolContext, hostContext),
+      () => tool.execute({ blockId: "b1" }, call()),
       (err: unknown) =>
         err instanceof Error &&
         /超过解压阈值/.test(err.message) &&
@@ -551,11 +519,7 @@ describe("decompress tool execute — gate rejection", () => {
     // No setModelLimit call → getModelLimit returns undefined → gate skipped.
 
     const tool = createDecompressTool(host, PARSED_CONFIG, runtime);
-    const result = await tool.execute(
-      { blockId: "b1" },
-      mockToolContext,
-      hostContext,
-    );
+    const { text: result } = await tool.execute({ blockId: "b1" }, call());
 
     const state = stateOf();
     assert.equal(state.blocks.get(1)?.status, "consumed");
@@ -577,7 +541,7 @@ describe("decompress tool execute — target resolution errors", () => {
 
     const tool = createDecompressTool(host, PARSED_CONFIG, runtime);
     await assert.rejects(
-      () => tool.execute({ blockId: "b9" }, mockToolContext, hostContext),
+      () => tool.execute({ blockId: "b9" }, call()),
       (err: unknown) =>
         err instanceof Error &&
         /b9 不存在/.test(err.message) &&
@@ -592,7 +556,7 @@ describe("decompress tool execute — target resolution errors", () => {
 
     const tool = createDecompressTool(host, PARSED_CONFIG, runtime);
     await assert.rejects(
-      () => tool.execute({ blockId: "9" }, mockToolContext, hostContext),
+      () => tool.execute({ blockId: "9" }, call()),
       (err: unknown) =>
         err instanceof Error &&
         /格式非法/.test(err.message) &&
@@ -606,7 +570,7 @@ describe("decompress tool execute — target resolution errors", () => {
 
     const tool = createDecompressTool(host, PARSED_CONFIG, runtime);
     await assert.rejects(
-      () => tool.execute({ blockId: "b1" }, mockToolContext, hostContext),
+      () => tool.execute({ blockId: "b1" }, call()),
       (err: unknown) =>
         err instanceof Error &&
         /b1 不存在/.test(err.message) &&
@@ -629,7 +593,7 @@ describe("decompress tool execute — config guidance error", () => {
     );
 
     await assert.rejects(
-      () => tool.execute({ blockId: "b1" }, mockToolContext, hostContext),
+      () => tool.execute({ blockId: "b1" }, call()),
       (err: unknown) =>
         err instanceof Error &&
         err.message.includes("[zoo.context.decompress]") &&
@@ -646,7 +610,7 @@ describe("decompress tool execute — config guidance error", () => {
     const tool = createDecompressTool(host, ENABLED_CONFIG, runtime);
 
     await assert.rejects(
-      () => tool.execute({ blockId: 3 }, mockToolContext, hostContext),
+      () => tool.execute({ blockId: 3 }, call()),
       (err: unknown) =>
         err instanceof Error &&
         /blockId/.test(err.message) &&

@@ -21,6 +21,7 @@
  * @module
  */
 
+import type { QuestionChannel } from "./ask.js";
 import type { DelegationJudgeContribution } from "./gate.js";
 import type { WorkPermit } from "./lifecycle/index.js";
 import type { SettledContribution } from "./loop/settle.js";
@@ -217,6 +218,56 @@ export interface ToolDefinitionContribution {
 }
 
 /**
+ * The structured payload of one tool call.
+ *
+ * A tool returns its model-facing `text` and, when it has one, the
+ * structured payload a host persists with the result.  The tool never
+ * writes into a host object: the host adapter maps the result onto its
+ * own result shape.
+ */
+export interface ToolResult {
+  /** Model-facing text. */
+  text: string;
+  /** Structured payload for hosts that persist one. */
+  data?: unknown;
+}
+
+/**
+ * The host-neutral context of one tool call.
+ *
+ * Every field the tool needs to run belongs here, already translated by
+ * the host adapter: the tool never reads a host object.
+ */
+export interface ToolCallContext {
+  /** The session this call belongs to. */
+  sessionID: string;
+  /** The host's tool-call id, when the host names one. */
+  callID?: string;
+  /**
+   * The call's cancellation signal.  An admitted call receives the
+   * permit's signal, so it stops when the session or the host stops.
+   */
+  signal: AbortSignal;
+  /**
+   * The permit the host admitted this call under.  A tool that reads or
+   * writes session records uses it for every `ContextRuntime` operation.
+   */
+  permit?: WorkPermit;
+  /**
+   * Request a repaint of the host's live card for this call.
+   *
+   * A host without a live card omits it.  The call carries no payload:
+   * the card projects its own state.
+   */
+  notifyChanged?(): void;
+  /**
+   * The host's question channel, or omitted when the host cannot ask the
+   * user anything.
+   */
+  questionChannel?: QuestionChannel;
+}
+
+/**
  * One tool record, as the composition result and the host registration
  * boundary read it.
  *
@@ -235,77 +286,15 @@ export interface ToolContribution {
   /**
    * Execute the tool.
    *
-   * `toolCtx` is the host tool execution context (an OpenCode tool context
-   * on OpenCode, a pi `ExtensionContext` on pi).  The optional `hostCtx`
-   * third argument carries the host-forwarded execution surface: the abort
-   * `signal`, the tool-call `callId`, and the `onUpdate` repaint-signal
-   * callback, all forwarded by the pi bridge from the native tool
-   * signature.  `onUpdate` is a content-free repaint trigger, never a text
-   * channel: pi re-renders a live tool card whenever a partial result
-   * arrives, so a tool driving a live view sends an empty partial
-   * `{ content: [] }` instead of streaming text.  Hosts that do not
-   * forward these (OpenCode, which invokes tools natively) simply omit the
-   * third argument.
-   */
-  execute(
-    args: unknown,
-    toolCtx: unknown,
-    hostCtx?: {
-      signal?: AbortSignal;
-      /** The host tool-call id (the pi tool-call id), forwarded by the pi
-       * bridge from the native tool signature.  Used as the run id by the
-       * subagent tool's registry write. */
-      callId?: string;
-      /** The host's partial-result callback (pi's `onUpdate`): a
-       * content-free repaint signal, never a text channel. */
-      onUpdate?: unknown;
-      /**
-       * Write-back slot for a structured result payload (pi's tool-result
-       * `details` slot).  The bridge allocates this object per call, reads
-       * `details` back AFTER `execute` resolves, and merges a plain object
-       * into the host result's details — so a tool whose text is a
-       * model-facing summary can still hand renderers the structured
-       * outcome behind it (the `ask` tool's per-question results).
-       * Leaving it unset changes nothing; hosts that do not build this
-       * object (OpenCode) never see it.
-       */
-      details?: unknown;
-      /**
-       * The permit the host admitted this call under, or omitted when the
-       * host holds none.  A tool that reads or writes session records uses
-       * it for every `ContextRuntime` operation.
-       */
-      permit?: WorkPermit;
-    },
-  ): Promise<string>;
-  /**
-   * Optional scheduling hint forwarded to hosts that support it (pi's
-   * native `ToolDefinition.executionMode`).
+   * The call context is already host-neutral: the adapter translated the
+   * host's execution context into it.  The result is structured, so the
+   * host adapter maps it onto its own result shape.
    *
-   * `"sequential"` forces the tool to run one call at a time with respect
-   * to every other tool call in the turn.  Tools that need exclusivity over
-   * their own state get it from a sequencer instead (see
-   * `core/sequencer.js`), because the host-wide hint would also block
-   * unrelated concurrent work.  Omitted → the host default; hosts without
-   * per-tool scheduling ignore it.
+   * @param args - The raw tool arguments.
+   * @param call - The call's host-neutral context.
+   * @returns The call's text and optional structured payload.
    */
-  executionMode?: "sequential" | "parallel";
-  /**
-   * Optional host TUI renderers for the tool's transcript card.
-   *
-   * Present only on hosts that supply a renderer: `renderCall` draws the
-   * initial tool-call card, `renderResult` draws the live partial /
-   * terminal card from the structured progress in the result `details`.
-   * Structurally loose (never importing host types in core); hosts that do
-   * not render tools (OpenCode) simply omit them.
-   */
-  renderCall?(args: unknown, theme: unknown, context?: unknown): unknown;
-  renderResult?(
-    result: unknown,
-    options: unknown,
-    theme: unknown,
-    context?: unknown,
-  ): unknown;
+  execute(args: unknown, call: ToolCallContext): Promise<ToolResult>;
 }
 
 /**

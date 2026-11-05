@@ -155,7 +155,6 @@ describe("/go unit — executor passthrough", () => {
       {
         ...caps(target, baseDir),
         toolHost: {
-          resolveSessionId: () => SESSION_ID,
           notify: async (_sessionId: string, text: string) => {
             notifications.push(text);
           },

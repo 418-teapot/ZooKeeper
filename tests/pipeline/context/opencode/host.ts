@@ -26,7 +26,10 @@ import {
   type Block,
   type SessionState,
 } from "../../../../src/core/context/state.js";
-import { permitFor } from "../../../../src/testkits/context-runtime.js";
+import {
+  callFor,
+  permitFor,
+} from "../../../../src/testkits/context-runtime.js";
 import { createCompressTool } from "../../../../src/tools/compress.js";
 import { createDecompressTool } from "../../../../src/tools/decompress.js";
 import type { PipelineSandbox } from "../sandbox.js";
@@ -204,7 +207,7 @@ async function runTool(
   notifications: string[],
 ): Promise<{ result: string | null; error: string | null }> {
   const client = makeClient(messages, notifications);
-  const hostCtx = { permit: permitFor(sessionID) };
+  const call = callFor(sessionID, { permit: permitFor(sessionID) });
   switch (action.kind) {
     case "compress-tool": {
       const tool = createCompressTool(
@@ -212,12 +215,8 @@ async function runTool(
         config,
         sandbox.runtime,
       );
-      const result = await tool.execute(
-        { ranges: action.ranges },
-        { sessionID },
-        hostCtx,
-      );
-      return { result, error: null };
+      const { text } = await tool.execute({ ranges: action.ranges }, call);
+      return { result: text, error: null };
     }
     case "decompress-tool": {
       const tool = createDecompressTool(
@@ -225,12 +224,8 @@ async function runTool(
         config,
         sandbox.runtime,
       );
-      const result = await tool.execute(
-        { blockId: action.blockId },
-        { sessionID },
-        hostCtx,
-      );
-      return { result, error: null };
+      const { text } = await tool.execute({ blockId: action.blockId }, call);
+      return { result: text, error: null };
     }
     case "compress-tool-raw": {
       const tool = createCompressTool(
@@ -238,12 +233,8 @@ async function runTool(
         config,
         sandbox.runtime,
       );
-      const result = await tool.execute(
-        action.args,
-        action.toolCtx ?? { sessionID },
-        hostCtx,
-      );
-      return { result, error: null };
+      const { text } = await tool.execute(action.args, call);
+      return { result: text, error: null };
     }
     case "decompress-tool-raw": {
       const tool = createDecompressTool(
@@ -251,12 +242,8 @@ async function runTool(
         config,
         sandbox.runtime,
       );
-      const result = await tool.execute(
-        action.args,
-        action.toolCtx ?? { sessionID },
-        hostCtx,
-      );
-      return { result, error: null };
+      const { text } = await tool.execute(action.args, call);
+      return { result: text, error: null };
     }
   }
 }

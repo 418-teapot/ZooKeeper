@@ -2,16 +2,14 @@
  * Todo capability port.
  *
  * Pure types: the per-session todo state store the `todo` tool reads and
- * writes, its optional transcript-card renderer, and the optional
- * read-only `TodoSource` the progress checks consume.  The file imports
- * types only — never an implementation.
+ * writes, and the optional read-only `TodoSource` the progress checks
+ * consume.  The file imports types only — never an implementation.
  *
  * @module
  */
 
 import type { TodoSource } from "../todo/source.js";
 import type { TodoStateStore } from "../todo/store.js";
-import type { ToolCardRenderer } from "./subagent.js";
 
 /** The todo capability. */
 export interface TodoPort {
@@ -28,14 +26,6 @@ export interface TodoPort {
    * contributes no tools.
    */
   todoStore: TodoStateStore;
-  /**
-   * Optional host renderer for the todo tool card.
-   *
-   * When present the tool attaches its `renderCall` / `renderResult`
-   * callbacks so the host TUI draws the todo list as a transcript card
-   * instead of the plain summary text.
-   */
-  todoRenderer: ToolCardRenderer;
   /**
    * Read-only todo source the progress checks consume.
    *

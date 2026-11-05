@@ -135,6 +135,9 @@ export function probe(pi: ExtensionAPI): void {
       .getAllTools()
       .map((tool) => tool.name)
       .sort();
+    // The set the model is offered, after ZooKeeper's own handler applied
+    // this session's visibility rules (handlers run in registration order).
+    const activeToolNames = pi.getActiveTools().slice().sort();
     rec("before_agent_start", {
       sessionID,
       messageType: event.messageType,
@@ -148,6 +151,7 @@ export function probe(pi: ExtensionAPI): void {
       systemPrompt: excerpt(event.systemPrompt, 240),
       child: subagentActive,
       toolNames,
+      activeToolNames,
     });
   });
 

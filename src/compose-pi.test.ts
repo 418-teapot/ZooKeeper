@@ -53,7 +53,7 @@ import { createReplyStripHandler } from "./hooks/reply-strip/index.js";
 import { enhanceSubagentDefinition } from "./hooks/subagent-prompt/index.js";
 import { REGISTRY } from "./registry.js";
 import { composeForTest } from "./testkits/compose.js";
-import { permitFor } from "./testkits/context-runtime.js";
+import { callFor, permitFor } from "./testkits/context-runtime.js";
 import { assistantMessage } from "./testkits/pi-messages.js";
 import { _getBufferForTesting, _resetForTesting } from "./utils/logger.js";
 
@@ -767,7 +767,7 @@ function subagentToolWithArgs(): ToolContribution {
       prompt: { type: "string", description: "完整任务说明" },
     },
     async execute() {
-      return "done";
+      return { text: "done" };
     },
   };
 }
@@ -831,7 +831,7 @@ describe("applyToolDefinitionContributions", () => {
       description: "compress message ranges",
       args: { ranges: { type: "array", description: "ranges" } },
       async execute() {
-        return "compressed";
+        return { text: "compressed" };
       },
     };
     const tools = await applyToolDefinitionContributions(
@@ -900,7 +900,6 @@ const TOOL_PROFILE: ModeProfile = {
 /** The pi host's tool services: a fixed session id and a no-op notify. */
 function piToolHost(): ToolHost {
   return {
-    resolveSessionId: () => "sess-compose",
     async notify(): Promise<void> {},
   };
 }
@@ -950,7 +949,10 @@ describe("pi composition — the todo tool registration boundary", () => {
     // Mutating through the composed tool must land in the very store the
     // host injected (no hidden re-creation), so the host's own invalidation
     // and the tool always share one cache.
-    await tools.todo?.execute({ op: "init", tasks: ["Injected"] }, {}, {});
+    await tools.todo?.execute(
+      { op: "init", tasks: ["Injected"] },
+      callFor("sess-compose", { permit: permitFor("sess-compose") }),
+    );
     const phases = await store.get("sess-compose");
     assert.equal(phases[0]?.tasks[0]?.content, "Injected");
   });
@@ -965,28 +967,12 @@ describe("pi composition — the todo tool registration boundary", () => {
     assert.deepEqual(Object.keys(tools).sort(), ["compress", "decompress"]);
   });
 
-  it("registers no tool at all when the host supplies no toolHost", () => {
+  it("registers the todo tool from its store alone, without tool services", () => {
     const tools = composeTools({ todoStore: createTodoStore(async () => []) });
-    assert.equal(
-      tools.todo,
-      undefined,
-      "no tool services → the todo unit must be skipped",
-    );
-    // compress and decompress also need the tool host: absent it, no tool
-    // unit activates.
-    assert.deepEqual(Object.keys(tools).sort(), []);
-  });
-
-  it("attaches the host todo renderer to the composed tool (pi-only seam)", () => {
-    const renderCall = () => ({ kind: "call" });
-    const renderResult = () => ({ kind: "result" });
-    const tools = composeTools({
-      toolHost: piToolHost(),
-      todoStore: createTodoStore(async () => []),
-      todoRenderer: { renderCall, renderResult },
-    });
-    assert.equal(tools.todo?.renderCall, renderCall);
-    assert.equal(tools.todo?.renderResult, renderResult);
+    assert.ok(tools.todo, "the todo unit needs only its store");
+    // compress and decompress still need the tool host: absent it, they
+    // stay unregistered.
+    assert.deepEqual(Object.keys(tools).sort(), ["todo"]);
   });
 
   it("the pi definition boundary passes the composed todo tool through untouched", async () => {

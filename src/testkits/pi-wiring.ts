@@ -199,10 +199,9 @@ export function resetPiTestState(): void {
   delete process.env.ZOO_MODE_FILE;
 }
 
-/** The pi host's tool services: a fixed session id and a no-op notify. */
+/** The pi host's tool services: a no-op notify. */
 export function fakePiToolHost(): ToolHost {
   return {
-    resolveSessionId: () => "sess-tool-host",
     async notify(): Promise<void> {},
   };
 }

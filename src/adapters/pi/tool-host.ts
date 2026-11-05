@@ -2,8 +2,7 @@
  * Pi tool host — session services for the compress / decompress tools.
  *
  * Implements the host-free `ToolHost` contract against pi's
- * `ExtensionContext`: the session id comes from the tool execution context's
- * `sessionManager`, notifications are best-effort via pi's in-session
+ * `ExtensionContext`: notifications are best-effort via pi's in-session
  * `appendEntry` channel (a `zoo-notice` custom entry — persistent, never
  * part of the LLM context), and transient toasts go through the `ui.notify`
  * of the session the call names (silently dropped when that session has no
@@ -35,11 +34,11 @@ import { log } from "../../utils/logger.js";
  * contexts keep.
  *
  * No import from the pi package — these structural types are the only
- * contract the readers rely on.  `sessionManager.getSessionId`
- * serves session-id resolution, `buildContextEntries` is read by the pi
- * entry point's session-start subagent-run rescan (never by this host: it
- * offers no history read for the compression tools), and `ui` serves the
- * toast port.
+ * contract the readers rely on.  `sessionManager.getSessionId` serves the
+ * session-id resolution of the entry paths, `buildContextEntries` is read
+ * by the pi entry point's session-start subagent-run rescan (never by this
+ * host: it offers no history read for the compression tools), and `ui`
+ * serves the toast port.
  */
 export interface PiToolHostContext {
   /** Session manager (read-only). */
@@ -129,21 +128,6 @@ export function createPiToolHost(
   appendEntry?: PiAppendEntry,
 ): ToolHost {
   return {
-    /**
-     * Resolve the session id from the pi tool execution context.
-     *
-     * pi exposes the session id through `toolCtx.sessionManager.getSessionId()`.
-     *
-     * @param toolCtx - The tool execution context.
-     * @returns The session identifier, or undefined when absent.
-     */
-    resolveSessionId(toolCtx: unknown): string | undefined {
-      const ctx = toolCtx as {
-        sessionManager?: { getSessionId(): string };
-      };
-      return ctx.sessionManager?.getSessionId();
-    },
-
     /**
      * Post a best-effort in-session notification via `appendEntry`.
      *

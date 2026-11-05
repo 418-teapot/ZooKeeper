@@ -22,7 +22,12 @@
  * @module
  */
 
-import { defineTool, type ToolDefinition } from "../core/unit.js";
+import {
+  defineTool,
+  type ToolCallContext,
+  type ToolDefinition,
+  type ToolResult,
+} from "../core/unit.js";
 import {
   fetchWebContent,
   type HtmlConverter,
@@ -92,8 +97,8 @@ function validateFetchArgs(args: unknown): FetchToolInput {
  * Create the fetch tool bound to a converter and head truncator.
  *
  * The converter and the host head truncator are captured by the closure;
- * the adapter forwards the caller's abort signal so a cancelled tool call
- * aborts the in-flight request.
+ * the adapter forwards the call's signal so a cancelled tool call aborts
+ * the in-flight request.
  *
  * @param converter - The native HTML→Markdown converter.
  * @param truncate - The host head truncator.
@@ -117,7 +122,7 @@ export function createFetchTool(
       },
     },
     required: ["url"],
-    async execute(args, _toolCtx, hostCtx) {
+    async execute(args, call: ToolCallContext): Promise<ToolResult> {
       const input = validateFetchArgs(args);
       const result = await fetchWebContent(input.url, {
         converter,
@@ -125,9 +130,9 @@ export function createFetchTool(
         ...(input.timeout !== undefined
           ? { timeoutMs: input.timeout * 1000 }
           : {}),
-        ...(hostCtx?.signal !== undefined ? { signal: hostCtx.signal } : {}),
+        signal: call.signal,
       });
-      return result.output;
+      return { text: result.output };
     },
   };
 }

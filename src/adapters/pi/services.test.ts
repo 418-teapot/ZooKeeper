@@ -120,10 +120,10 @@ describe("pi tool baselines", () => {
     assert.deepEqual(baselines.primary(), ["edit", "bash"]);
     assert.equal(state.reads, 1, "the first capture is reused");
 
-    // The subagent baseline is its own capture: merging the two would make
-    // one consumer's trim visible to the other.
+    // Both faces read the capture made on first use, so neither can observe
+    // a tool face the other one trimmed.
     assert.deepEqual(baselines.subagent(), ["edit", "bash"]);
-    assert.equal(state.reads, 2);
+    assert.equal(state.reads, 1, "the subagent face shares the capture");
   });
 
   it("freezes both baselines against a live host array", () => {
@@ -147,6 +147,48 @@ describe("pi tool baselines", () => {
     );
   });
 
+  it("computes the subagent baseline from the untrimmed capture", () => {
+    const tools = ["fetch", "edit", "bash"];
+    const { state, api } = fakeApi(tools);
+    const baselines = createPiToolBaselines(api);
+
+    // The main session captures the shared baseline, then its trim removes
+    // the primary's denied tool from the live face.
+    assert.deepEqual(baselines.primary(), ["fetch", "edit", "bash"]);
+    tools.splice(0, 1);
+
+    // A sub-session's face is the untrimmed set: only the target's own
+    // denies apply there, so the caller's deny never reaches it.
+    assert.deepEqual(baselines.subagent(), ["fetch", "edit", "bash"]);
+    assert.equal(state.reads, 1, "both faces share one host read");
+  });
+
+  it("never hands ask to a sub-session", () => {
+    // The host configuration activated ask before the capture; a sub-session
+    // starts on the SDK, whose event contexts yield no question channel.
+    const { api } = fakeApi(["fetch", "edit", "ask"]);
+    const baselines = createPiToolBaselines(api);
+
+    assert.deepEqual(baselines.primary(), ["fetch", "edit", "ask"]);
+    assert.deepEqual(
+      baselines.subagent(),
+      ["fetch", "edit"],
+      "the subagent baseline must not carry ask",
+    );
+  });
+
+  it("shares the first capture whichever face reads first", () => {
+    const tools = ["fetch", "edit"];
+    const { state, api } = fakeApi(tools);
+    const baselines = createPiToolBaselines(api);
+
+    assert.deepEqual(baselines.subagent(), ["fetch", "edit"]);
+    tools.splice(0, 1);
+
+    assert.deepEqual(baselines.primary(), ["fetch", "edit"]);
+    assert.equal(state.reads, 1, "the shared capture is reused");
+  });
+
   it("caches an empty report instead of re-reading the host", () => {
     const { state, api } = fakeApi([]);
     const baselines = createPiToolBaselines(api);
@@ -166,7 +208,7 @@ describe("pi tool baselines", () => {
 
     assert.equal(baselines.primary(), undefined);
     assert.equal(baselines.subagent(), undefined);
-    assert.equal(state.reads, 2, "a stopped scope never reads the host again");
+    assert.equal(state.reads, 1, "a stopped scope never reads the host again");
   });
 
   it("serves no baseline without a pi API instance", () => {
@@ -253,10 +295,7 @@ describe("pi host services — declarations", () => {
       undefined,
     );
     assert.equal(typeof extension.services.adapter.history, "function");
-    assert.equal(
-      typeof extension.services.toolHost.resolveSessionId,
-      "function",
-    );
+    assert.equal(typeof extension.services.toolHost.notify, "function");
     assert.equal(
       extension.services.switchHost.host?.newSession !== undefined,
       true,

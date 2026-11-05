@@ -671,7 +671,6 @@ export async function expectRejectedToolCallsPreserveView<M>(
     "compress-empty-title",
     "compress-hyphen-title",
     "compress-non-string-field",
-    "decompress-missing-session-id",
     "compress-config-section-missing",
     "decompress-config-section-missing",
   ]) {

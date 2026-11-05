@@ -1449,7 +1449,6 @@ describe("context-nudge injection", () => {
       text: string;
     }> = [];
     const toolHost: ToolHost = {
-      resolveSessionId: () => undefined,
       fetchHistory: async () => project([], []),
       notify: async () => {},
       toast: (sessionId, t) => {
@@ -1494,7 +1493,6 @@ describe("context-nudge injection", () => {
     setLimit(sessionID, NUDGE_LIMIT, "test-model");
     // A host that implements notify but not the optional toast port.
     const toolHost: ToolHost = {
-      resolveSessionId: () => undefined,
       fetchHistory: async () => project([], []),
       notify: async () => {},
     };
@@ -2272,7 +2270,6 @@ describe("unit.create enablement", () => {
       adapter,
       contextRuntime: createContextRuntime(store),
       toolHost: {
-        resolveSessionId: () => undefined,
         fetchHistory: async () => project([], []),
         notify: async () => {},
         toast: () => {},

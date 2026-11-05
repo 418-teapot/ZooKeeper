@@ -2,13 +2,14 @@
  * Core scenario registry, ordered by risk: the load/tool loop first, then
  * session isolation, reload idempotency, fork inheritance, the SDK
  * sub-session, ordered shutdown, the context pipeline, the compression
- * tools, and finally the primary switch.
+ * tools, the primary switch, and finally the ask tool's visibility.
  *
  * Any scenario can be selected on its own by id (`--scenario <id>`), which
  * is what makes a failure cheap to rerun.
  */
 
 import type { ScenarioDefinition } from "../harness/scenario-runtime.js";
+import { askVisibility } from "./ask-visibility.js";
 import { compressionTools } from "./compression-tools.js";
 import { contextPipeline } from "./context-pipeline.js";
 import { forkInheritance } from "./fork-inheritance.js";
@@ -30,4 +31,5 @@ export const SCENARIOS: ScenarioDefinition[] = [
   contextPipeline,
   compressionTools,
   primarySwitch,
+  askVisibility,
 ];

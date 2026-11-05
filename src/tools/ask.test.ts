@@ -6,17 +6,17 @@
  *    lenient `recommended` handling, terminal control sequences stripped from
  *    the model's texts, loud errors for malformed input);
  *  - result assembly (one `Q<n>: <question> => <core rendering>` line per
- *    question, and the structured `details` written back through the host
- *    context's details slot);
+ *    question, and the structured `data` carried in the tool result);
  *  - the contribution's own paths, driven through a fake `ui.custom` that
- *    mounts the REAL dialog headless: the non-TUI `no-ui` fallback, a real
+ *    mounts the REAL dialog headless behind the pi question channel: the
+ *    defence path taken by a call without a channel (`no-ui`), a real
  *    answer run, a `ui.custom` that rejects, and the `guardAnswers`
  *    replacement of a structurally illegal `answered` slot.
  *
  * Also the unit descriptor's pi-only fail-closed behaviour (no
- * `askFormHost` → zero tools) and the internal gate that keeps two forms
- * from mounting on top of each other.  The presentation contract itself
- * (`presentAskForm`) is covered in `src/adapters/pi/ask-form.test.ts`.
+ * `askQuestionChannel` → zero tools) and the internal gate that keeps two
+ * forms from mounting on top of each other.  The presentation contract
+ * itself (`presentAskForm`) is covered in `src/adapters/pi/ask-form.test.ts`.
  *
  * @module
  */
@@ -26,7 +26,7 @@ import { describe, it } from "node:test";
 import {
   type AskDialogComponent,
   type AskDialogOutcome,
-  presentAskForm,
+  createPiQuestionChannel,
 } from "../adapters/pi/ask-form.js";
 import type { AskResult, NormalizedQuestion } from "../core/ask.js";
 import type { ModeProfile } from "../core/config-types.js";
@@ -47,6 +47,22 @@ async function settle(turns = 6): Promise<void> {
 /** Send one raw key to a mounted dialog. */
 function key(component: AskDialogComponent, data: string): void {
   component.handleInput(data);
+}
+
+/**
+ * Build the call context an ask call receives on pi.
+ *
+ * The question channel is the one the pi adapter builds from its own
+ * execution context, so a pi context without an interactive surface gets
+ * no channel and the tool reports the system-side slot.
+ */
+function askCall(piCtx: unknown, overrides: { signal?: AbortSignal } = {}) {
+  const questionChannel = createPiQuestionChannel(piCtx);
+  return {
+    sessionID: "sess-ask",
+    signal: overrides.signal ?? new AbortController().signal,
+    ...(questionChannel !== undefined ? { questionChannel } : {}),
+  };
 }
 // ---------------------------------------------------------------------------
 // Argument parsing
@@ -171,21 +187,21 @@ describe("ask tool — result assembly", () => {
     },
   ];
 
-  it("writes one line per question and the structured details", () => {
+  it("writes one line per question and the structured data", () => {
     const results: AskResult[] = [
       { status: "answered", answer: ["Yes"], wasCustom: false },
       { status: "unavailable", reason: "timeout" },
     ];
-    const { text, details } = assembleAskResults(questions, results);
+    const { text, data } = assembleAskResults(questions, results);
     assert.equal(
       text,
       "Q1: Ship it? => User answered: Yes\nQ2: Which files? => User unavailable (timeout)",
     );
-    assert.deepEqual(details.questions[0], {
+    assert.deepEqual(data.questions[0], {
       question: "Ship it?",
       result: results[0],
     });
-    assert.deepEqual(details.questions[1], {
+    assert.deepEqual(data.questions[1], {
       question: "Which files?",
       result: results[1],
     });
@@ -233,11 +249,11 @@ describe("ask tool — result assembly", () => {
   });
 
   it("fills a missing result slot as aborted rather than dropping the line", () => {
-    const { text, details } = assembleAskResults(questions, [
+    const { text, data } = assembleAskResults(questions, [
       { status: "declined" },
     ]);
     assert.equal(text.split("\n").length, 2);
-    assert.deepEqual(details.questions[1].result, {
+    assert.deepEqual(data.questions[1].result, {
       status: "unavailable",
       reason: "aborted",
     });
@@ -298,16 +314,46 @@ describe("ask tool — contribution", () => {
     ],
   };
 
-  it("reports no-ui without a TUI (still a normal result, never an error)", async () => {
+  it("asks through the call's question channel and returns text plus data", async () => {
     const tool = unitTools()[0];
-    const hostCtx: { details?: unknown } = {};
-    const text = await tool.execute(args, { mode: "print" }, hostCtx);
+    const asked: number[] = [];
+    const result = await tool.execute(args, {
+      sessionID: "sess-ask",
+      signal: new AbortController().signal,
+      questionChannel: {
+        async ask(request) {
+          asked.push(request.questions.length);
+          return [
+            { status: "answered", answer: ["A1"], wasCustom: false },
+            { status: "declined" },
+          ];
+        },
+      },
+    });
+    assert.deepEqual(asked, [2], "the channel receives both questions");
+    assert.deepEqual(result, {
+      text: "Q1: One? => User answered: A1\nQ2: Two? => User declined to answer",
+      data: {
+        questions: [
+          {
+            question: "One?",
+            result: { status: "answered", answer: ["A1"], wasCustom: false },
+          },
+          { question: "Two?", result: { status: "declined" } },
+        ],
+      },
+    });
+  });
+
+  it("reports no-ui when the call arrives without a channel", async () => {
+    const tool = unitTools()[0];
+    const result = await tool.execute(args, askCall({ mode: "print" }));
     assert.equal(
-      text,
+      result.text,
       "Q1: One? => User unavailable (no-ui)\nQ2: Two? => User unavailable (no-ui)",
     );
     assert.deepEqual(
-      (hostCtx.details as { questions: { question: string }[] }).questions.map(
+      (result.data as { questions: { question: string }[] }).questions.map(
         (entry) => entry.question,
       ),
       ["One?", "Two?"],
@@ -316,28 +362,27 @@ describe("ask tool — contribution", () => {
 
   it("reports no-ui when the host has no custom-component surface", async () => {
     const tool = unitTools()[0];
-    const text = await tool.execute(args, { mode: "tui", ui: {} });
-    assert.match(text, /User unavailable \(no-ui\)/);
+    const result = await tool.execute(args, askCall({ mode: "tui", ui: {} }));
+    assert.match(result.text, /User unavailable \(no-ui\)/);
   });
 
-  it("assembles a real dialog run into text + details", async () => {
+  it("assembles a real dialog run into text + data", async () => {
     const tool = unitTools()[0];
     const form = formHarness();
-    const hostCtx: { details?: unknown } = {};
-    const running = tool.execute(args, { mode: "tui", ui: form }, hostCtx);
+    const running = tool.execute(args, askCall({ mode: "tui", ui: form }));
     const component = form.component();
     assert.ok(component);
     key(component, "\r"); // Q1 = A1 -> Q2
     key(component, "\x1b"); // decline Q2
-    const text = await running;
+    const result = await running;
     assert.equal(
-      text,
+      result.text,
       "Q1: One? => User answered: A1\nQ2: Two? => User declined to answer",
     );
-    const details = hostCtx.details as {
+    const data = result.data as {
       questions: { question: string; result: AskResult }[];
     };
-    assert.deepEqual(details.questions, [
+    assert.deepEqual(data.questions, [
       {
         question: "One?",
         result: { status: "answered", answer: ["A1"], wasCustom: false },
@@ -358,10 +403,9 @@ describe("ask tool — contribution", () => {
           closure: "submit" as const,
         }),
     };
-    const hostCtx: { details?: unknown } = {};
-    const text = await tool.execute(args, { mode: "tui", ui: form }, hostCtx);
-    assert.match(text, /Q1: One\? => User unavailable \(aborted\)/);
-    assert.match(text, /Q2: Two\? => User declined to answer/);
+    const result = await tool.execute(args, askCall({ mode: "tui", ui: form }));
+    assert.match(result.text, /Q1: One\? => User unavailable \(aborted\)/);
+    assert.match(result.text, /Q2: Two\? => User declined to answer/);
   });
 
   it("hands the dialog the sanitized question and labels", async () => {
@@ -376,7 +420,7 @@ describe("ask tool — contribution", () => {
           },
         ],
       },
-      { mode: "tui", ui: form },
+      askCall({ mode: "tui", ui: form }),
     );
     const component = form.component();
     assert.ok(component, "the dialog mounted");
@@ -390,23 +434,24 @@ describe("ask tool — contribution", () => {
     assert.match(view(), /One\?/);
     assert.match(view(), /A1/);
     key(component, "\r");
-    assert.equal(await running, "Q1: One? => User answered: A1");
+    assert.equal((await running).text, "Q1: One? => User answered: A1");
   });
 
   it("reports aborted slots when the host's ui.custom rejects", async () => {
     const tool = unitTools()[0];
-    const hostCtx: { details?: unknown } = {};
-    const text = await tool.execute(
+    const result = await tool.execute(
       args,
-      { mode: "tui", ui: { custom: () => Promise.reject(new Error("boom")) } },
-      hostCtx,
+      askCall({
+        mode: "tui",
+        ui: { custom: () => Promise.reject(new Error("boom")) },
+      }),
     );
     assert.equal(
-      text,
+      result.text,
       "Q1: One? => User unavailable (aborted)\nQ2: Two? => User unavailable (aborted)",
     );
     assert.deepEqual(
-      (hostCtx.details as { questions: { result: AskResult }[] }).questions.map(
+      (result.data as { questions: { result: AskResult }[] }).questions.map(
         (entry) => entry.result,
       ),
       [
@@ -419,7 +464,7 @@ describe("ask tool — contribution", () => {
   it("still throws the loud guidance error on malformed arguments", async () => {
     const tool = unitTools()[0];
     await assert.rejects(
-      () => tool.execute({ questions: [] }, { mode: "print" }),
+      () => tool.execute({ questions: [] }, askCall({ mode: "print" })),
       /ask \u5de5\u5177\u53c2\u6570\u9519\u8bef/,
     );
   });
@@ -449,22 +494,22 @@ describe("ask tool — contribution", () => {
       closure: "submit" as const,
     });
 
-    const first = tool.execute(args, { mode: "tui", ui: form }, {});
+    const first = tool.execute(args, askCall({ mode: "tui", ui: form }));
     await settle();
     assert.equal(dismiss.length, 1, "the first call draws the form");
 
     // Dispatched while the first form is still on screen: it must wait.
-    const second = tool.execute(args, { mode: "tui", ui: form }, {});
+    const second = tool.execute(args, askCall({ mode: "tui", ui: form }));
     await settle();
     assert.equal(onScreen, 1, "the second call never stacks a form");
 
     dismiss[0](answered("A1"));
-    assert.match(await first, /Q1: One\? => User answered: A1/);
+    assert.match((await first).text, /Q1: One\? => User answered: A1/);
     await settle();
     assert.equal(dismiss.length, 2, "the queued call gets its turn");
 
     dismiss[1](answered("A1"));
-    assert.match(await second, /Q1: One\? => User answered: A1/);
+    assert.match((await second).text, /Q1: One\? => User answered: A1/);
     assert.equal(maxOnScreen, 1, "no two forms ever shared the terminal");
   });
 
@@ -479,12 +524,12 @@ describe("ask tool — contribution", () => {
           dismiss.push((outcome) => resolve(outcome));
         }),
     };
-    const first = tool.execute(args, { mode: "tui", ui: form }, {});
+    const first = tool.execute(args, askCall({ mode: "tui", ui: form }));
     await settle();
     assert.equal(dismiss.length, 1, "the first call draws the form");
 
     await assert.rejects(
-      () => tool.execute({ questions: [] }, { mode: "tui", ui: form }, {}),
+      () => tool.execute({ questions: [] }, askCall({ mode: "tui", ui: form })),
       /ask \u5de5\u5177\u53c2\u6570\u9519\u8bef/,
     );
     assert.equal(
@@ -515,11 +560,10 @@ describe("ask tool — contribution", () => {
       },
     };
     const controller = new AbortController();
-    const first = tool.execute(args, { mode: "tui", ui: form }, {});
+    const first = tool.execute(args, askCall({ mode: "tui", ui: form }));
     const second = tool.execute(
       args,
-      { mode: "tui", ui: form },
-      { signal: controller.signal },
+      askCall({ mode: "tui", ui: form }, { signal: controller.signal }),
     );
     controller.abort();
 
@@ -531,7 +575,7 @@ describe("ask tool — contribution", () => {
     });
     await first;
 
-    const text = await second;
+    const text = (await second).text;
     assert.match(text, /Q1: One\? => User unavailable \(aborted\)/);
     assert.match(text, /Q2: Two\? => User unavailable \(aborted\)/);
     assert.equal(
@@ -542,15 +586,15 @@ describe("ask tool — contribution", () => {
   });
 
   it("keeps no-ui calls out of the way of the gate", async () => {
-    // The non-TUI path returns without touching the terminal, so it still
-    // flows through the same queue and stays a normal result.
+    // The channel-less path returns without touching the terminal, so it
+    // still flows through the same queue and stays a normal result.
     const tool = unitTools()[0];
     const [a, b] = await Promise.all([
-      tool.execute(args, { mode: "print" }, {}),
-      tool.execute(args, { mode: "print" }, {}),
+      tool.execute(args, askCall({ mode: "print" })),
+      tool.execute(args, askCall({ mode: "print" })),
     ]);
-    assert.match(a, /no-ui/);
-    assert.match(b, /no-ui/);
+    assert.match(a.text, /no-ui/);
+    assert.match(b.text, /no-ui/);
   });
 
   it("declares the arg surface the model must fill and the slots policy", () => {
@@ -579,17 +623,17 @@ describe("ask tool — contribution", () => {
 // ---------------------------------------------------------------------------
 
 describe("ask tool — unit descriptor", () => {
-  it("skips the unit and reports askFormHost without the form host (OpenCode)", () => {
+  it("skips the unit and reports askQuestionChannel without the provider (OpenCode)", () => {
     const result = composeForTest(ASK_TOOL_PROFILE, [unit], makeDeps({}));
     assert.deepEqual(result.tools, {});
     assert.deepEqual(result.report.skipped, [
-      { name: "ask", missing: ["askFormHost"] },
+      { name: "ask", missing: ["askQuestionChannel"] },
     ]);
   });
 
-  it("contributes the ask tool when the form host is present", () => {
+  it("contributes the ask tool when the provider is present", () => {
     const contributions = unit.create(
-      makeDeps({ askFormHost: FORM_HOST }),
+      makeDeps({ askQuestionChannel: FORM_HOST }),
       activeSet(),
     );
     assert.equal(contributions.kind, "tool");
@@ -599,7 +643,7 @@ describe("ask tool — unit descriptor", () => {
 
   it("passes the configured timeout through to the dialog", async () => {
     const contributions = unit.create(
-      makeDeps({ askFormHost: FORM_HOST, askTimeoutSeconds: 7 }),
+      makeDeps({ askQuestionChannel: FORM_HOST, askTimeoutSeconds: 7 }),
       activeSet(),
     );
     assert.equal(contributions.kind, "tool");
@@ -607,11 +651,11 @@ describe("ask tool — unit descriptor", () => {
     const form = formHarness();
     const running = tool.execute(
       { questions: [{ question: "One?", options: [{ label: "A" }] }] },
-      { mode: "tui", ui: form },
+      askCall({ mode: "tui", ui: form }),
     );
     assert.match((form.component()?.render(60) ?? []).join("\n"), /Ask \(7s\)/);
     form.component()?.handleInput("\x1b");
-    assert.match(await running, /User declined to answer/);
+    assert.match((await running).text, /User declined to answer/);
   });
 });
 
@@ -619,14 +663,13 @@ describe("ask tool — unit descriptor", () => {
 // Capabilities helpers (same shape the neighbour tool tests use)
 // ---------------------------------------------------------------------------
 
-const FORM_HOST: NonNullable<Partial<Capabilities>["askFormHost"]> = {
-  present: presentAskForm,
-};
+const FORM_HOST: NonNullable<Partial<Capabilities>["askQuestionChannel"]> =
+  createPiQuestionChannel;
 
 /** The tools contributed by a pi-enabled deps set (exactly one). */
 function unitTools() {
   const contributions = unit.create(
-    makeDeps({ askFormHost: FORM_HOST }),
+    makeDeps({ askQuestionChannel: FORM_HOST }),
     activeSet(),
   );
   assert.equal(contributions.kind, "tool");

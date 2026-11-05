@@ -41,6 +41,7 @@ import {
   loadPiHtmlConverter,
   registerPiHandlers,
 } from "../../compose-pi.js";
+import { ASK_TOOL_NAME } from "../../core/ask.js";
 import { capabilityBindings } from "../../core/bindings.js";
 import {
   configCapabilities,
@@ -56,6 +57,7 @@ import {
 import type { CleanupReport, WorkPermit } from "../../core/lifecycle/index.js";
 import { ORCHESTRATOR_AGENT_NAME } from "../../core/orchestrator.js";
 import { parseSkillPermissions } from "../../core/permissions/skill-permissions.js";
+import type { QuestionChannelProvider } from "../../core/ports/ask.js";
 import type { Capabilities } from "../../core/ports/index.js";
 import type { SwitchHost } from "../../core/ports/switch.js";
 import type { ToolHost } from "../../core/ports/tool-host.js";
@@ -72,12 +74,12 @@ import type { SubagentDriver } from "../../core/subagent/driver.js";
 import type { SubagentRun } from "../../core/subagent/registry.js";
 import { findByChildSession } from "../../core/subagent/registry.js";
 import { todoSourceFromStore } from "../../core/todo/source.js";
-import type { ToolContribution } from "../../core/unit.js";
+import type { ToolCallContext, ToolContribution } from "../../core/unit.js";
 import { REGISTRY } from "../../registry.js";
 import { log } from "../../utils/logger.js";
 import { createPiAdapter } from "./adapter.js";
 import { loadAgentsJson } from "./agent-models.js";
-import { presentAskForm } from "./ask-form.js";
+import { createPiQuestionChannel } from "./ask-form.js";
 import { createPiEventHandlers } from "./handlers.js";
 import { createPiHandoffTarget, type PiCommandCtx } from "./handoff-target.js";
 import type { PiLifecycleContext } from "./lifecycle.js";
@@ -94,6 +96,7 @@ import {
   pendingSwitchPrimary,
 } from "./switch-host.js";
 import { mergeTerminalToolDetails, truecolorWrap } from "./terminal-details.js";
+import { withAskVisibility } from "./tool-availability.js";
 import {
   buildSubagentCardRenderer,
   buildTodoCardRenderer,
@@ -262,12 +265,6 @@ export function buildPiContributions(
      */
     subagentDriver?: SubagentDriver;
     /**
-     * Host subagent transcript-card renderer (only supplied by the real pi
-     * entry point).  Undefined without it — the subagent tool stays
-     * text-only.
-     */
-    subagentRenderer?: Partial<Capabilities>["subagentRenderer"];
-    /**
      * todo port the composition reads (only on the pi host).  Built by the
      * host's extension-scope service over its own transcript scan; it is a
      * routing catalog, so the todo tool unit and the progress hooks reach
@@ -278,12 +275,6 @@ export function buildPiContributions(
      * transcript.
      */
     todoStore?: Partial<Capabilities>["todoStore"];
-    /**
-     * Host todo transcript-card renderer (only supplied by the real pi
-     * entry point).  Undefined without it — the todo tool stays
-     * text-only.
-     */
-    todoRenderer?: Partial<Capabilities>["todoRenderer"];
     /**
      * Lazily supplies the host's full untrimmed tool-name baseline for
      * subagent capability computation.  The baseline cannot be captured at
@@ -322,11 +313,12 @@ export function buildPiContributions(
      */
     truncateHead?: Partial<Capabilities>["truncateHead"];
     /**
-     * Host form presentation for the ask tool (only supplied by the real pi
-     * entry point).  Undefined without it — the ask tool unit contributes
-     * no tools (fail-closed, matching OpenCode).
+     * Question-channel provider of this runtime (supplied by the handler
+     * wiring, which also hands it to the execution bridge and the
+     * visibility rule).  Undefined without it — the ask tool unit
+     * contributes no tools (fail-closed, matching OpenCode).
      */
-    askFormHost?: Partial<Capabilities>["askFormHost"];
+    askQuestionChannel?: Partial<Capabilities>["askQuestionChannel"];
   },
   rawConfig?: any,
 ): PiContributions {
@@ -379,9 +371,6 @@ export function buildPiContributions(
       // real pi entry point supplies one; unit tests and other hosts omit it
       // so the subagent tool never registers (fail-closed).
       subagentDriver: hostDeps?.subagentDriver,
-      // The pi subagent transcript-card renderer.  Only the real pi entry
-      // point supplies one; without it the tool stays text-only.
-      subagentRenderer: hostDeps?.subagentRenderer,
       // The todo port (pi host only).  The extension-scope service provides
       // a routing catalog; without it the todo tool unit is skipped
       // (fail-closed).
@@ -398,9 +387,6 @@ export function buildPiContributions(
         hostDeps?.todoStore === undefined
           ? undefined
           : todoSourceFromStore(hostDeps.todoStore),
-      // The pi todo transcript-card renderer.  Only the real pi entry
-      // point supplies one; without it the tool stays text-only.
-      todoRenderer: hostDeps?.todoRenderer,
       // The full untrimmed tool baseline for subagent capability
       // computation, passed through as a thunk: the unit invokes it inside
       // `execute`, which is always post-load, so the supplier (pi's
@@ -426,9 +412,10 @@ export function buildPiContributions(
       // The host head truncator for the fetch pipeline.  Absent without it
       // (fail-closed, paired with the converter).
       truncateHead: hostDeps?.truncateHead,
-      // The ask tool's form host.  Without it the ask tool unit is skipped
-      // (fail-closed, so `ask` never registers on OpenCode).
-      askFormHost: hostDeps?.askFormHost,
+      // The ask tool's question-channel provider.  Without it the ask tool
+      // unit is skipped (fail-closed, so `ask` never registers on
+      // OpenCode).
+      askQuestionChannel: hostDeps?.askQuestionChannel,
       // pi has no SDK client: the context-pruning transform runs and
       // returns the pruned replacement to pi.  The release notification
       // does not need a client: it posts through the unified pi tool
@@ -527,26 +514,51 @@ export interface PiToolBridgeResult {
 }
 
 /**
+ * The content-free repaint signal handed to pi's `onUpdate`.
+ *
+ * pi re-invokes a live tool card's renderer whenever a partial result
+ * arrives, and the card body projects its own state — never the partial
+ * payload — so a repaint sends this empty partial.  The `content` array is
+ * always empty; no text ever streams through it.
+ *
+ * Forward-compat dependency: the signal relies on the pi SDK's current
+ * partial handling, where any partial (even an empty one) triggers a
+ * re-render.  If a future pi version filters out empty partials as no-ops,
+ * the live card would freeze again — the signal would then need whatever
+ * payload that pi still re-renders on.
+ */
+interface PiRepaintSignal {
+  /** The partial content pi re-renders on — always empty. */
+  content: [];
+}
+
+/** The pi partial-result callback of one tool call. */
+type PiOnUpdate = (partial: PiRepaintSignal) => void;
+
+/**
  * Build pi's `execute` bridge for one composed tool.
  *
  * Every call is admitted for the session its own tool context names: the
  * whole execution runs under the issued permit, so a call that arrives
  * without a session, after the session stopped, or with a cancelled caller
- * runs no tool at all.  The permit's signal replaces pi's native one in the
- * forwarded host context, so the tool stops when the session or the
- * extension stops, and the permit itself is forwarded for tools that need
- * to inspect it.  The context reaches the session contexts only after
- * admission, under the permit's session id.
+ * runs no tool at all.  The permit's signal replaces pi's native one, so
+ * the tool stops when the session or the extension stops.  The native
+ * surface reaches the tool as a host-neutral call context — never as the
+ * pi object — and the tool's structured result is mapped back onto pi's
+ * `content` / `details` shape.
  *
  * @param tool - The composed tool contribution.
  * @param run - The lifecycle admission surface.
  * @param publish - Binds a tool call's context under its session id.
+ * @param questionChannel - Builds the call's question channel from pi's
+ *   own context, or omits it when pi cannot ask.
  * @returns The bridge pi registers for the tool.
  */
 export function buildPiToolExecute(
   tool: ToolContribution,
   run: PiSessionWorkRunner,
   publish: (sessionID: string, ctx: unknown) => void,
+  questionChannel: QuestionChannelProvider,
 ): (
   toolCallId: unknown,
   params: unknown,
@@ -566,41 +578,45 @@ export function buildPiToolExecute(
         // reader — the todo transcript scan, the session's fleet ui —
         // resolves the context by session id.
         publish(permit.sessionID, ctx);
-        // Forward the native execution surface to the contribution: the
-        // tool-call `callId` (the run's registry id for the fleet widget),
-        // the `onUpdate` repaint-signal callback, and the permit whose
-        // signal replaces pi's native one.  `onUpdate` is a content-free
-        // repaint trigger for live tool cards — pi re-renders on any
-        // partial result, so a tool such as subagent sends an empty partial
-        // rather than streaming text.  The sub-session model is NOT
-        // forwarded — strict mode reads the agents.json configured model
-        // only (never the parent session's model).  compress / decompress
-        // ignore the hostCtx and keep working unchanged.
-        //
-        // `details` is a write-back slot: a contribution that needs to hand
-        // renderers a structured payload (the ask tool's per-question
-        // results) assigns it here, and the bridge merges a plain object
-        // into the host result's details AFTER execute resolves — merged
-        // INTO (never replacing) the bridge's own details, so the run's
-        // session path survives.
-        const hostCtx: {
-          signal?: AbortSignal;
-          callId?: string;
-          onUpdate?: unknown;
-          details?: unknown;
-          permit?: WorkPermit;
-        } = {
+        const channel = questionChannel(ctx);
+        const repaint =
+          typeof onUpdate === "function" ? (onUpdate as PiOnUpdate) : undefined;
+        // The native surface is translated here: the tool-call id (the
+        // run's registry id for the fleet widget), the permit whose signal
+        // replaces pi's native one, a content-free repaint request, and the
+        // question channel.  The sub-session model is NOT forwarded —
+        // strict mode reads the agents.json configured model only (never
+        // the parent session's model).
+        const call: ToolCallContext = {
+          sessionID: permit.sessionID,
           ...(typeof toolCallId === "string" && toolCallId.length > 0
-            ? { callId: toolCallId }
+            ? { callID: toolCallId }
             : {}),
           signal: permit.signal,
-          ...(onUpdate !== undefined ? { onUpdate } : {}),
           permit,
+          notifyChanged: () => {
+            // A UI callback must never break a run: a throwing host
+            // callback is recorded and swallowed here, in the adapter.
+            if (repaint === undefined) return;
+            try {
+              repaint({ content: [] });
+            } catch (err) {
+              log.warn({
+                hook: "pi-tool-bridge",
+                event: "notify_changed_failed",
+                sessionId: permit.sessionID,
+                error: err instanceof Error ? err.message : String(err),
+              });
+            }
+          },
+          ...(channel !== undefined ? { questionChannel: channel } : {}),
         };
-        const text = await tool.execute(params, ctx, hostCtx);
+        const outcome = await tool.execute(params, call);
         return {
-          content: [{ type: "text" as const, text }],
-          details: mergeTerminalToolDetails(toolCallId, hostCtx.details),
+          content: [{ type: "text" as const, text: outcome.text }],
+          // The tool's payload is merged INTO (never over) the bridge's own
+          // details, so the run's fact pointer always survives.
+          details: mergeTerminalToolDetails(toolCallId, outcome.data),
         };
       },
       caller,
@@ -729,6 +745,13 @@ export async function buildPiHandlers(
     onLifecycle?: (close: () => Promise<CleanupReport>) => void;
     /** Test seam: the instance's context runtime to inspect in place. */
     contextRuntime?: ContextRuntime;
+    /**
+     * Question-channel provider of this runtime.  The entry point leaves it
+     * out to get pi's own dialog; a framework host that asks through another
+     * surface (IPC, a remote UI) injects its own.  One provider feeds both
+     * the ask tool's execution bridge and the tool's visibility.
+     */
+    askQuestionChannel?: QuestionChannelProvider;
   },
 ): Promise<PiEventHandlers> {
   // The single pi tool host routes every in-session chat notification
@@ -798,6 +821,13 @@ export async function buildPiHandlers(
     ...contextSessionResources(contextRuntime),
     sessionAgentResource,
   ]);
+
+  // The question-channel provider of this runtime.  The ask tool's
+  // execution bridge and the active-tool visibility rule read this one
+  // provider, so an injected provider changes what the model sees and what
+  // a call reaches alike.  pi's own dialog is the default.
+  const askQuestionChannel =
+    overrides?.askQuestionChannel ?? createPiQuestionChannel;
 
   // The host service declarations.  Every state owner the composition
   // touches — the session contexts, the adapter, the tool host built on
@@ -871,19 +901,6 @@ export async function buildPiHandlers(
                     }),
                 })
               : undefined),
-          // The pi subagent transcript-card renderer — turns the tool's
-          // streamed text into pi TUI components.  Wired only when a real pi
-          // API instance is present; the tool contribution then carries
-          // renderCall / renderResult so the TUI draws the live card.
-          // Without it (OpenCode, test-only compositions) the tool stays
-          // text-only.
-          subagentRenderer: piApi ? buildSubagentCardRenderer() : undefined,
-          // The pi todo transcript-card renderer — turns the tool's summary
-          // text into a pi TUI card over the persisted snapshot.  Wired only
-          // when a real pi API instance is present; the tool contribution
-          // then carries renderCall / renderResult.  Without it (OpenCode,
-          // test-only compositions) the tool stays text-only.
-          todoRenderer: piApi ? buildTodoCardRenderer() : undefined,
           // The todo port (pi host only).  The extension-scope catalog routes
           // every call to the store of the session the call names, so the
           // todo tool unit and the `session_tree` handler reach the state of
@@ -892,16 +909,17 @@ export async function buildPiHandlers(
           // `todo` never registers on a host that cannot restore its state
           // from the transcript.
           todoStore: piApi === undefined ? undefined : ports.todo,
-          // The subagent capability baseline: pi's full untrimmed active tool
-          // set, captured lazily on first subagent execution and cached —
-          // mirroring the switch command's baseline capture so tool denies
-          // never accumulate across either switches or subagent delegations.
-          // The capture is DEFERRED because pi forbids calling action
-          // methods (including `getActiveTools`) during extension loading;
-          // the first subagent execution always happens post-bind, so the
-          // lazily-captured set is the real untrimmed universe.  `undefined`
-          // when unavailable (also after the extension stopped) → capability
-          // computation yields an empty set (fail-closed).
+          // The subagent capability baseline: the shared untrimmed active
+          // tool set minus `ask` (a sub-session has no question channel),
+          // captured lazily on first use and cached.  Both faces read the
+          // same capture, so the main session's primary denies and ask
+          // visibility never reach a sub-session.  The capture is DEFERRED
+          // because pi forbids calling action methods (including
+          // `getActiveTools`) during extension loading; the first consumer
+          // always runs post-bind, so the capture is the real untrimmed
+          // universe.  `undefined` when unavailable (also after the
+          // extension stopped) → capability computation yields an empty set
+          // (fail-closed).
           subagentBaseline:
             piApi === undefined
               ? undefined
@@ -919,9 +937,10 @@ export async function buildPiHandlers(
           // the converter loader; the fetch unit registers only when both are
           // present.
           truncateHead,
-          // The ask tool's form host.  Wired here (the real pi entry point) so
-          // the ask unit registers on pi only and stays closed on OpenCode.
-          askFormHost: { present: presentAskForm },
+          // The ask tool's question-channel provider: the one this runtime
+          // resolved, so the ask unit registers on pi only and stays closed
+          // on OpenCode.
+          askQuestionChannel,
         },
         rawConfig,
       ),
@@ -994,32 +1013,100 @@ export async function buildPiHandlers(
   // are released by that session's scope.
   const engine = loop.engine;
 
-  // Apply one session's primary tool-level denies to the active tool set.
+  // Whether this host registered the ask tool.  The tool registers inactive
+  // (`defaultActive: false`), so the visibility rule — not the registration
+  // — decides whether the model may ask the user.
+  const askRegistered =
+    piApi?.registerTool !== undefined &&
+    Object.values(composed.tools).some((tool) => tool.name === ASK_TOOL_NAME);
+
+  // Whether the session's primary denies the ask tool.  An unresolvable
+  // primary reports a deny, so ask stays hidden (fail-closed).
+  const askDeniedByPrimary = (sessionID: string): boolean => {
+    const primary = resolveAgent(sessionID);
+    if (primary === undefined) return true;
+    return (agentPermissions[primary] ?? []).includes(ASK_TOOL_NAME);
+  };
+
+  // Write one active-tool set: the candidate set, then the ask rule.
+  //
+  // Every active-tool writer of this adapter goes through here — the primary
+  // deny trim and the deferred switch trim — so one rule decides the ask
+  // tool in both and no writer corrects another.  The ask tool is visible
+  // only while the session's primary permits it AND the event's own context
+  // yields a question channel: an external host configuration may activate
+  // it, and every event corrects that to this session's answer.
+  //
+  // The host is written only when the resolved set differs from the current
+  // one: a write rebuilds the system prompt, so a steady-state event stays
+  // silent.  A host that reports no current set is written anyway.
+  const applyToolSet = (
+    sessionID: string,
+    ctx: unknown,
+    candidates: readonly string[],
+  ): void => {
+    const next = withAskVisibility(candidates, {
+      registered: askRegistered,
+      available: askQuestionChannel(ctx) !== undefined,
+      denied: askDeniedByPrimary(sessionID),
+    });
+    const current = piApi?.getActiveTools?.();
+    if (
+      current !== undefined &&
+      current.length === next.length &&
+      next.every((tool, index) => current[index] === tool)
+    ) {
+      return;
+    }
+    piApi?.setActiveTools?.(next);
+    const hadAsk = candidates.includes(ASK_TOOL_NAME);
+    const hasAsk = next.includes(ASK_TOOL_NAME);
+    if (hadAsk !== hasAsk) {
+      log.debug({
+        hook: "permissions",
+        event: hasAsk ? "ask_tool_activated" : "ask_tool_hidden",
+        sessionId: sessionID,
+      });
+    }
+  };
+
+  // Apply one session's active tool set: its primary's tool-level denies,
+  // then the ask rule (see `applyToolSet`).
   //
   // pi has no host-level per-agent permission enforcement (unlike
   // OpenCode), so the extension trims pi's process-wide registered tool
   // face per session.  The trim is computed from the SHARED untrimmed
   // baseline (`toolBaselines.primary`) minus the session's primary denies,
   // so it is idempotent and denies never accumulate across repeated calls
-  // or primary switches.  A sub-session runtime is skipped: the driver
-  // already restricts its tool face by the capability allowlist.  Fails
-  // closed: no primary, no denies, or no baseline all leave the active set
-  // untouched (an empty filter would wipe every tool).
-  const applyPrimaryToolTrim = (sessionID: string): void => {
+  // or primary switches.  Without a baseline the trim cannot decide the
+  // tool face, so only the ask rule runs — on the live set, which leaves
+  // every other tool as it is.  A sub-session runtime is skipped: the
+  // driver already restricts its tool face by the capability allowlist.
+  const applyActiveTools = (sessionID: string, ctx: unknown): void => {
     if (overrides?.agent !== undefined) return;
     const primary = resolveAgent(sessionID);
-    if (primary === undefined) return;
-    const denied = agentPermissions[primary] ?? [];
-    if (denied.length === 0) return;
-    const baseline = toolBaselines.primary();
-    if (baseline === undefined || baseline.length === 0) return;
+    const baseline =
+      primary === undefined ? undefined : toolBaselines.primary();
+    if (baseline === undefined || baseline.length === 0) {
+      // No baseline to trim: correct ask on the live set.  An unresolvable
+      // primary denies ask (fail-closed).  A host that reports no live set
+      // leaves nothing to correct.
+      const current = piApi?.getActiveTools?.();
+      if (current !== undefined) applyToolSet(sessionID, ctx, current);
+      return;
+    }
+    const denied =
+      primary === undefined ? [] : (agentPermissions[primary] ?? []);
     const deniedSet = new Set(denied);
-    // Always write the FULL `baseline minus denies` set (never a delta):
+    // Always resolve the FULL `baseline minus denies` set (never a delta):
     // this both removes the current primary's denies and restores tools a
     // previously active primary had denied.  Log only an actual removal so
     // a steady-state turn (denies already absent) stays quiet.
-    const next = baseline.filter((tool) => !deniedSet.has(tool));
-    piApi?.setActiveTools?.(next);
+    applyToolSet(
+      sessionID,
+      ctx,
+      baseline.filter((tool) => !deniedSet.has(tool)),
+    );
     const removed = denied.filter((tool) => baseline.includes(tool));
     if (removed.length > 0) {
       log.info({
@@ -1081,43 +1168,44 @@ export async function buildPiHandlers(
     composed.toolDefinition,
   );
   if (piApi?.registerTool) {
+    // pi draws a live transcript card for the subagent and todo tools.  The
+    // card renderers are adapter-owned (they read pi TUI state), so
+    // registration installs them by tool name; every other tool registers
+    // without one.
+    const cardRenderers = new Map([
+      ["subagent", buildSubagentCardRenderer()],
+      ["todo", buildTodoCardRenderer()],
+    ]);
     const registered = new Set<string>();
     for (const tool of Object.values(definitionEnrichedTools)) {
       if (registered.has(tool.name)) continue;
       registered.add(tool.name);
       const args = tool.args ?? {};
       const required = tool.required ?? Object.keys(args);
+      const card = cardRenderers.get(tool.name);
       piApi.registerTool({
         name: tool.name,
         label: tool.name,
         description: tool.description,
-        // Forward a declared scheduling hint to pi's per-tool execution mode.
-        // Tools that guard their own state (todo, ask) serialise inside
-        // themselves and declare nothing, so they keep pi's default and stay
-        // concurrent with unrelated calls in the same turn.
-        ...(tool.executionMode !== undefined
-          ? { executionMode: tool.executionMode }
-          : {}),
-        // Forward the tool's custom TUI renderers (the subagent transcript
-        // card) so pi draws the animated card instead of a static result.
-        // Tools without renderers (compress / decompress) simply omit them.
-        // The renderers are duck-typed in the core tool slot (no pi-TUI
-        // import there), so the whole definition is asserted to pi's own
-        // `ToolDefinition` at this registration boundary.
-        ...(tool.renderCall !== undefined
-          ? { renderCall: tool.renderCall }
-          : {}),
-        ...(tool.renderResult !== undefined
-          ? { renderResult: tool.renderResult }
-          : {}),
+        // The ask tool registers inactive: the model may ask the user only
+        // while the session has a question channel, which the bind-time
+        // events decide (see `applyToolSet`).  Every other tool keeps pi's
+        // own registration default.
+        ...(tool.name === ASK_TOOL_NAME ? { defaultActive: false } : {}),
+        ...(card === undefined
+          ? {}
+          : { renderCall: card.renderCall, renderResult: card.renderResult }),
         // pi's validateToolArguments accepts plain JSON-Schema parameters.
         parameters: {
           type: "object",
           properties: args,
           ...(required.length > 0 ? { required } : {}),
         } as unknown as object,
-        execute: buildPiToolExecute(tool, lifecycle, (sessionID, ctx) =>
-          sessionContexts.bind(sessionID, ctx),
+        execute: buildPiToolExecute(
+          tool,
+          lifecycle,
+          (sessionID, ctx) => sessionContexts.bind(sessionID, ctx),
+          askQuestionChannel,
         ),
       } as unknown as Parameters<ExtensionAPI["registerTool"]>[0]);
     }
@@ -1178,15 +1266,22 @@ export async function buildPiHandlers(
     skillPermissions,
     getProfileSkills: () => profileCatalog.get(),
     collectSkillPaths,
-    applyPrimaryToolTrim,
+    applyActiveTools,
     registerFleetWidget,
     refreshFleetWidget: (sessionID) => fleet.refresh(sessionID),
     refreshTodoView: (sessionID) => fleet.refreshTodoView(sessionID),
     seedTodoView: (sessionID) => fleet.seedTodoView(sessionID),
     // The switch surface's pending post-replacement operations ride the
     // explicit process-level handoff store, because a switch spans two
-    // factory executions — see `adapters/pi/switch-host.ts`.
-    drainPendingSwitchOps: () => switchHost.drainPendingOps(),
+    // factory executions — see `adapters/pi/switch-host.ts`.  The queued
+    // trim is applied through the same writer as the primary trim, so the
+    // ask rule answers with this session's context.
+    drainPendingSwitchOps: (sessionID, ctx) => {
+      if (overrides?.agent !== undefined) return;
+      const deferred = switchHost.drainPendingOps();
+      if (deferred === undefined) return;
+      applyToolSet(sessionID, ctx, deferred);
+    },
     invalidateTodo: (sessionId) => todo.invalidate(sessionId),
     resolveAgent,
     resolveCallerAgent,

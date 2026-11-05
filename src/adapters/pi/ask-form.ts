@@ -14,7 +14,11 @@
  * @module
  */
 
-import { type AskResult, fallbackResults } from "../../core/ask.js";
+import {
+  type AskResult,
+  fallbackResults,
+  type QuestionChannel,
+} from "../../core/ask.js";
 import { log } from "../../utils/logger.js";
 import {
   type AskDialog,
@@ -33,6 +37,52 @@ export type {
   AskDialogOutcome,
   AskDialogQuestion,
 } from "./tui/ask-dialog.js";
+
+// ---------------------------------------------------------------------------
+// Question channel
+// ---------------------------------------------------------------------------
+
+/** The parts of pi's execution context the channel provider reads. */
+interface PiAskContext {
+  /** Host run mode — only `"tui"` can show the dialog. */
+  mode?: unknown;
+  /** The pi UI surface (only `custom` is used). */
+  ui?: { custom?: unknown };
+}
+
+/**
+ * Build the question channel of one tool call from pi's execution context.
+ *
+ * Only the interactive TUI can draw the dialog, so a context without it
+ * (print / RPC / json mode, or no custom-component surface) gets no
+ * channel.  The adapter probes this same answer to decide whether the
+ * model may see the ask tool at all (see `tool-availability.ts`); a
+ * channel-less call would only report the system-side slot for every
+ * question.
+ *
+ * @param hostCtx - pi's tool execution context.
+ * @returns The channel, or `undefined` when this context cannot ask.
+ */
+export function createPiQuestionChannel(
+  hostCtx: unknown,
+): QuestionChannel | undefined {
+  const ctx = (hostCtx ?? {}) as PiAskContext;
+  const custom = ctx.ui?.custom;
+  if (ctx.mode !== "tui" || typeof custom !== "function") return undefined;
+  const present = custom as (factory: unknown, options?: unknown) => unknown;
+  return {
+    ask(request) {
+      return presentAskForm({
+        questions: request.questions,
+        custom: present,
+        ...(request.timeoutSeconds !== undefined
+          ? { timeoutSeconds: request.timeoutSeconds }
+          : {}),
+        signal: request.signal,
+      });
+    },
+  };
+}
 
 // ---------------------------------------------------------------------------
 // Dialog presentation

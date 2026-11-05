@@ -140,15 +140,6 @@ export const G_TOOL_01: Scenario = {
       action: { kind: "decompress-tool", blockId: "b1" },
     },
     {
-      label: "decompress-missing-session-id",
-      messages: longConversation(SID),
-      action: {
-        kind: "decompress-tool-raw",
-        args: { blockId: "b1" },
-        toolCtx: {},
-      },
-    },
-    {
       label: "compress-config-section-missing",
       messages: longConversation(SID),
       action: {

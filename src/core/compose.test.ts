@@ -111,7 +111,7 @@ function makeUnits(): UnitDescriptor[] {
         {
           name: "compress",
           description: "compress tool",
-          execute: async () => "ok",
+          execute: async () => ({ text: "ok" }),
         },
       ],
     })),
@@ -121,7 +121,7 @@ function makeUnits(): UnitDescriptor[] {
         {
           name: "decompress",
           description: "decompress tool",
-          execute: async () => "ok",
+          execute: async () => ({ text: "ok" }),
         },
       ],
     })),
@@ -676,7 +676,6 @@ function toolProfile(tools: string[]): ModeProfile {
 }
 
 const TOOL_HOST: NonNullable<Partial<Capabilities>["toolHost"]> = {
-  resolveSessionId: () => "s",
   async notify(): Promise<void> {},
 };
 
@@ -688,7 +687,11 @@ describe("assemble — capability matching", () => {
       () => ({
         kind: "tool",
         tools: [
-          { name: "compress", description: "c", execute: async () => "ok" },
+          {
+            name: "compress",
+            description: "c",
+            execute: async () => ({ text: "ok" }),
+          },
         ],
       }),
       ["toolHost", "contextConfig"],
@@ -747,10 +750,16 @@ describe("assemble — capability matching", () => {
       "tool",
       () => ({
         kind: "tool",
-        tools: [{ name: "todo", description: "t", execute: async () => "ok" }],
+        tools: [
+          {
+            name: "todo",
+            description: "t",
+            execute: async () => ({ text: "ok" }),
+          },
+        ],
       }),
       ["toolHost"],
-      ["todoRenderer"],
+      ["todoSource"],
     );
 
     const { report, composed } = run(toolProfile(["todo"]), [unit], {
@@ -929,7 +938,11 @@ describe("assemble — uses projection", () => {
     const compress = mockUnit("compress", "tool", () => ({
       kind: "tool",
       tools: [
-        { name: "compress", description: "c", execute: async () => "ok" },
+        {
+          name: "compress",
+          description: "c",
+          execute: async () => ({ text: "ok" }),
+        },
       ],
     }));
     const profile: ModeProfile = {

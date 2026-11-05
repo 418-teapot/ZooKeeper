@@ -9,6 +9,9 @@
  * factory throws (the presenter still never throws), and the timeout budget
  * reaching the dialog title.
  *
+ * The channel provider is covered here too: it is the pi-side translation
+ * from an execution context to the host-neutral port.
+ *
  * The tool's argument parsing, result assembly and contribution live in
  * `src/tools/ask.test.ts`.
  *
@@ -19,7 +22,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { fakeTheme, fakeTui, formHarness } from "../../testkits/ask-form.js";
 import { parseAskArgs } from "../../tools/ask.js";
-import { presentAskForm } from "./ask-form.js";
+import { createPiQuestionChannel, presentAskForm } from "./ask-form.js";
 import type { AskDialogComponent, AskDialogOutcome } from "./tui/ask-dialog.js";
 
 // ---------------------------------------------------------------------------
@@ -159,5 +162,49 @@ describe("ask tool — presentAskForm", () => {
       { status: "declined" },
       { status: "unavailable", reason: "aborted" },
     ]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// createPiQuestionChannel
+// ---------------------------------------------------------------------------
+
+describe("ask tool — createPiQuestionChannel", () => {
+  const one = parseAskArgs({
+    questions: [{ question: "One?", options: [{ label: "A1" }] }],
+  });
+
+  it("offers no channel outside the interactive TUI", () => {
+    assert.equal(createPiQuestionChannel({ mode: "print" }), undefined);
+    assert.equal(createPiQuestionChannel({ mode: "tui", ui: {} }), undefined);
+    assert.equal(createPiQuestionChannel(undefined), undefined);
+  });
+
+  it("asks through the context's own custom-component surface", async () => {
+    const form = formHarness();
+    const channel = createPiQuestionChannel({ mode: "tui", ui: form });
+    assert.ok(channel, "an interactive context gets a channel");
+    const running = channel.ask({
+      questions: one,
+      signal: new AbortController().signal,
+    });
+    form.component()?.handleInput("\r");
+    assert.deepEqual(await running, [
+      { status: "answered", answer: ["A1"], wasCustom: false },
+    ]);
+  });
+
+  it("reports an already-aborted signal without opening the form", async () => {
+    const form = formHarness();
+    const channel = createPiQuestionChannel({ mode: "tui", ui: form });
+    assert.ok(channel);
+    const controller = new AbortController();
+    controller.abort();
+    const results = await channel.ask({
+      questions: one,
+      signal: controller.signal,
+    });
+    assert.deepEqual(results, [{ status: "unavailable", reason: "aborted" }]);
+    assert.equal(form.component(), undefined, "the dialog never mounted");
   });
 });

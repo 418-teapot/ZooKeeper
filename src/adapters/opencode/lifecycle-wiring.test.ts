@@ -44,6 +44,7 @@ import {
   createSessionResourceCatalog,
   type SessionResourceCatalog,
 } from "../../core/session/resources.js";
+import type { ToolCallContext, ToolResult } from "../../core/unit.js";
 import { permitFor } from "../../testkits/context-runtime.js";
 import { makeTmpDir } from "../../testkits/tmp.js";
 import {
@@ -511,11 +512,7 @@ type EventInput = {
 
 /** A tool entry as the composition hands it to the host. */
 function toolEntry(
-  execute: (
-    args: unknown,
-    toolCtx: unknown,
-    hostCtx?: unknown,
-  ) => Promise<string>,
+  execute: (args: unknown, toolCtx: unknown) => Promise<ToolResult>,
 ) {
   return {
     name: "compress",
@@ -725,18 +722,10 @@ describe("session work around ordinary hooks", () => {
 describe("session work around registered tools", () => {
   it("runs a tool under its session's permit and keeps its metadata", async () => {
     const { wiring, log } = buildRecordingWiring();
-    const seen: Array<{
-      args: unknown;
-      toolCtx: Record<string, unknown>;
-      hostCtx: Record<string, unknown>;
-    }> = [];
-    const entry = toolEntry(async (args, toolCtx, hostCtx) => {
-      seen.push({
-        args,
-        toolCtx: toolCtx as Record<string, unknown>,
-        hostCtx: hostCtx as Record<string, unknown>,
-      });
-      return "compressed";
+    const seen: Array<{ args: unknown; call: ToolCallContext }> = [];
+    const entry = toolEntry(async (args, raw) => {
+      seen.push({ args, call: raw as ToolCallContext });
+      return { text: "compressed" };
     });
     const hooks = withSessionWork({ tool: { compress: entry } }, wiring);
     const caller = new AbortController();
@@ -749,62 +738,70 @@ describe("session work around registered tools", () => {
     assert.equal(result, "compressed", "the business result propagates");
     assert.deepEqual(log, ["create:ext", "create:worker:s1"]);
     assert.deepEqual(seen[0]?.args, { ranges: [1] });
-    assert.equal(seen[0]?.toolCtx.messageID, "m1", "other context fields stay");
+    assert.equal(seen[0]?.call.sessionID, "s1");
     assert.equal(hooks.tool.compress.description, entry.description);
     assert.deepEqual(hooks.tool.compress.args, entry.args);
     assert.deepEqual(hooks.tool.compress.required, ["ranges"]);
   });
 
-  it("hands the tool the permit's signal over its own abort", async () => {
+  it("reports structured data as the host's metadata", async () => {
     const { wiring } = buildRecordingWiring();
-    const seen: Array<{
-      toolCtx: Record<string, unknown>;
-      hostCtx: Record<string, unknown>;
-    }> = [];
     const hooks = withSessionWork(
       {
         tool: {
-          compress: toolEntry(async (_args, toolCtx, hostCtx) => {
-            seen.push({
-              toolCtx: toolCtx as Record<string, unknown>,
-              hostCtx: hostCtx as Record<string, unknown>,
-            });
-            return "ok";
+          compress: toolEntry(async () => ({
+            text: "applied",
+            data: { blocks: [1] },
+          })),
+        },
+      },
+      wiring,
+    );
+
+    const result = await hooks.tool.compress.execute({}, { sessionID: "s1" });
+
+    assert.deepEqual(result, {
+      output: "applied",
+      metadata: { blocks: [1] },
+    });
+  });
+
+  it("hands the tool the permit's signal over its own abort", async () => {
+    const { wiring } = buildRecordingWiring();
+    const seen: ToolCallContext[] = [];
+    const hooks = withSessionWork(
+      {
+        tool: {
+          compress: toolEntry(async (_args, raw) => {
+            seen.push(raw as ToolCallContext);
+            return { text: "ok" };
           }),
         },
       },
       wiring,
     );
     const caller = new AbortController();
-    const hostCtx = { callId: "call-1" };
 
     await hooks.tool.compress.execute(
       {},
       { sessionID: "s1", abort: caller.signal },
-      hostCtx,
     );
 
-    const permit = seen[0]?.hostCtx.permit as {
+    const permit = seen[0]?.permit as {
       sessionID: string;
       signal: AbortSignal;
       isActive(): boolean;
     };
     assert.equal(permit.sessionID, "s1");
-    assert.notEqual(seen[0]?.toolCtx.abort, caller.signal);
-    assert.equal(
-      seen[0]?.toolCtx.abort,
-      permit.signal,
-      "abort is the permit's",
-    );
-    assert.equal(seen[0]?.hostCtx.signal, permit.signal);
-    assert.equal(seen[0]?.hostCtx.callId, "call-1", "host fields survive");
+    assert.notEqual(seen[0]?.signal, caller.signal);
+    assert.equal(seen[0]?.signal, permit.signal, "signal is the permit's");
     assert.equal(permit.isActive(), false, "the permit ends with the call");
 
     caller.abort();
     assert.equal(
-      (seen[0]?.toolCtx.abort as AbortSignal).aborted,
+      seen[0]?.signal.aborted,
       true,
-      "the tool's abort follows the caller",
+      "the tool's signal follows the caller",
     );
   });
 
@@ -814,9 +811,9 @@ describe("session work around registered tools", () => {
     const hooks = withSessionWork(
       {
         tool: {
-          compress: toolEntry(async (_args, toolCtx) => {
-            toolAbort = (toolCtx as { abort?: AbortSignal }).abort;
-            return "ok";
+          compress: toolEntry(async (_args, raw) => {
+            toolAbort = (raw as ToolCallContext).signal;
+            return { text: "ok" };
           }),
         },
       },
@@ -837,7 +834,7 @@ describe("session work around registered tools", () => {
         tool: {
           compress: toolEntry(async () => {
             ran += 1;
-            return "ok";
+            return { text: "ok" };
           }),
         },
       },
@@ -863,7 +860,7 @@ describe("session work around registered tools", () => {
         tool: {
           compress: toolEntry(async () => {
             ran += 1;
-            return "ok";
+            return { text: "ok" };
           }),
         },
       },
@@ -881,7 +878,7 @@ describe("session work around registered tools", () => {
     const { wiring, log } = buildRecordingWiring();
     const hooks = withSessionWork(
       {
-        tool: { compress: toolEntry(async () => "ok") },
+        tool: { compress: toolEntry(async () => ({ text: "ok" })) },
       },
       wiring,
     );
@@ -1075,12 +1072,12 @@ describe("stops against running session work", () => {
     const hooks = withSessionWork(
       {
         tool: {
-          compress: toolEntry(async (_args, toolCtx) => {
-            toolAbort = (toolCtx as { abort?: AbortSignal }).abort;
+          compress: toolEntry(async (_args, raw) => {
+            toolAbort = (raw as ToolCallContext).signal;
             log.push("tool:start");
             await blocker.waited;
             log.push(`tool:end:${toolAbort?.aborted}`);
-            return "ok";
+            return { text: "ok" };
           }),
         },
       },
@@ -1148,11 +1145,11 @@ describe("stops against running session work", () => {
     const hooks = withSessionWork(
       {
         tool: {
-          compress: toolEntry(async (_args, toolCtx) => {
-            const ctx = toolCtx as { sessionID: string; abort: AbortSignal };
-            signals.set(ctx.sessionID, ctx.abort);
+          compress: toolEntry(async (_args, raw) => {
+            const call = raw as ToolCallContext;
+            signals.set(call.sessionID, call.signal);
             await blocker.waited;
-            return ctx.sessionID;
+            return { text: call.sessionID };
           }),
         },
       },

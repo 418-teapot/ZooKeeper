@@ -704,7 +704,7 @@ function manageSpinnerTimer(
 }
 
 /**
- * The renderer surface attached to the subagent tool contribution.
+ * The renderer surface the pi registration installs on the subagent tool.
  *
  * `renderCall` / `renderResult` are closures over the host-agnostic
  * projection machinery; pi invokes them with its real `Theme` / render

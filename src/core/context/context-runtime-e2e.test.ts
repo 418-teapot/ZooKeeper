@@ -12,7 +12,7 @@ import assert from "node:assert/strict";
 import { rmSync } from "node:fs";
 import { afterEach, describe, it } from "node:test";
 import { createV1Adapter } from "../../adapters/opencode/adapter.js";
-import { permitFor } from "../../testkits/context-runtime.js";
+import { callFor, permitFor } from "../../testkits/context-runtime.js";
 import { makeTmpDir } from "../../testkits/tmp.js";
 import { createCompressTool } from "../../tools/compress.js";
 import type { ContextPruningConfig } from "../config-types.js";
@@ -178,7 +178,6 @@ describe("one session, overlapping entries", () => {
     });
     const tool = createCompressTool(
       {
-        resolveSessionId: () => sessionID,
         async notify() {},
       },
       CONFIG,
@@ -199,8 +198,7 @@ describe("one session, overlapping entries", () => {
             { fromRef: "m2", toRef: "m2", title: "段", summary: "摘要" },
           ],
         },
-        { sessionID },
-        { permit: permitFor(sessionID) },
+        callFor(sessionID, { permit: permitFor(sessionID) }),
       ),
     ]);
 
@@ -211,7 +209,7 @@ describe("one session, overlapping entries", () => {
       true,
       "the transform's release survives",
     );
-    assert.ok(toolResult.includes("已压缩"));
+    assert.ok(toolResult.text.includes("已压缩"));
   });
 });
 

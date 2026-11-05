@@ -19,6 +19,7 @@ import type {
   TruncateHeadFn,
 } from "../core/webfetch/pipeline.js";
 import { composeForTest, facts } from "../testkits/compose.js";
+import { callFor } from "../testkits/context-runtime.js";
 import { installFetchMock, restoreFetch } from "../testkits/fetch.js";
 import { createFetchTool, unit as fetchUnit } from "./fetch.js";
 
@@ -62,6 +63,9 @@ function htmlResponse(body: string, contentType = "text/html"): Response {
   });
 }
 
+/** The call context a fetch call receives. */
+const CALL = callFor("sess-fetch");
+
 /** Assert that executing the tool rejects with the given guidance text. */
 async function assertArgError(
   tool: ReturnType<typeof createFetchTool>,
@@ -69,7 +73,7 @@ async function assertArgError(
   pattern: RegExp,
 ): Promise<void> {
   await assert.rejects(
-    () => tool.execute(args, undefined),
+    () => tool.execute(args, CALL),
     (error: unknown) => {
       assert.ok(error instanceof Error, "expected an Error instance");
       assert.match(error.message, pattern);
@@ -193,12 +197,9 @@ describe("fetch tool execute", () => {
     mockFetch(() => htmlResponse("<h1>Hi</h1>", "text/html; charset=utf-8"));
     const tool = createFetchTool((html) => `MD:${html}`, keepAll);
 
-    const output = await tool.execute(
-      { url: "http://93.184.216.34/" },
-      undefined,
-    );
+    const output = await tool.execute({ url: "http://93.184.216.34/" }, CALL);
 
-    assert.equal(output, "MD:<h1>Hi</h1>");
+    assert.equal(output.text, "MD:<h1>Hi</h1>");
   });
 
   it("returns plain text verbatim without converting", async () => {
@@ -209,10 +210,10 @@ describe("fetch tool execute", () => {
 
     const output = await tool.execute(
       { url: "http://93.184.216.34/note.txt", timeout: 5 },
-      undefined,
+      CALL,
     );
 
-    assert.equal(output, "plain text");
+    assert.equal(output.text, "plain text");
   });
 
   it("renders a failed fetch as model-readable error text", async () => {
@@ -221,10 +222,10 @@ describe("fetch tool execute", () => {
 
     const output = await tool.execute(
       { url: "http://93.184.216.34/missing" },
-      undefined,
+      CALL,
     );
 
-    assert.match(output, /status 404/);
+    assert.match(output.text, /status 404/);
   });
 
   it("forwards the caller abort signal to the request", async () => {
@@ -248,11 +249,10 @@ describe("fetch tool execute", () => {
 
     const output = await tool.execute(
       { url: "http://93.184.216.34/" },
-      undefined,
-      { signal: controller.signal },
+      callFor("sess-fetch", { signal: controller.signal }),
     );
 
     assert.equal(captured?.aborted, true);
-    assert.equal(output, "ok");
+    assert.equal(output.text, "ok");
   });
 });

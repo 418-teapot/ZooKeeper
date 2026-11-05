@@ -23,7 +23,8 @@
  * instance's context runtime are captured by the factory closure.  Every
  * state operation runs under the call's permit: the recall path reads, the
  * restore path reads and writes inside one `runtime.commit`, and a missing
- * or lapsed permit changes nothing.  The history the restore gate measures
+ * or lapsed permit changes nothing.  The call's own session ID names the
+ * state.  The history the restore gate measures
  * is the round view published by the context transform (the same address
  * space the model sees), with the host's history read only as a fallback on
  * hosts that guarantee it is the same source.  Loud Chinese guidance errors
@@ -47,8 +48,10 @@ import type { ContextRuntime } from "../core/context/runtime.js";
 import type { ToolHost } from "../core/ports/tool-host.js";
 import {
   defineTool,
+  type ToolCallContext,
   type ToolContribution,
   type ToolDefinition,
+  type ToolResult,
 } from "../core/unit.js";
 import { log } from "../utils/logger.js";
 
@@ -142,15 +145,9 @@ export function createDecompressTool(
 ): ToolDefinition {
   return {
     ...buildDecompressToolMetadata(contextConfig),
-    async execute(args, toolCtx, hostCtx) {
-      const sessionID = host.resolveSessionId(toolCtx);
-      if (sessionID === undefined) {
-        throw new Error(
-          "无法解压：工具上下文缺少 sessionID，会话状态无法定位。" +
-            "这是宿主接线问题，重试本工具无法解决，需重启宿主或由用户处理。",
-        );
-      }
-      const permit = hostCtx?.permit;
+    async execute(args, call: ToolCallContext): Promise<ToolResult> {
+      const sessionID = call.sessionID;
+      const permit = call.permit;
       if (permit === undefined || !permit.isActive()) {
         throw new Error(
           "本次解压未生效：本次调用没有有效的会话工作凭证，会话可能已停止或已取消，会话状态未改动。",
@@ -200,7 +197,7 @@ export function createDecompressTool(
           kind: "recall",
           status: recall.status,
         });
-        return recall.text;
+        return { text: recall.text };
       }
 
       // ── Restore path ─────────────────────────────────────────────
@@ -286,8 +283,8 @@ export function createDecompressTool(
         });
       }
 
-      // Single-line short ToolResult — never the original content.
-      return notifyMsg;
+      // Single-line short text — never the original content.
+      return { text: notifyMsg };
     },
   };
 }

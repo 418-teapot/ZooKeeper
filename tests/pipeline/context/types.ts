@@ -64,16 +64,8 @@ export interface CompressionPlan {
 export type ToolRoundAction =
   | { kind: "compress-tool"; ranges: CompressRangeInput[] }
   | { kind: "decompress-tool"; blockId: string }
-  | {
-      kind: "compress-tool-raw";
-      args: unknown;
-      toolCtx?: unknown;
-    }
-  | {
-      kind: "decompress-tool-raw";
-      args: unknown;
-      toolCtx?: unknown;
-    };
+  | { kind: "compress-tool-raw"; args: unknown }
+  | { kind: "decompress-tool-raw"; args: unknown };
 
 /**
  * Programmatic step executed before the round's transform.

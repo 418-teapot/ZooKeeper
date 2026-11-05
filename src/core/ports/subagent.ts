@@ -2,30 +2,13 @@
  * Subagent-delegation capability port.
  *
  * Pure types: the host driver that executes a delegated run plus the
- * optional renderer, baseline and model inputs the `subagent` tool reads.
- * The file imports types only — never an implementation.
+ * baseline and model inputs the `subagent` tool reads.  The file imports
+ * types only — never an implementation.
  *
  * @module
  */
 
 import type { SubagentDriver } from "../subagent/driver.js";
-
-/**
- * Structural host renderer for a tool's transcript card.
- *
- * Deliberately loose (never importing pi types in core): the tool unit
- * attaches these callbacks when a host supplies them, so its TUI can draw
- * a live card; a host without a renderer keeps the plain text behaviour.
- */
-export interface ToolCardRenderer {
-  renderCall(args: unknown, theme: unknown, context?: unknown): unknown;
-  renderResult(
-    result: unknown,
-    options: unknown,
-    theme: unknown,
-    context?: unknown,
-  ): unknown;
-}
 
 /** The subagent-delegation capability. */
 export interface SubagentPort {
@@ -37,14 +20,6 @@ export interface SubagentPort {
    * its native `task` tool).
    */
   subagentDriver: SubagentDriver;
-  /**
-   * Optional host renderer for the subagent tool card.
-   *
-   * When present the tool attaches its `renderCall` / `renderResult`
-   * callbacks so the host TUI draws a live transcript card instead of the
-   * plain text snapshot.
-   */
-  subagentRenderer: ToolCardRenderer;
   /**
    * The host's full untrimmed tool-name baseline for subagent capability
    * computation, as a thunk.

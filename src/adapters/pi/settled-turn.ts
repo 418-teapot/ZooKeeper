@@ -4,10 +4,10 @@
  * The `agent_before_settle` boundary carries no transcript, so the loop
  * judge reconstructs the settled turn from the messages `agent_end`
  * recorded and derives its activity facts: how many tool calls the turn
- * issued, whether an `ask` parked on a headless `no-ui` slot, and pi's own
- * activity outcome.  These helpers read pi's duck-typed message shapes
- * without importing any pi package, and every payload is untrusted — a
- * malformed entry is skipped so the caller keeps its fail-closed verdict.
+ * issued and pi's own activity outcome.  These helpers read pi's
+ * duck-typed message shapes without importing any pi package, and every
+ * payload is untrusted — a malformed entry is skipped so the caller keeps
+ * its fail-closed verdict.
  *
  * @module
  */
@@ -74,51 +74,6 @@ export function countTurnToolCalls(messages: readonly unknown[]): number {
     }
   }
   return count;
-}
-
-/**
- * Whether the settled turn's ask tool result went unanswered headlessly.
- *
- * In a non-TUI host (print / RPC / json mode) the ask tool cannot draw
- * its dialog, so instead of blocking it resolves every question with the
- * system-side `{ status: "unavailable", reason: "no-ui" }` slot.  The
- * agent therefore asked the user something no human could answer: the
- * run must stop so the user reads the question after the process exits
- * rather than auto-continuing into possibly-unwanted work.
- *
- * Scans the turn's `toolResult` messages for the `ask` tool and reads
- * the STRUCTURED `details` (`{ questions: [{ result }] }`) rather than
- * the rendered text, which is only a display rendering.  Only `no-ui` is
- * treated as a handback: `aborted` already has its own stop channel (the
- * run reports `stopReason: "aborted"`) and `timeout` is deliberately
- * excluded (a timed-out dialog may still warrant a wake).  Every
- * payload is untrusted, so malformed entries are skipped and a
- * transcript with no matching result yields `false` — fail closed toward
- * the ordinary settle logic.
- *
- * @param messages - The settled turn's messages.
- * @returns True when an ask result reports `unavailable`/`no-ui`.
- */
-export function askWentUnanswered(messages: readonly unknown[]): boolean {
-  for (const message of messages) {
-    if (messageRole(message) !== "toolResult") continue;
-    const result = message as { toolName?: unknown; details?: unknown };
-    if (result.toolName !== "ask") continue;
-    const details = result.details;
-    if (details === null || typeof details !== "object") continue;
-    const questions = (details as { questions?: unknown }).questions;
-    if (!Array.isArray(questions)) continue;
-    for (const question of questions) {
-      if (question === null || typeof question !== "object") continue;
-      const slot = (question as { result?: unknown }).result;
-      if (slot === null || typeof slot !== "object") continue;
-      const candidate = slot as { status?: unknown; reason?: unknown };
-      if (candidate.status === "unavailable" && candidate.reason === "no-ui") {
-        return true;
-      }
-    }
-  }
-  return false;
 }
 
 /**

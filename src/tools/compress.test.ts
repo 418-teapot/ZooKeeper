@@ -34,6 +34,7 @@ import type { Block } from "../core/context/state.js";
 import { createStateStore } from "../core/context/store.js";
 import { numberView } from "../core/context/view-refs.js";
 import type { ToolHost } from "../core/ports/tool-host.js";
+import type { ToolCallContext } from "../core/unit.js";
 import { composeForTest } from "../testkits/compose.js";
 import {
   composeToolHooks,
@@ -41,7 +42,7 @@ import {
   POLY_ZOO,
   polyHostConfig,
 } from "../testkits/config.js";
-import { permitFor } from "../testkits/context-runtime.js";
+import { callFor, permitFor } from "../testkits/context-runtime.js";
 import { makeTmpDir } from "../testkits/tmp.js";
 import { _resetForTesting } from "../utils/logger.js";
 import { unit as compressUnit, createCompressTool } from "./compress.js";
@@ -184,12 +185,6 @@ function fakeHost(messages: HostMessage[]): {
 } {
   const notifyCalls: Array<{ sessionID: string; text: string }> = [];
   const host: ToolHost = {
-    resolveSessionId(toolCtx: unknown): string | undefined {
-      const ctx = toolCtx as { sessionID?: unknown; sessionId?: unknown };
-      const id = ctx.sessionID ?? ctx.sessionId;
-      if (typeof id !== "string" || id.length === 0) return undefined;
-      return id;
-    },
     async fetchHistory(_sessionId: string): Promise<Projection> {
       return project(messages, []);
     },
@@ -238,24 +233,13 @@ function mockClient(messages: any[]): {
   return { client, promptCalls };
 }
 
-/** Hand-written minimal OpenCode ToolContext shape. */
-const mockToolContext = {
-  sessionID: TEST_SESSION_ID,
-  messageID: "msg-compress",
-  agent: "dolphin",
-  directory: "/tmp",
-  worktree: "/tmp",
-  abort: new AbortController().signal,
-  metadata: () => {},
-  ask: async () => {},
-};
-
-/** The host execution surface a tool call receives. */
-const hostContext = {
-  get permit() {
-    return permit;
-  },
-};
+/**
+ * The call context a compress call receives, admitted under the current
+ * permit unless a case overrides it.
+ */
+function call(overrides: Partial<ToolCallContext> = {}): ToolCallContext {
+  return callFor(TEST_SESSION_ID, { permit, ...overrides });
+}
 
 /** The runtime's live session state (the same instance the tool uses). */
 function sessionState(): RuntimeFlaggedState {
@@ -286,12 +270,7 @@ describe("compress tool execute — one commit for state and view change", () =>
 
     try {
       await assert.rejects(
-        () =>
-          tool.execute(
-            { ranges: [makeRange(1, 9)] },
-            mockToolContext,
-            hostContext,
-          ),
+        () => tool.execute({ ranges: [makeRange(1, 9)] }, call()),
         "an unwritten compression is never reported as applied",
       );
     } finally {
@@ -342,7 +321,6 @@ function sourceHost(options: { history?: HostMessage[]; calls?: number[] }): {
 } {
   const notifyCalls: string[] = [];
   const host: ToolHost = {
-    resolveSessionId: () => TEST_SESSION_ID,
     async notify(): Promise<void> {
       notifyCalls.push("notify");
     },
@@ -373,10 +351,9 @@ describe("compress tool execute — permit lapses after the commit", () => {
     };
     const tool = createCompressTool(host, PARSED_CONFIG, stopping);
 
-    const result = await tool.execute(
+    const { text: result } = await tool.execute(
       { ranges: [makeRange(1, 9)] },
-      mockToolContext,
-      { permit: permitFor(TEST_SESSION_ID, controller.signal) },
+      call({ permit: permitFor(TEST_SESSION_ID, controller.signal) }),
     );
 
     // The committed compression stands.
@@ -404,10 +381,9 @@ describe("compress tool execute — history source", () => {
     const { host, notifyCalls } = sourceHost({ history: [], calls });
 
     const tool = createCompressTool(host, PARSED_CONFIG, runtime);
-    const result = await tool.execute(
+    const { text: result } = await tool.execute(
       { ranges: [makeRange(1, 9)] },
-      mockToolContext,
-      hostContext,
+      call(),
     );
 
     assert.equal(
@@ -427,10 +403,9 @@ describe("compress tool execute — history source", () => {
     const { host } = sourceHost({ history: makeMessages(), calls });
 
     const tool = createCompressTool(host, PARSED_CONFIG, runtime);
-    const result = await tool.execute(
+    const { text: result } = await tool.execute(
       { ranges: [makeRange(1, 9)] },
-      mockToolContext,
-      hostContext,
+      call(),
     );
 
     assert.equal(calls.length, 1, "the fallback read runs once");
@@ -446,12 +421,7 @@ describe("compress tool execute — history source", () => {
     // failure is thrown (never returned as a success-shaped string) and
     // says that repeating the call in this round changes nothing.
     await assert.rejects(
-      () =>
-        tool.execute(
-          { ranges: [makeRange(1, 9)] },
-          mockToolContext,
-          hostContext,
-        ),
+      () => tool.execute({ ranges: [makeRange(1, 9)] }, call()),
       (err: unknown) =>
         err instanceof Error &&
         /无法压缩/.test(err.message) &&
@@ -488,10 +458,9 @@ describe("compress tool execute — happy path", () => {
 
     const tool = createCompressTool(host, PARSED_CONFIG, runtime);
 
-    const result = await tool.execute(
+    const { text: result } = await tool.execute(
       { ranges: [makeRange(1, 9)] },
-      mockToolContext,
-      hostContext,
+      call(),
     );
 
     // (1) Block created in the instance's session state.
@@ -573,12 +542,11 @@ describe("compress tool execute — happy path", () => {
 
     const tool = createCompressTool(host, PARSED_CONFIG, runtime);
 
-    const result = await tool.execute(
+    const { text: result } = await tool.execute(
       {
         ranges: [makeRange(1, 5, "主题一"), makeRange(6, 9, "主题二")],
       },
-      mockToolContext,
-      hostContext,
+      call(),
     );
 
     // (1) Two blocks created in order.
@@ -614,41 +582,15 @@ describe("compress tool execute — happy path", () => {
     assert.ok(!result.includes("用户请求执行命令"));
   });
 
-  it("accepts a sessionId-shaped tool context (defensive)", async () => {
-    const messages = makeMessages();
-    const { host } = fakeHost(messages);
-    const tool = createCompressTool(host, PARSED_CONFIG, runtime);
-
-    const result = await tool.execute(
-      { ranges: [makeRange(1, 9)] },
-      {
-        ...mockToolContext,
-        sessionID: undefined,
-        sessionId: TEST_SESSION_ID,
-      },
-      hostContext,
-    );
-
-    const state = sessionState();
-    assert.equal(state.blocks.size, 1);
-    assert.equal(typeof result, "string");
-    assert.ok(result.includes("已压缩"));
-    assert.ok(
-      result.includes("上下文压缩："),
-      "ToolResult should carry the 上下文压缩 prefix",
-    );
-  });
-
   it("accepts a title of exactly 80 characters", async () => {
     const messages = makeMessages();
     const { host } = fakeHost(messages);
     const tool = createCompressTool(host, PARSED_CONFIG, runtime);
 
     const title = "超".repeat(80);
-    const result = await tool.execute(
+    const { text: result } = await tool.execute(
       { ranges: [makeRange(1, 9, title)] },
-      mockToolContext,
-      hostContext,
+      call(),
     );
 
     const state = sessionState();
@@ -670,12 +612,7 @@ describe("compress tool execute — protection gates", () => {
     const tool = createCompressTool(host, PARSED_CONFIG, runtime);
 
     await assert.rejects(
-      () =>
-        tool.execute(
-          { ranges: [makeRange(0, 5)] },
-          mockToolContext,
-          hostContext,
-        ),
+      () => tool.execute({ ranges: [makeRange(0, 5)] }, call()),
       (err: unknown) =>
         err instanceof Error && /第一条用户消息/.test(err.message),
     );
@@ -698,7 +635,7 @@ describe("compress tool execute — error paths", () => {
     // BEFORE any ref resolution (refs are dummy on purpose).
     const ranges = Array.from({ length: 9 }, () => makeRange(1, 2));
     await assert.rejects(
-      () => tool.execute({ ranges }, mockToolContext, hostContext),
+      () => tool.execute({ ranges }, call()),
       (err: unknown) =>
         err instanceof Error &&
         /9/.test(err.message) &&
@@ -717,7 +654,7 @@ describe("compress tool execute — error paths", () => {
     const tool = createCompressTool(host, PARSED_CONFIG, runtime);
 
     await assert.rejects(
-      () => tool.execute({ ranges: [] }, mockToolContext, hostContext),
+      () => tool.execute({ ranges: [] }, call()),
       /不能为空/,
     );
     const state = sessionState();
@@ -729,18 +666,12 @@ describe("compress tool execute — error paths", () => {
     const { host } = fakeHost(messages);
     const tool = createCompressTool(host, PARSED_CONFIG, runtime);
 
+    await assert.rejects(() => tool.execute({}, call()), /ranges/);
     await assert.rejects(
-      () => tool.execute({}, mockToolContext, hostContext),
+      () => tool.execute({ ranges: "m1" }, call()),
       /ranges/,
     );
-    await assert.rejects(
-      () => tool.execute({ ranges: "m1" }, mockToolContext, hostContext),
-      /ranges/,
-    );
-    await assert.rejects(
-      () => tool.execute(null, mockToolContext, hostContext),
-      /ranges/,
-    );
+    await assert.rejects(() => tool.execute(null, call()), /ranges/);
     const state = sessionState();
     assert.equal(state.blocks.size, 0);
   });
@@ -756,8 +687,7 @@ describe("compress tool execute — error paths", () => {
           {
             ranges: [makeRange(1, 6), { ...makeRange(6, 9), fromRef: "m9999" }],
           },
-          mockToolContext,
-          hostContext,
+          call(),
         ),
       (err: unknown) =>
         err instanceof Error &&
@@ -785,8 +715,7 @@ describe("compress tool execute — error paths", () => {
               },
             ],
           },
-          mockToolContext,
-          hostContext,
+          call(),
         ),
       (err: unknown) =>
         err instanceof Error &&
@@ -802,11 +731,7 @@ describe("compress tool execute — error paths", () => {
 
     await assert.rejects(
       () =>
-        tool.execute(
-          { ranges: [makeRange(1, 6), makeRange(4, 9)] },
-          mockToolContext,
-          hostContext,
-        ),
+        tool.execute({ ranges: [makeRange(1, 6), makeRange(4, 9)] }, call()),
       (err: unknown) =>
         err instanceof Error &&
         /第 2 个范围/.test(err.message) &&
@@ -828,8 +753,7 @@ describe("compress tool execute — error paths", () => {
           {
             ranges: [makeRange(1, 6), makeRange(6, 9, "   ")],
           },
-          mockToolContext,
-          hostContext,
+          call(),
         ),
       (err: unknown) =>
         err instanceof Error &&
@@ -849,12 +773,7 @@ describe("compress tool execute — error paths", () => {
 
     const longTitle = "超".repeat(81);
     await assert.rejects(
-      () =>
-        tool.execute(
-          { ranges: [makeRange(1, 9, longTitle)] },
-          mockToolContext,
-          hostContext,
-        ),
+      () => tool.execute({ ranges: [makeRange(1, 9, longTitle)] }, call()),
       (err: unknown) =>
         err instanceof Error &&
         /过长/.test(err.message) &&
@@ -878,12 +797,7 @@ describe("compress tool execute — error paths", () => {
     ];
     for (const title of badTitles) {
       await assert.rejects(
-        () =>
-          tool.execute(
-            { ranges: [makeRange(1, 9, title)] },
-            mockToolContext,
-            hostContext,
-          ),
+        () => tool.execute({ ranges: [makeRange(1, 9, title)] }, call()),
         (err: unknown) =>
           err instanceof Error &&
           /单行/.test(err.message) &&
@@ -903,12 +817,7 @@ describe("compress tool execute — error paths", () => {
     const badTitles = ["foo---bar", "----", "a--b---c--d"];
     for (const title of badTitles) {
       await assert.rejects(
-        () =>
-          tool.execute(
-            { ranges: [makeRange(1, 9, title)] },
-            mockToolContext,
-            hostContext,
-          ),
+        () => tool.execute({ ranges: [makeRange(1, 9, title)] }, call()),
         (err: unknown) =>
           err instanceof Error &&
           /连字符/.test(err.message) &&
@@ -960,8 +869,7 @@ describe("compress tool execute — error paths", () => {
 
     for (const item of cases) {
       await assert.rejects(
-        () =>
-          tool.execute({ ranges: [item.item] }, mockToolContext, hostContext),
+        () => tool.execute({ ranges: [item.item] }, call()),
         (err: unknown) =>
           err instanceof Error &&
           err.message.includes(item.name) &&
@@ -978,7 +886,7 @@ describe("compress tool execute — error paths", () => {
     const tool = createCompressTool(host, PARSED_CONFIG, runtime);
 
     await assert.rejects(
-      () => tool.execute({ ranges: ["m1"] }, mockToolContext, hostContext),
+      () => tool.execute({ ranges: ["m1"] }, call()),
       (err: unknown) =>
         err instanceof Error &&
         /第 1 个范围/.test(err.message) &&
@@ -986,26 +894,6 @@ describe("compress tool execute — error paths", () => {
     );
     const state = sessionState();
     assert.equal(state.blocks.size, 0);
-  });
-
-  it("throws a loud error when the tool context lacks a session id", async () => {
-    const messages = makeMessages();
-    const { host } = fakeHost(messages);
-    const tool = createCompressTool(host, PARSED_CONFIG, runtime);
-
-    await assert.rejects(
-      () =>
-        tool.execute(
-          { ranges: [makeRange(1, 9)] },
-          {
-            ...mockToolContext,
-            hostContext,
-            sessionID: undefined,
-            sessionId: undefined,
-          },
-        ),
-      /sessionID/,
-    );
   });
 
   it("throws a loud config error when the compress section parsed without thresholds (defensive)", async () => {
@@ -1020,12 +908,7 @@ describe("compress tool execute — error paths", () => {
     assert.ok(hooks?.compress);
 
     await assert.rejects(
-      () =>
-        hooks.compress.execute(
-          { ranges: [makeRange(1, 9)] },
-          mockToolContext,
-          hostContext,
-        ),
+      () => hooks.compress.execute({ ranges: [makeRange(1, 9)] }, call()),
       /\[zoo\.context\.compress\] 段缺失或非法/,
     );
   });
@@ -1047,12 +930,7 @@ describe("compress tool execute — error paths", () => {
     assert.ok(hooks?.compress);
 
     await assert.rejects(
-      () =>
-        hooks.compress.execute(
-          { ranges: [makeRange(1, 9)] },
-          mockToolContext,
-          hostContext,
-        ),
+      () => hooks.compress.execute({ ranges: [makeRange(1, 9)] }, call()),
       /protected_messages/,
     );
   });
@@ -1067,10 +945,9 @@ describe("compress tool execute — error paths", () => {
     };
     const tool = createCompressTool(notifyErrorHost, PARSED_CONFIG, runtime);
 
-    const result = await tool.execute(
+    const { text: result } = await tool.execute(
       { ranges: [makeRange(1, 9)] },
-      mockToolContext,
-      hostContext,
+      call(),
     );
 
     // Compression still succeeded and returned a ToolResult.

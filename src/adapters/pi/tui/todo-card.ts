@@ -383,12 +383,12 @@ export function renderResult(
 // ---------------------------------------------------------------------------
 
 /**
- * The renderer surface attached to the todo tool contribution.
+ * The renderer surface the pi registration installs on the todo tool.
  *
  * Mirrors `buildSubagentCardRenderer`: the loose `(args, theme, context)`
  * / `(result, options, theme, context)` signatures are what pi's tool
- * registration forwards, matched to the `Capabilities["todoRenderer"]` port shape.
- * `renderCall` renders a plain-text title, so it ignores the theme.
+ * registration forwards.  `renderCall` renders a plain-text title, so it
+ * ignores the theme.
  */
 export function buildTodoCardRenderer(): {
   renderCall: (args: unknown, theme: unknown, context?: unknown) => unknown;

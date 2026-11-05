@@ -96,16 +96,20 @@ describe("session_tree — todo cache invalidation", () => {
     return { ctx, scans };
   }
 
+  it("the todo tool registers with its pi card renderers", async () => {
+    const api = mockApi();
+    await buildPiHandlers(TODO_ZOO, api as any, MODES_RAW);
+    const todo = api.tools.find((tool: any) => tool.name === "todo") as any;
+    assert.ok(todo, "the todo tool must register when the profile lists it");
+    assert.equal(typeof todo.renderCall, "function");
+    assert.equal(typeof todo.renderResult, "function");
+  });
+
   it("the tool restores once per cache miss and session_tree forces a re-scan", async () => {
     const api = mockApi();
     const handlers = await buildPiHandlers(TODO_ZOO, api as any, MODES_RAW);
     const todo = api.tools.find((tool: any) => tool.name === "todo") as any;
     assert.ok(todo, "the todo tool must register when the profile lists it");
-    assert.equal(
-      todo.executionMode,
-      undefined,
-      "no host-level serialisation asked for",
-    );
 
     const { ctx, scans } = scanCtx("sess-tree");
     // Publish this session to the shared holder: the scan reads the
@@ -1506,7 +1510,7 @@ describe("buildPiHandlers — event admission", () => {
       skillPermissions: {},
       getProfileSkills: () => [],
       collectSkillPaths: () => [],
-      applyPrimaryToolTrim: () => log.push("trim"),
+      applyActiveTools: () => log.push("trim"),
       registerFleetWidget: (sessionID) => log.push(`widget:${sessionID}`),
       refreshFleetWidget: (sessionID) => log.push(`refresh:${sessionID}`),
       refreshTodoView: (sessionID) => log.push(`todo:${sessionID}`),

@@ -14,7 +14,7 @@
  * Structural exemptions stay silent: a non-`completed` outcome — an
  * aborted or errored run (pi reports the outcome itself, so a user Esc
  * recorded as `stopReason: "error"` no longer wakes) — an open blocking
- * UI prompt, a headless unanswered ask, an unidentifiable session.  A
+ * UI prompt, an unidentifiable session.  A
  * delivered wake locks the session: a text-only reply to a wake stays
  * silent without spending budget, any tool activity releases the lock,
  * and a real user turn clears both the lock and the budget.  A stale
@@ -426,26 +426,19 @@ describe("buildPiHandlers — loop settle", () => {
   it("judges each session's own run transcript when two settle", async () => {
     const api = mockApi();
     const handlers = await buildPiHandlers(ZOO, api as any, RAW_AGENTS);
-    const asking = settleCtx("sess-transcript-a", ACTIVE_BRANCH);
+    const awaiting = settleCtx("sess-transcript-a", ACTIVE_BRANCH);
     const working = settleCtx("sess-transcript-b", ACTIVE_BRANCH);
 
-    // Session A's run parked on a headless ask (it awaits the user), while
-    // session B's run made ordinary tool activity.  Their `agent_end`
-    // events interleave before either boundary fires.
-    await handlers.agentEnd(
-      runEnded([
-        askResultMessage([
-          { result: { status: "unavailable", reason: "no-ui" } },
-        ]),
-        assistant([toolCallPart("ask")]),
-      ]),
-      asking,
-    );
+    // Session A's run ended behind an open UI prompt (it waits on the
+    // user), while session B's run made ordinary tool activity.  Their
+    // `agent_end` events interleave before either boundary fires.
+    await handlers.agentEnd(RUN_ENDED, awaiting);
     await handlers.agentEnd(RUN_ENDED, working);
+    await handlers.uiPromptStart({ type: "ui_prompt_start" }, awaiting);
 
     const silent = await handlers.beforeSettle(
       { type: "agent_before_settle", outcome: "completed" },
-      asking,
+      awaiting,
     );
     const woke = await handlers.beforeSettle(
       { type: "agent_before_settle", outcome: "completed" },
@@ -1175,12 +1168,12 @@ describe("buildPiHandlers — settled-turn facts", () => {
     );
   });
 
-  it("classifies a headless ask (no-ui) as awaiting-input", async () => {
+  it("does not treat an unanswered ask as a wait on the user", async () => {
     const api = mockApi();
     const handlers = await buildPiHandlers(ZOO, api as any, RAW_AGENTS);
-    // In a non-TUI host the ask tool cannot draw a dialog, so every
-    // question comes back `unavailable`/`no-ui`: the agent asked the user
-    // something and no human could answer.  The wake must be suppressed.
+    // ask reaches the model only while the session has a question channel,
+    // so an `unavailable`/`no-ui` slot is not a normal stop cause: the todo
+    // list stays the sole wake authority.
     const evt = runEnded([
       userMessage("ask me"),
       assistant([toolCallPart("bash"), toolCallPart("ask")]),
@@ -1196,75 +1189,6 @@ describe("buildPiHandlers — settled-turn facts", () => {
       handlers,
       evt,
       settleCtx("sess-ask-noui", ACTIVE_BRANCH),
-    );
-
-    assert.equal(wakes(result).length, 0);
-    assert.equal(settleReceivedCause(), "awaiting-input");
-  });
-
-  it("leaves a turn whose ask was answered unaffected", async () => {
-    const api = mockApi();
-    const handlers = await buildPiHandlers(ZOO, api as any, RAW_AGENTS);
-    const evt = runEnded([
-      userMessage("ask me"),
-      assistant([toolCallPart("bash"), toolCallPart("ask")]),
-      askResultMessage([
-        {
-          question: "Which one?",
-          result: { status: "answered", answer: ["A"], wasCustom: false },
-        },
-      ]),
-    ]);
-
-    const result = await settle(
-      handlers,
-      evt,
-      settleCtx("sess-ask-answered", ACTIVE_BRANCH),
-    );
-
-    assert.equal(wakes(result).length, 1);
-    assert.equal(settleReceivedCause(), "settled");
-  });
-
-  it("does not treat an ask timeout or abort as awaiting-input", async () => {
-    for (const reason of ["timeout", "aborted"] as const) {
-      const api = mockApi();
-      const handlers = await buildPiHandlers(ZOO, api as any, RAW_AGENTS);
-      const evt = runEnded([
-        userMessage("ask me"),
-        assistant([toolCallPart("bash"), toolCallPart("ask")]),
-        askResultMessage([
-          { question: "Which one?", result: { status: "unavailable", reason } },
-        ]),
-      ]);
-
-      const result = await settle(
-        handlers,
-        evt,
-        settleCtx(`sess-ask-${reason}`, ACTIVE_BRANCH),
-      );
-
-      assert.equal(wakes(result).length, 1, `${reason} should still wake`);
-      assert.equal(settleReceivedCause(), "settled");
-    }
-  });
-
-  it("ignores malformed ask details without crashing", async () => {
-    const api = mockApi();
-    const handlers = await buildPiHandlers(ZOO, api as any, RAW_AGENTS);
-    const evt = runEnded([
-      userMessage("ask me"),
-      assistant([toolCallPart("bash"), toolCallPart("ask")]),
-      { role: "toolResult", toolName: "ask" },
-      { role: "toolResult", toolName: "ask", details: null },
-      { role: "toolResult", toolName: "ask", details: { questions: "nope" } },
-      askResultMessage([null, 42, { result: "x" }]),
-    ]);
-
-    const result = await settle(
-      handlers,
-      evt,
-      settleCtx("sess-ask-malformed", ACTIVE_BRANCH),
     );
 
     assert.equal(wakes(result).length, 1);

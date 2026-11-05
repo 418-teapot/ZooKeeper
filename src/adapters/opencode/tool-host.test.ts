@@ -115,37 +115,6 @@ function v1Message(role: string, text: string): ContextMessageEntry {
 }
 
 // ---------------------------------------------------------------------------
-// resolveSessionId
-// ---------------------------------------------------------------------------
-
-describe("resolveSessionId", () => {
-  it("prefers sessionID over sessionId", () => {
-    const host = createV1ToolHost(fakeClient({}), NO_AGENT);
-    assert.equal(
-      host.resolveSessionId({ sessionID: "s1", sessionId: "s2" }),
-      "s1",
-    );
-  });
-
-  it("falls back to sessionId when sessionID is absent", () => {
-    const host = createV1ToolHost(fakeClient({}), NO_AGENT);
-    assert.equal(host.resolveSessionId({ sessionId: "s2" }), "s2");
-  });
-
-  it("returns undefined when no session id is present", () => {
-    const host = createV1ToolHost(fakeClient({}), NO_AGENT);
-    assert.equal(host.resolveSessionId({}), undefined);
-  });
-
-  it("returns undefined for non-string or empty session ids", () => {
-    const host = createV1ToolHost(fakeClient({}), NO_AGENT);
-    assert.equal(host.resolveSessionId({ sessionID: 42 }), undefined);
-    assert.equal(host.resolveSessionId({ sessionID: "" }), undefined);
-    assert.equal(host.resolveSessionId({ sessionId: "" }), undefined);
-  });
-});
-
-// ---------------------------------------------------------------------------
 // fetchHistory
 // ---------------------------------------------------------------------------
 

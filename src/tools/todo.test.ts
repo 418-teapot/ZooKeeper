@@ -9,7 +9,7 @@
  * ends with a copy-ready example call, batch atomicity (a refused call leaves
  * the stored state untouched and writes no snapshot), the
  * transcript-truthfulness rule (every successful mutating call writes a fresh
- * `{ op, phases }` snapshot into `hostCtx.details`, a refused call and a
+ * `{ op, phases }` snapshot as the result's data, a refused call and a
  * `view` write nothing), the restore loop through an injected store, the
  * missing-session-ID error, the renderer attachment seam, the fail-closed
  * registration gate (no `todoStore` / no `toolHost` → zero tools), and the
@@ -19,11 +19,10 @@ import assert from "node:assert/strict";
 import { afterEach, describe, it } from "node:test";
 import type { ModeProfile } from "../core/config-types.js";
 import type { Capabilities } from "../core/ports/index.js";
-import type { ToolHost } from "../core/ports/tool-host.js";
 import type { TodoSnapshot } from "../core/todo/serialize.js";
 import { createTodoStore } from "../core/todo/store.js";
 import type { TodoPhase } from "../core/todo/types.js";
-import type { ToolContribution } from "../core/unit.js";
+import type { ToolCallContext, ToolContribution } from "../core/unit.js";
 import { composeForTest, facts } from "../testkits/compose.js";
 import { _resetForTesting } from "../utils/logger.js";
 import { parseTodoArgs, unit as todoUnit } from "./todo.js";
@@ -44,8 +43,11 @@ const TODO_TOOL_PROFILE: ModeProfile = {
   commands: [],
 };
 
-/** No tool context needed — the fake host resolves a fixed session id. */
-const TOOL_CTX = {};
+/** The call context every test call uses. */
+const CALL: ToolCallContext = {
+  sessionID: "sess-todo-tool",
+  signal: new AbortController().signal,
+};
 
 /** The transcript, simulated as a newest-first list of written details. */
 let transcript: unknown[] = [];
@@ -60,24 +62,14 @@ afterEach(() => {
   activeStore = undefined;
 });
 
-/** The host's tool services: a fixed session id and a no-op notify. */
-function fakeHost(sessionID: string | null = TEST_SESSION_ID): ToolHost {
-  return {
-    resolveSessionId: () => sessionID ?? undefined,
-    async notify(): Promise<void> {},
-  };
-}
-
 /**
  * Instantiate the tool through the unit descriptor over a FRESH store built
  * on the fake transcript — mirroring the real host, where each extension
  * instance owns its store.
  *
- * @param opts - Host overrides (a session id of `undefined` exercises the
- *   missing-session error) and an optional renderer port.
  * @returns The single contributed tool.
  */
-function makeTool(opts: { host?: ToolHost } = {}): ToolContribution {
+function makeTool(): ToolContribution {
   const store = createTodoStore(async () => transcript);
   activeStore = store;
   const deps = {
@@ -86,7 +78,6 @@ function makeTool(opts: { host?: ToolHost } = {}): ToolContribution {
     client: {},
     directory: "",
     resolveAgent: () => undefined,
-    toolHost: opts.host ?? fakeHost(),
     todoStore: store,
   } as unknown as Partial<Capabilities>;
   const tools = todoUnit.create(deps, facts()).tools;
@@ -95,20 +86,19 @@ function makeTool(opts: { host?: ToolHost } = {}): ToolContribution {
 }
 
 /**
- * Run one call, capture any written snapshot onto the fake transcript, and
+ * Run one call, capture any returned snapshot onto the fake transcript, and
  * return the echoed summary text.
  *
- * A written detail is `unshift`ed so the transcript stays newest-first,
- * exactly as the host's scan of tool-result details would.
+ * A returned snapshot is `unshift`ed so the transcript stays newest-first,
+ * exactly as the host's scan of persisted tool results would.
  */
 async function run(
   tool: ToolContribution,
   args: Record<string, unknown>,
 ): Promise<string> {
-  const hostCtx: { details?: unknown } = {};
-  const text = await tool.execute(args, TOOL_CTX, hostCtx);
-  if (hostCtx.details !== undefined) transcript.unshift(hostCtx.details);
-  return text;
+  const result = await tool.execute(args, CALL);
+  if (result.data !== undefined) transcript.unshift(result.data);
+  return result.text;
 }
 
 /** Read the live state from the store the last `makeTool()` injected. */
@@ -253,7 +243,7 @@ describe("todo tool operations", () => {
     await run(tool, { op: "init", tasks: ["One", "Two"] });
     for (const op of ["done", "drop", "rm"]) {
       await assert.rejects(
-        () => tool.execute({ op }, TOOL_CTX, {}),
+        () => tool.execute({ op }, CALL),
         op === "drop" ? /drop 缺少目标/ : /task 必须是字符串/,
       );
       assert.match(
@@ -509,14 +499,6 @@ describe("todo tool argument validation", () => {
     // The bare call is the only legal one.
     assert.deepEqual(parseTodoArgs({ op: "view" }), [{ op: "view" }]);
   });
-
-  it("errors without a session id in the tool context", async () => {
-    const tool = makeTool({ host: fakeHost(null) });
-    await assert.rejects(
-      () => tool.execute({ op: "init", tasks: ["a"] }, TOOL_CTX, {}),
-      /无法确定会话 ID：工具上下文缺少 sessionID。/,
-    );
-  });
 });
 
 // ---------------------------------------------------------------------------
@@ -675,25 +657,14 @@ describe("todo tool per-op fields", () => {
       ["tasks", 'rm 不接受的字段 "tasks"'],
       ["items", '含未知字段 "items"：rm 只接受 task'],
     ] as const) {
-      const hostCtx: { details?: unknown } = {};
       await assert.rejects(
-        () =>
-          tool.execute(
-            { op: "rm", [field]: ["Alpha", "Beta"] },
-            TOOL_CTX,
-            hostCtx,
-          ),
+        () => tool.execute({ op: "rm", [field]: ["Alpha", "Beta"] }, CALL),
         new RegExp(refusal),
       );
       assert.deepEqual(
         await state(),
         before,
         `a stray ${field} field must never reach the 'every task' default`,
-      );
-      assert.equal(
-        hostCtx.details,
-        undefined,
-        "a rejected call records no snapshot",
       );
     }
     // And the list is still fully intact for a correctly targeted rm later.
@@ -716,24 +687,22 @@ describe("todo tool atomicity", () => {
     });
     const before = await state();
 
-    const hostCtx: { details?: unknown } = {};
-    const text = await tool.execute(
+    const result = await tool.execute(
       { op: "done", task: "Never existed" },
-      TOOL_CTX,
-      hostCtx,
+      CALL,
     );
 
-    assert.match(text, /^Errors: /);
-    assert.match(text, /Never existed/);
+    assert.match(result.text, /^Errors: /);
+    assert.match(result.text, /Never existed/);
     assert.deepEqual(
       await state(),
       before,
       "a refused call must leave the stored state untouched",
     );
     assert.equal(
-      hostCtx.details,
+      result.data,
       undefined,
-      "a refused call must not write a snapshot",
+      "a refused call must not return a snapshot",
     );
   });
 
@@ -778,9 +747,8 @@ describe("todo tool snapshot details", () => {
     ];
 
     for (const call of calls) {
-      const hostCtx: { details?: unknown } = {};
-      await tool.execute(call, TOOL_CTX, hostCtx);
-      const details = hostCtx.details as TodoSnapshot;
+      const { data } = await tool.execute(call, CALL);
+      const details = data as TodoSnapshot;
       assert.equal(
         details.op,
         call.op,
@@ -801,9 +769,8 @@ describe("todo tool snapshot details", () => {
   it("writes nothing for a read-only view", async () => {
     const tool = makeTool();
     await run(tool, { op: "init", tasks: ["Only task"] });
-    const hostCtx: { details?: unknown } = {};
-    await tool.execute({ op: "view" }, TOOL_CTX, hostCtx);
-    assert.equal(hostCtx.details, undefined, "view records no state change");
+    const { data } = await tool.execute({ op: "view" }, CALL);
+    assert.equal(data, undefined, "view records no state change");
   });
 
   it("restores the live state from the newest transcript snapshot", async () => {
@@ -828,16 +795,6 @@ describe("todo tool snapshot details", () => {
       "only mutating calls produced snapshots",
     );
   });
-
-  it("drops snapshots written by a host that builds no details slot", async () => {
-    const tool = makeTool();
-    const text = await tool.execute(
-      { op: "init", tasks: ["No details host"] },
-      TOOL_CTX,
-    );
-    assert.match(text, /No details host/);
-    assert.equal(statusOf(await state(), "No details host"), "in_progress");
-  });
 });
 
 // ---------------------------------------------------------------------------
@@ -857,16 +814,14 @@ describe("todo tool concurrency", () => {
     const tool = makeTool();
     await run(tool, { op: "init", tasks: ["Alpha", "Beta"] });
 
-    const ctxAlpha: { details?: unknown } = {};
-    const ctxBeta: { details?: unknown } = {};
-    const [textAlpha, textBeta] = await Promise.all([
-      tool.execute({ op: "done", task: "Alpha" }, TOOL_CTX, ctxAlpha),
-      tool.execute({ op: "done", task: "Beta" }, TOOL_CTX, ctxBeta),
+    const [first, second] = await Promise.all([
+      tool.execute({ op: "done", task: "Alpha" }, CALL),
+      tool.execute({ op: "done", task: "Beta" }, CALL),
     ]);
     // No lost update, and a total order: the call submitted first saw the
     // base state (one of two done), the second read the first one's write.
-    assert.match(textAlpha, /Overall: 1\/2 done/);
-    assert.match(textBeta, /Overall: 2\/2 done/);
+    assert.match(first.text, /Overall: 1\/2 done/);
+    assert.match(second.text, /Overall: 2\/2 done/);
     const final = await state();
     assert.equal(statusOf(final, "Alpha"), "completed");
     assert.equal(statusOf(final, "Beta"), "completed");
@@ -879,8 +834,8 @@ describe("todo tool concurrency", () => {
       snapshotStatus(details, "Alpha") === "completed" &&
       snapshotStatus(details, "Beta") === "completed";
     assert.notEqual(
-      both(ctxAlpha.details),
-      both(ctxBeta.details),
+      both(first.data),
+      both(second.data),
       "the second call must observe the first call's write",
     );
   });
@@ -897,7 +852,7 @@ describe("todo tool concurrency", () => {
       { op: "block", task: "T4", reason: "waiting on the registry" },
     ];
     const texts = await Promise.all(
-      calls.map((call) => tool.execute(call, TOOL_CTX, {})),
+      calls.map((call) => tool.execute(call, CALL)),
     );
 
     const final = await state();
@@ -921,8 +876,8 @@ describe("todo tool concurrency", () => {
     await run(tool, { op: "init", tasks: ["Alpha"] });
 
     const outcomes = await Promise.allSettled([
-      tool.execute({ op: "done", task: "Ghost" }, TOOL_CTX, {}),
-      tool.execute({ op: "done", task: "Alpha" }, TOOL_CTX, {}),
+      tool.execute({ op: "done", task: "Ghost" }, CALL),
+      tool.execute({ op: "done", task: "Alpha" }, CALL),
     ]);
 
     // A refused operation is a summary with errors, not a rejection; the
@@ -930,7 +885,7 @@ describe("todo tool concurrency", () => {
     assert.equal(outcomes[0].status, "fulfilled");
     assert.equal(outcomes[1].status, "fulfilled");
     assert.match(
-      (outcomes[0] as PromiseFulfilledResult<string>).value,
+      (outcomes[0] as PromiseFulfilledResult<{ text: string }>).value.text,
       /Ghost|错误|不存在/,
     );
     assert.equal(statusOf(await state(), "Alpha"), "completed");
@@ -948,15 +903,14 @@ describe("todo tool concurrency", () => {
         client: {},
         directory: "",
         resolveAgent: () => undefined,
-        toolHost: fakeHost(),
         todoStore: store,
       }) as unknown as Partial<Capabilities>;
     const toolA = todoUnit.create(depsFor(first), facts()).tools[0];
     const toolB = todoUnit.create(depsFor(second), facts()).tools[0];
 
     await Promise.all([
-      toolA.execute({ op: "init", tasks: ["A only"] }, TOOL_CTX, {}),
-      toolB.execute({ op: "init", tasks: ["B only"] }, TOOL_CTX, {}),
+      toolA.execute({ op: "init", tasks: ["A only"] }, CALL),
+      toolB.execute({ op: "init", tasks: ["B only"] }, CALL),
     ]);
 
     assert.deepEqual(
@@ -987,28 +941,11 @@ describe("todo tool unit descriptor", () => {
       client: {},
       directory: "",
       resolveAgent: () => undefined,
-      toolHost: fakeHost(),
     } as unknown as Partial<Capabilities>;
     const result = composeForTest(TODO_TOOL_PROFILE, [todoUnit], deps);
     assert.deepEqual(result.tools, {});
     assert.deepEqual(result.report.skipped, [
       { name: "todo", missing: ["todoStore"] },
-    ]);
-  });
-
-  it("skips the unit and reports toolHost when deps carry no tool host", () => {
-    const deps = {
-      limits: {},
-      contextConfig: {},
-      client: {},
-      directory: "",
-      resolveAgent: () => undefined,
-      todoStore: createTodoStore(async () => []),
-    } as unknown as Partial<Capabilities>;
-    const result = composeForTest(TODO_TOOL_PROFILE, [todoUnit], deps);
-    assert.deepEqual(result.tools, {});
-    assert.deepEqual(result.report.skipped, [
-      { name: "todo", missing: ["toolHost"] },
     ]);
   });
 
@@ -1020,11 +957,10 @@ describe("todo tool unit descriptor", () => {
       client: {},
       directory: "",
       resolveAgent: () => undefined,
-      toolHost: fakeHost(),
       todoStore: store,
     } as unknown as Partial<Capabilities>;
     const tool = todoUnit.create(deps, facts()).tools[0];
-    await tool.execute({ op: "init", tasks: ["Injected"] }, TOOL_CTX, {});
+    await tool.execute({ op: "init", tasks: ["Injected"] }, CALL);
     assert.equal(
       statusOf(await store.get(TEST_SESSION_ID), "Injected"),
       "in_progress",
@@ -1048,28 +984,6 @@ describe("todo tool unit descriptor", () => {
     // Fields outside the schema carry no entry of their own.
     assert.equal(tool.args?.items, undefined);
     assert.equal(tool.args?.entries, undefined);
-  });
-
-  it("attaches host renderers only when the renderer port is supplied", () => {
-    const renderCall = () => "card";
-    const renderResult = () => "result";
-    const deps = {
-      limits: {},
-      contextConfig: {},
-      client: {},
-      directory: "",
-      resolveAgent: () => undefined,
-      toolHost: fakeHost(),
-      todoStore: createTodoStore(async () => []),
-      todoRenderer: { renderCall, renderResult },
-    } as unknown as Partial<Capabilities>;
-    const tool = todoUnit.create(deps, facts()).tools[0];
-    assert.equal(tool.renderCall, renderCall);
-    assert.equal(tool.renderResult, renderResult);
-
-    const plain = makeTool();
-    assert.equal(plain.renderCall, undefined);
-    assert.equal(plain.renderResult, undefined);
   });
 
   it("carries the operation manual and one example per op in its description", () => {

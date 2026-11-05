@@ -243,8 +243,14 @@ export interface PiSwitchHostDeps {
 export interface PiSwitchHostController {
   /** The host surface for the composition deps. */
   host: SwitchHost;
-  /** Apply and clear the pending post-replacement operations. */
-  drainPendingOps(): void;
+  /**
+   * Take the pending post-replacement tool trim, or `undefined` when none
+   * was queued.
+   *
+   * The caller applies it: the active-tool set has one writer (the pi
+   * adapter's availability rule), so the drain never writes it directly.
+   */
+  drainPendingOps(): string[] | undefined;
 }
 
 /**
@@ -352,10 +358,7 @@ export function createPiSwitchHost(
   return {
     host,
     drainPendingOps() {
-      const ops = store.drain();
-      if (ops?.activeTools !== undefined) {
-        deps.setActiveTools(ops.activeTools);
-      }
+      return store.drain()?.activeTools;
     },
   };
 }

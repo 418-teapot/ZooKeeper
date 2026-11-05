@@ -109,7 +109,6 @@ function mockToolHost(messages: HostMessage[]): {
   const notifyCalls: Array<{ sessionID: string; text: string }> = [];
 
   const toolHost: ToolHost = {
-    resolveSessionId: () => undefined,
     fetchHistory: async () => projectMessages(messages),
     notify: async (sessionID, text) => {
       notifyCalls.push({ sessionID, text });
@@ -281,7 +280,6 @@ describe("effective prune marks over storage", () => {
 
     const notices: string[] = [];
     const toolHost: ToolHost = {
-      resolveSessionId: () => undefined,
       notify: async (_sessionID, text) => {
         notices.push(text);
       },
@@ -315,7 +313,6 @@ describe("lapsed permit", () => {
     let fetches = 0;
     const notices: string[] = [];
     const toolHost: ToolHost = {
-      resolveSessionId: () => undefined,
       fetchHistory: async () => {
         fetches += 1;
         return projectMessages([makeMsg("user", ["Hi"])]);
@@ -345,7 +342,6 @@ describe("lapsed permit", () => {
     const sessionID = "sess-compress-lapsed";
     const notices: string[] = [];
     const toolHost: ToolHost = {
-      resolveSessionId: () => undefined,
       notify: async (_sessionID, text) => {
         notices.push(text);
       },
@@ -372,7 +368,6 @@ describe("lapsed permit", () => {
     const sessionID = "sess-compress-commit-lapsed";
     const notices: string[] = [];
     const toolHost: ToolHost = {
-      resolveSessionId: () => undefined,
       notify: async (_sessionID, text) => {
         notices.push(text);
       },
@@ -472,7 +467,6 @@ describe("missing host APIs", () => {
     // published is then the only — and correct — report basis.
     const notices: string[] = [];
     const toolHost: ToolHost = {
-      resolveSessionId: () => undefined,
       notify: async (_sid, text) => {
         notices.push(text);
       },
@@ -495,7 +489,6 @@ describe("missing host APIs", () => {
 
   it("propagates the fetchHistory rejection (HTTP error)", async () => {
     const toolHost: ToolHost = {
-      resolveSessionId: () => undefined,
       fetchHistory: async () => {
         throw new Error("获取会话消息失败：rate limit exceeded");
       },
@@ -595,7 +588,6 @@ describe("/dcp compress subcommand", () => {
     // must not fetch the message list (arming only sets the one-shot trigger).
     let notifyText = "";
     const toolHost: ToolHost = {
-      resolveSessionId: () => undefined,
       fetchHistory: async () => {
         throw new Error("fetchHistory must not be called");
       },
@@ -621,7 +613,6 @@ describe("/dcp compress subcommand", () => {
 
   it("repeat /dcp compress keeps the flag armed (idempotent)", async () => {
     const toolHost: ToolHost = {
-      resolveSessionId: () => undefined,
       fetchHistory: async () => project([] as HostMessage[], []),
       notify: async () => {},
     };

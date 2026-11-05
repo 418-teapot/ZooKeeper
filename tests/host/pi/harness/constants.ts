@@ -17,6 +17,14 @@ export const MARKERS = {
   subagent: "E2E-SUBAGENT: 委派给 lynx",
 } as const;
 
+/**
+ * Prompt of the ask-visibility scenario: one plain turn with no tool call.
+ *
+ * The deterministic provider answers it with text, so the turn only makes the
+ * probe record the runtime's tool face after ZooKeeper applied it.
+ */
+export const TOOL_VISIBILITY_PROMPT = "E2E-ASK: 记录工具可见性";
+
 /** Phase name of the alpha plan. */
 export const ALPHA_PHASE = "alpha";
 

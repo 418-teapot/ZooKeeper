@@ -1,11 +1,12 @@
 /**
  * Host tool-services port.
  *
- * The contract a tool adapter needs to run against a session: resolving
- * the session id from a tool context, posting a session-scoped system
- * notification that is persisted with the session record (when the host
- * supports it) and is never visible to the model, and — optionally —
- * showing a transient session-scoped toast to the human observer.
+ * The contract a tool adapter needs to run against a session: posting a
+ * session-scoped system notification that is persisted with the session
+ * record (when the host supports it) and is never visible to the model,
+ * and — optionally — showing a transient session-scoped toast to the human
+ * observer.  The session id itself travels on the tool call context, so no
+ * host object reaches a tool.
  * Framework-agnostic by design: each host implements `ToolHost` against
  * its own SDK instead of tools typing against any host type.
  *
@@ -65,8 +66,6 @@ export function formatToastMessage(toast: ToastPayload): string {
  * Host services a tool adapter needs to run against a session.
  */
 export interface ToolHost {
-  /** Resolve the session id from a tool execution context. */
-  resolveSessionId(toolCtx: unknown): string | undefined;
   /**
    * Fetch the session's full history as a host-agnostic projection
    * snapshot (lens transcript + invocation table).

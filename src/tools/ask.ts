@@ -3,49 +3,54 @@
  *
  * The tool is a thin host adapter over the framework-independent ask
  * protocol (`src/core/ask.ts`): it parses the model's questions through the
- * core normalizer, hands the whole form to the injected form host
- * (`deps.askFormHost`, implemented by `src/adapters/pi/ask-form.ts`) to
- * mount and collect, then maps the per-question results back onto the tool
- * result — `content` as one line per question (question text + the core's
- * `formatResultForModel` rendering) and `details` as the structured
+ * core normalizer, hands the whole form to the call's question channel
+ * (`call.questionChannel`, built by the host adapter from its own execution
+ * context) and maps the per-question results back onto the tool result —
+ * `text` as one line per question (question text + the core's
+ * `formatResultForModel` rendering) and `data` as the structured
  * `{question, result}` pairs.
  *
  * Result policy: all three outcome slots (answered / declined / unavailable)
- * are ordinary tool results — the tool never throws and never flags
- * `isError` for a user decision or a host that cannot draw the form.  Only
- * malformed arguments raise (the loud Chinese guidance the other tools use).
- * Model-supplied texts are stripped of terminal control sequences on the way
- * in.  Two forms can never overlap: the tool serialises its own calls
- * through an internal gate, because the dialog takes over the single
- * terminal surface.
+ * are ordinary tool results — the tool never throws and never reports a user
+ * decision or a host that cannot ask as a failure.  Only malformed arguments
+ * raise (the loud Chinese guidance the other tools use).  Model-supplied
+ * texts are stripped of terminal control sequences on the way in.  Two forms
+ * can never overlap: the tool serialises its own calls through an internal
+ * gate, because the dialog takes over the single terminal surface.
  *
- * The unit is pi-only: without a form host in deps (`askFormHost`) it
- * contributes zero tools, so OpenCode never registers `ask` (the agents
- * deny it in `config.toml` anyway).
+ * The unit is pi-only: without the question-channel provider in deps
+ * (`askQuestionChannel`) it contributes zero tools, so OpenCode never
+ * registers `ask` (the agents deny it in `config.toml` anyway).
  *
  * @module
  */
 
-import type { AskResult, NormalizedQuestion } from "../core/ask.js";
 import {
-  type AskFormHost,
+  ASK_TOOL_NAME,
   type AskFormQuestion,
+  type AskResult,
   fallbackResults,
   formatResultForModel,
+  type NormalizedQuestion,
   normalizeQuestion,
   toOneLine,
   validateAnswer,
 } from "../core/ask.js";
 import { createSequencer } from "../core/sequencer.js";
 import { stripTerminalSequences } from "../core/terminal-sequences.js";
-import { defineTool, type ToolDefinition } from "../core/unit.js";
+import {
+  defineTool,
+  type ToolCallContext,
+  type ToolDefinition,
+  type ToolResult,
+} from "../core/unit.js";
 import { log } from "../utils/logger.js";
 
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
 
-/** One question's structured outcome, carried in the tool `details`. */
+/** One question's structured outcome, carried in the tool `data`. */
 export interface AskQuestionDetail {
   /** The question text as asked. */
   question: string;
@@ -54,26 +59,16 @@ export interface AskQuestionDetail {
 }
 
 /** The ask tool's structured result payload. */
-export interface AskToolDetails {
+export interface AskToolData {
   questions: AskQuestionDetail[];
 }
 
-/** What the ask tool produces from a set of results: text + details. */
+/** What the ask tool produces from a set of results: text + data. */
 export interface AskAssembly {
   /** The model-facing text (one line per question). */
   text: string;
-  /** The structured payload written back through the host's details slot. */
-  details: AskToolDetails;
-}
-
-/** The duck-typed pi tool context the ask tool reads (ExtensionContext). */
-export interface AskToolCtxLike {
-  /** Host run mode — only `"tui"` can show the dialog. */
-  mode?: unknown;
-  /** The pi UI surface (only `custom` is used). */
-  ui?: {
-    custom?: (factory: unknown, options?: unknown) => unknown;
-  };
+  /** The structured payload carried in the tool result's `data`. */
+  data: AskToolData;
 }
 
 // ---------------------------------------------------------------------------
@@ -222,20 +217,19 @@ export function parseAskArgs(args: unknown): AskFormQuestion[] {
  *
  * `text` is one line per question — `<question text> => <core rendering>`
  * — joined with newlines (the question text collapses onto one line so the
- * one-line-per-question shape survives an embedded newline); `details`
- * carries each question's text with its structured result and is written
- * back through the host's details slot.
+ * one-line-per-question shape survives an embedded newline); `data`
+ * carries each question's text with its structured result.
  *
  * @param questions - The normalized questions, in ask order.
  * @param results - The results, index-aligned with `questions`.
- * @returns The assembled text and structured details.
+ * @returns The assembled text and structured data.
  */
 export function assembleAskResults(
   questions: NormalizedQuestion[],
   results: AskResult[],
 ): AskAssembly {
   const lines: string[] = [];
-  const details: AskToolDetails = { questions: [] };
+  const data: AskToolData = { questions: [] };
   for (let i = 0; i < questions.length; i++) {
     const question = questions[i];
     const result =
@@ -247,9 +241,9 @@ export function assembleAskResults(
     lines.push(
       `Q${i + 1}: ${toOneLine(question.question)} => ${formatResultForModel(question, result)}`,
     );
-    details.questions.push({ question: question.question, result });
+    data.questions.push({ question: question.question, result });
   }
-  return { text: lines.join("\n"), details };
+  return { text: lines.join("\n"), data };
 }
 
 /**
@@ -284,22 +278,17 @@ export function guardAnswers(
 }
 
 // ---------------------------------------------------------------------------
-// Result hand-back
+// Tool result
 // ---------------------------------------------------------------------------
 
 /**
- * Return the model-facing text and write the structured details back.
+ * Turn an assembly into the tool's structured result.
  *
- * The details travel through the host-forwarded `hostCtx` write-back slot
- * (the pi bridge merges them into the tool result's `details`); a host that
- * never builds that object simply gets the text.
+ * @param assembly - The assembled text and data.
+ * @returns The tool result.
  */
-function handBack(
-  hostCtx: { details?: unknown } | undefined,
-  assembly: AskAssembly,
-): string {
-  if (hostCtx !== undefined) hostCtx.details = assembly.details;
-  return assembly.text;
+function toResult(assembly: AskAssembly): ToolResult {
+  return { text: assembly.text, data: assembly.data };
 }
 
 // ---------------------------------------------------------------------------
@@ -309,16 +298,12 @@ function handBack(
 /**
  * Create the ask tool contribution.
  *
- * @param host - The injected form host that mounts and collects the form.
  * @param timeoutSeconds - The `[zoo.ask].timeout` budget (undefined → the
  *   form waits for the user indefinitely).
  * @returns The tool definition (its calls are serialised — the dialog
  *   owns the terminal).
  */
-export function createAskTool(
-  host: AskFormHost,
-  timeoutSeconds?: number,
-): ToolDefinition {
+export function createAskTool(timeoutSeconds?: number): ToolDefinition {
   // The resource this tool protects is one user-facing dialog, so the
   // exclusion is kept per tool instance rather than declared to the host.
   const runSerialized = createSequencer();
@@ -378,7 +363,7 @@ export function createAskTool(
       },
     },
     required: ["questions"],
-    async execute(args, toolCtx, hostCtx) {
+    async execute(args, call: ToolCallContext): Promise<ToolResult> {
       // Parsing is a pure function over the raw arguments — it touches no
       // shared state — so it runs ahead of the gate: a malformed call gets
       // its correction immediately instead of queueing behind a live dialog.
@@ -387,29 +372,26 @@ export function createAskTool(
       // terminal the form draws on, so a concurrent call waits its turn
       // instead of the host being told to run this tool alone.
       return runSerialized(async () => {
-        const ctx = (toolCtx ?? {}) as AskToolCtxLike;
-        const custom = ctx.ui?.custom;
-        // No TUI to draw on (print / RPC / json mode, or a host without the
-        // custom-component surface): every question reports the system-side
-        // slot, still as a normal tool result.
-        if (ctx.mode !== "tui" || typeof custom !== "function") {
-          return handBack(
-            hostCtx,
+        const channel = call.questionChannel;
+        // Defence path: the host publishes `ask` only while the call can
+        // reach the user, so a channel-less call is a race (or a host that
+        // handed out no provider).  It still returns a normal result: every
+        // question reports the system-side slot.
+        if (channel === undefined) {
+          return toResult(
             assembleAskResults(questions, fallbackResults(questions, "no-ui")),
           );
         }
         // A call that waited in the queue behind another form and was then
-        // cancelled never steals the terminal: the form host checks the
+        // cancelled never steals the terminal: the channel checks the
         // signal at its turn and reports every question as aborted without
         // opening the UI.
-        const results = await host.present({
+        const results = await channel.ask({
           questions,
-          custom,
+          signal: call.signal,
           ...(timeoutSeconds !== undefined ? { timeoutSeconds } : {}),
-          ...(hostCtx?.signal !== undefined ? { signal: hostCtx.signal } : {}),
         });
-        return handBack(
-          hostCtx,
+        return toResult(
           assembleAskResults(questions, guardAnswers(questions, results)),
         );
       });
@@ -424,15 +406,17 @@ export function createAskTool(
 /**
  * The ask tool unit descriptor.
  *
- * The unit contributes its tool ONLY on the pi host — `askFormHost` is
- * present exactly when the extension runs inside pi, so on OpenCode the
+ * The unit contributes its tool ONLY on the pi host — `askQuestionChannel`
+ * is present exactly when the extension runs inside pi, so on OpenCode the
  * create() returns no tool and `ask` never registers (fail-closed).
  */
 export const unit = defineTool({
-  name: "ask",
-  needs: ["askFormHost"],
+  name: ASK_TOOL_NAME,
+  needs: ["askQuestionChannel"],
   wants: ["askTimeoutSeconds"],
   create(caps) {
-    return createAskTool(caps.askFormHost, caps.askTimeoutSeconds);
+    // The per-call channel arrives through the call context; the port only
+    // decides whether this host can ask at all.
+    return createAskTool(caps.askTimeoutSeconds);
   },
 });

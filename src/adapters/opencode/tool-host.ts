@@ -90,23 +90,6 @@ export function createV1ToolHost(
 ): V1ToolHost {
   return {
     /**
-     * Resolve the session id from the OpenCode tool context.
-     *
-     * The OpenCode SDK uses `sessionID`; a `sessionId` variant is
-     * tolerated so the host survives SDK shape changes.  Returns
-     * undefined when neither field carries a non-empty string.
-     *
-     * @param toolCtx - The tool execution context.
-     * @returns The session identifier, or undefined when absent.
-     */
-    resolveSessionId(toolCtx: unknown): string | undefined {
-      const ctx = toolCtx as { sessionID?: unknown; sessionId?: unknown };
-      const id = ctx.sessionID ?? ctx.sessionId;
-      if (typeof id !== "string" || id.length === 0) return undefined;
-      return id;
-    },
-
-    /**
      * Fetch the session's full history and project it to lens messages.
      *
      * Offered as the round-view fallback: v1's messages API reads the same

@@ -101,7 +101,6 @@ function makeToolHost(options: { withToast?: boolean } = {}): {
   const notifyCalls: Array<{ sessionID: string; text: string }> = [];
   const toastCalls: Array<{ sessionID: string; toast: ToastPayload }> = [];
   const toolHost: ToolHost = {
-    resolveSessionId: () => undefined,
     notify: async (sessionID, text) => {
       notifyCalls.push({ sessionID, text });
     },

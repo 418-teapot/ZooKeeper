@@ -5,6 +5,7 @@
  */
 
 import type { WorkPermit } from "../core/lifecycle/index.js";
+import type { ToolCallContext } from "../core/unit.js";
 
 /**
  * Build a {@link WorkPermit} for one session.
@@ -21,5 +22,23 @@ export function permitFor(sessionID: string, signal?: AbortSignal): WorkPermit {
     sessionID,
     signal: effective,
     isActive: () => !effective.aborted,
+  };
+}
+
+/**
+ * Build a tool call's host-neutral context.
+ *
+ * @param sessionID - The session the call belongs to.
+ * @param overrides - Context fields this call needs beyond the defaults.
+ * @returns The call context.
+ */
+export function callFor(
+  sessionID: string,
+  overrides: Partial<ToolCallContext> = {},
+): ToolCallContext {
+  return {
+    sessionID,
+    signal: new AbortController().signal,
+    ...overrides,
   };
 }

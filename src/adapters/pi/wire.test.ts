@@ -18,6 +18,7 @@ import { join } from "node:path";
 import { afterEach, describe, it } from "node:test";
 import { initTheme } from "@earendil-works/pi-coding-agent";
 import { buildPiCommandRegistrationPlan } from "../../compose-pi.js";
+import { ASK_TOOL_NAME, type QuestionChannel } from "../../core/ask.js";
 import { project } from "../../core/context/lens.js";
 import { createContextRuntime } from "../../core/context/runtime.js";
 import type { CleanupReport, WorkPermit } from "../../core/lifecycle/index.js";
@@ -36,7 +37,8 @@ import {
   updateRun,
 } from "../../core/subagent/registry.js";
 import { createTodoStore } from "../../core/todo/store.js";
-import type { ToolContribution } from "../../core/unit.js";
+import type { ToolCallContext, ToolContribution } from "../../core/unit.js";
+import { formHarness } from "../../testkits/ask-form.js";
 import {
   COLORS_RAW,
   fakePiToolHost,
@@ -60,6 +62,7 @@ import {
   initLogger,
   log,
 } from "../../utils/logger.js";
+import { createPiQuestionChannel } from "./ask-form.js";
 import { createPiHandoffTarget } from "./handoff-target.js";
 import { beginHydration, resetHydration, waitForHydration } from "./hydrate.js";
 import type { PiSessionWorkRunner } from "./lifecycle-wiring.js";
@@ -287,10 +290,6 @@ describe("buildPiContributions — profile-driven selection", () => {
     );
     assert.ok(composed.tools.todo, "todo must register on the pi host");
     assert.equal(typeof composed.tools.todo.execute, "function");
-    // No host scheduling hint: todo state changes are serialised inside the
-    // tool through the store's own gate, so unrelated calls in the same
-    // turn stay concurrent.
-    assert.equal(composed.tools.todo.executionMode, undefined);
   });
 
   it("the same todo-listing profile with no host ports → no todo tool", () => {
@@ -777,10 +776,16 @@ describe("buildPiHandlers — registerTool wiring", () => {
     const subagent = api.tools.find((tool: any) => tool.name === "subagent");
     assert.ok(subagent, "subagent tool must be registered");
     assert.equal(typeof (subagent as any).execute, "function");
-    // The pi TUI renderers are attached when the host wired a renderer (the
-    // subagent transcript card draws from the structured progress details).
+    // The registration boundary installs pi's TUI card renderers by tool
+    // name: the subagent transcript card draws from the structured
+    // progress details, and every other tool registers without one.
     assert.equal(typeof (subagent as any).renderCall, "function");
     assert.equal(typeof (subagent as any).renderResult, "function");
+    for (const name of ["compress", "decompress"]) {
+      const plain = api.tools.find((tool: any) => tool.name === name) as any;
+      assert.equal(plain.renderCall, undefined, `${name} gets no renderer`);
+      assert.equal(plain.renderResult, undefined, `${name} gets no renderer`);
+    }
   });
 
   it("enforces the composed delegation gate on the tool_call event", async () => {
@@ -1310,6 +1315,82 @@ describe("buildPiHandlers — primary-switch command wiring", () => {
     );
   });
 
+  it("the deferred switch trim follows the ask visibility rule", async () => {
+    const api = mockApi();
+    const writes: string[][] = [];
+    const set = api.setActiveTools.bind(api);
+    api.setActiveTools = (names: string[]) => {
+      writes.push([...names]);
+      set(names);
+    };
+    // The host configuration activated ask; the session that drains the
+    // queued trim cannot ask.
+    api.activeTools.push("bash", "ask");
+    const handlers = await buildPiHandlers(
+      { mode: { poly: { ...POLY_PROFILE, tools: ["compress", "ask"] } } },
+      api as any,
+      MODES_RAW,
+    );
+    const target = api.commands.find((c) => c.name === "dolphin");
+    assert.ok(target && typeof target.handler === "function");
+    sessionAgentRegistry.bind("sess-switch", "mola");
+
+    await (target.handler as (args: string, ctx: unknown) => Promise<void>)(
+      "",
+      switchCtx(() => {}),
+    );
+    await handlers.beforeAgentStart(
+      { messageType: "user", systemPrompt: "base" },
+      { sessionManager: { getSessionId: () => "sess-new" }, mode: "print" },
+    );
+
+    assert.deepEqual(api.activeTools, ["bash"]);
+    assert.ok(writes.length > 0, "the drain must write the active set");
+    for (const write of writes) {
+      assert.ok(!write.includes("ask"), `a write kept ask: ${write}`);
+    }
+  });
+
+  it("the deferred switch trim keeps the target's ask deny", async () => {
+    const api = mockApi();
+    const writes: string[][] = [];
+    const set = api.setActiveTools.bind(api);
+    api.setActiveTools = (names: string[]) => {
+      writes.push([...names]);
+      set(names);
+    };
+    // The replacement session can ask, and its primary denies ask.
+    api.activeTools.push("bash", "edit", "ask");
+    const handlers = await buildPiHandlers(
+      { mode: { poly: { ...POLY_PROFILE, tools: ["compress", "ask"] } } },
+      api as any,
+      {
+        agent: {
+          ...MODES_RAW.agent,
+          dolphin: { mode: "primary", permission: { ask: "deny" } },
+        },
+      },
+    );
+    const target = api.commands.find((c) => c.name === "dolphin");
+    assert.ok(target && typeof target.handler === "function");
+    sessionAgentRegistry.bind("sess-switch", "mola");
+
+    await (target.handler as (args: string, ctx: unknown) => Promise<void>)(
+      "",
+      switchCtx(() => {}),
+    );
+    await handlers.beforeAgentStart(
+      { messageType: "user", systemPrompt: "base" },
+      askCtx(true, "sess-new"),
+    );
+
+    assert.deepEqual(api.activeTools, ["bash", "edit"]);
+    assert.ok(writes.length > 0, "the drain must write the active set");
+    for (const write of writes) {
+      assert.ok(!write.includes("ask"), `a write kept ask: ${write}`);
+    }
+  });
+
   it("no agent-role table → invalid profile → no switch commands", async () => {
     // Without the role table no primary (and therefore no orchestrator)
     // resolves, so the profile is invalid and contributes no command.
@@ -1430,6 +1511,53 @@ describe("buildPiHandlers — primary tool-deny trim (main session)", () => {
     assert.deepEqual(api.activeTools, ALL_TOOLS);
   });
 
+  it("computes subagent capabilities from the untrimmed baseline", async () => {
+    const api = mockApi();
+    api.activeTools.push("fetch", "edit", "bash", "subagent", "ask");
+    const requested: string[][] = [];
+    const driver: SubagentDriver = {
+      async run(request) {
+        requested.push(request.tools);
+        return { kind: "ok", text: "done" };
+      },
+    };
+    const handlers = await buildPiHandlers(
+      {
+        mode: {
+          poly: { ...POLY_PROFILE, tools: ["subagent", "ask"], hooks: [] },
+        },
+      },
+      api as any,
+      PERM_DENY_RAW,
+      { subagentDriver: driver },
+    );
+    bindSession("beaver");
+    // The main session trims beaver's fetch, and its own context can ask, so
+    // the live face keeps ask.
+    await handlers.sessionStart(
+      { type: "session_start", reason: "startup" },
+      askCtx(true, "sess-1"),
+    );
+    assert.deepEqual(api.activeTools, ["edit", "bash", "subagent", "ask"]);
+
+    const subagent = api.tools.find((tool: any) => tool.name === "subagent") as
+      | { execute: (...args: unknown[]) => Promise<unknown> }
+      | undefined;
+    assert.ok(subagent);
+    await subagent.execute(
+      "call-capability",
+      { agent: "lynx", description: "调研任务", prompt: "t" },
+      undefined,
+      undefined,
+      askCtx(true, "sess-1"),
+    );
+
+    // lynx denies nothing: its face is the untrimmed baseline minus ask.  The
+    // caller's fetch deny must not leak, and ask needs a channel a sub-session
+    // never has.
+    assert.deepEqual(requested[0], ["bash", "edit", "fetch", "subagent"]);
+  });
+
   it("leaves the tool set untouched with no baseline (fail-closed)", async () => {
     const api = mockApi();
     const handlers = await buildPiHandlers(POLY_ZOO, api as any, PERM_DENY_RAW);
@@ -1498,6 +1626,298 @@ describe("buildPiHandlers — primary tool-deny trim (main session)", () => {
       SESSION_CTX,
     );
     assert.deepEqual(api.activeTools, ["edit", "bash"]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Ask tool visibility
+// ---------------------------------------------------------------------------
+
+/**
+ * The poly profile plus the ask tool.
+ *
+ * The ask unit contributes its tool only on pi (the question-channel
+ * provider is present), so this profile is what the visibility rule acts
+ * on.
+ */
+const ASK_ZOO = {
+  mode: { poly: { ...POLY_PROFILE, tools: ["compress", "ask"] } },
+};
+
+/**
+ * A pi tool context naming one session.
+ *
+ * `tui` supplies the mode and the custom-component surface the question
+ * channel needs; without them the host cannot ask.
+ */
+function askCtx(tui: boolean, sessionID = "sess-ask") {
+  const base = { sessionManager: { getSessionId: () => sessionID } };
+  return tui
+    ? { ...base, mode: "tui", ui: { custom: () => {} } }
+    : { ...base, mode: "print" };
+}
+
+describe("buildPiHandlers — ask tool visibility", () => {
+  /** The host double, also recording every active-tool write. */
+  function recordingApi() {
+    const api = mockApi();
+    const writes: string[][] = [];
+    const set = api.setActiveTools.bind(api);
+    api.setActiveTools = (names: string[]) => {
+      writes.push([...names]);
+      set(names);
+    };
+    return { api, writes };
+  }
+
+  it("registers ask inactive and leaves the other tools at pi's default", async () => {
+    const { api } = recordingApi();
+    await buildPiHandlers(ASK_ZOO, api as any, MODES_RAW);
+
+    const ask = api.tools.find((tool: any) => tool.name === "ask") as
+      | { defaultActive?: boolean }
+      | undefined;
+    assert.ok(ask, "the pi host registers ask");
+    assert.equal(ask.defaultActive, false);
+    const compress = api.tools.find((tool: any) => tool.name === "compress") as
+      | { defaultActive?: boolean }
+      | undefined;
+    assert.ok(compress);
+    assert.equal(compress.defaultActive, undefined);
+  });
+
+  it("activates ask at session start when the session can ask", async () => {
+    const { api } = recordingApi();
+    api.activeTools.push("bash", "edit");
+    const handlers = await buildPiHandlers(ASK_ZOO, api as any, MODES_RAW);
+
+    await handlers.sessionStart(
+      { type: "session_start", reason: "startup" },
+      askCtx(true),
+    );
+
+    assert.deepEqual(api.activeTools, ["bash", "edit", "ask"]);
+  });
+
+  it("removes ask at session start when the session cannot ask", async () => {
+    const { api, writes } = recordingApi();
+    // The host configuration activated ask, and no session binds it back.
+    api.activeTools.push("bash", "ask");
+    const handlers = await buildPiHandlers(ASK_ZOO, api as any, MODES_RAW);
+
+    await handlers.sessionStart(
+      { type: "session_start", reason: "startup" },
+      askCtx(false),
+    );
+
+    assert.deepEqual(api.activeTools, ["bash"]);
+    assert.deepEqual(writes, [["bash"]]);
+  });
+
+  it("re-corrects ask on session_tree and before_agent_start", async () => {
+    const { api, writes } = recordingApi();
+    api.activeTools.push("bash", "edit");
+    const handlers = await buildPiHandlers(ASK_ZOO, api as any, MODES_RAW);
+
+    await handlers.sessionStart(
+      { type: "session_start", reason: "startup" },
+      askCtx(true),
+    );
+    assert.deepEqual(api.activeTools, ["bash", "edit", "ask"]);
+
+    await handlers.sessionTree(undefined, askCtx(false));
+    assert.deepEqual(api.activeTools, ["bash", "edit"]);
+
+    await handlers.beforeAgentStart(
+      { messageType: "user", systemPrompt: "base" },
+      askCtx(true),
+    );
+    assert.deepEqual(api.activeTools, ["bash", "edit", "ask"]);
+
+    // Each write carries the answer of its own context: ask is visible
+    // exactly when that event could ask.
+    assert.deepEqual(writes, [
+      ["bash", "edit", "ask"],
+      ["bash", "edit"],
+      ["bash", "edit", "ask"],
+    ]);
+  });
+
+  it("keeps the primary deny while correcting ask", async () => {
+    const { api } = recordingApi();
+    api.activeTools.push("fetch", "bash", "ask");
+    const handlers = await buildPiHandlers(ASK_ZOO, api as any, {
+      agent: {
+        ...MODES_RAW.agent,
+        dolphin: { mode: "primary", permission: { fetch: "deny" } },
+      },
+    });
+
+    await handlers.sessionStart(
+      { type: "session_start", reason: "startup" },
+      askCtx(true),
+    );
+
+    assert.deepEqual(api.activeTools, ["bash", "ask"]);
+  });
+
+  it("keeps ask hidden when the primary denies it and the session can ask", async () => {
+    const { api, writes } = recordingApi();
+    api.activeTools.push("bash", "edit", "ask");
+    const handlers = await buildPiHandlers(ASK_ZOO, api as any, {
+      agent: {
+        ...MODES_RAW.agent,
+        dolphin: { mode: "primary", permission: { ask: "deny" } },
+      },
+    });
+
+    await handlers.sessionStart(
+      { type: "session_start", reason: "startup" },
+      askCtx(true),
+    );
+
+    assert.deepEqual(api.activeTools, ["bash", "edit"]);
+    for (const write of writes) {
+      assert.ok(!write.includes("ask"), `a write kept ask: ${write}`);
+    }
+  });
+
+  it("drives visibility and execution from one injected provider", async () => {
+    const { api } = recordingApi();
+    api.activeTools.push("bash");
+    const asked: string[][] = [];
+    // A remote-style channel: it answers for a context the local pi
+    // provider cannot (no TUI), so a shared provider is the only way both
+    // surfaces can agree.
+    const channel: QuestionChannel = {
+      ask: async (request) => {
+        asked.push(request.questions.map((question) => question.question));
+        return request.questions.map(() => ({ status: "declined" as const }));
+      },
+    };
+    const handlers = await buildPiHandlers(ASK_ZOO, api as any, MODES_RAW, {
+      askQuestionChannel: (hostCtx) =>
+        (hostCtx as { remoteAsk?: boolean }).remoteAsk === true
+          ? channel
+          : undefined,
+    });
+    const ctx = {
+      sessionManager: { getSessionId: () => "sess-ask" },
+      remoteAsk: true,
+    };
+
+    await handlers.sessionStart(
+      { type: "session_start", reason: "startup" },
+      ctx,
+    );
+    assert.deepEqual(api.activeTools, ["bash", ASK_TOOL_NAME]);
+
+    const ask = api.tools.find((tool: any) => tool.name === ASK_TOOL_NAME) as
+      | { execute: (...args: unknown[]) => Promise<unknown> }
+      | undefined;
+    assert.ok(ask, "the pi host registers ask");
+    await ask.execute(
+      "call-remote",
+      { questions: [{ question: "Remote?" }] },
+      undefined,
+      undefined,
+      ctx,
+    );
+    assert.deepEqual(asked, [["Remote?"]]);
+  });
+
+  it("writes only when the resolved active set changes", async () => {
+    const { api, writes } = recordingApi();
+    api.activeTools.push("bash", "edit");
+    const handlers = await buildPiHandlers(ASK_ZOO, api as any, MODES_RAW);
+
+    await handlers.sessionStart(
+      { type: "session_start", reason: "startup" },
+      askCtx(true),
+    );
+    assert.deepEqual(writes, [["bash", "edit", ASK_TOOL_NAME]]);
+
+    // A steady-state event resolves the same set: the host must not be
+    // rewritten, because a write rebuilds the system prompt.
+    await handlers.sessionTree(undefined, askCtx(true));
+    await handlers.beforeAgentStart(
+      { messageType: "user", systemPrompt: "base" },
+      askCtx(true),
+    );
+    assert.equal(writes.length, 1, "a steady-state event must not write");
+
+    // A channel change still writes.
+    await handlers.beforeAgentStart(
+      { messageType: "user", systemPrompt: "base" },
+      askCtx(false),
+    );
+    assert.deepEqual(writes, [
+      ["bash", "edit", ASK_TOOL_NAME],
+      ["bash", "edit"],
+    ]);
+  });
+
+  it("corrects ask on the live set when no baseline exists", async () => {
+    const { api, writes } = recordingApi();
+    const handlers = await buildPiHandlers(ASK_ZOO, api as any, MODES_RAW);
+
+    // The host reports no active tool, so no baseline exists; the live set
+    // is still the truth the ask rule acts on.
+    await handlers.sessionStart(
+      { type: "session_start", reason: "startup" },
+      askCtx(true),
+    );
+    assert.deepEqual(writes, [[ASK_TOOL_NAME]]);
+
+    // An external configuration activated ask; a session that cannot ask
+    // removes it and keeps its other tools.
+    api.activeTools.length = 0;
+    api.activeTools.push("bash", ASK_TOOL_NAME);
+    await handlers.beforeAgentStart(
+      { messageType: "user", systemPrompt: "base" },
+      askCtx(false),
+    );
+    assert.deepEqual(api.activeTools, ["bash"]);
+    assert.deepEqual(writes, [[ASK_TOOL_NAME], ["bash"]]);
+  });
+
+  it("removes an externally activated ask when no primary resolves", async () => {
+    const { api, writes } = recordingApi();
+    api.activeTools.push("bash", ASK_TOOL_NAME);
+    // No agent-role table → the profile resolves no orchestrator, so no
+    // session resolves a primary and the permission side answers a deny.
+    const handlers = await buildPiHandlers(ASK_ZOO, api as any);
+
+    await handlers.sessionStart(
+      { type: "session_start", reason: "startup" },
+      askCtx(true),
+    );
+    assert.deepEqual(api.activeTools, ["bash"]);
+    assert.deepEqual(writes, [["bash"]]);
+  });
+
+  it("writes by the rule when the host reports no current set", async () => {
+    const { api, writes } = recordingApi();
+    api.activeTools.push("bash", "edit");
+    const handlers = await buildPiHandlers(ASK_ZOO, api as any, MODES_RAW);
+
+    await handlers.sessionStart(
+      { type: "session_start", reason: "startup" },
+      askCtx(true),
+    );
+    assert.deepEqual(writes, [["bash", "edit", ASK_TOOL_NAME]]);
+
+    // A host that stops reporting its active set still receives the rule's
+    // answer instead of a skipped write.
+    (api as any).getActiveTools = undefined;
+    await handlers.beforeAgentStart(
+      { messageType: "user", systemPrompt: "base" },
+      askCtx(false),
+    );
+    assert.deepEqual(writes, [
+      ["bash", "edit", ASK_TOOL_NAME],
+      ["bash", "edit"],
+    ]);
   });
 });
 
@@ -3104,25 +3524,25 @@ describe("buildPiToolExecute — tool admission", () => {
     };
   }
 
-  /** A tool whose host context and calls the test records. */
+  /** A tool whose call context and arguments the test records. */
   function recordingTool(calls: {
-    host: unknown[];
+    call: ToolCallContext[];
     args: unknown[];
   }): ToolContribution {
     return {
       name: "probe",
       description: "probe",
-      execute: async (args, _toolCtx, hostCtx) => {
+      execute: async (args, call) => {
         calls.args.push(args);
-        calls.host.push(hostCtx);
-        return "ok";
+        calls.call.push(call);
+        return { text: "ok" };
       },
     };
   }
 
   it("runs the whole call under the permit it is handed", async () => {
     const permit = fakePermit();
-    const calls = { host: [] as unknown[], args: [] as unknown[] };
+    const calls = { call: [] as ToolCallContext[], args: [] as unknown[] };
     const published: Array<[string, unknown]> = [];
     const ctx = { sessionManager: { getSessionId: () => "sess-tool" } };
     const admitted: unknown[] = [];
@@ -3132,13 +3552,15 @@ describe("buildPiToolExecute — tool admission", () => {
         return work(permit);
       },
     };
-    const onUpdate = () => {};
+    const partials: unknown[] = [];
+    const onUpdate = (partial: unknown) => partials.push(partial);
     const caller = new AbortController();
 
     const result = await buildPiToolExecute(
       recordingTool(calls),
       run,
       (sessionID, callCtx) => published.push([sessionID, callCtx]),
+      createPiQuestionChannel,
     )("call-1", { a: 1 }, caller.signal, onUpdate, ctx);
 
     // The call is admitted for its own context, which is bound under the
@@ -3146,28 +3568,133 @@ describe("buildPiToolExecute — tool admission", () => {
     assert.deepEqual(admitted, [ctx]);
     assert.deepEqual(published, [["sess-tool", ctx]]);
 
-    // The tool receives the permit's signal (never pi's native one) and the
-    // permit itself; the other forwarded fields stay unchanged.
+    // The tool receives a host-neutral context: the permit's session and
+    // signal (never pi's native one), the permit itself, and the pi
+    // tool-call id.
     assert.deepEqual(calls.args, [{ a: 1 }]);
-    const host = calls.host[0] as Record<string, unknown>;
-    assert.equal(host.permit, permit);
-    assert.equal(host.signal, permit.signal);
-    assert.notEqual(host.signal, caller.signal);
-    assert.equal(host.callId, "call-1");
-    assert.equal(host.onUpdate, onUpdate);
+    const call = calls.call[0];
+    assert.equal(call?.sessionID, "sess-tool");
+    assert.equal(call?.permit, permit);
+    assert.equal(call?.signal, permit.signal);
+    assert.notEqual(call?.signal, caller.signal);
+    assert.equal(call?.callID, "call-1");
+    assert.equal(call?.questionChannel, undefined);
+
+    // The repaint request is the adapter's own content-free partial.
+    call?.notifyChanged?.();
+    assert.deepEqual(partials, [{ content: [] }]);
+
     assert.deepEqual(result, {
       content: [{ type: "text", text: "ok" }],
       details: {},
     });
   });
 
+  it("survives a throwing repaint callback", async () => {
+    const calls = { call: [] as ToolCallContext[], args: [] as unknown[] };
+    const run: PiSessionWorkRunner = {
+      runSession: async (_ctx, work) => work(fakePermit()),
+    };
+    const result = await buildPiToolExecute(
+      {
+        name: "probe",
+        description: "probe",
+        execute: async (_args, call) => {
+          call.notifyChanged?.();
+          call.notifyChanged?.();
+          return { text: "ok" };
+        },
+      },
+      run,
+      () => {},
+      createPiQuestionChannel,
+    )(
+      "call-1",
+      {},
+      undefined,
+      () => {
+        throw new Error("ui exploded");
+      },
+      { sessionManager: { getSessionId: () => "sess-tool" } },
+    );
+
+    assert.deepEqual(calls.args, []);
+    assert.deepEqual(result, {
+      content: [{ type: "text", text: "ok" }],
+      details: {},
+    });
+  });
+
+  it("builds the question channel from pi's own execution context", async () => {
+    const calls = { call: [] as ToolCallContext[], args: [] as unknown[] };
+    const run: PiSessionWorkRunner = {
+      runSession: async (_ctx, work) => work(fakePermit()),
+    };
+    const form = formHarness();
+    const result = await buildPiToolExecute(
+      {
+        name: "probe",
+        description: "probe",
+        execute: async (_args, call) => {
+          calls.call.push(call);
+          return { text: "asked" };
+        },
+      },
+      run,
+      () => {},
+      createPiQuestionChannel,
+    )("call-1", {}, undefined, undefined, {
+      sessionManager: { getSessionId: () => "sess-tool" },
+      mode: "tui",
+      ui: form,
+    });
+
+    assert.deepEqual(result, {
+      content: [{ type: "text", text: "asked" }],
+      details: {},
+    });
+    const channel = calls.call[0]?.questionChannel;
+    assert.ok(channel, "an interactive context yields a channel");
+  });
+
+  it("merges the tool's structured data into the terminal details", async () => {
+    const run: PiSessionWorkRunner = {
+      runSession: async (_ctx, work) => work(fakePermit()),
+    };
+    startRun({ id: "call-data", agent: "beaver", parentSession: "sess-tool" });
+    updateRun("call-data", { sessionPath: "/tmp/run.jsonl" });
+    const result = await buildPiToolExecute(
+      {
+        name: "probe",
+        description: "probe",
+        execute: async () => ({
+          text: "ok",
+          data: { questions: [], sessionPath: "/tmp/forged.jsonl" },
+        }),
+      },
+      run,
+      () => {},
+      createPiQuestionChannel,
+    )("call-data", {}, undefined, undefined, {
+      sessionManager: { getSessionId: () => "sess-tool" },
+    });
+
+    assert.deepEqual(result.details, {
+      questions: [],
+      sessionPath: "/tmp/run.jsonl",
+    });
+  });
+
   it("runs nothing and publishes nothing when the call is refused", async () => {
-    const calls = { host: [] as unknown[], args: [] as unknown[] };
+    const calls = { call: [] as ToolCallContext[], args: [] as unknown[] };
     const published: unknown[] = [];
     const run: PiSessionWorkRunner = { runSession: async () => undefined };
 
-    const result = await buildPiToolExecute(recordingTool(calls), run, (ctx) =>
-      published.push(ctx),
+    const result = await buildPiToolExecute(
+      recordingTool(calls),
+      run,
+      (ctx) => published.push(ctx),
+      createPiQuestionChannel,
     )("call-1", {}, undefined, undefined, {
       sessionManager: { getSessionId: () => "s" },
     });

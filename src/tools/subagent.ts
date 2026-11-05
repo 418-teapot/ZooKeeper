@@ -25,10 +25,9 @@
  * file, so the tool definition here is the plain, policy-free shape.
  *
  * Each execution:
- * 1. Resolves the CALLER agent from the session the call names: the tool
- *    host maps the tool context to a session id, and the shared
- *    `resolveCallerAgent` port answers that session's agent.  No ambient
- *    identity is read.
+ * 1. Resolves the CALLER agent from the session the call names: the call
+ *    context carries the session id, and the shared `resolveCallerAgent`
+ *    port answers that session's agent.  No ambient identity is read.
  * 2. Fails closed on the TARGET role: only agents declared
  *    `mode = "subagent"` in the parsed config are valid delegation
  *    targets.  A missing modes map, a target absent from it, or a target
@@ -43,11 +42,10 @@
  * 4. Hands the run's append-only fact log to the driver so every observed
  *    fact is recorded there, patches the driver's progress reports' fields
  *    (current tool, context length, model, child session ids, session path)
- *    onto the registry run, repaints the host's live card with a content-free
- *    `onUpdate` partial per report (pi re-renders its card on any partial
- *    result; the card body projects the run's log), and drives the
- *    lifecycle orchestration (`runSubagent`), forwarding the parent abort
- *    signal when the tool context carries one.
+ *    onto the registry run, asks the host for a card repaint per report
+ *    (`call.notifyChanged`; the card body projects the run's log), and
+ *    drives the lifecycle orchestration (`runSubagent`) under the call's
+ *    cancellation signal.
  * 5. Resolves the sub-session model (strict mode): `caps.subagentModels`
  *    (agents.json, whose mapped values are `"provider/model"` strings) is
  *    the SOLE source.  A missing entry for the target
@@ -70,7 +68,12 @@ import type {
 import type { UpdateRunPatch } from "../core/subagent/registry.js";
 import { finishRun, startRun, updateRun } from "../core/subagent/registry.js";
 import { runSubagent } from "../core/subagent/run.js";
-import { defineTool, type ToolDefinition } from "../core/unit.js";
+import {
+  defineTool,
+  type ToolCallContext,
+  type ToolDefinition,
+  type ToolResult,
+} from "../core/unit.js";
 import { log } from "../utils/logger.js";
 
 type SubagentToolInput = {
@@ -80,31 +83,10 @@ type SubagentToolInput = {
 };
 
 /**
- * The content-free repaint signal forwarded through pi's `onUpdate`
- * partial-result callback.
- *
- * pi's tool-execution component re-invokes a live tool card's renderer
- * whenever a partial result arrives, and the card body projects the run's
- * fact log — never the partial payload — so every driver progress report
- * sends this empty partial as a pure repaint trigger.  The `content` array
- * is always empty; no text ever streams through it.
- *
- * Forward-compat dependency: the signal relies on the pi SDK's current
- * partial handling, where any partial (even an empty one) triggers a
- * re-render.  If a future pi version filters out empty partials as no-ops,
- * the live card would freeze again — the signal would then need whatever
- * payload that pi still re-renders on.
- */
-interface PiRepaintSignal {
-  /** The partial content pi re-renders on — always empty. */
-  content: [];
-}
-
-/**
  * Monotonic counter for synthetic run ids.
  *
  * A run without a forwarded tool-call id (OpenCode, test invocations that
- * omit `hostCtx.callId`) is tracked under a synthetic id derived from the
+ * omit `call.callID`) is tracked under a synthetic id derived from the
  * caller/agent plus this counter, so consecutive delegations in the same
  * process never collide (the previous scheme stamped `Date.now()`, which two
  * delegations in the same millisecond could collide on, and carried a
@@ -198,20 +180,15 @@ function formatSubagentResult(result: SubagentResult): string {
 /**
  * Create the subagent delegation tool.
  *
- * The driver, the host tool services, the tool baseline, the parsed
- * per-agent denies, and the optional transcript-card renderer are captured
- * by the closure so each `execute` call is self-contained.  When a renderer
- * is present (pi) the tool contribution carries `renderCall` / `renderResult`
- * so pi's TUI draws the live transcript card; without one (OpenCode) the
- * tool stays text-only.
+ * The driver, the host tool services, the tool baseline and the parsed
+ * per-agent denies are captured by the closure so each `execute` call is
+ * self-contained.
  *
  * @param driver - The host driver that executes the subagent.
- * @param caps - The capability surfaces the tool needs: `toolHost` for the
- *   parent session id, `resolveCallerAgent` for that session's caller
- *   agent, `subagentBaseline` for the capability baseline,
- *   `agentModes` for the declared subagent role of the target,
- *   `agentPermissions` for the target's tool-level denies, and
- *   `subagentRenderer` for the optional pi TUI card renderer.
+ * @param caps - The capability surfaces the tool needs: `resolveCallerAgent`
+ *   for the calling session's agent, `subagentBaseline` for the capability
+ *   baseline, `agentModes` for the declared subagent role of the target,
+ *   and `agentPermissions` for the target's tool-level denies.
  * @returns The subagent tool definition.
  */
 export function createSubagentTool(
@@ -220,17 +197,14 @@ export function createSubagentTool(
     Partial<
       Pick<
         Capabilities,
-        | "toolHost"
         | "subagentBaseline"
         | "agentModes"
         | "agentPermissions"
-        | "subagentRenderer"
         | "subagentModels"
         | "onSubagentRunChange"
       >
     >,
 ): ToolDefinition {
-  const renderer = caps.subagentRenderer;
   // Nudge the parent session's fleet widget after every registry mutation
   // (the pi entry point wires this to that session's widget refresh).
   const notifyRunChange = (parentSession: string): void => {
@@ -254,28 +228,19 @@ export function createSubagentTool(
       },
     },
     required: ["agent", "description", "prompt"],
-    // Attach the pi TUI renderers only when the host supplied one.  A
-    // missing renderer (OpenCode) keeps the tool text-only.
-    ...(renderer !== undefined
-      ? {
-          renderCall: renderer.renderCall,
-          renderResult: renderer.renderResult,
-        }
-      : {}),
-    async execute(args, toolCtx, hostCtx) {
+    async execute(args, call: ToolCallContext): Promise<ToolResult> {
       const input = validateSubagentArgs(args);
 
       // 1. Resolve the CALLER agent from the session this call names.  An
-      // unnamed session or an unresolved agent fails closed with an
-      // explanatory text.  The session id is the run's parent session and
-      // every log line's attribution, so it is resolved exactly once.
-      const sessionID = caps.toolHost?.resolveSessionId(toolCtx);
-      const caller =
-        sessionID === undefined
-          ? undefined
-          : await caps.resolveCallerAgent(sessionID);
-      if (caller === undefined || sessionID === undefined) {
-        return "无法确定调用者身份：未配置主 agent，无法委派子 agent。";
+      // unresolved agent fails closed with an explanatory text.  The session
+      // id is the run's parent session and every log line's attribution, so
+      // it is read exactly once from the call context.
+      const sessionID = call.sessionID;
+      const caller = await caps.resolveCallerAgent(sessionID);
+      if (caller === undefined) {
+        return {
+          text: "无法确定调用者身份：未配置主 agent，无法委派子 agent。",
+        };
       }
 
       // 2. Target-role guard — only agents declared `mode = "subagent"`
@@ -294,7 +259,9 @@ export function createSubagentTool(
           target: input.agent,
           reason: "not-a-subagent",
         });
-        return `"${input.agent}" 不是可委派的子 agent：仅在配置中声明 mode = "subagent" 的 agent 才能作为委派目标。`;
+        return {
+          text: `"${input.agent}" 不是可委派的子 agent：仅在配置中声明 mode = "subagent" 的 agent 才能作为委派目标。`,
+        };
       }
 
       // 3. Capability set for the TARGET agent: `baseline − deniedTools`.
@@ -306,19 +273,8 @@ export function createSubagentTool(
         deniedTools,
       });
 
-      // 4. The abort signal.  It is taken from the host-forwarded execution
-      // context (the pi bridge forwards the real tool signal there) when
-      // present, falling back to the tool context's own `abort` field;
-      // otherwise a fresh never-aborting signal is used (the driver owns
-      // the real termination wiring).
-      const hostSignal = hostCtx?.signal;
-      const toolCtxSignal = (toolCtx as { abort?: unknown } | undefined)?.abort;
-      const signal =
-        hostSignal instanceof AbortSignal
-          ? hostSignal
-          : toolCtxSignal instanceof AbortSignal
-            ? toolCtxSignal
-            : new AbortController().signal;
+      // 4. The cancellation signal of this call.
+      const signal = call.signal;
 
       // 5. Model resolution for the sub-session (strict mode): the target's
       //    `[agent.<name>].model` from agents.json (`caps.subagentModels`,
@@ -338,21 +294,21 @@ export function createSubagentTool(
           caller,
           target: input.agent,
         });
-        return `"${input.agent}" 未配置子 agent 模型：仅从 ~/.pi/agent/agents.json 读取模型配置，未找到该 agent 的 provider/model 条目（文件缺失、JSON 非法或该 agent 未配置 provider/model 均会导致此错误）。请运行 \`uv run python install.py\` 重新生成 agents.json 后重试。`;
+        return {
+          text: `"${input.agent}" 未配置子 agent 模型：仅从 ~/.pi/agent/agents.json 读取模型配置，未找到该 agent 的 provider/model 条目（文件缺失、JSON 非法或该 agent 未配置 provider/model 均会导致此错误）。请运行 \`uv run python install.py\` 重新生成 agents.json 后重试。`,
+        };
       }
       const model = configuredModel;
 
-      // 6. Registry write — the pi bridge forwards the tool-call id via
-      // `hostCtx.callId`, which doubles as the run id in the process-level
-      // run registry (the fleet widget's source of truth).  A run without a
-      // forwarded call id (OpenCode, test invocations that omit hostCtx) is
-      // tracked with a synthetic id derived from the caller/agent plus a
-      // module-level monotonic counter so consecutive delegations never
-      // collide (the previous scheme stamped `Date.now()`, which two
-      // delegations in the same millisecond could collide on, and carried a
-      // non-ASCII arrow).
+      // 6. Registry write — the host forwards its tool-call id on the call
+      // context, and it doubles as the run id in the process-level run
+      // registry (the fleet widget's source of truth).  A run without one
+      // (OpenCode, test invocations) is tracked with a synthetic id derived
+      // from the caller/agent plus a module-level monotonic counter, so
+      // consecutive delegations never collide (a `Date.now()` stamp could
+      // collide within one millisecond).
       const runId =
-        hostCtx?.callId ?? `${caller}-${input.agent}-${++syntheticRunSeq}`;
+        call.callID ?? `${caller}-${input.agent}-${++syntheticRunSeq}`;
       const run = startRun({
         id: runId,
         agent: input.agent,
@@ -419,28 +375,10 @@ export function createSubagentTool(
               notifyRunChange(sessionID);
             }
 
-            // Repaint the host's live card on every report.  pi re-invokes
-            // the card renderer only when a partial result arrives, while
-            // the card body projects the run's log, so the partial is a
-            // content-free repaint signal, never a text channel.  A
-            // throwing callback is logged and swallowed — a UI callback
-            // must never break the run.
-            if (typeof hostCtx?.onUpdate === "function") {
-              try {
-                (hostCtx.onUpdate as (partial: PiRepaintSignal) => void)({
-                  content: [],
-                });
-              } catch (err) {
-                const message =
-                  err instanceof Error ? err.message : String(err);
-                log.warn({
-                  hook: "subagent-tool",
-                  event: "progress_update_failed",
-                  sessionId: sessionID,
-                  error: message,
-                });
-              }
-            }
+            // Repaint the host's live card on every report.  The card body
+            // projects the run's log, so the request carries no payload and
+            // never streams text; a host without a live card omits it.
+            call.notifyChanged?.();
           },
         },
       );
@@ -471,7 +409,7 @@ export function createSubagentTool(
       });
 
       // 9. Map the outcome onto the tool text.
-      return formatSubagentResult(result);
+      return { text: formatSubagentResult(result) };
     },
   };
 }
@@ -487,11 +425,9 @@ export const unit = defineTool({
   name: "subagent",
   needs: ["subagentDriver", "resolveCallerAgent"],
   wants: [
-    "toolHost",
     "subagentBaseline",
     "agentModes",
     "agentPermissions",
-    "subagentRenderer",
     "subagentModels",
     "onSubagentRunChange",
   ],

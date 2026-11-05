@@ -647,7 +647,8 @@ function warnAgentColorInvalid(agent: string, color: unknown): void {
  * sub-tables are not tool-level).  Fail-closed: an absent or non-object
  * `agent` table yields an empty map silently, a non-object agent entry
  * is skipped silently, and an agent without a tool-level deny is
- * omitted (the active tool set is left untouched).
+ * omitted: the trim removes no tool for that agent, and only the ask
+ * tool's visibility rule still writes the active set.
  *
  * @param rawConfig - The whole parsed config.toml (root object, carrying
  *   the top-level `agent` table; the `zoo` section is not needed here).

@@ -9,7 +9,7 @@
  * The host tool services and the parsed context-pruning config are
  * captured by the factory closure.  Each execution:
  *
- * 1. Resolves the session ID from the tool context through the host.
+ * 1. Reads the session ID from the host-neutral call context.
  * 2. Validates the `ranges` argument (array of `{fromRef, toRef, title,
  *    summary}`); per-range title rules and the `max_ranges` upper bound
  *    are enforced by the core with loud batch guidance BEFORE any range
@@ -33,6 +33,9 @@
  * 6. Posts a single ignored chat notification through the host, after the
  *    commit succeeded.  A missing or lapsed permit changes nothing and
  *    reports the call as not applied.
+ *
+ * The successful result is the summary line in `text`; the call carries no
+ * structured `data`.
  *
  * Every rejection is thrown as a tool error whose text is written in the
  * model's address space: per-range failures are aggregated (all of them,
@@ -62,8 +65,10 @@ import { type NumberedItem, numberView } from "../core/context/view-refs.js";
 import type { ToolHost } from "../core/ports/tool-host.js";
 import {
   defineTool,
+  type ToolCallContext,
   type ToolContribution,
   type ToolDefinition,
+  type ToolResult,
 } from "../core/unit.js";
 import { log } from "../utils/logger.js";
 
@@ -259,15 +264,9 @@ export function createCompressTool(
 ): ToolDefinition {
   return {
     ...buildCompressToolMetadata(contextConfig),
-    async execute(args, toolCtx, hostCtx) {
-      const sessionID = host.resolveSessionId(toolCtx);
-      if (sessionID === undefined) {
-        throw new Error(
-          "无法压缩：工具上下文缺少 sessionID，会话状态无法定位。" +
-            "这是宿主接线问题，重试本工具无法解决，需重启宿主或由用户处理。",
-        );
-      }
-      const permit = hostCtx?.permit;
+    async execute(args, call: ToolCallContext): Promise<ToolResult> {
+      const sessionID = call.sessionID;
+      const permit = call.permit;
       if (permit === undefined || !permit.isActive()) {
         throw new Error(
           "本次压缩未生效：本次调用没有有效的会话工作凭证，会话可能已停止或已取消，会话状态未改动。",
@@ -453,8 +452,8 @@ export function createCompressTool(
         });
       }
 
-      // Single-line short ToolResult — never the summary bodies.
-      return notifyMsg;
+      // Single-line short text — never the summary bodies.
+      return { text: notifyMsg };
     },
   };
 }

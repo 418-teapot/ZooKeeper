@@ -36,7 +36,9 @@ import {
   resetRegistry,
   topLevelRuns,
 } from "../core/subagent/registry.js";
+import type { ToolCallContext } from "../core/unit.js";
 import { composeForTest, facts } from "../testkits/compose.js";
+import { callFor } from "../testkits/context-runtime.js";
 import {
   _getBufferForTesting,
   _resetForTesting as _resetLoggerForTesting,
@@ -55,19 +57,13 @@ afterEach(() => {
   _resetLoggerForTesting();
 });
 
-/** A tool context carrying a session id and an abort signal. */
-const TOOL_CTX = {
-  sessionID: "sess-subagent",
-  abort: new AbortController().signal,
-};
+/** The call context a delegation receives, unless a case overrides it. */
+function TOOL_CALL(overrides: Partial<ToolCallContext> = {}): ToolCallContext {
+  return callFor("sess-subagent", overrides);
+}
 
-/** A minimal ToolHost that reads the session id from the tool context. */
+/** A minimal ToolHost over this suite's history read and notify. */
 const TOOL_HOST: ToolHost = {
-  resolveSessionId(toolCtx: unknown): string | undefined {
-    const ctx = toolCtx as { sessionID?: unknown; sessionId?: unknown };
-    const id = ctx.sessionID ?? ctx.sessionId;
-    return typeof id === "string" && id.length > 0 ? id : undefined;
-  },
   async fetchHistory(): Promise<Projection> {
     return project([], []);
   },
@@ -156,7 +152,7 @@ describe("subagent tool execute — argument validation", () => {
 
     await assert.rejects(
       async () =>
-        t.execute({ agent: "beaver", prompt: "t" } as never, TOOL_CTX),
+        t.execute({ agent: "beaver", prompt: "t" } as never, TOOL_CALL()),
       /description/,
     );
     assert.equal(calls.length, 0, "driver must not run for invalid args");
@@ -170,7 +166,7 @@ describe("subagent tool execute — argument validation", () => {
       async () =>
         t.execute(
           { agent: "beaver", description: "", prompt: "t" } as never,
-          TOOL_CTX,
+          TOOL_CALL(),
         ),
       /description/,
     );
@@ -185,7 +181,7 @@ describe("subagent tool execute — argument validation", () => {
       async () =>
         t.execute(
           { agent: "beaver", description: "实现任务" } as never,
-          TOOL_CTX,
+          TOOL_CALL(),
         ),
       /prompt/,
     );
@@ -200,7 +196,7 @@ describe("subagent tool execute — argument validation", () => {
       async () =>
         t.execute(
           { agent: "beaver", description: "实现任务", prompt: "" } as never,
-          TOOL_CTX,
+          TOOL_CALL(),
         ),
       /prompt/,
     );
@@ -212,7 +208,7 @@ describe("subagent tool execute — argument validation", () => {
     const t = tool(makeDeps({ subagentDriver: driver }));
 
     await assert.rejects(
-      async () => t.execute(null as never, TOOL_CTX),
+      async () => t.execute(null as never, TOOL_CALL()),
       /参数格式错误/,
     );
     assert.equal(calls.length, 0, "driver must not run for invalid args");
@@ -238,13 +234,13 @@ describe("subagent tool execute — successful delegation", () => {
       }),
     );
 
-    const result = await t.execute(
+    const { text: result } = await t.execute(
       {
         agent: "beaver",
         description: "实现功能",
         prompt: "Implement the feature",
       },
-      TOOL_CTX,
+      TOOL_CALL(),
     );
 
     assert.equal(result, "beaver finished the implementation");
@@ -272,7 +268,7 @@ describe("subagent tool execute — successful delegation", () => {
 
     await t.execute(
       { agent: "beaver", description: "实现任务", prompt: "task" },
-      TOOL_CTX,
+      TOOL_CALL(),
     );
 
     assert.deepEqual(calls[0].request.tools, ["bash", "edit", "subagent"]);
@@ -290,7 +286,7 @@ describe("subagent tool execute — successful delegation", () => {
 
     await t.execute(
       { agent: "beaver", description: "实现任务", prompt: "task" },
-      TOOL_CTX,
+      TOOL_CALL(),
     );
 
     // No baseline → computeCapabilitySet yields [] — the run still happens,
@@ -299,7 +295,7 @@ describe("subagent tool execute — successful delegation", () => {
     assert.deepEqual(calls[0].request.tools, []);
   });
 
-  it("forwards the host signal from the third hostCtx argument", async () => {
+  it("runs under the call's cancellation signal", async () => {
     // A hanging driver that records the signal it observes and only resolves
     // once the run is aborted.
     let release: (() => void) | undefined;
@@ -320,12 +316,9 @@ describe("subagent tool execute — successful delegation", () => {
     const hostController = new AbortController();
     const runPromise = t.execute(
       { agent: "beaver", description: "实现任务", prompt: "task" },
-      TOOL_CTX,
-      {
-        signal: hostController.signal,
-      },
+      TOOL_CALL({ signal: hostController.signal }),
     );
-    // Let the run reach the hanging driver, then abort the host signal.
+    // Let the run reach the hanging driver, then abort the call's signal.
     await new Promise((resolve) => setTimeout(resolve, 20));
     hostController.abort();
     release?.();
@@ -346,12 +339,7 @@ describe("subagent tool execute — successful delegation", () => {
     );
     await t.execute(
       { agent: "beaver", description: "实现任务", prompt: "task" },
-      TOOL_CTX,
-      // Strict mode ignores the parent model entirely — a host-forwarded
-      // model must NOT leak into the request.  The hostCtx type does not
-      // expose `model`, so the cast models a stale host that still sends
-      // it.
-      { model: "Dummy/dummy-small" } as never,
+      TOOL_CALL(),
     );
 
     assert.equal(calls[0].request.model, "Dummy/dummy-large");
@@ -372,7 +360,7 @@ describe("subagent tool execute — successful delegation", () => {
     );
     await t.execute(
       { agent: "beaver", description: "实现任务", prompt: "task" },
-      TOOL_CTX,
+      TOOL_CALL(),
     );
 
     assert.equal(calls[0].request.model, "Dummy/dummy/prefixed-id");
@@ -388,9 +376,9 @@ describe("subagent tool execute — successful delegation", () => {
         subagentModels: { lynx: "Dummy/dummy-large" },
       }),
     );
-    const result = await t.execute(
+    const { text: result } = await t.execute(
       { agent: "beaver", description: "实现任务", prompt: "task" },
-      TOOL_CTX,
+      TOOL_CALL(),
     );
 
     assert.equal(
@@ -416,9 +404,9 @@ describe("subagent tool execute — successful delegation", () => {
     const t = tool(
       makeDeps({ subagentDriver: driver, subagentModels: undefined }),
     );
-    const result = await t.execute(
+    const { text: result } = await t.execute(
       { agent: "beaver", description: "实现任务", prompt: "task" },
-      TOOL_CTX,
+      TOOL_CALL(),
     );
 
     assert.equal(
@@ -447,29 +435,26 @@ describe("subagent tool execute — successful delegation", () => {
     );
     await t.execute(
       { agent: "beaver", description: "实现任务", prompt: "task" },
-      TOOL_CTX,
+      TOOL_CALL(),
     );
 
     assert.equal(calls[0].request.model, "Dummy/dummy-large");
   });
 
-  it("ignores a hostCtx model when agents.json has no entry for the target (no inheritance)", async () => {
+  it("never inherits the parent model when agents.json has no entry for the target", async () => {
     const { driver, calls } = fakeDriver({ kind: "ok", text: "done" });
 
-    // No entry for beaver + a parent model in hostCtx: strict mode must
-    // NOT fall back to the parent — it errors instead.
+    // No entry for beaver: strict mode must not fall back to the parent —
+    // it errors instead.
     const t = tool(
       makeDeps({
         subagentDriver: driver,
         subagentModels: { lynx: "Dummy/dummy-large" },
       }),
     );
-    const result = await t.execute(
+    const { text: result } = await t.execute(
       { agent: "beaver", description: "实现任务", prompt: "task" },
-      TOOL_CTX,
-      // A stale host forwarding a parent model — strict mode must ignore it
-      // (the type does not expose `model`, so the cast models it).
-      { model: "Dummy/dummy-small" } as never,
+      TOOL_CALL(),
     );
 
     assert.equal(
@@ -496,9 +481,9 @@ describe("subagent tool execute — target-role guard", () => {
       }),
     );
 
-    const result = await t.execute(
+    const { text: result } = await t.execute(
       { agent: "mola", description: "实现任务", prompt: "task" },
-      TOOL_CTX,
+      TOOL_CALL(),
     );
 
     assert.equal(calls.length, 0, "driver must not run for a primary target");
@@ -522,9 +507,9 @@ describe("subagent tool execute — target-role guard", () => {
       }),
     );
 
-    const result = await t.execute(
+    const { text: result } = await t.execute(
       { agent: "nonexistent", description: "实现任务", prompt: "task" },
-      TOOL_CTX,
+      TOOL_CALL(),
     );
 
     assert.equal(calls.length, 0, "driver must not run for an unknown target");
@@ -544,9 +529,9 @@ describe("subagent tool execute — target-role guard", () => {
     // No agentModes in deps → no target can be verified as a subagent.
     const t = tool(makeDeps({ subagentDriver: driver, agentModes: undefined }));
 
-    const result = await t.execute(
+    const { text: result } = await t.execute(
       { agent: "beaver", description: "实现任务", prompt: "task" },
-      TOOL_CTX,
+      TOOL_CALL(),
     );
 
     assert.equal(
@@ -572,7 +557,7 @@ describe("subagent tool execute — target-role guard", () => {
 
     await t.execute(
       { agent: "mola", description: "实现任务", prompt: "task" },
-      TOOL_CTX,
+      TOOL_CALL(),
     );
 
     const blocked = _getBufferForTesting().filter(
@@ -600,9 +585,9 @@ describe("subagent tool execute — unresolved caller", () => {
       }),
     );
 
-    const result = await t.execute(
+    const { text: result } = await t.execute(
       { agent: "beaver", description: "实现任务", prompt: "task" },
-      TOOL_CTX,
+      TOOL_CALL(),
     );
 
     assert.equal(calls.length, 0, "driver must not run without a caller");
@@ -625,34 +610,10 @@ describe("subagent tool execute — unresolved caller", () => {
 
     await t.execute(
       { agent: "beaver", description: "实现任务", prompt: "task" },
-      TOOL_CTX,
+      TOOL_CALL(),
     );
 
     assert.deepEqual(asked, ["sess-subagent"]);
-  });
-
-  it("fails closed when the tool context names no session", async () => {
-    const { driver, calls } = fakeDriver({ kind: "ok", text: "done" });
-    let asked = 0;
-
-    const t = tool(
-      makeDeps({
-        subagentDriver: driver,
-        resolveCallerAgent: async () => {
-          asked += 1;
-          return "dolphin";
-        },
-      }),
-    );
-
-    const result = await t.execute(
-      { agent: "beaver", description: "实现任务", prompt: "task" },
-      {},
-    );
-
-    assert.equal(asked, 0, "no session id means no caller lookup");
-    assert.equal(calls.length, 0, "driver must not run without a caller");
-    assert.ok(result.length > 0, "must return an explanatory text");
   });
 });
 
@@ -664,12 +625,12 @@ describe("subagent tool execute — result mapping", () => {
   it("maps an ok result to the subagent text verbatim", async () => {
     const { driver } = fakeDriver({ kind: "ok", text: "result text" });
     const t = tool(makeDeps({ subagentDriver: driver }));
-    assert.equal(
+    assert.deepEqual(
       await t.execute(
         { agent: "beaver", description: "实现任务", prompt: "t" },
-        TOOL_CTX,
+        TOOL_CALL(),
       ),
-      "result text",
+      { text: "result text" },
     );
   });
 
@@ -680,9 +641,9 @@ describe("subagent tool execute — result mapping", () => {
       errorMessage: "session failed",
     });
     const t = tool(makeDeps({ subagentDriver: driver }));
-    const result = await t.execute(
+    const { text: result } = await t.execute(
       { agent: "beaver", description: "实现任务", prompt: "t" },
-      TOOL_CTX,
+      TOOL_CALL(),
     );
 
     assert.ok(
@@ -698,9 +659,9 @@ describe("subagent tool execute — result mapping", () => {
   it("maps an aborted result to the partial text plus a reason line", async () => {
     const { driver } = fakeDriver({ kind: "aborted", text: "partial output" });
     const t = tool(makeDeps({ subagentDriver: driver }));
-    const result = await t.execute(
+    const { text: result } = await t.execute(
       { agent: "beaver", description: "实现任务", prompt: "t" },
-      TOOL_CTX,
+      TOOL_CALL(),
     );
 
     assert.ok(
@@ -764,8 +725,7 @@ describe("subagent tool execute — progress to registry updates", () => {
     const t = tool(makeDeps({ subagentDriver: driver }));
     await t.execute(
       { agent: "beaver", description: "实现任务", prompt: "t" },
-      TOOL_CTX,
-      { callId: "call-log" },
+      TOOL_CALL({ callID: "call-log" }),
     );
 
     const run = getRun("call-log");
@@ -797,8 +757,7 @@ describe("subagent tool execute — progress to registry updates", () => {
     const t = tool(makeDeps({ subagentDriver: driver }));
     await t.execute(
       { agent: "beaver", description: "实现任务", prompt: "t" },
-      TOOL_CTX,
-      { callId: "call-tokens" },
+      TOOL_CALL({ callID: "call-tokens" }),
     );
     assert.equal(getRun("call-tokens")?.tokens, 4242);
     // The log stayed empty, so no scan of it could have produced the number.
@@ -818,8 +777,7 @@ describe("subagent tool execute — progress to registry updates", () => {
     const t = tool(makeDeps({ subagentDriver: driver }));
     await t.execute(
       { agent: "beaver", description: "实现任务", prompt: "t" },
-      TOOL_CTX,
-      { callId: "call-notokens" },
+      TOOL_CALL({ callID: "call-notokens" }),
     );
     assert.equal(getRun("call-notokens")?.tokens, undefined);
   });
@@ -847,8 +805,7 @@ describe("subagent tool execute — progress to registry updates", () => {
     const t = tool(makeDeps({ subagentDriver: driver }));
     await t.execute(
       { agent: "beaver", description: "实现任务", prompt: "t" },
-      TOOL_CTX,
-      { callId: "call-clear" },
+      TOOL_CALL({ callID: "call-clear" }),
     );
     assert.equal(toolAfterStart, "bash");
     assert.equal(toolAfterUnrelated, "bash");
@@ -856,7 +813,7 @@ describe("subagent tool execute — progress to registry updates", () => {
     assert.equal(getRun("call-clear")?.currentTool, undefined);
   });
 
-  it("emits an empty repaint partial on every progress report (pi)", async () => {
+  it("asks for a card repaint on every progress report", async () => {
     const snapshots: SubagentProgress[] = [
       { currentTool: "bash", done: false },
       { done: false, tokens: 150 },
@@ -869,98 +826,35 @@ describe("subagent tool execute — progress to registry updates", () => {
       },
     };
 
-    const partials: unknown[] = [];
+    let repaints = 0;
     const t = tool(makeDeps({ subagentDriver: driver }));
 
-    const result = await t.execute(
+    const { text: result } = await t.execute(
       { agent: "beaver", description: "实现任务", prompt: "t" },
-      TOOL_CTX,
-      {
-        onUpdate: (partial: unknown) => {
-          partials.push(partial);
+      TOOL_CALL({
+        notifyChanged: () => {
+          repaints += 1;
         },
-      },
+      }),
     );
 
     assert.equal(result, "done");
-    // Each report reaches onUpdate as a content-free repaint signal: pi's
-    // tool-execution gate re-invokes the card renderer only when a partial
-    // result arrives, while the card body projects the run's log.  No text
-    // is streaming — the partial carries an empty content array.
-    assert.equal(partials.length, 3);
-    assert.deepEqual(partials[0], { content: [] });
-    assert.deepEqual(partials[1], { content: [] });
-    assert.deepEqual(partials[2], { content: [] });
+    // The card body projects the run's log, so a repaint carries no
+    // payload at all.
+    assert.equal(repaints, 3);
   });
 
-  it("does not fail the run when the repaint callback throws", async () => {
-    const driver: SubagentDriver = {
-      async run(_req, ctx) {
-        ctx.onProgress?.({ currentTool: "bash", done: false });
-        ctx.onProgress?.({ done: true });
-        return { kind: "ok", text: "done" };
-      },
-    };
-
-    const t = tool(makeDeps({ subagentDriver: driver }));
-    let threw = 0;
-    const result = await t.execute(
-      { agent: "beaver", description: "实现任务", prompt: "t" },
-      TOOL_CTX,
-      {
-        onUpdate: () => {
-          threw += 1;
-          throw new Error("ui exploded");
-        },
-      },
-    );
-
-    assert.equal(threw, 2, "onUpdate must be invoked for each snapshot");
-    assert.equal(result, "done", "a throwing onUpdate must not break the run");
-  });
-
-  it("runs the driver without any hostCtx streaming surface (OpenCode path)", async () => {
+  it("runs the driver without a live card (OpenCode path)", async () => {
     const { driver, calls } = fakeDriver({ kind: "ok", text: "done" });
     const t = tool(makeDeps({ subagentDriver: driver }));
 
-    const result = await t.execute(
+    const { text: result } = await t.execute(
       { agent: "beaver", description: "实现任务", prompt: "t" },
-      TOOL_CTX,
+      TOOL_CALL(),
     );
 
     assert.equal(result, "done");
-    assert.equal(calls.length, 1, "driver must run without a hostCtx");
-  });
-
-  it("attaches renderCall / renderResult when a renderer is present (pi)", () => {
-    const renderCall = () => ({ kind: "call" });
-    const renderResult = () => ({ kind: "result" });
-    const t = tool(
-      makeDeps({
-        subagentDriver: {
-          async run() {
-            return { kind: "ok", text: "done" };
-          },
-        },
-        subagentRenderer: { renderCall, renderResult },
-      }),
-    );
-    assert.equal(t.renderCall, renderCall);
-    assert.equal(t.renderResult, renderResult);
-  });
-
-  it("keeps the tool text-only when no renderer is present (OpenCode)", () => {
-    const t = tool(
-      makeDeps({
-        subagentDriver: {
-          async run() {
-            return { kind: "ok", text: "done" };
-          },
-        },
-      }),
-    );
-    assert.equal(t.renderCall, undefined);
-    assert.equal(t.renderResult, undefined);
+    assert.equal(calls.length, 1, "driver must run without a live card");
   });
 });
 
@@ -981,11 +875,10 @@ describe("subagent tool execute — run-registry writes", () => {
       },
     };
     const t = tool(makeDeps({ subagentDriver: driver }));
-    const result = await t.execute(
+    const { text: result } = await t.execute(
       { agent: "beaver", description: "实现任务", prompt: "t" },
-      TOOL_CTX,
-      // The pi bridge forwards the real tool-call id via hostCtx.callId.
-      { callId: "call-42" },
+      // The host forwards its tool-call id on the call context.
+      TOOL_CALL({ callID: "call-42" }),
     );
     assert.equal(result, "done");
 
@@ -1027,8 +920,7 @@ describe("subagent tool execute — run-registry writes", () => {
     const t = tool(makeDeps({ subagentDriver: driver }));
     await t.execute(
       { agent: "beaver", description: "实现任务", prompt: "t" },
-      TOOL_CTX,
-      { callId: "call-running" },
+      TOOL_CALL({ callID: "call-running" }),
     );
     assert.equal(
       statusDuring,
@@ -1054,8 +946,7 @@ describe("subagent tool execute — run-registry writes", () => {
     );
     await okT.execute(
       { agent: "beaver", description: "实现任务", prompt: "t" },
-      TOOL_CTX,
-      { callId: "call-e" },
+      TOOL_CALL({ callID: "call-e" }),
     );
     assert.equal(getRun("call-e")?.status, "error");
     assert.equal(getRun("call-e")?.error, "boom");
@@ -1071,8 +962,7 @@ describe("subagent tool execute — run-registry writes", () => {
     );
     await abortT.execute(
       { agent: "beaver", description: "实现任务", prompt: "t" },
-      TOOL_CTX,
-      { callId: "call-a" },
+      TOOL_CALL({ callID: "call-a" }),
     );
     assert.equal(getRun("call-a")?.status, "aborted");
   });
@@ -1090,8 +980,7 @@ describe("subagent tool execute — run-registry writes", () => {
     const t = tool(makeDeps({ subagentDriver: driver }));
     await t.execute(
       { agent: "beaver", description: "实现任务", prompt: "t" },
-      TOOL_CTX,
-      { callId: "call-p" },
+      TOOL_CALL({ callID: "call-p" }),
     );
     assert.equal(getRun("call-p")?.childSession, "child-ses-1");
 
@@ -1114,8 +1003,7 @@ describe("subagent tool execute — run-registry writes", () => {
     );
     await nestedT.execute(
       { agent: "lynx", description: "调研", prompt: "t" },
-      { sessionID: "child-ses-1", abort: TOOL_CTX.abort },
-      { callId: "call-c" },
+      TOOL_CALL({ sessionID: "child-ses-1", callID: "call-c" }),
     );
     assert.equal(getRun("call-c")?.parentSession, "child-ses-1");
     assert.deepEqual(
@@ -1141,11 +1029,11 @@ describe("subagent tool execute — run-registry writes", () => {
     // `→` arrow.
     await t.execute(
       { agent: "beaver", description: "任务一", prompt: "t" },
-      TOOL_CTX,
+      TOOL_CALL(),
     );
     await t.execute(
       { agent: "beaver", description: "任务二", prompt: "t" },
-      TOOL_CTX,
+      TOOL_CALL(),
     );
     const runs = topLevelRuns("sess-subagent");
     assert.equal(runs.length, 2, "both synthetic runs must be registered");
@@ -1187,30 +1075,12 @@ describe("subagent tool execute — run-registry writes", () => {
     );
     await t.execute(
       { agent: "beaver", description: "实现任务", prompt: "t" },
-      TOOL_CTX,
-      { callId: "call-n" },
+      TOOL_CALL({ callID: "call-n" }),
     );
     // start + update (currentTool) + finish.
     assert.ok(
       notifications >= 3,
       `expected ≥3 notifications, got ${notifications}`,
     );
-  });
-
-  it("stays silent when no parent session id is available", async () => {
-    const t = tool(
-      makeDeps({
-        subagentDriver: {
-          async run() {
-            return { kind: "ok", text: "done" };
-          },
-        },
-      }),
-    );
-    await t.execute(
-      { agent: "beaver", description: "实现任务", prompt: "t" },
-      { abort: TOOL_CTX.abort },
-    );
-    assert.equal(topLevelRuns("").length, 0, "no run without a parent session");
   });
 });

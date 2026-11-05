@@ -1,25 +1,36 @@
 /**
  * Ask capability port.
  *
- * Pure types: the host form presentation for the `ask` tool and its
+ * Pure types: the host provider of question channels and the ask tool's
  * timeout budget.  The file imports types only — never an implementation.
  *
  * @module
  */
 
-import type { AskFormHost } from "../ask.js";
+import type { QuestionChannel } from "../ask.js";
+
+/**
+ * Build the question channel of one tool call from the host's own
+ * execution context.
+ *
+ * The provider runs in the host adapter, which is the only place the
+ * native context is readable; it answers `undefined` when the host cannot
+ * ask (no interactive surface), and the ask tool then reports the
+ * system-side slot.
+ */
+export type QuestionChannelProvider = (
+  hostCtx: unknown,
+) => QuestionChannel | undefined;
 
 /** The ask capability. */
 export interface AskPort {
   /**
-   * Host form presentation for the ask tool.
+   * Host provider of per-call question channels.
    *
    * Absent on hosts without one — the ask tool unit then contributes no
-   * tools, so `ask` never registers there.  The form host owns the dialog
-   * lifecycle: it mounts the host's component surface, waits for the user,
-   * and applies the timeout/abort.
+   * tools, so `ask` never registers there.
    */
-  askFormHost: AskFormHost;
+  askQuestionChannel: QuestionChannelProvider;
   /**
    * Ask-tool timeout in seconds (`[zoo.ask].timeout`).
    *

@@ -22,8 +22,9 @@
  * Per-agent map of tool-level denied tool names, keyed by agent name.
  *
  * Each value is the sorted list of top-level `[agent.<name>].permission`
- * keys whose value is exactly `"deny"`.  An agent absent from the map
- * has no tool-level denies (the active tool set is left untouched).
+ * keys whose value is exactly `"deny"`.  An agent absent from the map has
+ * no tool-level denies: the trim removes no tool for it, and only the ask
+ * tool's visibility rule still writes the active set.
  */
 export type AgentPermissionMap = Record<string, string[]>;
 

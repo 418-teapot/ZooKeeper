@@ -133,7 +133,7 @@ describe("defineHook", () => {
 
 describe("defineTool", () => {
   it("wraps the returned definition into a named tool contribution", () => {
-    const execute = async () => "ok";
+    const execute = async () => ({ text: "ok" });
     const unit = defineTool({
       name: "t",
       needs: [],
@@ -150,7 +150,10 @@ describe("defineTool", () => {
     const unit = defineTool({
       name: "t",
       needs: [],
-      create: () => ({ description: "d", execute: async () => "ok" }),
+      create: () => ({
+        description: "d",
+        execute: async () => ({ text: "ok" }),
+      }),
     });
 
     const contributions = unit.create(CAPS, ACTIVE_SET);
@@ -169,7 +172,7 @@ describe("defineTool", () => {
       create: (caps, uses) => {
         seenCaps = caps;
         seenUses = uses;
-        return { description: "d", execute: async () => "ok" };
+        return { description: "d", execute: async () => ({ text: "ok" }) };
       },
     });
 

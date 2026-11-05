@@ -32,7 +32,7 @@ import type { ToolHostPort } from "./tool-host.js";
 import type { ValidationPort } from "./validation.js";
 
 export type { AgentPort } from "./agent.js";
-export type { AskPort } from "./ask.js";
+export type { AskPort, QuestionChannelProvider } from "./ask.js";
 export type {
   AutoDebugDirEntry,
   AutoDebugFs,
@@ -45,10 +45,7 @@ export type { ContinuationPort } from "./continuation.js";
 export type { FetchPort } from "./fetch.js";
 export type { HandoffPort, MessageInjector } from "./handoff.js";
 export type { SessionPort } from "./session.js";
-export type {
-  SubagentPort,
-  ToolCardRenderer,
-} from "./subagent.js";
+export type { SubagentPort } from "./subagent.js";
 export type { SwitchHost, SwitchNewSessionOps, SwitchPort } from "./switch.js";
 export type { TodoPort } from "./todo.js";
 export type { ToastPayload, ToolHost, ToolHostPort } from "./tool-host.js";
