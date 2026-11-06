@@ -26,8 +26,8 @@ import { visibleWidth } from "@earendil-works/pi-tui";
 import { SPINNER_FRAMES } from "../../../core/display.js";
 import {
   finishRun,
+  type RunSnapshot,
   resetRegistry,
-  type SubagentRun,
   startRun,
 } from "../../../core/subagent/registry.js";
 import type { TodoPhase } from "../../../core/todo/types.js";
@@ -121,7 +121,7 @@ function depsOf(
     getPrimary?: () => string | undefined;
     getSessionId?: () => string | undefined;
     getEditorText?: () => string;
-    enterRun?: (run: SubagentRun) => boolean | undefined;
+    enterRun?: (run: RunSnapshot) => boolean | undefined;
     getTodoPhases?: () => readonly TodoPhase[];
     t?: ReturnType<typeof fakeTimer>;
   } = {},
@@ -465,6 +465,107 @@ describe("fleet widget — expanded agent colorization", () => {
       lines.join("\n"),
     );
     assert.ok(!lines.some((l) => l.includes("<c>")), lines.join("\n"));
+    w.dispose();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Corrupted run graph
+// ---------------------------------------------------------------------------
+
+describe("fleet widget — corrupted run graph", () => {
+  /**
+   * Register the self-looped tree: `top` delegates into `ses-top` and `self`
+   * reports `ses-top` as both its parent and its own child session, so the
+   * registry's child query matches the run itself.
+   */
+  function seedSelfLoop(): void {
+    seedRun("top", 0, "beaver");
+    finishRun("top", { status: "done", childSession: "ses-top" });
+    startRun({
+      id: "self",
+      agent: "lynx",
+      parentSession: "ses-top",
+      startedAt: 1000,
+      childSession: "ses-top",
+    });
+  }
+
+  /**
+   * Register the two-run cycle: `top` → `a` → `b`, with `b` pointing its
+   * child session back at the main session so `childrenOf(b)` matches `top`.
+   */
+  function seedTwoRunCycle(): void {
+    seedRun("top", 0, "beaver");
+    finishRun("top", { status: "done", childSession: "ses-top" });
+    startRun({
+      id: "a",
+      agent: "mola",
+      parentSession: "ses-top",
+      startedAt: 1000,
+      childSession: "ses-a",
+    });
+    startRun({
+      id: "b",
+      agent: "lynx",
+      parentSession: "ses-a",
+      startedAt: 2000,
+      childSession: "main",
+    });
+  }
+
+  it("renders the collapsed running summary of a self loop once", () => {
+    const { deps, t } = depsOf();
+    seedSelfLoop();
+    const w = createFleetWidget(deps);
+    w.attach(tuiOf().tui, THEME);
+    t.advance(5000);
+    const lines = w.render(200);
+    assert.equal(lines.length, 1, lines.join("\n"));
+    assert.equal(
+      lines[0].split("<c>lynx</c>").length - 1,
+      1,
+      `the looping run is listed once: ${lines[0]}`,
+    );
+    w.dispose();
+  });
+
+  it("renders the expanded list of a two-run cycle once per run", () => {
+    const { deps, t } = depsOf();
+    seedTwoRunCycle();
+    const w = createFleetWidget(deps);
+    w.attach(tuiOf().tui, THEME);
+    w.handleKey("\u001b[B"); // expand
+    t.advance(5000);
+    const lines = w.render(200);
+    assert.ok(
+      lines.length <= FLEET_MAX_LINES,
+      `lines=${lines.length} exceeds the ${FLEET_MAX_LINES}-line budget`,
+    );
+    for (const agent of ["beaver", "mola", "lynx"]) {
+      assert.equal(
+        lines.filter((l) => l.includes(`<c>${agent}</c>`)).length,
+        1,
+        `${agent} must render exactly one row: ${lines.join("\n")}`,
+      );
+    }
+    w.dispose();
+  });
+
+  it("moves the selection through a looping roster without repeating a run", () => {
+    const { deps } = depsOf();
+    seedTwoRunCycle();
+    const w = createFleetWidget(deps);
+    w.attach(tuiOf().tui, THEME);
+    w.handleKey("\u001b[B"); // expand, selects top
+    w.handleKey("j"); // a
+    w.handleKey("j"); // b
+    // The roster ends at `b`; the cycle must not re-enter `top`.
+    w.handleKey("j");
+    const lines = w.render(200);
+    const banded = lines.filter((l) => l.includes("<selectedBg>"));
+    assert.equal(banded.length, 1, lines.join("\n"));
+    assert.ok(banded[0].includes("<c>lynx</c>"), banded[0]);
     w.dispose();
   });
 });

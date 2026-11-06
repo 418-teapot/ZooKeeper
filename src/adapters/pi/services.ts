@@ -59,7 +59,8 @@ import {
   defineSessionResourcesService,
   type SessionResourceCatalog,
 } from "../../core/session/resources.js";
-import type { SubagentRun } from "../../core/subagent/registry.js";
+import type { RunSnapshot } from "../../core/subagent/registry.js";
+import { subscribeRunChange } from "../../core/subagent/registry.js";
 import type { FetchCandidates } from "../../core/todo/store.js";
 import type { ValidationLimits } from "../../core/validate.js";
 import { log } from "../../utils/logger.js";
@@ -227,13 +228,17 @@ export interface PiFleetFacade {
  * The extension-scope fleet service.
  *
  * The facade plus the session-scope seam the `fleetSession` service uses to
- * bind and release a session's own fleet.
+ * bind and release a session's own fleet.  The surface owns the one
+ * subscription to the run registry: a run change repaints the fleet of the
+ * session the run belongs to, and the extension stop removes it.
  */
 export interface PiFleetSurface extends PiFleetFacade {
   /** Track one session scope's fleet. */
   attach(session: PiFleetSession): void;
   /** Release one session scope's fleet and stop routing to it. */
   detach(session: PiFleetSession): void;
+  /** Remove the run-change subscription (the extension scope is stopping). */
+  dispose(): void;
 }
 
 /**
@@ -278,10 +283,10 @@ export interface PiServiceHost {
   /** Colorize an agent name per its configured `[agent.<name>].color`. */
   colorizeAgent(name: string): string;
   /** The overlay title for a run. */
-  titleForRun(run: SubagentRun): string;
+  titleForRun(run: RunSnapshot): string;
   /** The run's agent border colorizer, or undefined when unconfigured. */
   borderColorizeForRun(
-    run: SubagentRun,
+    run: RunSnapshot,
   ): ((text: string) => string) | undefined;
 }
 
@@ -372,9 +377,16 @@ function createTodoCandidates(
  * Routing is by session id only, and the id is always the caller's: an id
  * no session scope bound writes nothing, so the facade never falls back to
  * another session's fleet.
+ *
+ * The facade is also the one subscriber to the run registry of this
+ * extension instance: every run change repaints the fleet of the session
+ * that owns the run, so no producer ever nudges a widget itself.
  */
 function createPiFleetSurface(): PiFleetSurface {
   const sessions = createPiFleetSessionRegistry();
+  const unsubscribe = subscribeRunChange((change) => {
+    sessions.refresh(change.parentSession);
+  });
 
   return {
     refresh: (sessionID) => sessions.refresh(sessionID),
@@ -383,6 +395,7 @@ function createPiFleetSurface(): PiFleetSurface {
     register: (sessionID) => sessions.register(sessionID),
     attach: (session) => sessions.bind(session),
     detach: (session) => sessions.release(session),
+    dispose: () => unsubscribe(),
   };
 }
 
@@ -481,6 +494,9 @@ export function createPiHostServices(host: PiServiceHost) {
     name: "fleet",
     deps: [],
     create: () => createPiFleetSurface(),
+    // A stopped extension must not repaint a widget: the subscription ends
+    // with this scope.
+    dispose: (surface) => surface.dispose(),
   });
 
   const switchHost = defineExtensionService({

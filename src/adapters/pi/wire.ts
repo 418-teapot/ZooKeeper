@@ -71,7 +71,7 @@ import {
 } from "../../core/session/resources.js";
 import { scanSkillDirectories } from "../../core/skills.js";
 import type { SubagentDriver } from "../../core/subagent/driver.js";
-import type { SubagentRun } from "../../core/subagent/registry.js";
+import type { RunSnapshot } from "../../core/subagent/registry.js";
 import { findByChildSession } from "../../core/subagent/registry.js";
 import { todoSourceFromStore } from "../../core/todo/source.js";
 import type { ToolCallContext, ToolContribution } from "../../core/unit.js";
@@ -283,13 +283,6 @@ export function buildPiContributions(
      */
     subagentBaseline?: () => string[] | undefined;
     /**
-     * Called after every subagent run-registry mutation so the entry point
-     * can nudge the parent session's fleet widget to re-render (the widget
-     * reads the process-level registry directly on render).  Undefined on
-     * hosts without a fleet widget.
-     */
-    onSubagentRunChange?: (sessionID: string) => void;
-    /**
      * Test seam: workspace root the auto-debug strategy scans for Cases.
      * Defaults to the process working directory on the real host.
      */
@@ -401,10 +394,6 @@ export function buildPiContributions(
       // the subagent tool errors (never inherits or falls back) when the
       // target agent's entry is absent.
       subagentModels: loadAgentsJson(),
-      // Registry-write notification: the tool layer calls this after every
-      // subagent run start/update/finish so the fleet widget re-renders with
-      // the latest registry state.
-      onSubagentRunChange: hostDeps?.onSubagentRunChange,
       // The probed converter, bound by value.  `null` here means the addon
       // is unavailable or no profile is active; either way no key is
       // declared.
@@ -794,7 +783,7 @@ export async function buildPiHandlers(
   // color; pi's Text / truncateToWidth / visibleWidth preserve ANSI codes
   // (only the collapse-preview path strips them), so the wrapped name
   // survives the overlay render verbatim.  Unconfigured → the plain name.
-  const runTitle = (run: SubagentRun): string => {
+  const runTitle = (run: RunSnapshot): string => {
     const labelPart =
       run.label !== undefined && run.label.length > 0 ? ` · ${run.label}` : "";
     return `${colorizeAgent(run.agent)}${labelPart}`;
@@ -804,7 +793,7 @@ export async function buildPiHandlers(
   // back to its fixed border color — the current default).  Used for the
   // transcript overlay border so it reads as the inspected run's agent color.
   const agentBorderColorize = (
-    run: SubagentRun,
+    run: RunSnapshot,
   ): ((text: string) => string) | undefined => {
     const hex = agentColors[run.agent];
     if (hex === undefined) return undefined;
@@ -924,10 +913,6 @@ export async function buildPiHandlers(
             piApi === undefined
               ? undefined
               : () => ports.toolBaselines.subagent(),
-          // Registry-write notification → the parent session's fleet widget
-          // re-renders with the latest registry state (start / update /
-          // finish all nudge it).
-          onSubagentRunChange: (sessionID) => ports.fleet.refresh(sessionID),
           // Native HTML→Markdown converter for the fetch tool.  Wired here
           // (the real pi entry point); the wrapper warns once when the addon
           // is unavailable, the assembly then declares no `htmlConverter`
@@ -1268,7 +1253,6 @@ export async function buildPiHandlers(
     collectSkillPaths,
     applyActiveTools,
     registerFleetWidget,
-    refreshFleetWidget: (sessionID) => fleet.refresh(sessionID),
     refreshTodoView: (sessionID) => fleet.refreshTodoView(sessionID),
     seedTodoView: (sessionID) => fleet.seedTodoView(sessionID),
     // The switch surface's pending post-replacement operations ride the

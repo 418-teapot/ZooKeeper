@@ -21,7 +21,7 @@
  * @module
  */
 
-import type { SubagentRun } from "../../../core/subagent/registry.js";
+import type { RunSnapshot } from "../../../core/subagent/registry.js";
 import type { RunLog } from "../../../core/subagent/run-log.js";
 import type { TodoStateStore } from "../../../core/todo/store.js";
 import type { TodoPhase } from "../../../core/todo/types.js";
@@ -55,10 +55,10 @@ export interface FleetWiringDeps {
   /** The current pi editor text (guards the collapsed-key activation). */
   getEditorText(): string;
   /** The overlay title for a run (`<agent> · <label>`, colorized). */
-  titleForRun(run: SubagentRun): string;
+  titleForRun(run: RunSnapshot): string;
   /** The run's agent border colorizer, or undefined when unconfigured. */
   borderColorizeForRun(
-    run: SubagentRun,
+    run: RunSnapshot,
   ): ((text: string) => string) | undefined;
   /** The live `ui.custom` overlay opener, or undefined when absent. */
   getOpenOverlay():

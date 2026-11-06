@@ -49,13 +49,4 @@ export interface SubagentPort {
    * an actionable error naming agents.json).
    */
   subagentModels: Record<string, string>;
-  /**
-   * Called after every subagent run-registry mutation (start / update /
-   * finish) so the host can nudge the parent session's fleet widget to
-   * re-render.  The parent session id is the delegation's own, so the nudge
-   * never reaches another session's widget.
-   *
-   * Absent on hosts without a fleet widget.
-   */
-  onSubagentRunChange: (sessionID: string) => void;
 }

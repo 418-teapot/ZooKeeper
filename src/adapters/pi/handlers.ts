@@ -125,8 +125,6 @@ export interface PiEventHandlerDeps {
    * unknown id registers nothing.
    */
   registerFleetWidget(sessionID: string | undefined): void;
-  /** Re-render one session's fleet widget (registry / primary nudge). */
-  refreshFleetWidget(sessionID: string | undefined): void;
   /** Re-read one session's todo state and re-render its widget. */
   refreshTodoView(sessionID: string | undefined): void;
   /** Seed one session's todo column once (the `before_agent_start` fallback). */
@@ -318,6 +316,10 @@ export function createPiEventHandlers(
         // manager / history leaves the registry untouched (fresh session).
         // The transcript read comes from this event's own context, never
         // from another session's bound context.
+        //
+        // Every restored run publishes one run change, and the fleet
+        // subscription repaints the session that owns it, so the rebuild
+        // owns no widget nudge of its own.
         const sessionManager = (ctx as PiToolHostContext | undefined)
           ?.sessionManager;
         if (typeof sessionManager?.buildContextEntries === "function") {
@@ -337,7 +339,6 @@ export function createPiEventHandlers(
             });
           }
         }
-        deps.refreshFleetWidget(permit.sessionID);
       });
     },
     async resourcesDiscover(_evt?, ctx?) {

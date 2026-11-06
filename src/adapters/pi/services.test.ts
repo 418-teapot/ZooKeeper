@@ -24,7 +24,13 @@ import {
   contextSessionResources,
   createSessionResourceCatalog,
 } from "../../core/session/resources.js";
-import type { SubagentRun } from "../../core/subagent/registry.js";
+import {
+  finishRun,
+  type RunSnapshot,
+  resetRegistry,
+  startRun,
+  updateRun,
+} from "../../core/subagent/registry.js";
 import type { TodoPhase } from "../../core/todo/types.js";
 import { renderZooWidget } from "../../testkits/pi-wiring.js";
 import { _getBufferForTesting, _resetForTesting } from "../../utils/logger.js";
@@ -40,6 +46,7 @@ import { buildPiContributions } from "./wire.js";
 
 afterEach(() => {
   sessionAgentRegistry.clear();
+  resetRegistry();
   _resetForTesting();
 });
 
@@ -72,7 +79,7 @@ const SESSION_CATALOG = createSessionResourceCatalog([
 /** The pure host helpers the services take from the entry point. */
 const HOST_HELPERS = {
   colorizeAgent: (name: string) => name,
-  titleForRun: (run: SubagentRun) => run.agent,
+  titleForRun: (run: RunSnapshot) => run.agent,
   borderColorizeForRun: () => undefined,
 };
 
@@ -595,6 +602,144 @@ describe("pi host services — declarations", () => {
       );
     } finally {
       rendered.dispose();
+    }
+  });
+
+  it("refreshes only the fleet of the session a run change names", async () => {
+    const { api } = fakeApi(["edit"]);
+    const declarations = createPiHostServices(buildHost(api));
+    const kernel = createLifecycleKernel({
+      extension: declarations.extension,
+      session: declarations.session,
+    });
+    const extensionScope = await kernel.ensureExtension();
+    assert.ok(extensionScope);
+    const { services } = extensionScope;
+    sessionAgentRegistry.bind("s1", "dolphin");
+    sessionAgentRegistry.bind("s2", "dolphin");
+
+    /** One session's ui plus a tui counting the widget's render requests. */
+    const sessionUi = () => {
+      const calls: Array<[string, unknown]> = [];
+      const state = { renders: 0 };
+      const tui = {
+        requestRender: () => {
+          state.renders += 1;
+        },
+      };
+      return {
+        calls,
+        state,
+        tui,
+        ui: {
+          notify: () => {},
+          setWidget: (key: string, content: unknown) => {
+            calls.push([key, content]);
+          },
+          onTerminalInput: () => () => {},
+        },
+      };
+    };
+    const a = sessionUi();
+    const b = sessionUi();
+    services.sessionContexts.bind("s1", {
+      sessionManager: { getSessionId: () => "s1" },
+      ui: a.ui,
+    });
+    await kernel.ensureSession("s1");
+    services.sessionContexts.bind("s2", {
+      sessionManager: { getSessionId: () => "s2" },
+      ui: b.ui,
+    });
+    await kernel.ensureSession("s2");
+    services.fleet.register("s1");
+    services.fleet.register("s2");
+
+    const widgetA = renderZooWidget(a.calls, 80, a.tui);
+    const widgetB = renderZooWidget(b.calls, 80, b.tui);
+    try {
+      const beforeA = a.state.renders;
+      const beforeB = b.state.renders;
+
+      startRun({
+        id: "run-1",
+        agent: "lynx",
+        parentSession: "s1",
+        startedAt: 1,
+      });
+      updateRun("run-1", { tokens: 5 });
+      finishRun("run-1", { status: "done", endedAt: 2 });
+
+      assert.equal(
+        a.state.renders - beforeA,
+        3,
+        "the owning session's fleet repaints on every run change",
+      );
+      assert.equal(
+        b.state.renders,
+        beforeB,
+        "the sibling session's widget must never repaint",
+      );
+    } finally {
+      widgetA.dispose();
+      widgetB.dispose();
+    }
+  });
+
+  it("stops routing run changes once the extension stops", async () => {
+    const { api } = fakeApi(["edit"]);
+    const declarations = createPiHostServices(buildHost(api));
+    const kernel = createLifecycleKernel({
+      extension: declarations.extension,
+      session: declarations.session,
+    });
+    const extensionScope = await kernel.ensureExtension();
+    assert.ok(extensionScope);
+    const { services } = extensionScope;
+    sessionAgentRegistry.bind("s1", "dolphin");
+    const calls: Array<[string, unknown]> = [];
+    const state = { renders: 0 };
+    const tui = {
+      requestRender: () => {
+        state.renders += 1;
+      },
+    };
+    services.sessionContexts.bind("s1", {
+      sessionManager: { getSessionId: () => "s1" },
+      ui: {
+        notify: () => {},
+        setWidget: (key: string, content: unknown) => {
+          calls.push([key, content]);
+        },
+        onTerminalInput: () => () => {},
+      },
+    });
+    await kernel.ensureSession("s1");
+    services.fleet.register("s1");
+    const widget = renderZooWidget(calls, 80, tui);
+    try {
+      startRun({
+        id: "run-1",
+        agent: "lynx",
+        parentSession: "s1",
+        startedAt: 1,
+      });
+      assert.equal(state.renders, 1, "a live extension routes the change");
+
+      await kernel.stopExtension("extension.stop");
+      startRun({
+        id: "run-2",
+        agent: "lynx",
+        parentSession: "s1",
+        startedAt: 2,
+      });
+      assert.equal(
+        state.renders,
+        1,
+        "a stopped extension must not repaint anything",
+      );
+    } finally {
+      widget.dispose();
     }
   });
 

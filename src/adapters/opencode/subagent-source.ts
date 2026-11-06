@@ -34,6 +34,7 @@
 import {
   finishRun,
   getRun,
+  restoreRun,
   startRun,
   TERMINAL_STATUSES,
   type UpdateRunPatch,
@@ -435,8 +436,9 @@ export function createSubagentSource(deps: SubagentSourceDeps): SubagentSource {
    *
    * The registry freezes a run at its terminal transition, so the last read
    * has to land while the run is still active: the terminal write waits for
-   * it.  A failing read still closes the run — the status is the more
-   * important fact.
+   * it and commits both in one step, which publishes exactly one change.  A
+   * failing read still closes the run — the status is the more important
+   * fact.
    */
   function finishWithFinalTokens(
     partId: string,
@@ -447,9 +449,10 @@ export function createSubagentSource(deps: SubagentSourceDeps): SubagentSource {
   ): void {
     stopPolling(partId);
     labelRanks.delete(partId);
-    const finish = (): void => {
+    const finish = (tokens?: number): void => {
       finishRun(partId, {
         status: outcome,
+        ...(tokens !== undefined ? { tokens } : {}),
         ...(endedAt !== undefined ? { endedAt } : {}),
         ...(error !== undefined ? { error } : {}),
         ...(childSession !== undefined ? { childSession } : {}),
@@ -459,11 +462,7 @@ export function createSubagentSource(deps: SubagentSourceDeps): SubagentSource {
       finish();
       return;
     }
-    void readContextTokens(childSession)
-      .then((tokens) => {
-        if (tokens !== undefined) updateRun(partId, { tokens });
-      })
-      .finally(finish);
+    void readContextTokens(childSession).then(finish, () => finish());
   }
 
   /**
@@ -533,18 +532,69 @@ export function createSubagentSource(deps: SubagentSourceDeps): SubagentSource {
   }
 
   /**
+   * Restore an absent terminal part with one terminal write.
+   *
+   * A part no run covers and that already reached its terminal state has no
+   * live history to replay: registering it as running and closing it would
+   * publish a state it never had.  The final context length is the only
+   * extra fact, so the write waits for it and commits both at once; a failed
+   * or empty read still restores the terminal state.
+   *
+   * The read is asynchronous, so the write re-checks both of its conditions
+   * on settle: a disposed source restores nothing, and a run the live path
+   * registered first keeps its own facts.
+   */
+  function restoreTerminal(
+    partId: string,
+    state: Record<string, unknown>,
+    outcome: "done" | "error" | "aborted",
+  ): void {
+    const input = state.input as Record<string, unknown> | undefined;
+    const metadata = state.metadata as Record<string, unknown> | undefined;
+    const childSession = extractChildSession(metadata);
+    const model = extractModel(metadata);
+    const { startedAt, endedAt } = extractTimes(state);
+    const restore = (tokens?: number): void => {
+      if (disposed || getRun(partId) !== undefined) return;
+      restoreRun({
+        id: partId,
+        agent: extractAgent(input),
+        parentSession: parentSessionId,
+        status: outcome,
+        label: titleFact(state, partId).label,
+        ...(startedAt !== undefined ? { startedAt } : {}),
+        ...(endedAt !== undefined ? { endedAt } : {}),
+        ...(model !== undefined ? { model } : {}),
+        ...(childSession !== undefined ? { childSession } : {}),
+        ...(tokens !== undefined ? { tokens } : {}),
+        ...(outcome === "error" ? { error: String(state.error ?? "") } : {}),
+      });
+    };
+    if (childSession === undefined) {
+      restore();
+      return;
+    }
+    void readContextTokens(childSession).then(restore, () => restore());
+  }
+
+  /**
    * Write a part fact recovered from the session history.
    *
-   * A part no run covers is translated exactly like a live first sighting
-   * (register, enrich, close when already terminal).  A run that already
-   * exists is left alone when it finished, and otherwise only receives the
-   * fields the live events have not reported — the scan reads a snapshot
-   * that may predate them — plus the terminal transition when the scan sees
-   * it.
+   * A part no run covers is restored in one terminal write when the history
+   * already shows its outcome, and otherwise translated like a live first
+   * sighting (register, enrich, poll).  A run that already exists is left
+   * alone when it finished, and otherwise only receives the fields the live
+   * events have not reported — the scan reads a snapshot that may predate
+   * them — plus the terminal transition when the scan sees it.
    */
   function applyScanned(partId: string, state: Record<string, unknown>): void {
     const existing = getRun(partId);
     if (existing === undefined) {
+      const outcome = terminalOutcome(state);
+      if (outcome !== undefined) {
+        restoreTerminal(partId, state, outcome);
+        return;
+      }
       applyLive(partId, state);
       return;
     }

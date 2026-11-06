@@ -6,7 +6,7 @@
  * registry, so the fleet widget would otherwise render empty).  It maps the
  * pi message shape returned by `sessionManager.buildContextEntries()` —
  * `toolCall` blocks in assistant messages paired with `toolResult` messages
- * by call id — onto `SubagentRun` entries scoped to the calling session.
+ * by call id — onto `RunSnapshot` entries scoped to the calling session.
  *
  * Covered here:
  * - completed / errored / interrupted (in-flight at pi exit) resolution
@@ -32,6 +32,7 @@ import {
   getRun,
   resetRegistry,
   startRun,
+  subscribeRunChange,
   topLevelRuns,
 } from "../../core/subagent/registry.js";
 import { makeTmpDir } from "../../testkits/tmp.js";
@@ -529,6 +530,44 @@ describe("rebuildSubagentRuns — write scanned runs into the registry", () => {
     assert.equal(run?.sessionPath, "/home/u/.pi/agent/sessions/x/s.jsonl");
     assert.equal(topLevelRuns("sess-1").length, 1, "no duplicate entries");
     assert.equal(run?.endedAt, frozen?.endedAt, "terminal fields stay frozen");
+  });
+
+  it("publishes one terminal change per restored run and none on a re-scan", () => {
+    const history = [
+      assistantEntry([toolCall("r1", "subagent", { agent: "beaver" })], 10),
+      toolResultEntry("r1", "subagent", [{ type: "text", text: "ok" }]),
+      assistantEntry([toolCall("r2", "subagent", { agent: "spider" })], 20),
+      toolResultEntry("r2", "subagent", [{ type: "text", text: "boom" }], {
+        isError: true,
+      }),
+    ];
+    const changes: Array<{
+      runId: string;
+      parentSession: string;
+      status?: string;
+    }> = [];
+    const off = subscribeRunChange((change) => {
+      changes.push({ ...change, status: getRun(change.runId)?.status });
+    });
+    rebuildSubagentRuns(history, "sess-1");
+    off();
+
+    assert.deepEqual(
+      changes,
+      [
+        { runId: "r1", parentSession: "sess-1", status: "done" },
+        { runId: "r2", parentSession: "sess-1", status: "error" },
+      ],
+      "a restored run publishes exactly one already-terminal change",
+    );
+
+    let rescanned = 0;
+    const offRescan = subscribeRunChange(() => {
+      rescanned += 1;
+    });
+    rebuildSubagentRuns(history, "sess-1");
+    offRescan();
+    assert.equal(rescanned, 0, "a re-scan publishes nothing");
   });
 
   it("preserves an existing running entry when a scan reports it aborted", () => {

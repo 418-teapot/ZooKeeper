@@ -86,10 +86,10 @@ import {
 } from "@earendil-works/pi-tui";
 import type { DisplayHue } from "../../../core/display.js";
 import {
-  childrenOf,
+  childrenIndex,
   getRun,
+  type RunSnapshot,
   type RunStatus,
-  type SubagentRun,
   TERMINAL_STATUSES,
 } from "../../../core/subagent/registry.js";
 import type { RunLog } from "../../../core/subagent/run-log.js";
@@ -178,15 +178,37 @@ interface SubagentToolResult {
 // Projection component
 // ---------------------------------------------------------------------------
 
-/** The three inputs one card projection needs, resolved at render time. */
+/** The inputs one card projection needs, resolved at render time. */
 interface CardProjection {
   /** The fact log to project (live registry log or hydrated copy). */
   log: RunLog;
   /** Run identity / lifecycle beyond the facts. */
   meta: CardMeta;
-  /** The run's nested subagent runs (registry children, rendered as a
-   * recursive tree). */
-  children: SubagentRun[];
+  /** The rendered run's id: its own row group in `childrenByParent`. */
+  rootId: string;
+  /** Parent-run id → its child runs, every depth (from the same walk). */
+  childrenByParent: ReadonlyMap<string, RunSnapshot[]>;
+}
+
+/**
+ * The card's subtree inputs for a run, taken from one walk.
+ *
+ * The projection receives the run id and the parent → children index, so the
+ * nested rows and the descendant-failure count come from one explicit
+ * source.  A run that is absent (the startup race) yields an empty index and
+ * an id that no entry matches.
+ *
+ * @param run - The run the card renders, when the registry knows it.
+ * @returns The root id and the full index.
+ */
+function cardTree(run: RunSnapshot | undefined): {
+  rootId: string;
+  childrenByParent: ReadonlyMap<string, RunSnapshot[]>;
+} {
+  if (run === undefined) {
+    return { rootId: "", childrenByParent: new Map() };
+  }
+  return { rootId: run.id, childrenByParent: childrenIndex([run]) };
 }
 
 /**
@@ -203,7 +225,7 @@ class ProjectedCard implements Component {
   private readonly cache = new Map<number, string[]>();
 
   /**
-   * @param projection - Resolver for the log / meta / children snapshot.
+   * @param projection - Resolver for the log / meta / subtree snapshot.
    * @param markdownTheme - pi's full markdown theme (markdown lines only).
    * @param expanded - Whether the card renders in expanded mode.
    * @param frame - The shared spinner frame (nested-child spinners).
@@ -224,13 +246,14 @@ class ProjectedCard implements Component {
     const safeWidth = Math.max(1, width);
     const hit = this.cache.get(safeWidth);
     if (hit !== undefined) return hit;
-    const { log, meta, children } = this.projection();
+    const { log, meta, rootId, childrenByParent } = this.projection();
     const lines = projectCard(log, meta, {
       width: safeWidth,
       expanded: this.expanded,
       now: Date.now(),
       frame: this.frame,
-      children,
+      rootId,
+      childrenByParent,
     });
     const container = new Container();
     for (const line of lines) {
@@ -248,7 +271,7 @@ class ProjectedCard implements Component {
  * @param run - The registry entry.
  * @returns The projection meta.
  */
-function metaFromRun(run: SubagentRun): CardMeta {
+function metaFromRun(run: RunSnapshot): CardMeta {
   return {
     agent: run.agent,
     model: run.model,
@@ -563,7 +586,7 @@ export function renderResult(
           () => ({
             log: hydration.log,
             meta: metaFromRun(run),
-            children: childrenOf(run.id),
+            ...cardTree(run),
           }),
           markdownTheme,
           expanded,
@@ -585,7 +608,7 @@ export function renderResult(
       () => ({
         log: run.log,
         meta: metaFromRun(run),
-        children: childrenOf(run.id),
+        ...cardTree(run),
       }),
       markdownTheme,
       expanded,
@@ -626,7 +649,7 @@ export function renderResult(
           return {
             log: hydration.log,
             meta,
-            children: live !== undefined ? childrenOf(live.id) : [],
+            ...cardTree(live),
           };
         },
         markdownTheme,

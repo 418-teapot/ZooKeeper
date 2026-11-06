@@ -25,7 +25,7 @@
  * @module
  */
 
-import type { SubagentRun } from "../../core/subagent/registry.js";
+import type { RunSnapshot } from "../../core/subagent/registry.js";
 import type { TodoStateStore } from "../../core/todo/store.js";
 import type { PiToolHostContext } from "./tool-host.js";
 import type { FleetWidget } from "./tui/widget.js";
@@ -86,10 +86,10 @@ export interface PiFleetSessionDeps {
   /** This session's pi editor text (guards the collapsed-key activation). */
   getEditorText(): string;
   /** The overlay title for a run (`<agent> · <label>`, colorized). */
-  titleForRun(run: SubagentRun): string;
+  titleForRun(run: RunSnapshot): string;
   /** The run's agent border colorizer, or undefined when unconfigured. */
   borderColorizeForRun(
-    run: SubagentRun,
+    run: RunSnapshot,
   ): ((text: string) => string) | undefined;
   /** This session's `ui.custom` overlay opener, or undefined when absent. */
   getOpenOverlay():

@@ -5,9 +5,9 @@
  * A subagent run is an ordered, immutable fact stream (`run-log.ts`);
  * most functions here are *pure projections* of that stream plus run
  * metadata.  The fleet-widget projections (`renderFleetCollapsed` /
- * `renderFleetRows`) and the card's nested subtrees are the exception:
- * they also read the process-global run registry (`registry.ts`) through
- * `childrenOf` to reach a run's descendants.  No information is destroyed
+ * `renderFleetRows`) and the card's nested subtrees render the run tree a
+ * caller hands in as an explicit parent → children index, so this module
+ * never reads the registry.  No information is destroyed
  * before projection: the log keeps full args,
  * results, and message text, and every display decision — which entries
  * are in the recency window, how wide a line may get, how a tool call reads
@@ -35,7 +35,7 @@
  *     `GLANCE_LINES` entries.
  *
  * The fleet-widget functions (`renderFleetCollapsed` / `renderFleetRows`)
- * derive the pi `zoo` widget lines from the run registry (`registry.ts`):
+ * derive the pi `zoo` widget lines from the runs they are given:
  * a single-line collapsed summary (status carried purely by color, never
  * by text markers) and the expanded scrolling row list with nested child
  * runs at every generation.
@@ -54,12 +54,7 @@ import {
   TREE_LAST,
   TREE_PIPE,
 } from "../display.js";
-import {
-  childrenOf,
-  type RunStatus,
-  type RunSummary,
-  type SubagentRun,
-} from "./registry.js";
+import type { RunSnapshot, RunStatus, RunSummary } from "./registry.js";
 import type {
   MessageEndFact,
   RunFact,
@@ -735,9 +730,16 @@ export interface CardOptions {
   now?: number;
   /** The shared spinner frame sequence (for nested-child spinners). */
   frame?: number;
-  /** This run's nested subagent runs (rendered as a recursive,
-   * time-anchored tree). */
-  children?: SubagentRun[];
+  /** The id of the run this card renders: the key of its own row group in
+   * `childrenByParent`. */
+  rootId: string;
+  /**
+   * Parent-run id → its child runs (from `registry.childrenIndex`).
+   *
+   * The single source for the nested rows at every depth and for the
+   * descendant-failure badge.  The root's own entry holds the first level.
+   */
+  childrenByParent: ReadonlyMap<string, RunSnapshot[]>;
 }
 
 /**
@@ -762,7 +764,7 @@ export interface CardOptions {
  * @param log - The run's append-only fact log.
  * @param meta - The run metadata (identity, lifecycle, current tool).
  * @param opts - Render-time options (width, expansion, recency window,
- *   clock, spinner frame, children).
+ *   clock, spinner frame, the rendered run's id and its subtree index).
  * @returns The display lines for the card.
  */
 export function projectCard(
@@ -775,9 +777,10 @@ export function projectCard(
   const glance = opts.glanceLines ?? GLANCE_LINES;
   const frame = opts.frame ?? 0;
   const lines: CardLine[] = [];
-  const children = opts.children ?? [];
+  const childrenByParent = opts.childrenByParent;
+  const children = childrenByParent.get(opts.rootId) ?? [];
   const childIds = new Set(children.map((child) => child.id));
-  const childGroups = childEntries(children, frame);
+  const childGroups = childEntries(children, frame, childrenByParent);
 
   if (meta.status === "running") {
     // The running body emits no title line — the tool-call card owns it,
@@ -832,7 +835,7 @@ export function projectCard(
   // cancellation, not a failure, so neither gets the descendant badge.
   lines.push(
     meta.status === "done"
-      ? badgeFailures(title, countDescendantErrors(children))
+      ? badgeFailures(title, countDescendantErrors(children, childrenByParent))
       : title,
   );
   if (meta.status === "error" && meta.error !== undefined) {
@@ -1025,7 +1028,7 @@ export function renderFleetCollapsed(
  * @returns The glyph and its semantic hue.
  */
 function fleetGlyph(
-  run: SubagentRun,
+  run: RunSnapshot,
   frameSeq: number,
 ): { glyph: string; hue: DisplayHue } {
   const presentation = STATUS_PRESENTATION[RUN_PRESENTATION[run.status]];
@@ -1065,8 +1068,8 @@ function fleetGlyph(
  * @returns The display lines for the expanded fleet widget.
  */
 export function renderFleetRows(
-  entries: SubagentRun[],
-  childrenByParent: Map<string, SubagentRun[]>,
+  entries: RunSnapshot[],
+  childrenByParent: ReadonlyMap<string, RunSnapshot[]>,
   selectedId: string | undefined,
   frameSeq: number,
   now: number,
@@ -1115,9 +1118,9 @@ export function renderFleetRows(
  * @returns The rendered rows for the group and its descendants.
  */
 function fleetChildRows(
-  children: SubagentRun[],
+  children: RunSnapshot[],
   ancestorPrefix: string,
-  childrenByParent: Map<string, SubagentRun[]>,
+  childrenByParent: ReadonlyMap<string, RunSnapshot[]>,
   selectedId: string | undefined,
   frameSeq: number,
   now: number,
@@ -1230,7 +1233,7 @@ function agentPrefixOf(body: string): string | undefined {
  * @param now - The current epoch-millis time (injected for determinism).
  * @returns The row body text.
  */
-function fleetRowBody(run: SubagentRun, now: number): string {
+function fleetRowBody(run: RunSnapshot, now: number): string {
   const labelPart =
     run.label !== undefined && run.label.length > 0 ? ` · ${run.label}` : "";
   // A restored aborted run whose `endedAt` equals its `startedAt` carries no
@@ -1261,7 +1264,7 @@ function fleetRowBody(run: SubagentRun, now: number): string {
  * @param child - The child run.
  * @returns The activity text, or `undefined` when the run is idle/terminal.
  */
-function childActivity(child: SubagentRun): string | undefined {
+function childActivity(child: RunSnapshot): string | undefined {
   if (child.status !== "running") return undefined;
   if (child.currentTool !== undefined && child.currentTool.length > 0) {
     return child.currentTool;
@@ -1300,20 +1303,22 @@ function lastUnfinishedTool(facts: readonly RunFact[]): string | undefined {
  * position among its siblings (`TREE_LAST` for the last, `TREE_BRANCH`
  * otherwise) and the indent accumulated from every ancestor level.  The
  * activity segment appears only while the run is live.  Descendants come
- * from the registry (`childrenOf`), one level deeper with the ancestor's
- * indent extended, so the whole subtree renders as a tree.
+ * from the explicit index (`childrenByParent`), one level deeper with the
+ * ancestor's indent extended, so the whole subtree renders as a tree.
  *
  * @param child - The child run.
  * @param isLast - Whether the child is the last of its siblings.
  * @param ancestorPrefix - The indent accumulated from ancestor levels.
  * @param frameSeq - The shared spinner frame sequence.
+ * @param childrenByParent - Parent-run id → its child runs (every depth).
  * @returns The subtree's display lines (the child row first).
  */
 function childSubtreeLines(
-  child: SubagentRun,
+  child: RunSnapshot,
   isLast: boolean,
   ancestorPrefix: string,
   frameSeq: number,
+  childrenByParent: ReadonlyMap<string, RunSnapshot[]>,
 ): CardLine[] {
   const { glyph, hue } = fleetGlyph(child, frameSeq);
   const labelPart =
@@ -1327,7 +1332,7 @@ function childSubtreeLines(
   const lines: CardLine[] = [
     { text: `${ancestorPrefix}${branch} ${glyph} ${body}`, hue },
   ];
-  const children = childrenOf(child.id);
+  const children = childrenByParent.get(child.id) ?? [];
   const childPrefix = `${ancestorPrefix}${isLast ? "   " : TREE_PIPE}`;
   children.forEach((descendant, index) => {
     lines.push(
@@ -1336,6 +1341,7 @@ function childSubtreeLines(
         index === children.length - 1,
         childPrefix,
         frameSeq,
+        childrenByParent,
       ),
     );
   });
@@ -1352,11 +1358,13 @@ function childSubtreeLines(
  *
  * @param children - The run's direct child runs (oldest first).
  * @param frameSeq - The shared spinner frame sequence.
+ * @param childrenByParent - Parent-run id → its child runs (every depth).
  * @returns The anchored groups and the unanchored lines.
  */
 function childEntries(
-  children: SubagentRun[],
+  children: RunSnapshot[],
   frameSeq: number,
+  childrenByParent: ReadonlyMap<string, RunSnapshot[]>,
 ): { anchored: TimelineEntry[]; unanchored: CardLine[] } {
   const anchored: TimelineEntry[] = [];
   const unanchored: CardLine[] = [];
@@ -1366,6 +1374,7 @@ function childEntries(
       index === children.length - 1,
       "",
       frameSeq,
+      childrenByParent,
     );
     if (child.startedAt > 0) {
       anchored.push({ at: child.startedAt, lines });
@@ -1379,17 +1388,24 @@ function childEntries(
 /**
  * Count every descendant run (all generations) that finished with an error.
  *
- * Recurses through `childrenOf`, so a failure buried under a successful
+ * The walk uses the explicit index, so a failure buried under a successful
  * intermediate run still surfaces on the top-level card's title.
  *
  * @param children - The direct child runs.
+ * @param childrenByParent - Parent-run id → its child runs (every depth).
  * @returns The number of error descendants.
  */
-function countDescendantErrors(children: SubagentRun[]): number {
+function countDescendantErrors(
+  children: RunSnapshot[],
+  childrenByParent: ReadonlyMap<string, RunSnapshot[]>,
+): number {
   let count = 0;
   for (const child of children) {
     if (child.status === "error") count += 1;
-    count += countDescendantErrors(childrenOf(child.id));
+    count += countDescendantErrors(
+      childrenByParent.get(child.id) ?? [],
+      childrenByParent,
+    );
   }
   return count;
 }

@@ -45,7 +45,9 @@
  *    onto the registry run, asks the host for a card repaint per report
  *    (`call.notifyChanged`; the card body projects the run's log), and
  *    drives the lifecycle orchestration (`runSubagent`) under the call's
- *    cancellation signal.
+ *    cancellation signal.  The driver's terminal report (`done`) carries the
+ *    last field values; those are committed with the finish write, so the
+ *    run never publishes them on a still-running state.
  * 5. Resolves the sub-session model (strict mode): `caps.subagentModels`
  *    (agents.json, whose mapped values are `"provider/model"` strings) is
  *    the SOLE source.  A missing entry for the target
@@ -201,15 +203,9 @@ export function createSubagentTool(
         | "agentModes"
         | "agentPermissions"
         | "subagentModels"
-        | "onSubagentRunChange"
       >
     >,
 ): ToolDefinition {
-  // Nudge the parent session's fleet widget after every registry mutation
-  // (the pi entry point wires this to that session's widget refresh).
-  const notifyRunChange = (parentSession: string): void => {
-    caps.onSubagentRunChange?.(parentSession);
-  };
   return {
     description:
       "将任务委派给一个专用的子 agent 执行。子 agent 使用全新上下文，不会继承当前会话，需要在 prompt 中提供完整的背景、目标、约束和验收标准。该工具会同步等待子 agent 完成，并返回其最终回复。",
@@ -309,13 +305,17 @@ export function createSubagentTool(
       // collide within one millisecond).
       const runId =
         call.callID ?? `${caller}-${input.agent}-${++syntheticRunSeq}`;
-      const run = startRun({
+      const handle = startRun({
         id: runId,
         agent: input.agent,
         parentSession: sessionID,
         label: input.description,
       });
-      notifyRunChange(sessionID);
+      // The driver's terminal report carries the run's last field values.
+      // They are committed with the finish write instead of an update of
+      // their own: no consumer needs to observe tokens or a session path on
+      // a run that is finishing anyway.
+      let finalPatch: UpdateRunPatch = {};
 
       // 7. Drive the delegation through the orchestration core.  The run's
       // progress reports are patched onto the registry run (see the
@@ -335,7 +335,7 @@ export function createSubagentTool(
         },
         {
           signal,
-          log: run.log,
+          log: handle.log,
           onProgress: (progress) => {
             // Patch the running run's progress fields — the current tool
             // (including the driver's explicit "tool finished" clear), the
@@ -344,19 +344,16 @@ export function createSubagentTool(
             // rebuild the parent/child tree), and the sub-session path.
             //
             // The context length comes from the report rather than from
-            // `deriveCounters(run.log.facts())`: rescanning the whole fact log
-            // for every progress report is O(n) per report and O(n²) over a
-            // run, while the driver has already read each usage figure as it
-            // appended the fact.  Fields an absent report omits are left
-            // untouched.
+            // `deriveCounters(handle.log.facts())`: rescanning the whole fact
+            // log for every progress report is O(n) per report and O(n²) over
+            // a run, while the driver has already read each usage figure as
+            // it appended the fact.  Fields an absent report omits are left
+            // untouched, and `updateRun` drops a value the run already holds.
             const patch: UpdateRunPatch = {};
             if (progress.currentTool !== undefined) {
               patch.currentTool = progress.currentTool;
             }
-            if (
-              progress.tokens !== undefined &&
-              progress.tokens !== run.tokens
-            ) {
+            if (progress.tokens !== undefined) {
               patch.tokens = progress.tokens;
             }
             if (progress.model !== undefined) patch.model = progress.model;
@@ -371,8 +368,8 @@ export function createSubagentTool(
               patch.sessionPath = progress.sessionPath;
             }
             if (Object.keys(patch).length > 0) {
-              updateRun(runId, patch);
-              notifyRunChange(sessionID);
+              if (progress.done) finalPatch = patch;
+              else updateRun(runId, patch);
             }
 
             // Repaint the host's live card on every report.  The card body
@@ -384,10 +381,10 @@ export function createSubagentTool(
       );
 
       // 8. Finish the registry run (terminal state, immutable thereafter).
-      //    The session path (when any) was already patched onto the run via
-      //    `updateRun` on the first progress report, so finish only sets
-      //    the terminal status and outcome fields.
+      //    The last progress batch lands in this same write, so the run
+      //    publishes exactly one terminal event.
       finishRun(runId, {
+        ...finalPatch,
         status:
           result.kind === "ok"
             ? "done"
@@ -396,7 +393,6 @@ export function createSubagentTool(
               : "aborted",
         ...(result.kind === "error" ? { error: result.errorMessage } : {}),
       });
-      notifyRunChange(sessionID);
 
       log.info({
         hook: "subagent-tool",
@@ -429,7 +425,6 @@ export const unit = defineTool({
     "agentModes",
     "agentPermissions",
     "subagentModels",
-    "onSubagentRunChange",
   ],
   create(caps) {
     return createSubagentTool(caps.subagentDriver, caps);

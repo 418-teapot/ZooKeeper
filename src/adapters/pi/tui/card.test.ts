@@ -514,6 +514,83 @@ describe("pi renderResult — structured projection from the run log", () => {
     );
   });
 
+  it("renders nested child rows at every depth, not only the first", () => {
+    startRun({
+      id: "tc-deep-parent",
+      agent: "beaver",
+      parentSession: "main-1",
+      childSession: "deep-1",
+    });
+    startRun({
+      id: "tc-deep-child",
+      agent: "lynx",
+      parentSession: "deep-1",
+      childSession: "deep-2",
+      startedAt: 10,
+    });
+    startRun({
+      id: "tc-deep-grand",
+      agent: "spider",
+      parentSession: "deep-2",
+      startedAt: 20,
+    });
+    const lines = renderComponent(
+      renderResult(
+        streamed(""),
+        { isPartial: true },
+        THEME,
+        toolContext("tc-deep-parent"),
+      ),
+      80,
+    );
+    assert.ok(
+      lines.some((l) => /^└─ \S+ subagent\(lynx\)/.test(l.trimEnd())),
+      `child row expected: ${lines.join(" | ")}`,
+    );
+    assert.ok(
+      lines.some((l) => /^ {3}└─ \S+ subagent\(spider\)/.test(l.trimEnd())),
+      `grandchild row expected: ${lines.join(" | ")}`,
+    );
+  });
+
+  it("badges a successful title with a grandchild failure", () => {
+    startRun({
+      id: "tc-badge-parent",
+      agent: "beaver",
+      parentSession: "main-1",
+      childSession: "badge-1",
+    });
+    startRun({
+      id: "tc-badge-child",
+      agent: "lynx",
+      parentSession: "badge-1",
+      childSession: "badge-2",
+      startedAt: 10,
+    });
+    startRun({
+      id: "tc-badge-grand",
+      agent: "spider",
+      parentSession: "badge-2",
+      startedAt: 20,
+    });
+    finishRun("tc-badge-child", { status: "done" });
+    finishRun("tc-badge-grand", { status: "error" });
+    finishRun("tc-badge-parent", { status: "done" });
+    const lines = renderComponent(
+      renderResult(
+        streamed(""),
+        { isPartial: false },
+        THEME,
+        toolContext("tc-badge-parent"),
+      ),
+      200,
+    );
+    assert.ok(
+      lines[0].includes("■ 1 failed"),
+      `grandchild failure badge expected: ${lines.join(" | ")}`,
+    );
+  });
+
   it("back-fills a restored card's children lazily after a registry rebuild", async () => {
     const sessionPath = await writeSessionFile({
       role: "assistant",

@@ -27,6 +27,9 @@
  *   `parentSession`, so concurrent main sessions never see each other's
  *   runs.  Run ids are globally unique; a duplicate `startRun` never
  *   clobbers an existing entry.
+ * - **Read-only views** — a public query returns a frozen `RunSnapshot`, so
+ *   the mutable entry never leaves this module; a producer holds a
+ *   `RunHandle` (id plus the shared live log) and addresses the run by id.
  *
  * `windowRuns` is the stateless scrolling-window slice that feeds the
  * expanded fleet widget's ~7-row budget: the selected run (when present)
@@ -41,9 +44,11 @@
  * alongside lifecycle transitions, so one subscription refreshes consumers
  * on both kinds of change (the streaming partial deliveries stay off this
  * fact-only feed by design — the fleet must not repaint per streamed
- * token).  At finish the log is released: the terminal run holds a fresh
- * empty log, and the released object stays valid for any consumer already
- * holding it (an open transcript overlay keeps its projected content).
+ * token).  Every published change names the run and its parent session, so
+ * a subscriber routes it without a registry lookup.  At finish the log is
+ * released: the terminal run holds a fresh empty log, and the released
+ * object stays valid for any consumer already holding it (an open
+ * transcript overlay keeps its projected content).
  *
  * @module
  */
@@ -59,48 +64,73 @@ import { createRunLog, type RunLog } from "./run-log.js";
 export type RunStatus = "running" | "done" | "error" | "aborted";
 
 /**
- * One tracked subagent run.
+ * An immutable snapshot of one tracked subagent run.
+ *
+ * Every public query hands out a frozen snapshot: a read-only consumer never
+ * sees the registry's mutable entry, so a later `updateRun` / `finishRun`
+ * cannot change what an already-returned snapshot reports.  Unset optional
+ * fields are absent keys, never `undefined` values.
+ *
+ * `log` is the one shared, deliberately mutable handle — see `RunHandle`.
  *
  * `parentSession` is the calling session (the main session for top-level
  * runs, or the parent run's `childSession` for a nested delegation).
  * `childSession` is the sub-session id this run created when it delegated,
  * recorded via `updateRun` once the sub-session exists.
  */
-export interface SubagentRun {
+export interface RunSnapshot {
   /** The globally unique run id (the delegation's tool-call / run id). */
-  id: string;
+  readonly id: string;
   /** The delegated subagent name (e.g. "lynx", "spider"). */
-  agent: string;
+  readonly agent: string;
   /** The calling session id (main session for top-level runs). */
-  parentSession: string;
+  readonly parentSession: string;
   /** The lifecycle status. */
-  status: RunStatus;
+  readonly status: RunStatus;
   /** Epoch-millis start time. */
-  startedAt: number;
+  readonly startedAt: number;
   /** Epoch-millis end time, set only on a terminal finish. */
-  endedAt?: number;
+  readonly endedAt?: number;
   /** The delegation's task description (rendered beside the agent). */
-  label?: string;
+  readonly label?: string;
   /** The sub-session id this run created (its delegation target). */
-  childSession?: string;
+  readonly childSession?: string;
   /** The tool name the run is currently executing, when any. */
-  currentTool?: string;
+  readonly currentTool?: string;
   /** The context length of the latest message that reported usable usage. */
-  tokens?: number;
+  readonly tokens?: number;
   /** The model id actually used by the sub-session, when resolved. */
-  model?: string;
+  readonly model?: string;
   /** The failure reason, set only when `status` is `error`. */
-  error?: string;
+  readonly error?: string;
   /** The on-disk path of the sub-session file, when the host persists it. */
-  sessionPath?: string;
+  readonly sessionPath?: string;
   /** The run's append-only fact log while the run is active.  Created with
    * the run; replaced by a fresh empty log when the run finishes — the
    * terminal log is inert by design: it carries no `onFact` listener, so
    * appending to it fires no notifications (a post-finish append is a
    * programming error).  The terminal run keeps metadata only (see the
    * module doc). */
-  log: RunLog;
+  readonly log: RunLog;
 }
+
+/**
+ * The handle of a run a caller just started.
+ *
+ * A producer drives the run through the registry (`updateRun` /
+ * `finishRun`) and needs exactly two things: the id to address it, and the
+ * live log to append facts to.  The log is shared on purpose — it is the
+ * live append stream, not a snapshot — so it is neither copied nor frozen.
+ */
+export interface RunHandle {
+  /** The globally unique run id. */
+  readonly id: string;
+  /** The run's live fact log. */
+  readonly log: RunLog;
+}
+
+/** The registry's mutable entry — the snapshot's shape without `readonly`. */
+type MutableRun = { -readonly [K in keyof RunSnapshot]: RunSnapshot[K] };
 
 /** Input to `startRun`. */
 export interface StartRunInput {
@@ -147,18 +177,40 @@ export interface UpdateRunPatch {
   sessionPath?: string;
 }
 
-/** Input to `finishRun` — transitions a run to a terminal state. */
-export interface FinishRunInput {
+/**
+ * Input to `finishRun` — the terminal outcome plus the run's last progress
+ * fields.
+ *
+ * The final progress batch belongs here: a producer that reads the last
+ * values (tokens, model, label, current tool) while the run settles commits
+ * them in the same write as the terminal transition, so the run never
+ * publishes an intermediate "fields updated but still running" event.
+ */
+export interface FinishRunInput extends UpdateRunPatch {
   /** The terminal outcome. */
   status: "done" | "error" | "aborted";
   /** Epoch-millis end time (defaults to the current time). */
   endedAt?: number;
   /** The failure reason (only meaningful for `error`). */
   error?: string;
-  /** The on-disk path of the sub-session file, when the host persists it. */
-  sessionPath?: string;
-  /** The sub-session id this run created (its delegation target). */
-  childSession?: string;
+}
+
+/** Input to `restoreRun` — one historical run rebuilt from persisted data. */
+export interface RestoreRunInput extends UpdateRunPatch {
+  /** The globally unique run id. */
+  id: string;
+  /** The delegated subagent name. */
+  agent: string;
+  /** The calling session id. */
+  parentSession: string;
+  /** The terminal outcome the persisted data resolved. */
+  status: "done" | "error" | "aborted";
+  /** Epoch-millis start time (defaults to the current time). */
+  startedAt?: number;
+  /** Epoch-millis end time (defaults to the current time). */
+  endedAt?: number;
+  /** The failure reason, set only when `status` is `error`. */
+  error?: string;
 }
 
 /** Per-main-session run counts feeding the collapsed fleet widget. */
@@ -176,7 +228,7 @@ export interface RunSummary {
 /** A scrolling-window slice over a run list. */
 export interface WindowSlice {
   /** The visible rows (already sorted by the caller). */
-  rows: SubagentRun[];
+  rows: RunSnapshot[];
   /** Runs hidden above the window. */
   hiddenAbove: number;
   /** Runs hidden below the window. */
@@ -186,31 +238,62 @@ export interface WindowSlice {
 }
 
 /** The module-level run table, keyed by run id. */
-const registry = new Map<string, SubagentRun>();
+const registry = new Map<string, MutableRun>();
+
+/**
+ * Freeze a shallow copy of one registry entry for a read-only consumer.
+ *
+ * The copy carries the entry's own keys only, so an unset optional field
+ * stays absent.  `log` is the run's live handle and stays shared.
+ *
+ * @param run - The registry entry.
+ * @returns The frozen snapshot.
+ */
+function snapshot(run: MutableRun): RunSnapshot {
+  return Object.freeze({ ...run });
+}
+
+/**
+ * One published run change: which run changed and which session owns it.
+ *
+ * `parentSession` routes the change to that session's consumers only, so a
+ * subscriber never has to look the run up to decide who it belongs to.
+ */
+export interface RunChange {
+  /** The id of the run that changed. */
+  runId: string;
+  /** The calling session id the run is scoped to. */
+  parentSession: string;
+}
 
 /**
  * Listeners notified on any run change — a lifecycle transition or a fact
  * appended to any run's log.
  */
-type RunChangeListener = () => void;
+type RunChangeListener = (change: RunChange) => void;
 
 const runChangeListeners = new Set<RunChangeListener>();
 
 /** Fire the run-change notification for every registered listener. */
-function notifyRunChange(): void {
-  for (const listener of runChangeListeners) listener();
+function notifyRunChange(run: MutableRun): void {
+  const change: RunChange = {
+    runId: run.id,
+    parentSession: run.parentSession,
+  };
+  for (const listener of runChangeListeners) listener(change);
 }
 
 /**
  * Subscribe to run changes.
  *
- * The listener is called whenever a run is registered, updated, or
- * finished, and whenever any run's fact log receives an append (partial
- * deliveries never reach it) — so a
+ * The listener is called whenever a run is registered, a running run's
+ * fields actually change, a run reaches its terminal state, or any run's
+ * fact log receives an append (partial deliveries never reach it) — so a
  * single subscription keeps consumers (fleet widget, card, overlay)
- * current with both lifecycle and transcript changes.
+ * current with both lifecycle and transcript changes.  A write that changes
+ * nothing publishes nothing.
  *
- * @param listener - Called with no arguments on each change.
+ * @param listener - Called with the changed run and its parent session.
  * @returns A function that removes the subscription.
  */
 export function subscribeRunChange(listener: RunChangeListener): () => void {
@@ -231,10 +314,14 @@ export const TERMINAL_STATUSES: ReadonlySet<RunStatus> = new Set([
  * Reset the module-level registry state.
  *
  * Process-global state means tests share one isolate; call this between
- * tests to keep every assertion deterministic.
+ * tests to keep every assertion deterministic.  The run-change subscribers
+ * are module-level state too, so they are dropped as well — a subscription
+ * left behind by an earlier test would otherwise repaint its session on
+ * every later registry write.
  */
 export function resetRegistry(): void {
   registry.clear();
+  runChangeListeners.clear();
 }
 
 /**
@@ -245,12 +332,13 @@ export function resetRegistry(): void {
  * that must not silently re-parent an existing run).
  *
  * @param input - The run to register.
- * @returns The registered run.
+ * @returns The handle of the registered run (its id and live log); a
+ *   duplicate id returns the first run's handle.
  */
-export function startRun(input: StartRunInput): SubagentRun {
+export function startRun(input: StartRunInput): RunHandle {
   const existing = registry.get(input.id);
-  if (existing !== undefined) return existing;
-  const run: SubagentRun = {
+  if (existing !== undefined) return { id: existing.id, log: existing.log };
+  const run: MutableRun = {
     id: input.id,
     agent: input.agent,
     parentSession: input.parentSession,
@@ -266,18 +354,72 @@ export function startRun(input: StartRunInput): SubagentRun {
       : {}),
   };
   run.log.onFact(() => {
-    notifyRunChange();
+    notifyRunChange(run);
   });
   registry.set(input.id, run);
-  notifyRunChange();
-  return run;
+  notifyRunChange(run);
+  return { id: run.id, log: run.log };
+}
+
+/**
+ * Apply a progress patch to a run, reporting whether any field changed.
+ *
+ * A field already holding the requested value is not a change: the
+ * subscribers learn only about writes that alter what they would read.
+ *
+ * @param run - The run to patch.
+ * @param patch - The fields to apply.
+ * @returns Whether the run changed.
+ */
+function applyProgress(run: MutableRun, patch: UpdateRunPatch): boolean {
+  let changed = false;
+  if (patch.currentTool !== undefined) {
+    // `null` is the explicit clear; an absent field never reaches here.
+    if (patch.currentTool === null) {
+      if (run.currentTool !== undefined) {
+        delete run.currentTool;
+        changed = true;
+      }
+    } else if (run.currentTool !== patch.currentTool) {
+      run.currentTool = patch.currentTool;
+      changed = true;
+    }
+  }
+  if (patch.tokens !== undefined && run.tokens !== patch.tokens) {
+    run.tokens = patch.tokens;
+    changed = true;
+  }
+  if (patch.label !== undefined && run.label !== patch.label) {
+    run.label = patch.label;
+    changed = true;
+  }
+  if (patch.model !== undefined && run.model !== patch.model) {
+    run.model = patch.model;
+    changed = true;
+  }
+  if (
+    patch.childSession !== undefined &&
+    run.childSession !== patch.childSession
+  ) {
+    run.childSession = patch.childSession;
+    changed = true;
+  }
+  if (
+    patch.sessionPath !== undefined &&
+    run.sessionPath !== patch.sessionPath
+  ) {
+    run.sessionPath = patch.sessionPath;
+    changed = true;
+  }
+  return changed;
 }
 
 /**
  * Patch the progress fields of a running run.
  *
  * Silently ignored when the run is terminal (its status, progress fields,
- * and timestamps are frozen) or the id is unknown.
+ * and timestamps are frozen) or the id is unknown.  A patch that changes
+ * nothing (empty, or every value already held) publishes no event.
  *
  * @param id - The run id.
  * @param patch - The fields to update.
@@ -285,17 +427,8 @@ export function startRun(input: StartRunInput): SubagentRun {
 export function updateRun(id: string, patch: UpdateRunPatch): void {
   const run = registry.get(id);
   if (run === undefined || TERMINAL_STATUSES.has(run.status)) return;
-  if (patch.currentTool !== undefined) {
-    // `null` is the explicit clear; an absent field never reaches here.
-    if (patch.currentTool === null) delete run.currentTool;
-    else run.currentTool = patch.currentTool;
-  }
-  if (patch.tokens !== undefined) run.tokens = patch.tokens;
-  if (patch.label !== undefined) run.label = patch.label;
-  if (patch.model !== undefined) run.model = patch.model;
-  if (patch.childSession !== undefined) run.childSession = patch.childSession;
-  if (patch.sessionPath !== undefined) run.sessionPath = patch.sessionPath;
-  notifyRunChange();
+  if (!applyProgress(run, patch)) return;
+  notifyRunChange(run);
 }
 
 /**
@@ -304,6 +437,11 @@ export function updateRun(id: string, patch: UpdateRunPatch): void {
  * Silently ignored when the run is already terminal (its status, `endedAt`,
  * `error`, and `sessionPath` are frozen — a second finish never overwrites
  * the first) or the id is unknown.  `endedAt` defaults to the current time.
+ *
+ * The input also carries the run's last progress fields: they are written
+ * in the same step as the terminal transition, and the whole write
+ * publishes exactly one event.  A producer that reads the final values
+ * while the run settles therefore never publishes an intermediate update.
  *
  * The finish also RELEASES the run's fact log: the terminal run keeps its
  * lifecycle metadata only and its `log` becomes a fresh empty log.  The
@@ -316,33 +454,78 @@ export function updateRun(id: string, patch: UpdateRunPatch): void {
  * a post-finish append is a programming error.
  *
  * @param id - The run id.
- * @param input - The terminal outcome.
+ * @param input - The terminal outcome and the run's last progress fields.
  */
 export function finishRun(id: string, input: FinishRunInput): void {
   const run = registry.get(id);
   if (run === undefined || TERMINAL_STATUSES.has(run.status)) return;
+  applyProgress(run, input);
   run.status = input.status;
   run.endedAt = input.endedAt ?? Date.now();
   if (input.error !== undefined) run.error = input.error;
-  if (input.sessionPath !== undefined) run.sessionPath = input.sessionPath;
-  if (input.childSession !== undefined) run.childSession = input.childSession;
   // Release the run's fact log: resident memory must track ACTIVE work only.
   // The run keeps its lifecycle metadata; a later view of the finished run's
   // transcript rebuilds the facts from the persisted sub-session file
   // through the hydration path.  The released log stays valid for any holder
   // (the open-overlay edge case) but is no longer the registry's.
   run.log = createRunLog();
-  notifyRunChange();
+  notifyRunChange(run);
+}
+
+/**
+ * Restore one run from persisted history as an already-terminal entry.
+ *
+ * History rebuilds know the run's outcome up front, so a restored run never
+ * passes through a `running` state: its metadata and its empty terminal log
+ * are created in one step, and exactly one change is published.
+ *
+ * An id already present in the registry is left untouched and publishes
+ * nothing — a live run (or a run restored earlier) keeps what it has, so a
+ * repeated scan is idempotent.
+ *
+ * @param input - The restored run's metadata and terminal outcome.
+ * @returns Whether the run was created (`false` when it already existed).
+ */
+export function restoreRun(input: RestoreRunInput): boolean {
+  if (registry.has(input.id)) return false;
+  const run: MutableRun = {
+    id: input.id,
+    agent: input.agent,
+    parentSession: input.parentSession,
+    status: input.status,
+    startedAt: input.startedAt ?? Date.now(),
+    endedAt: input.endedAt ?? Date.now(),
+    // The terminal log is inert: a restored run has no facts and takes no
+    // appends, and the log carries no listener.
+    log: createRunLog(),
+    ...(input.label !== undefined ? { label: input.label } : {}),
+    ...(input.currentTool !== undefined && input.currentTool !== null
+      ? { currentTool: input.currentTool }
+      : {}),
+    ...(input.tokens !== undefined ? { tokens: input.tokens } : {}),
+    ...(input.model !== undefined ? { model: input.model } : {}),
+    ...(input.error !== undefined ? { error: input.error } : {}),
+    ...(input.childSession !== undefined
+      ? { childSession: input.childSession }
+      : {}),
+    ...(input.sessionPath !== undefined
+      ? { sessionPath: input.sessionPath }
+      : {}),
+  };
+  registry.set(input.id, run);
+  notifyRunChange(run);
+  return true;
 }
 
 /**
  * Look up a run by id.
  *
  * @param id - The run id.
- * @returns The run, or `undefined` when unknown.
+ * @returns A frozen snapshot of the run, or `undefined` when unknown.
  */
-export function getRun(id: string): SubagentRun | undefined {
-  return registry.get(id);
+export function getRun(id: string): RunSnapshot | undefined {
+  const run = registry.get(id);
+  return run === undefined ? undefined : snapshot(run);
 }
 
 /**
@@ -352,7 +535,7 @@ export function getRun(id: string): SubagentRun | undefined {
  * @param b - The second run.
  * @returns A negative / zero / positive sort comparison.
  */
-function byStartedAt(a: SubagentRun, b: SubagentRun): number {
+function byStartedAt(a: RunSnapshot, b: RunSnapshot): number {
   if (a.startedAt !== b.startedAt) return a.startedAt - b.startedAt;
   return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
 }
@@ -365,12 +548,13 @@ function byStartedAt(a: SubagentRun, b: SubagentRun): number {
  * excluded.
  *
  * @param parentSession - The main session id.
- * @returns The top-level runs, oldest first.
+ * @returns Frozen snapshots of the top-level runs, oldest first.
  */
-export function topLevelRuns(parentSession: string): SubagentRun[] {
+export function topLevelRuns(parentSession: string): RunSnapshot[] {
   return [...registry.values()]
     .filter((run) => run.parentSession === parentSession)
-    .sort(byStartedAt);
+    .sort(byStartedAt)
+    .map(snapshot);
 }
 
 /**
@@ -381,14 +565,56 @@ export function topLevelRuns(parentSession: string): SubagentRun[] {
  * without a recorded `childSession` have no children.
  *
  * @param runId - The parent run id.
- * @returns The child runs, oldest first.
+ * @returns Frozen snapshots of the child runs, oldest first.
  */
-export function childrenOf(runId: string): SubagentRun[] {
+export function childrenOf(runId: string): RunSnapshot[] {
   const parent = registry.get(runId);
   if (parent === undefined || parent.childSession === undefined) return [];
   return [...registry.values()]
     .filter((run) => run.parentSession === parent.childSession)
-    .sort(byStartedAt);
+    .sort(byStartedAt)
+    .map(snapshot);
+}
+
+/**
+ * Index the subtrees rooted at the given runs by parent run id.
+ *
+ * The map covers every generation reachable from `roots`: each entry holds a
+ * root's or descendant's child runs, ordered by `startedAt` — the same order
+ * `childrenOf` returns.  A run with no children has no entry, so a consumer
+ * reads `index.get(id) ?? []`.  A read-only consumer can hand the shared
+ * index to the card and the fleet renderers, which then render every depth
+ * from one explicit source instead of querying the registry per level.
+ *
+ * The index is a DAG even when the registry holds a parent/child loop (a run
+ * whose child session points back at an ancestor, which a corrupted history
+ * scan can leave behind): a run enters the index at most once, so a later
+ * edge back to an indexed run is dropped.  A recursive consumer of this map
+ * therefore always terminates.
+ *
+ * @param roots - The run snapshots to walk down from (top-level runs).
+ * @returns Parent-run id → its child runs, at every depth.
+ */
+export function childrenIndex(
+  roots: readonly RunSnapshot[],
+): Map<string, RunSnapshot[]> {
+  const index = new Map<string, RunSnapshot[]>();
+  // Seeding the roots keeps a root out of any child list, so a loop through
+  // a root and a run that delegates into it cannot re-enter the root.
+  const placed = new Set<string>(roots.map((root) => root.id));
+  const walk = (run: RunSnapshot): void => {
+    const children = childrenOf(run.id).filter(
+      (child) => !placed.has(child.id),
+    );
+    if (children.length === 0) return;
+    index.set(run.id, children);
+    for (const child of children) {
+      placed.add(child.id);
+      walk(child);
+    }
+  };
+  for (const root of roots) walk(root);
+  return index;
 }
 
 /**
@@ -401,13 +627,14 @@ export function childrenOf(runId: string): SubagentRun[] {
  * rebuilt from persisted history carries the same `childSession`).
  *
  * @param childSession - The sub-session id to look up.
- * @returns The run whose `childSession` matches, or `undefined`.
+ * @returns A frozen snapshot of the run whose `childSession` matches, or
+ *   `undefined`.
  */
 export function findByChildSession(
   childSession: string,
-): SubagentRun | undefined {
+): RunSnapshot | undefined {
   for (const run of registry.values()) {
-    if (run.childSession === childSession) return run;
+    if (run.childSession === childSession) return snapshot(run);
   }
   return undefined;
 }
@@ -435,7 +662,7 @@ export function summary(parentSession: string): RunSummary {
   let done = 0;
   let failed = 0;
   let aborted = 0;
-  const tally = (run: SubagentRun): void => {
+  const tally = (run: MutableRun): void => {
     if (run.status === "running") running += 1;
     else if (run.status === "done") done += 1;
     else if (run.status === "aborted") aborted += 1;
@@ -443,7 +670,7 @@ export function summary(parentSession: string): RunSummary {
   };
   // Index runs by their calling session once, then walk the tree from the
   // main session so nested runs are counted without a per-run registry scan.
-  const runsByParent = new Map<string, SubagentRun[]>();
+  const runsByParent = new Map<string, MutableRun[]>();
   for (const run of registry.values()) {
     const siblings = runsByParent.get(run.parentSession);
     if (siblings === undefined) runsByParent.set(run.parentSession, [run]);
@@ -489,17 +716,17 @@ export function summary(parentSession: string): RunSummary {
  * @returns The visible slice with the hidden counts and selection index.
  */
 export function windowRuns(
-  entries: SubagentRun[],
+  entries: RunSnapshot[],
   selectedId: string | undefined,
   maxRows: number,
-  rowsOf?: (run: SubagentRun) => number,
+  rowsOf?: (run: RunSnapshot) => number,
 ): WindowSlice {
   const n = entries.length;
   if (n === 0) {
     return { rows: [], hiddenAbove: 0, hiddenBelow: 0, selectedIndex: -1 };
   }
   const cap = Math.max(1, Math.floor(maxRows));
-  const cost = (run: SubagentRun): number => {
+  const cost = (run: RunSnapshot): number => {
     if (rowsOf === undefined) return 1;
     const rows = Math.floor(rowsOf(run));
     return Number.isFinite(rows) && rows >= 1 ? rows : 1;

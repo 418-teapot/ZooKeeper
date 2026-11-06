@@ -34,6 +34,7 @@ import type {
 import {
   getRun,
   resetRegistry,
+  subscribeRunChange,
   topLevelRuns,
 } from "../core/subagent/registry.js";
 import type { ToolCallContext } from "../core/unit.js";
@@ -1054,33 +1055,68 @@ describe("subagent tool execute — run-registry writes", () => {
     }
   });
 
-  it("notifies onSubagentRunChange on start, update, and finish", async () => {
-    let notifications = 0;
+  it("commits the final progress batch with the finish event", async () => {
+    // The terminal report carries the run's last facts (tokens, model, the
+    // sub-session pointers).  They belong to the finish write: a subscriber
+    // must never see them on a still-running run, because no consumer needs
+    // that intermediate state.
     const driver: SubagentDriver = {
       async run(_req, ctx) {
+        ctx.onProgress?.({ currentTool: "bash", done: false });
         ctx.onProgress?.({
-          currentTool: "bash",
-          done: false,
+          done: true,
+          tokens: 4321,
+          model: "dummy-large",
+          childSession: "child-ses-9",
+          sessionPath: "/tmp/child-ses-9.jsonl",
         });
         return { kind: "ok", text: "done" };
       },
     };
-    const t = tool(
-      makeDeps({
-        subagentDriver: driver,
-        onSubagentRunChange: () => {
-          notifications += 1;
-        },
-      }),
-    );
+    const events: Array<{ runId: string; parentSession: string }> = [];
+    const snapshots: Array<Record<string, unknown>> = [];
+    const off = subscribeRunChange((change) => {
+      events.push(change);
+      const run = getRun(change.runId);
+      snapshots.push({
+        status: run?.status,
+        tokens: run?.tokens,
+        model: run?.model,
+        childSession: run?.childSession,
+        sessionPath: run?.sessionPath,
+      });
+    });
+    const t = tool(makeDeps({ subagentDriver: driver }));
     await t.execute(
       { agent: "beaver", description: "实现任务", prompt: "t" },
-      TOOL_CALL({ callID: "call-n" }),
+      TOOL_CALL({ callID: "call-atomic" }),
     );
-    // start + update (currentTool) + finish.
-    assert.ok(
-      notifications >= 3,
-      `expected ≥3 notifications, got ${notifications}`,
+    off();
+
+    assert.equal(
+      events.length,
+      3,
+      "start + one ordinary progress update + one finish",
     );
+    assert.deepEqual(events.at(-1), {
+      runId: "call-atomic",
+      parentSession: "sess-subagent",
+    });
+    for (const snapshot of snapshots.slice(0, -1)) {
+      assert.equal(snapshot.tokens, undefined, "no pre-finish token event");
+      assert.equal(snapshot.model, undefined, "no pre-finish model event");
+      assert.equal(
+        snapshot.sessionPath,
+        undefined,
+        "no pre-finish session-path event",
+      );
+    }
+    assert.deepEqual(snapshots.at(-1), {
+      status: "done",
+      tokens: 4321,
+      model: "dummy-large",
+      childSession: "child-ses-9",
+      sessionPath: "/tmp/child-ses-9.jsonl",
+    });
   });
 });

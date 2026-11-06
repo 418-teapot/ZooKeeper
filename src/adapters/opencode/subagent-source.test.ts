@@ -20,6 +20,7 @@ import {
   getRun,
   resetRegistry,
   startRun,
+  subscribeRunChange,
   topLevelRuns,
 } from "../../core/subagent/registry.js";
 import {
@@ -510,6 +511,44 @@ describe("subagent source — token poll", () => {
     assert.equal(run?.tokens, 999, "the final read is authoritative");
   });
 
+  it("commits the final token read with the terminal transition", async () => {
+    // The registry freezes a finished run, so the last read has to land with
+    // the finish.  It must land IN the finish: an update of its own would
+    // publish a token change no consumer can use.
+    const client = fakeClient([500, 999]);
+    const source = makeSource({
+      client: client as SubagentSourceDeps["client"],
+      state: fakeState({ "ses-child": PARENT }),
+    });
+    source.onToolPartUpdated(childPart("part_1", "ses-child"));
+    await wait(620);
+    assert.equal(getRun("part_1")?.tokens, 500, "precondition: polled value");
+
+    const snapshots: Array<{ status?: string; tokens?: number }> = [];
+    const off = subscribeRunChange((change) => {
+      const run = getRun(change.runId);
+      snapshots.push({ status: run?.status, tokens: run?.tokens });
+    });
+    source.onToolPartUpdated(
+      partEvent(
+        PARENT,
+        taskPart("part_1", {
+          status: "completed",
+          time: { start: 100, end: 700 },
+          metadata: { session_id: "ses-child" },
+        }),
+      ),
+    );
+    await wait(20);
+    off();
+
+    assert.deepEqual(
+      snapshots,
+      [{ status: "done", tokens: 999 }],
+      "one change, carrying the terminal status and the final tokens",
+    );
+  });
+
   it("still finishes the run when the final read fails", async () => {
     const client = fakeClient([], { fail: true });
     const source = makeSource({
@@ -879,6 +918,7 @@ describe("subagent source — reconcile", () => {
         msg([
           taskPart("part_done", {
             status: "completed",
+            input: { description: "已完成" },
             metadata: { session_id: "ses-a" },
           }),
         ]),
@@ -972,6 +1012,304 @@ describe("subagent source — reconcile", () => {
 
     assert.equal(getRun("part_x"), undefined);
     assert.equal(client.calls.length, 0, "no poll timer after dispose");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Terminal history parts (no live events observed them)
+// ---------------------------------------------------------------------------
+
+describe("subagent source — terminal history restoration", () => {
+  /**
+   * Record the run snapshot of every published change.
+   *
+   * @returns The snapshot log and its unsubscribe function.
+   */
+  function watch(): {
+    snapshots: Array<{ status?: string; tokens?: number; label?: string }>;
+    off: () => void;
+  } {
+    const snapshots: Array<{
+      status?: string;
+      tokens?: number;
+      label?: string;
+    }> = [];
+    const off = subscribeRunChange((change) => {
+      const run = getRun(change.runId);
+      snapshots.push({
+        status: run?.status,
+        tokens: run?.tokens,
+        label: run?.label,
+      });
+    });
+    return { snapshots, off };
+  }
+
+  it("restores an absent terminal part in one terminal event", async () => {
+    const { snapshots, off } = watch();
+    const source = makeSource({
+      history: [
+        msg([
+          taskPart("part_done", {
+            status: "completed",
+            time: { start: 100, end: 900 },
+            input: { description: "已完成" },
+            metadata: { model: { modelID: "dummy" } },
+          }),
+        ]),
+      ],
+    });
+    await source.reconcile();
+    off();
+
+    assert.deepEqual(
+      snapshots,
+      [{ status: "done", tokens: undefined, label: "已完成" }],
+      "one event, never a running state",
+    );
+    const run = getRun("part_done");
+    assert.equal(run?.agent, "task");
+    assert.equal(run?.model, "dummy");
+    assert.equal(run?.startedAt, 100);
+    assert.equal(run?.endedAt, 900);
+  });
+
+  it("restores a synchronous terminal read-free part and reads no tokens", async () => {
+    const client = fakeClient([888]);
+    const source = makeSource({
+      client: client as SubagentSourceDeps["client"],
+      history: [
+        msg([
+          taskPart("part_done", {
+            status: "completed",
+            time: { start: 100, end: 900 },
+          }),
+        ]),
+      ],
+    });
+    await source.reconcile();
+
+    // No wait: the part has no child session, so the restore is complete
+    // once the scan returns.
+    const run = getRun("part_done");
+    assert.equal(run?.status, "done");
+    assert.equal(run?.endedAt, 900);
+    assert.equal(client.calls.length, 0, "zero HTTP reads");
+  });
+
+  it("publishes the delayed final tokens with the terminal status once", async () => {
+    const client = fakeClient([888], { delayMs: 30 });
+    const { snapshots, off } = watch();
+    const source = makeSource({
+      client: client as SubagentSourceDeps["client"],
+      state: fakeState({ "ses-a": PARENT }),
+      history: [
+        msg([
+          taskPart("part_done", {
+            status: "completed",
+            input: { description: "已完成" },
+            metadata: { session_id: "ses-a" },
+          }),
+        ]),
+      ],
+    });
+    await source.reconcile();
+    assert.equal(getRun("part_done"), undefined, "the read is still in flight");
+
+    await wait(80);
+    off();
+    assert.deepEqual(snapshots, [
+      { status: "done", tokens: 888, label: "已完成" },
+    ]);
+    assert.equal(client.calls.length, 1);
+  });
+
+  it("restores the terminal state when the delayed read fails", async () => {
+    const client = fakeClient([], { fail: true, delayMs: 20 });
+    const { snapshots, off } = watch();
+    const source = makeSource({
+      client: client as SubagentSourceDeps["client"],
+      state: fakeState({ "ses-a": PARENT }),
+      history: [
+        msg([
+          taskPart("part_done", {
+            status: "completed",
+            input: { description: "已完成" },
+            metadata: { session_id: "ses-a" },
+          }),
+        ]),
+      ],
+    });
+    await source.reconcile();
+    await wait(60);
+    off();
+
+    assert.deepEqual(snapshots, [
+      { status: "done", tokens: undefined, label: "已完成" },
+    ]);
+  });
+
+  it("restores the terminal state when the read finds no usage", async () => {
+    const client = fakeClient([], { delayMs: 20 });
+    const { snapshots, off } = watch();
+    const source = makeSource({
+      client: client as SubagentSourceDeps["client"],
+      state: fakeState({ "ses-a": PARENT }),
+      history: [
+        msg([
+          taskPart("part_done", {
+            status: "completed",
+            input: { description: "已完成" },
+            metadata: { session_id: "ses-a" },
+          }),
+        ]),
+      ],
+    });
+    await source.reconcile();
+    await wait(60);
+    off();
+
+    assert.deepEqual(snapshots, [
+      { status: "done", tokens: undefined, label: "已完成" },
+    ]);
+  });
+
+  it("maps an absent error part to its failure text", async () => {
+    const source = makeSource({
+      history: [
+        msg([
+          taskPart("part_fail", {
+            status: "error",
+            error: "provider exploded",
+            time: { start: 100, end: 900 },
+          }),
+        ]),
+      ],
+    });
+    await source.reconcile();
+
+    const run = getRun("part_fail");
+    assert.equal(run?.status, "error");
+    assert.equal(run?.error, "provider exploded");
+  });
+
+  it("publishes nothing when the same history is scanned again", async () => {
+    const history = [
+      msg([
+        taskPart("part_done", {
+          status: "completed",
+          time: { start: 100, end: 900 },
+        }),
+      ]),
+    ];
+    const source = makeSource({ history });
+    await source.reconcile();
+
+    const { snapshots, off } = watch();
+    await source.reconcile();
+    await wait(20);
+    off();
+
+    assert.deepEqual(snapshots, [], "the restored run absorbs the rescan");
+    assert.equal(topLevelRuns(PARENT).length, 1);
+  });
+
+  it("lets a live part win when it registers during the delayed read", async () => {
+    const client = fakeClient([888], { delayMs: 50 });
+    const { snapshots, off } = watch();
+    const source = makeSource({
+      client: client as SubagentSourceDeps["client"],
+      state: fakeState({ "ses-a": PARENT }),
+      history: [
+        msg([
+          taskPart("part_1", {
+            status: "completed",
+            metadata: { session_id: "ses-a" },
+          }),
+        ]),
+      ],
+    });
+    await source.reconcile();
+    source.onToolPartUpdated(
+      partEvent(
+        PARENT,
+        taskPart("part_1", {
+          status: "running",
+          metadata: { session_id: "ses-a" },
+          input: { description: "实时标题" },
+        }),
+      ),
+    );
+    await wait(100);
+    off();
+
+    const run = getRun("part_1");
+    assert.equal(run?.status, "running", "the live registration wins");
+    assert.equal(run?.label, "实时标题");
+    assert.ok(
+      snapshots.every((snapshot) => snapshot.status === "running"),
+      "the delayed restore publishes no event",
+    );
+  });
+
+  it("creates no run when disposed before the delayed read settles", async () => {
+    const client = fakeClient([888], { delayMs: 40 });
+    const source = makeSource({
+      client: client as SubagentSourceDeps["client"],
+      state: fakeState({ "ses-a": PARENT }),
+      history: [
+        msg([
+          taskPart("part_done", {
+            status: "completed",
+            input: { description: "已完成" },
+            metadata: { session_id: "ses-a" },
+          }),
+        ]),
+      ],
+    });
+    await source.reconcile();
+    source.dispose();
+    await wait(100);
+
+    assert.equal(getRun("part_done"), undefined);
+    assert.equal(client.calls.length, 1);
+  });
+
+  it("registers a running part without waiting for the terminal read", async () => {
+    const client = fakeClient([888], { delayMs: 100 });
+    const source = makeSource({
+      client: client as SubagentSourceDeps["client"],
+      state: fakeState({ "ses-a": PARENT }),
+      history: [
+        msg([
+          taskPart("part_done", {
+            status: "completed",
+            input: { description: "已完成" },
+            metadata: { session_id: "ses-a" },
+          }),
+        ]),
+        msg([
+          taskPart("part_run", {
+            status: "running",
+            time: { start: 950 },
+            metadata: { session_id: "ses-a" },
+          }),
+        ]),
+      ],
+    });
+    await source.reconcile();
+
+    assert.equal(
+      getRun("part_run")?.status,
+      "running",
+      "the scan does not await the terminal read",
+    );
+    assert.equal(getRun("part_run")?.startedAt, 950);
+    assert.equal(getRun("part_done"), undefined);
+
+    await wait(160);
+    assert.equal(getRun("part_done")?.status, "done");
+    assert.equal(getRun("part_done")?.tokens, 888);
   });
 });
 

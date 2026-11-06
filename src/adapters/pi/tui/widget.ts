@@ -79,9 +79,9 @@ import {
   truncateToWidth,
 } from "@earendil-works/pi-tui";
 import {
-  childrenOf,
+  childrenIndex,
   getRun,
-  type SubagentRun,
+  type RunSnapshot,
   summary,
   topLevelRuns,
 } from "../../../core/subagent/registry.js";
@@ -172,7 +172,7 @@ export interface FleetWidgetDeps {
    * `ui.custom` surface, or the run lacks a session path), leaving the key
    * to fall through to the editor.
    */
-  enterRun?(run: SubagentRun): boolean | undefined;
+  enterRun?(run: RunSnapshot): boolean | undefined;
   /** Spinner/clock refresh interval (defaults to `FLEET_REFRESH_MS`). */
   refreshMs?: number;
   /** Injectable interval factory (tests use a fake timer). */
@@ -273,12 +273,14 @@ export function createFleetWidget(deps: FleetWidgetDeps): FleetWidget {
   const rosterIds = (): string[] => {
     const sessionId = sessionIdOf();
     if (sessionId === undefined) return [];
+    const tops = topLevelRuns(sessionId);
+    const childrenByParent = childrenIndex(tops);
     const ids: string[] = [];
     const walk = (runId: string): void => {
       ids.push(runId);
-      for (const child of childrenOf(runId)) walk(child.id);
+      for (const child of childrenByParent.get(runId) ?? []) walk(child.id);
     };
-    for (const top of topLevelRuns(sessionId)) walk(top.id);
+    for (const top of tops) walk(top.id);
     return ids;
   };
 
@@ -342,7 +344,7 @@ export function createFleetWidget(deps: FleetWidgetDeps): FleetWidget {
     theme ?? { fg: (_color: string, text: string) => text };
 
   /** The session's top-level runs (empty when no session is available). */
-  const currentTops = (): SubagentRun[] => {
+  const currentTops = (): RunSnapshot[] => {
     const sessionId = sessionIdOf();
     return sessionId !== undefined ? topLevelRuns(sessionId) : [];
   };
@@ -463,8 +465,10 @@ export function createFleetWidget(deps: FleetWidgetDeps): FleetWidget {
     sessionId: string | undefined,
   ): FleetRunningSummary[] | undefined => {
     if (sessionId === undefined) return undefined;
+    const tops = topLevelRuns(sessionId);
+    const childrenByParent = childrenIndex(tops);
     const running: FleetRunningSummary[] = [];
-    const collect = (run: SubagentRun): void => {
+    const collect = (run: RunSnapshot): void => {
       if (run.status === "running") {
         running.push({
           agent: run.agent,
@@ -472,9 +476,9 @@ export function createFleetWidget(deps: FleetWidgetDeps): FleetWidget {
           elapsedMs: now() - run.startedAt,
         });
       }
-      for (const child of childrenOf(run.id)) collect(child);
+      for (const child of childrenByParent.get(run.id) ?? []) collect(child);
     };
-    for (const top of topLevelRuns(sessionId)) collect(top);
+    for (const top of tops) collect(top);
     return running;
   };
 

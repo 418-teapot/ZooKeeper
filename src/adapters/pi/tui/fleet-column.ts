@@ -20,8 +20,8 @@
  */
 
 import {
-  childrenOf,
-  type SubagentRun,
+  childrenIndex,
+  type RunSnapshot,
   type WindowSlice,
   windowRuns,
 } from "../../../core/subagent/registry.js";
@@ -146,15 +146,23 @@ function highlight(theme: FleetColumnThemeLike, text: string): string {
  * a selected descendant at any depth (so the selected run's top-level run
  * stays in view).  A stale id yields `undefined` and `windowRuns`
  * bottom-aligns.
+ *
+ * @param tops - The session's top-level runs, in display order.
+ * @param childrenByParent - Parent-run id → its child runs (every depth).
+ * @param selectedId - The selected run id, or `undefined` for none.
+ * @returns The top-level run id to anchor the window on, or `undefined`.
  */
 function anchorFor(
-  tops: readonly SubagentRun[],
+  tops: readonly RunSnapshot[],
+  childrenByParent: ReadonlyMap<string, RunSnapshot[]>,
   selectedId: string | undefined,
 ): string | undefined {
   if (selectedId === undefined) return undefined;
   const contains = (runId: string): boolean => {
     if (runId === selectedId) return true;
-    return childrenOf(runId).some((child) => contains(child.id));
+    return (childrenByParent.get(runId) ?? []).some((child) =>
+      contains(child.id),
+    );
   };
   for (const top of tops) {
     if (contains(top.id)) return top.id;
@@ -192,21 +200,14 @@ function anchorFor(
  *   a `… +K more` row so the bound still holds.
  */
 export function renderFleetColumn(
-  tops: readonly SubagentRun[],
+  tops: readonly RunSnapshot[],
   opts: FleetColumnOptions,
 ): string[] {
   const { windowRows, maxLines, selectedId, focused, frame, now, theme } = opts;
-  // Index every run that has children, at any depth, so the recursive
-  // renderer and the row count below walk the whole tree — not just the
-  // top-level runs' direct children.
-  const childrenByParent = new Map<string, SubagentRun[]>();
-  const collect = (run: SubagentRun): void => {
-    const children = childrenOf(run.id);
-    if (children.length === 0) return;
-    childrenByParent.set(run.id, children);
-    for (const child of children) collect(child);
-  };
-  for (const top of tops) collect(top);
+  // Index every run that has children, at any depth, so the row count and the
+  // anchor search walk the whole tree — not just the top-level runs' direct
+  // children.  The same index feeds the renderer, so all three agree.
+  const childrenByParent = childrenIndex(tops);
 
   const descendantCount = (runId: string): number => {
     const children = childrenByParent.get(runId);
@@ -217,8 +218,8 @@ export function renderFleetColumn(
   };
   // One row per run, at every generation: this must equal the number of
   // lines `renderFleetRows` emits for the run, or the window budget lies.
-  const rowsOf = (run: SubagentRun): number => 1 + descendantCount(run.id);
-  const anchor = anchorFor(tops, selectedId);
+  const rowsOf = (run: RunSnapshot): number => 1 + descendantCount(run.id);
+  const anchor = anchorFor(tops, childrenByParent, selectedId);
 
   // Pick the largest whole-run window (bounded by `windowRows`) whose rows
   // plus their overflow indicators still fit `maxLines`.  Shrinking the

@@ -12,7 +12,7 @@ import {
 } from "../../../core/context/context-report.js";
 import type { TokenBreakdownResult } from "../../../core/context/lens-stats.js";
 import {
-  type SubagentRun,
+  type RunSnapshot,
   subscribeRunChange,
   topLevelRuns,
 } from "../../../core/subagent/registry.js";
@@ -185,7 +185,7 @@ const plugin: TuiPluginModule = {
       // ── Subagent rows: a projection of the core registry ────────
       // The panel keeps no subagent state of its own — the rows are
       // re-read from the registry whenever a run changes.
-      const [getSubRuns, setSubRuns] = createSignal<SubagentRun[]>([]);
+      const [getSubRuns, setSubRuns] = createSignal<RunSnapshot[]>([]);
       // Hover state for the "enter session" button in expanded entries.
       const [getHoveredOpenId, setHoveredOpenId] = createSignal<
         string | undefined
@@ -278,7 +278,13 @@ const plugin: TuiPluginModule = {
         );
         const unsub5 = api.event.on("session.idle", source.onSessionIdle);
         const unsub6 = api.event.on("session.error", source.onSessionError);
-        const unsub7 = subscribeRunChange(refreshSubRuns);
+        // One subscription covers every run change of this session: the
+        // event names the run's parent session, so another session's runs
+        // never repaint this panel.
+        const unsub7 = subscribeRunChange((change) => {
+          if (change.parentSession !== props.sessionId) return;
+          refreshSubRuns();
+        });
 
         // Mount-time reconcile: recover the delegations this session
         // already performed (the shared fetch is reused).
@@ -367,7 +373,7 @@ const plugin: TuiPluginModule = {
         return label + " ".repeat(Math.max(0, width - cellWidth(label)));
       }
 
-      function renderSubEntry(run: SubagentRun) {
+      function renderSubEntry(run: RunSnapshot) {
         const expanded = getExpandedSubIds().has(run.id);
         const chevron = expanded ? "▾" : "▸";
         // Status is conveyed by the dot colour alone (running=warning,

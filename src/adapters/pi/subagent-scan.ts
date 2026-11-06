@@ -56,11 +56,11 @@
  * warn instead of recursing forever.  A missing / unreadable sub-session
  * file skips only that branch (warn) — the parent run is still rebuilt.
  *
- * Idempotence: run ids are the pi run ids (globally unique), and the
- * registry's terminal-immutability rule means a re-scan of the same history
- * never duplicates an entry or overwrites a terminal one.  A run still live
- * in this process (its `running` entry already exists) is likewise left
- * untouched — the registry silently ignores the aborted finish.
+ * Idempotence: run ids are the pi run ids (globally unique), and a run is
+ * restored in one terminal step, so a re-scan of the same history never
+ * duplicates an entry, never overwrites a terminal one, and publishes no
+ * event.  A run still live in this process (its `running` entry already
+ * exists) is likewise left untouched.
  *
  * @module
  */
@@ -76,10 +76,8 @@ import {
 import { homedir } from "node:os";
 import { join } from "node:path";
 import {
-  finishRun,
-  getRun,
   type RunStatus,
-  startRun,
+  restoreRun,
   TERMINAL_STATUSES,
 } from "../../core/subagent/registry.js";
 import { log } from "../../utils/logger.js";
@@ -498,13 +496,14 @@ export function extractSubagentRuns(
 /**
  * Rebuild the registry from scanned pi history.
  *
- * Each scanned run is written through the standard lifecycle: an absent run
- * is `startRun`'d then `finishRun`'d with its scanned terminal outcome; a
- * run already present is left untouched — the registry's terminal-immutability
- * rule silently ignores a finish on a terminal or still-running entry, so a
- * re-scan of the same history (or a scan of a run still live in this
- * process) never overwrites or duplicates it.  The interrupted (aborted)
- * runs carry their `endedAt` from the scan, not the current time.
+ * Each scanned run is restored in one step: a run absent from the registry
+ * becomes an already-terminal entry with its scanned metadata and an empty
+ * terminal log, so the rebuild never fabricates a `running` state it would
+ * have to close again.  A run already present is left untouched — the scan
+ * is idempotent, so re-scanning the same history (or scanning a run still
+ * live in this process) neither overwrites nor duplicates it.  The
+ * interrupted (aborted) runs carry their `endedAt` from the scan, not the
+ * current time.
  *
  * Nested delegation rebuild: a finished run's `details.sessionPath` points
  * at its sub-session jsonl file.  That file is read and rescanned with the
@@ -720,31 +719,27 @@ function rebuildLevel(
       scanned.childSession !== undefined
         ? scanned.childSession
         : nested?.sessionId;
-    // Idempotence: an absent run is started and finished; an existing one
-    // is left untouched (terminal immutability silently ignores the
-    // finish).  Recursion still descends so a partially-scanned history is
-    // completed on a later scan without duplicating anything.
-    if (getRun(scanned.id) === undefined) {
-      startRun({
+    // Idempotence: an absent run is restored as a terminal entry; an
+    // existing one is left untouched, so the scan publishes no event for a
+    // history it already holds.  Recursion still descends so a
+    // partially-scanned history is completed on a later scan without
+    // duplicating anything.
+    if (
+      restoreRun({
         id: scanned.id,
         agent: scanned.agent,
         parentSession,
-        label: scanned.label,
-        startedAt: scanned.startedAt,
-        ...(childSession !== undefined ? { childSession } : {}),
-        ...(scanned.sessionPath !== undefined
-          ? { sessionPath: scanned.sessionPath }
-          : {}),
-      });
-      finishRun(scanned.id, {
         status: scanned.status,
+        startedAt: scanned.startedAt,
         endedAt: scanned.endedAt,
+        ...(scanned.label !== undefined ? { label: scanned.label } : {}),
         ...(scanned.error !== undefined ? { error: scanned.error } : {}),
         ...(childSession !== undefined ? { childSession } : {}),
         ...(scanned.sessionPath !== undefined
           ? { sessionPath: scanned.sessionPath }
           : {}),
-      });
+      })
+    ) {
       written += 1;
     }
 

@@ -25,7 +25,11 @@ import {
   VERIFY_REMINDER,
 } from "../../core/prompts.js";
 import { sessionAgentRegistry } from "../../core/session/agent.js";
-import { startRun, updateRun } from "../../core/subagent/registry.js";
+import {
+  startRun,
+  topLevelRuns,
+  updateRun,
+} from "../../core/subagent/registry.js";
 import {
   joinedText,
   MODES_RAW,
@@ -43,6 +47,7 @@ import {
   createPiSessionContexts,
   type PiSessionContexts,
 } from "./session-contexts.js";
+import type { PiHistoryEntry } from "./subagent-scan.js";
 import { buildPiContributions, buildPiHandlers } from "./wire.js";
 
 afterEach(resetPiTestState);
@@ -1182,6 +1187,118 @@ describe("lifecycle scope", () => {
     assert.equal(state.binds - state.unsubscribes, 1, "exactly one live bind");
   });
 
+  it("repaints the fleet for each restored run through the run-change feed", async () => {
+    // The history restore owns no notification of its own: every run it
+    // creates publishes one run change, and the fleet subscription repaints
+    // that run's session.  The start handler therefore adds no repaint of
+    // its own — a start with nothing to restore measures the baseline.
+    const handlers = await buildPiHandlers(
+      POLY_ZOO,
+      mockApi() as any,
+      MODES_RAW,
+    );
+    /** One finished delegation in a pi message history. */
+    const delegation = (id: string, timestamp: number): PiHistoryEntry[] => [
+      {
+        type: "message",
+        message: {
+          role: "assistant",
+          timestamp,
+          content: [
+            {
+              type: "toolCall",
+              id,
+              name: "subagent",
+              arguments: { agent: "beaver", description: "实现任务" },
+            },
+          ],
+        },
+      },
+      {
+        type: "message",
+        message: {
+          role: "toolResult",
+          toolCallId: id,
+          toolName: "subagent",
+          content: [{ type: "text", text: "ok" }],
+          isError: false,
+          timestamp: timestamp + 10,
+        },
+      },
+    ];
+
+    /** A start ctx whose history is `entries`, with its widget repaint count. */
+    const startCtx = (sessionId: string, entries: PiHistoryEntry[]) => {
+      const calls: Array<[string, unknown]> = [];
+      const state = { renders: 0 };
+      const tui = {
+        requestRender: () => {
+          state.renders += 1;
+        },
+      };
+      return {
+        calls,
+        state,
+        tui,
+        ctx: {
+          sessionManager: {
+            getSessionId: () => sessionId,
+            buildContextEntries: () => entries,
+          },
+          ui: {
+            notify: () => {},
+            setWidget: (key: string, content: unknown) => {
+              calls.push([key, content]);
+            },
+            onTerminalInput: () => () => {},
+          },
+        },
+      };
+    };
+
+    /** Repaints one start causes once the session's widget is attached. */
+    const startRepaints = async (
+      session: ReturnType<typeof startCtx>,
+    ): Promise<number> => {
+      // The previous-turn fallback registers the widget without restoring.
+      await handlers.beforeAgentStart(
+        { messageType: "user", systemPrompt: "base" },
+        session.ctx,
+      );
+      const widget = renderZooWidget(session.calls, 80, session.tui);
+      try {
+        const before = session.state.renders;
+        await handlers.sessionStart(
+          { type: "session_start", reason: "resume" },
+          session.ctx,
+        );
+        return session.state.renders - before;
+      } finally {
+        widget.dispose();
+      }
+    };
+
+    const restored = startCtx("sess-restore-fleet", [
+      ...delegation("call-r1", 10),
+      ...delegation("call-r2", 30),
+    ]);
+    const empty = startCtx("sess-restore-empty", []);
+
+    const withRestore = await startRepaints(restored);
+    assert.deepEqual(
+      topLevelRuns("sess-restore-fleet").map((run) => run.id),
+      ["call-r1", "call-r2"],
+      "precondition: the start restored both runs",
+    );
+    const withoutRestore = await startRepaints(empty);
+
+    assert.equal(
+      withRestore - withoutRestore,
+      2,
+      "each restored run repaints the fleet once",
+    );
+  });
+
   it("creates and registers nothing without a session id", async () => {
     const api = mockApi();
     const handlers = await buildPiHandlers(POLY_ZOO, api as any, MODES_RAW);
@@ -1512,7 +1629,6 @@ describe("buildPiHandlers — event admission", () => {
       collectSkillPaths: () => [],
       applyActiveTools: () => log.push("trim"),
       registerFleetWidget: (sessionID) => log.push(`widget:${sessionID}`),
-      refreshFleetWidget: (sessionID) => log.push(`refresh:${sessionID}`),
       refreshTodoView: (sessionID) => log.push(`todo:${sessionID}`),
       seedTodoView: (sessionID) => log.push(`seed:${sessionID}`),
       drainPendingSwitchOps: () => log.push("drain"),
@@ -1620,20 +1736,19 @@ describe("buildPiHandlers — event admission", () => {
     );
 
     // Interleaved sessions never share a surface: each bind, widget write
-    // and todo refresh carries the id of the event that caused it.
+    // and todo refresh carries the id of the event that caused it.  The
+    // post-restore repaint is the fleet subscription's, not the handler's.
     assert.deepEqual(h.log, [
       "start",
       "bind:s1",
       "trim",
       "widget:s1",
       "todo:s1",
-      "refresh:s1",
       "start",
       "bind:s2",
       "trim",
       "widget:s2",
       "todo:s2",
-      "refresh:s2",
     ]);
   });
 
@@ -1728,7 +1843,6 @@ describe("buildPiHandlers — event admission", () => {
       "trim",
       "widget:s1",
       "todo:s1",
-      "refresh:s1",
     ]);
   });
 

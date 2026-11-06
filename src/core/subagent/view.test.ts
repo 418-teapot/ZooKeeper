@@ -16,8 +16,8 @@ import { afterEach, describe, it } from "node:test";
 import { SPINNER_FRAMES, TREE_BRANCH, TREE_LAST } from "../display.js";
 import {
   finishRun,
+  type RunSnapshot,
   resetRegistry,
-  type SubagentRun,
   startRun,
 } from "./registry.js";
 import { createRunLog, type RunLog } from "./run-log.js";
@@ -78,7 +78,14 @@ function terminalMeta(overrides: Partial<CardMeta> = {}): CardMeta {
 
 /** The card projection options with the test defaults filled in. */
 function cardOpts(overrides: Partial<CardOptions> = {}): CardOptions {
-  return { width: 80, expanded: false, now: 0, ...overrides };
+  return {
+    width: 80,
+    expanded: false,
+    now: 0,
+    rootId: "root",
+    childrenByParent: new Map(),
+    ...overrides,
+  };
 }
 
 /** A log with `n` tool-start facts (bash echo 0..n-1), newest last. */
@@ -112,6 +119,18 @@ function toolTexts(lines: CardLine[]): string[] {
 /** The nested-child rows (`├─`/`└─`, any indent) of a projected card. */
 function childRows(lines: CardLine[]): CardLine[] {
   return lines.filter((l) => /^[│ ]*[├└]─/.test(l.text));
+}
+
+/**
+ * The card's explicit child index: parent run id → its child runs.
+ *
+ * Written as an object literal so a multi-generation tree reads as the tree
+ * it describes.
+ */
+function childIndex(
+  groups: Record<string, RunSnapshot[]>,
+): ReadonlyMap<string, RunSnapshot[]> {
+  return new Map(Object.entries(groups));
 }
 
 // ---------------------------------------------------------------------------
@@ -663,8 +682,8 @@ describe("summarizeToolCall", () => {
 /** A minimal subagent run fixture for the fleet view tests. */
 function fleetRun(
   id: string,
-  overrides: Partial<SubagentRun> = {},
-): SubagentRun {
+  overrides: Partial<RunSnapshot> = {},
+): RunSnapshot {
   return {
     id,
     agent: "lynx",
@@ -1041,7 +1060,7 @@ describe("renderFleetRows", () => {
       }),
       fleetRun("p2", { agent: "mola", status: "done", startedAt: 4000 }),
     ];
-    const children = new Map<string, SubagentRun[]>([
+    const children = new Map<string, RunSnapshot[]>([
       [
         "p1",
         [
@@ -1081,7 +1100,7 @@ describe("renderFleetRows", () => {
         startedAt: 1000,
       }),
     ];
-    const children = new Map<string, SubagentRun[]>([
+    const children = new Map<string, RunSnapshot[]>([
       [
         "p1",
         [
@@ -1132,7 +1151,7 @@ describe("renderFleetRows", () => {
 
   it("flags a nested child row as selected", () => {
     const entries = [fleetRun("p1", { status: "running", startedAt: 1000 })];
-    const children = new Map<string, SubagentRun[]>([
+    const children = new Map<string, RunSnapshot[]>([
       ["p1", [fleetRun("c1", { status: "done", startedAt: 2000 })]],
     ]);
     const lines = renderFleetRows(entries, children, "c1", 0, 5000);
@@ -1414,7 +1433,11 @@ describe("projectCard (running) — children", () => {
     ];
     const log = createRunLog();
     log.appendToolStart("bash", { command: "true" }, 0);
-    const lines = projectCard(log, runningMeta(), cardOpts({ children }));
+    const lines = projectCard(
+      log,
+      runningMeta(),
+      cardOpts({ childrenByParent: childIndex({ root: children }) }),
+    );
     const childLines = childRows(lines);
     assert.deepEqual(
       childLines.map((l) => l.text),
@@ -1437,7 +1460,10 @@ describe("projectCard (running) — children", () => {
     const lines = projectCard(
       createRunLog(),
       runningMeta(),
-      cardOpts({ children, frame: 3 }),
+      cardOpts({
+        childrenByParent: childIndex({ root: children }),
+        frame: 3,
+      }),
     );
     const childLines = childRows(lines);
     assert.equal(
@@ -1454,12 +1480,12 @@ describe("projectCard (running) — children", () => {
     const withEmpty = projectCard(
       log,
       runningMeta(),
-      cardOpts({ children: [] }),
+      cardOpts({ childrenByParent: childIndex({ root: [] }) }),
     );
     assert.deepEqual(
       withEmpty.map((l) => l.text),
       without.map((l) => l.text),
-      "an empty children list must not change the running card",
+      "an empty child index must not change the running card",
     );
   });
 });
@@ -1475,7 +1501,10 @@ describe("projectCard (terminal) — children", () => {
     const lines = projectCard(
       log,
       terminalMeta(),
-      cardOpts({ children, frame: 7 }),
+      cardOpts({
+        childrenByParent: childIndex({ root: children }),
+        frame: 7,
+      }),
     );
     const childLines = childRows(lines);
     assert.deepEqual(
@@ -1495,12 +1524,12 @@ describe("projectCard (terminal) — children", () => {
     const withEmpty = projectCard(
       log,
       terminalMeta(),
-      cardOpts({ children: [] }),
+      cardOpts({ childrenByParent: childIndex({ root: [] }) }),
     );
     assert.deepEqual(
       withEmpty.map((l) => l.text),
       without.map((l) => l.text),
-      "an empty children list must not change the terminal card",
+      "an empty child index must not change the terminal card",
     );
   });
 });
@@ -1511,6 +1540,90 @@ describe("projectCard (terminal) — children", () => {
 
 describe("projectCard — recursive subagent tree", () => {
   afterEach(() => resetRegistry());
+
+  it("renders every generation below a child from the explicit map", () => {
+    // Four levels: root → child → grandchild → great-grandchild.  Only the
+    // map carries levels two and three down, so a projection that read the
+    // registry per level would drop them.
+    const child = fleetRun("tree-c1", {
+      agent: "lynx",
+      label: "search",
+      status: "done",
+      startedAt: 10,
+    });
+    const lines = projectCard(
+      createRunLog(),
+      runningMeta({ currentTool: undefined }),
+      cardOpts({
+        childrenByParent: childIndex({
+          root: [child],
+          "tree-c1": [
+            fleetRun("tree-g1", {
+              agent: "spider",
+              label: "fetch",
+              status: "done",
+              startedAt: 20,
+            }),
+          ],
+          "tree-g1": [
+            fleetRun("tree-gg1", {
+              agent: "mola",
+              label: "sum",
+              status: "done",
+              startedAt: 30,
+            }),
+          ],
+        }),
+      }),
+    );
+    assert.deepEqual(
+      childRows(lines).map((l) => l.text),
+      [
+        `${TREE_LAST} ● subagent(lynx) · search`,
+        `   ${TREE_LAST} ● subagent(spider) · fetch`,
+        `      ${TREE_LAST} ● subagent(mola) · sum`,
+      ],
+    );
+  });
+
+  it("takes the whole tree from the map alone, never from the registry", () => {
+    // A registered grandchild that the map omits must not render: the card
+    // consumes exactly the explicit data the caller hands it.
+    startRun({
+      id: "tree-reg-child",
+      agent: "lynx",
+      parentSession: "child-reg",
+      childSession: "child-reg-2",
+      startedAt: 10,
+    });
+    startRun({
+      id: "tree-reg-grand",
+      agent: "spider",
+      parentSession: "child-reg-2",
+      startedAt: 20,
+    });
+    const lines = projectCard(
+      createRunLog(),
+      runningMeta({ currentTool: undefined }),
+      cardOpts({
+        childrenByParent: childIndex({
+          root: [
+            fleetRun("tree-reg-child", {
+              agent: "lynx",
+              label: "search",
+              status: "done",
+              startedAt: 10,
+            }),
+          ],
+        }),
+      }),
+    );
+    assert.deepEqual(
+      childRows(lines).map((l) => l.text),
+      [`${TREE_LAST} ● subagent(lynx) · search`],
+      "an unregistered grandchild must not appear",
+    );
+  });
 
   it("indents grandchildren and closes every level with └─", () => {
     startRun({
@@ -1544,7 +1657,18 @@ describe("projectCard — recursive subagent tree", () => {
     const lines = projectCard(
       createRunLog(),
       runningMeta({ currentTool: undefined }),
-      cardOpts({ children }),
+      cardOpts({
+        childrenByParent: childIndex({
+          root: children,
+          "tree-c1": [
+            fleetRun("tree-g1", {
+              agent: "spider",
+              status: "done",
+              startedAt: 20,
+            }),
+          ],
+        }),
+      }),
     );
     assert.deepEqual(
       childRows(lines).map((l) => l.text),
@@ -1569,7 +1693,7 @@ describe("projectCard — child live activity", () => {
     const runningLines = projectCard(
       createRunLog(),
       runningMeta({ currentTool: undefined }),
-      cardOpts({ children: [running] }),
+      cardOpts({ childrenByParent: childIndex({ root: [running] }) }),
     );
     assert.equal(
       childRows(runningLines)[0].text,
@@ -1586,7 +1710,7 @@ describe("projectCard — child live activity", () => {
     const doneLines = projectCard(
       createRunLog(),
       runningMeta({ currentTool: undefined }),
-      cardOpts({ children: [done] }),
+      cardOpts({ childrenByParent: childIndex({ root: [done] }) }),
     );
     assert.equal(
       childRows(doneLines)[0].text,
@@ -1608,7 +1732,7 @@ describe("projectCard — child live activity", () => {
     const lines = projectCard(
       createRunLog(),
       runningMeta({ currentTool: undefined }),
-      cardOpts({ children: [child] }),
+      cardOpts({ childrenByParent: childIndex({ root: [child] }) }),
     );
     assert.equal(
       childRows(lines)[0].text,
@@ -1626,7 +1750,7 @@ describe("projectCard — child live activity", () => {
     const lines = projectCard(
       createRunLog(),
       runningMeta({ currentTool: undefined }),
-      cardOpts({ children: [child] }),
+      cardOpts({ childrenByParent: childIndex({ root: [child] }) }),
     );
     assert.equal(
       childRows(lines)[0].text,
@@ -1651,18 +1775,18 @@ describe("projectCard — time-anchored child rows", () => {
     const lines = projectCard(
       log,
       runningMeta({ currentTool: undefined }),
-      cardOpts({ children }),
+      cardOpts({ childrenByParent: childIndex({ root: children }) }),
     );
     const texts = lines.map((l) => l.text);
-    const childIndex = texts.indexOf(`${TREE_LAST} ● subagent(lynx) · search`);
+    const childRow = texts.indexOf(`${TREE_LAST} ● subagent(lynx) · search`);
     const beforeIndex = texts.indexOf("→ $ before");
     const afterIndex = texts.indexOf("→ $ after");
     assert.ok(
-      beforeIndex !== -1 && childIndex !== -1 && afterIndex !== -1,
+      beforeIndex !== -1 && childRow !== -1 && afterIndex !== -1,
       texts.join(" | "),
     );
     assert.ok(
-      beforeIndex < childIndex && childIndex < afterIndex,
+      beforeIndex < childRow && childRow < afterIndex,
       `child must sit between the earlier and later parent lines: ${texts.join(
         " | ",
       )}`,
@@ -1687,22 +1811,25 @@ describe("projectCard — time-anchored child rows", () => {
     const lines = projectCard(
       log,
       runningMeta({ currentTool: "read" }),
-      cardOpts({ children, now: 400 }),
+      cardOpts({
+        childrenByParent: childIndex({ root: children }),
+        now: 400,
+      }),
     );
     const texts = lines.map((l) => l.text);
-    const childIndex = texts.findIndex((t) => t.includes("subagent(lynx)"));
+    const childRow = texts.findIndex((t) => t.includes("subagent(lynx)"));
     const afterIndex = texts.indexOf("→ $ after");
     const currentIndex = texts.indexOf("read");
     const statsIndex = texts.findIndex((t) => t.includes("⟳"));
     assert.ok(
-      childIndex !== -1 &&
+      childRow !== -1 &&
         afterIndex !== -1 &&
         currentIndex !== -1 &&
         statsIndex !== -1,
       texts.join(" | "),
     );
     assert.ok(
-      childIndex < afterIndex &&
+      childRow < afterIndex &&
         afterIndex < currentIndex &&
         currentIndex < statsIndex,
       `current tool must trail the child and its resumed fact line: ${texts.join(
@@ -1721,13 +1848,13 @@ describe("projectCard — time-anchored child rows", () => {
     const lines = projectCard(
       log,
       runningMeta({ currentTool: undefined }),
-      cardOpts({ children }),
+      cardOpts({ childrenByParent: childIndex({ root: children }) }),
     );
     const texts = lines.map((l) => l.text);
-    const childIndex = texts.findIndex((t) => t.includes("subagent(lynx)"));
+    const childRow = texts.findIndex((t) => t.includes("subagent(lynx)"));
     const statsIndex = texts.findIndex((t) => t.includes("⟳"));
-    assert.ok(childIndex !== -1 && statsIndex !== -1, texts.join(" | "));
-    assert.ok(childIndex < statsIndex, texts.join(" | "));
+    assert.ok(childRow !== -1 && statsIndex !== -1, texts.join(" | "));
+    assert.ok(childRow < statsIndex, texts.join(" | "));
   });
 });
 
@@ -1752,7 +1879,7 @@ describe("projectCard — inner delegation dedup", () => {
     const lines = projectCard(
       log,
       runningMeta({ currentTool: undefined }),
-      cardOpts({ children }),
+      cardOpts({ childrenByParent: childIndex({ root: children }) }),
     );
     const texts = lines.map((l) => l.text);
     assert.ok(
@@ -1772,7 +1899,7 @@ describe("projectCard — inner delegation dedup", () => {
     const lines = projectCard(
       log,
       runningMeta({ currentTool: undefined }),
-      cardOpts({ children: [] }),
+      cardOpts({ childrenByParent: childIndex({ root: [] }) }),
     );
     assert.ok(
       lines.some((l) => l.text.startsWith("→ subagent ")),
@@ -1794,7 +1921,11 @@ describe("projectCard — descendant failure badge", () => {
         startedAt: 10,
       }),
     ];
-    const lines = projectCard(log, terminalMeta(), cardOpts({ children }));
+    const lines = projectCard(
+      log,
+      terminalMeta(),
+      cardOpts({ childrenByParent: childIndex({ root: children }) }),
+    );
     const title = lines[0];
     assert.ok(title.text.includes("■ 1 failed"), title.text);
     assert.ok(
@@ -1803,36 +1934,80 @@ describe("projectCard — descendant failure badge", () => {
     );
   });
 
-  it("counts failures at any depth", () => {
-    startRun({
-      id: "badge-n1",
-      agent: "beaver",
-      parentSession: "sess-1",
-      childSession: "sess-2",
-      startedAt: 10,
-    });
+  it("counts failures at any depth from the explicit map", () => {
     startRun({
       id: "badge-g1",
       agent: "lynx",
-      parentSession: "sess-2",
+      parentSession: "child-sess",
       startedAt: 20,
     });
-    finishRun("badge-n1", { status: "done" });
     finishRun("badge-g1", { status: "error" });
+    startRun({
+      id: "badge-gg1",
+      agent: "spider",
+      parentSession: "grand-sess",
+      startedAt: 30,
+    });
+    finishRun("badge-gg1", { status: "error" });
     const lines = projectCard(
       createRunLog(),
       terminalMeta(),
       cardOpts({
-        children: [
-          fleetRun("badge-n1", {
-            agent: "beaver",
-            status: "done",
-            startedAt: 10,
-          }),
-        ],
+        childrenByParent: childIndex({
+          root: [
+            fleetRun("badge-n1", {
+              agent: "beaver",
+              status: "done",
+              startedAt: 10,
+            }),
+          ],
+          "badge-n1": [
+            fleetRun("badge-g1", {
+              agent: "lynx",
+              status: "error",
+              startedAt: 20,
+            }),
+          ],
+          "badge-g1": [
+            fleetRun("badge-gg1", {
+              agent: "spider",
+              status: "error",
+              startedAt: 30,
+            }),
+          ],
+        }),
       }),
     );
-    assert.ok(lines[0].text.includes("■ 1 failed"), lines[0].text);
+    assert.ok(lines[0].text.includes("■ 2 failed"), lines[0].text);
+  });
+
+  it("ignores a registered failure the map does not report", () => {
+    startRun({
+      id: "badge-hidden",
+      agent: "lynx",
+      parentSession: "child-sess",
+      startedAt: 20,
+    });
+    finishRun("badge-hidden", { status: "error" });
+    const lines = projectCard(
+      createRunLog(),
+      terminalMeta(),
+      cardOpts({
+        childrenByParent: childIndex({
+          root: [
+            fleetRun("badge-n2", {
+              agent: "beaver",
+              status: "done",
+              startedAt: 10,
+            }),
+          ],
+        }),
+      }),
+    );
+    assert.ok(
+      !lines[0].text.includes("failed"),
+      `no badge without explicit failures: ${lines[0].text}`,
+    );
   });
 
   it("leaves a failed parent's title unchanged", () => {
@@ -1846,7 +2021,7 @@ describe("projectCard — descendant failure badge", () => {
     const lines = projectCard(
       createRunLog(),
       terminalMeta({ status: "error", error: "boom" }),
-      cardOpts({ children }),
+      cardOpts({ childrenByParent: childIndex({ root: children }) }),
     );
     assert.ok(!lines[0].text.includes("failed"), lines[0].text);
   });
@@ -1862,7 +2037,7 @@ describe("projectCard — descendant failure badge", () => {
     const lines = projectCard(
       createRunLog(),
       terminalMeta({ status: "aborted" }),
-      cardOpts({ children }),
+      cardOpts({ childrenByParent: childIndex({ root: children }) }),
     );
     assert.ok(!lines[0].text.includes("failed"), lines[0].text);
   });
