@@ -17,18 +17,14 @@
 import assert from "node:assert/strict";
 import { mkdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
-import { afterEach, describe, it } from "node:test";
+import { afterEach, beforeEach, describe, it } from "node:test";
 import { permitFor } from "../../testkits/context-runtime.js";
 import { makeTmpDir } from "../../testkits/tmp.js";
 import { project } from "../context/lens.js";
 import { createContextRuntime } from "../context/runtime.js";
 import { createStateStore } from "../context/store.js";
 import { createLifecycleKernel } from "../lifecycle/index.js";
-import {
-  SessionAgentRegistry,
-  sessionAgentRegistry,
-  sessionAgentResource,
-} from "./agent.js";
+import { createSessionAgentResource, SessionAgentRegistry } from "./agent.js";
 import {
   contextSessionResources,
   createSessionResourceCatalog,
@@ -43,11 +39,17 @@ import {
 // Test setup
 // ---------------------------------------------------------------------------
 
+/** The session → agent bindings of the instance under test. */
+let sessionAgents = new SessionAgentRegistry();
+
+beforeEach(() => {
+  sessionAgents = new SessionAgentRegistry();
+});
+
 /** Scratch store directories the current test created. */
 const tmpDirs: string[] = [];
 
 afterEach(() => {
-  sessionAgentRegistry.clear();
   for (const dir of tmpDirs.splice(0)) {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -65,7 +67,7 @@ function sandboxRuntime() {
   const runtime = createContextRuntime(store);
   const catalog = createSessionResourceCatalog([
     ...contextSessionResources(runtime),
-    sessionAgentResource,
+    createSessionAgentResource(sessionAgents),
   ]);
   return { runtime, store, catalog };
 }
@@ -95,7 +97,7 @@ async function stageSession(
     });
     state.pendingViewChange = true;
   });
-  sessionAgentRegistry.bind(sessionID, "dolphin");
+  sessionAgents.bind(sessionID, "dolphin");
   runtime.setModelLimit(permit, 1000, "model");
   runtime.publishRoundView(sessionID, {
     projection: project([], []),
@@ -249,7 +251,7 @@ describe("session record deletion", () => {
     const report = await catalog.delete(sessionID);
 
     assert.deepEqual(report.errors, []);
-    assert.equal(sessionAgentRegistry.resolve(sessionID), undefined);
+    assert.equal(sessionAgents.resolve(sessionID), undefined);
     assert.equal(runtime.modelLimit(sessionID), undefined);
     assert.equal(runtime.roundView(sessionID), undefined);
     assert.equal(
@@ -289,7 +291,7 @@ describe("session record release", () => {
       "the next process instance restores the same context",
     );
     assert.equal(
-      sessionAgentRegistry.resolve(sessionID),
+      sessionAgents.resolve(sessionID),
       "dolphin",
       "identity belongs to the process, not to a runtime",
     );
@@ -364,7 +366,7 @@ describe("session resources service", () => {
         mode === "delete-session" ? 0 : 1,
       );
       assert.equal(
-        sessionAgentRegistry.resolve(sessionID),
+        sessionAgents.resolve(sessionID),
         mode === "delete-session" ? undefined : "dolphin",
       );
       assert.equal(runtime.modelLimit(sessionID), undefined);

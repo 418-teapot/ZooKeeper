@@ -13,6 +13,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import type { ModeProfile } from "../../core/config-types.js";
 import type { Capabilities } from "../../core/ports/index.js";
+import { definePromptAgent } from "../../core/unit.js";
 import { composeForTest } from "../../testkits/compose.js";
 import { judgeDelegationTarget, unit } from "./index.js";
 
@@ -84,17 +85,32 @@ const HOOK_PROFILE: ModeProfile = {
 };
 
 describe("subagent-delegation unit — capability gate", () => {
-  it("skips the unit when the host cannot resolve a caller", () => {
+  it("skips the unit when the host cannot resolve a caller or a role map", () => {
     const result = composeForTest(HOOK_PROFILE, [unit], BASE_CAPS);
     assert.equal(result.gate, null);
     assert.deepEqual(result.report.skipped, [
-      { name: "subagent-delegation", missing: ["resolveCallerAgent"] },
+      {
+        name: "subagent-delegation",
+        missing: ["resolveCallerAgent", "agentModes"],
+      },
+    ]);
+  });
+
+  it("skips the unit when the host declares no agent-mode map", () => {
+    const result = composeForTest(HOOK_PROFILE, [unit], {
+      ...BASE_CAPS,
+      resolveCallerAgent: async () => "beaver",
+    });
+    assert.equal(result.gate, null);
+    assert.deepEqual(result.report.skipped, [
+      { name: "subagent-delegation", missing: ["agentModes"] },
     ]);
   });
 
   it("composes the judge when the host provides the caller resolver", () => {
     const result = composeForTest(HOOK_PROFILE, [unit], {
       ...BASE_CAPS,
+      agentModes: { beaver: "subagent", kiwi: "subagent" },
       resolveCallerAgent: async () => "beaver",
     });
     assert.deepEqual(result.report.skipped, []);
@@ -102,6 +118,108 @@ describe("subagent-delegation unit — capability gate", () => {
     const refusal = result.gate?.({ caller: "beaver", target: "kiwi" });
     assert.ok(refusal !== null && refusal !== undefined);
     assert.ok(refusal.reason.includes("not allowed"));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Selection-aware target gate
+// ---------------------------------------------------------------------------
+
+/** Roles covering two primaries and three configured subagents. */
+const GATE_MODES = {
+  dolphin: "primary",
+  mola: "primary",
+  beaver: "subagent",
+  lynx: "subagent",
+  spider: "subagent",
+} as const;
+
+/** A profile selecting dolphin, mola, beaver and lynx — spider stays out. */
+const SELECTED_PROFILE: ModeProfile = {
+  ...HOOK_PROFILE,
+  agents: ["dolphin", "mola", "beaver", "lynx"],
+};
+
+/** The declared agent units, so the selection can derive its agent facts. */
+const AGENT_UNITS = ["dolphin", "mola", "beaver", "lynx", "spider"].map(
+  (name) => definePromptAgent(name, "prompt"),
+);
+
+/** Compose the judge over {@link SELECTED_PROFILE} and return its gate. */
+function selectedGate() {
+  const result = composeForTest(
+    SELECTED_PROFILE,
+    [unit, ...AGENT_UNITS],
+    {
+      ...BASE_CAPS,
+      agentModes: GATE_MODES,
+      resolveCallerAgent: async () => "beaver",
+    },
+    GATE_MODES,
+  );
+  assert.deepEqual(result.report.skipped, []);
+  assert.ok(result.gate !== null, "the judge must compose");
+  return result.gate;
+}
+
+describe("composed gate — selected targets", () => {
+  it("refuses a configured subagent the profile does not select", () => {
+    const refusal = selectedGate()({ caller: "dolphin", target: "spider" });
+    assert.ok(refusal !== null);
+    assert.ok(refusal.reason.includes("spider"));
+    assert.ok(refusal.reason.includes("未在当前 profile 的 agents 中启用"));
+  });
+
+  it("allows a selected subagent for an unrestricted caller", () => {
+    assert.equal(selectedGate()({ caller: "dolphin", target: "beaver" }), null);
+  });
+
+  it("refuses a selected primary as a target", () => {
+    const refusal = selectedGate()({ caller: "dolphin", target: "mola" });
+    assert.ok(refusal !== null);
+    assert.ok(refusal.reason.includes("不是可委派的子 agent"));
+  });
+
+  it("keeps the allowlist refusal for a restricted caller", () => {
+    const refusal = selectedGate()({ caller: "mola", target: "beaver" });
+    assert.ok(refusal !== null);
+    assert.ok(refusal.reason.includes("mola can only delegate to"));
+  });
+
+  it("allows a restricted caller a selected allowlisted target", () => {
+    assert.equal(selectedGate()({ caller: "mola", target: "lynx" }), null);
+  });
+
+  it("keeps refusing an unresolved caller", () => {
+    const refusal = selectedGate()({ caller: undefined, target: "beaver" });
+    assert.ok(refusal !== null);
+    assert.ok(refusal.reason.includes("无法确定调用者身份"));
+  });
+
+  it("keeps allowing a missing target", () => {
+    assert.equal(selectedGate()({ caller: "dolphin" }), null);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Structured refusal cause
+// ---------------------------------------------------------------------------
+
+describe("composed gate — structured refusal cause", () => {
+  it("carries the target-role cause for a configured primary", () => {
+    const refusal = selectedGate()({ caller: "dolphin", target: "mola" });
+    assert.equal(refusal?.cause, "not-a-subagent");
+  });
+
+  it("carries the target-role cause for an unselected subagent", () => {
+    const refusal = selectedGate()({ caller: "dolphin", target: "spider" });
+    assert.equal(refusal?.cause, "not-selected");
+  });
+
+  it("leaves the allowlist refusal without a cause", () => {
+    const refusal = selectedGate()({ caller: "mola", target: "beaver" });
+    assert.ok(refusal !== null);
+    assert.equal(refusal.cause, undefined);
   });
 });
 

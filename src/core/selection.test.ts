@@ -259,6 +259,76 @@ describe("planSelection — unknown profile names", () => {
     assert.deepEqual(selection.agents, ["dolphin"]);
     assert.deepEqual(selection.tools, []);
   });
+
+  it("reports a name listed under another category as unknown", () => {
+    const units = [
+      mockUnit("context-pruning", "hook"),
+      mockUnit("compress", "tool"),
+      mockUnit("dolphin", "agent"),
+      mockUnit("beaver-tdd", "skill"),
+      mockUnit("go", "command"),
+    ];
+    const profile: ModeProfile = {
+      name: "p",
+      agents: ["context-pruning"],
+      skills: ["compress"],
+      hooks: ["go"],
+      tools: ["dolphin"],
+      commands: ["beaver-tdd"],
+    };
+
+    const selection = planSelection({
+      profile,
+      units,
+      available: new Set<CapabilityKey>(),
+      agentModes: {},
+    });
+
+    assert.deepEqual(selection.report.selected, []);
+    assert.deepEqual(selection.report.unknown, [
+      { category: "agents", name: "context-pruning" },
+      { category: "skills", name: "compress" },
+      { category: "hooks", name: "go" },
+      { category: "tools", name: "dolphin" },
+      { category: "commands", name: "beaver-tdd" },
+    ]);
+    assert.deepEqual(selection.agents, []);
+    assert.deepEqual(selection.tools, []);
+  });
+
+  it("selects a name listed under its own category", () => {
+    const units = [
+      mockUnit("context-pruning", "hook"),
+      mockUnit("compress", "tool"),
+      mockUnit("dolphin", "agent"),
+      mockUnit("beaver-tdd", "skill"),
+      mockUnit("go", "command"),
+    ];
+    const profile: ModeProfile = {
+      name: "p",
+      agents: ["dolphin"],
+      skills: ["beaver-tdd"],
+      hooks: ["context-pruning"],
+      tools: ["compress"],
+      commands: ["go"],
+    };
+
+    const selection = planSelection({
+      profile,
+      units,
+      available: new Set<CapabilityKey>(),
+      agentModes: {},
+    });
+
+    assert.deepEqual(selection.report.selected, [
+      "context-pruning",
+      "compress",
+      "dolphin",
+      "beaver-tdd",
+      "go",
+    ]);
+    assert.deepEqual(selection.report.unknown, []);
+  });
 });
 
 describe("planSelection — null profile", () => {

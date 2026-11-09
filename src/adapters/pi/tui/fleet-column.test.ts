@@ -10,22 +10,21 @@
  *
  * The fake theme wraps colors as `<color>…</color>` and the background band
  * as `<selectedBg>…</selectedBg>`, matching the conventions the widget and
- * todo column tests use.  The registry is process-global and reset between
- * tests.
+ * todo column tests use.  Each test writes its runs into its own registry.
  */
 import assert from "node:assert/strict";
-import { afterEach, describe, it } from "node:test";
+import { beforeEach, describe, it } from "node:test";
 import {
-  finishRun,
-  resetRegistry,
-  startRun,
-  topLevelRuns,
+  createRunRegistry,
+  type RunRegistry,
 } from "../../../core/subagent/registry.js";
 import { colorTag, makeTheme } from "../../../testkits/theme.js";
 import { type FleetColumnOptions, renderFleetColumn } from "./fleet-column.js";
 
-afterEach(() => {
-  resetRegistry();
+let runs: RunRegistry = createRunRegistry();
+
+beforeEach(() => {
+  runs = createRunRegistry();
 });
 
 /** A theme stub that wraps each colorized string in `<color>` tags. */
@@ -36,7 +35,7 @@ const colorizeAgent = (name: string): string => `<c>${name}</c>`;
 
 /** Register a top-level run under the main session (with a session path). */
 function seedRun(id: string, startedAt: number, agent = id): void {
-  startRun({
+  runs.start({
     id,
     agent,
     parentSession: "main",
@@ -47,12 +46,13 @@ function seedRun(id: string, startedAt: number, agent = id): void {
 
 /** The session's top-level runs, oldest first. */
 function tops() {
-  return topLevelRuns("main");
+  return runs.topLevel("main");
 }
 
 /** Build renderer options with sensible defaults for the tests. */
 function opts(overrides: Partial<FleetColumnOptions> = {}): FleetColumnOptions {
   return {
+    runs,
     windowRows: 7,
     maxLines: 8,
     focused: true,
@@ -109,8 +109,8 @@ describe("renderFleetColumn — window semantics", () => {
   it("anchors the window on a selected child's parent", () => {
     for (let i = 0; i < 10; i++) seedRun(`r${i}`, i * 1000, `a${i}`);
     // r0 delegated: a nested run under its child session.
-    finishRun("r0", { status: "done", childSession: "child-r0" });
-    startRun({
+    runs.finish("r0", { status: "done", childSession: "child-r0" });
+    runs.start({
       id: "c0",
       agent: "kid",
       parentSession: "child-r0",
@@ -144,8 +144,8 @@ describe("renderFleetColumn — budget trim", () => {
     seedRun("r1", 1000);
     seedRun("r2", 2000);
     for (const parent of ["r0", "r1", "r2"]) {
-      finishRun(parent, { status: "done", childSession: `child-${parent}` });
-      startRun({
+      runs.finish(parent, { status: "done", childSession: `child-${parent}` });
+      runs.start({
         id: `c-${parent}`,
         agent: `kid-${parent}`,
         parentSession: `child-${parent}`,
@@ -189,13 +189,13 @@ describe("renderFleetColumn — budget trim", () => {
     for (let i = 0; i < 10; i++) seedRun(`r${i}`, i * 1000, `a${i}`);
     // Several parents carry a nested child, inflating their rendered rows.
     for (const parent of ["r2", "r5", "r8"]) {
-      startRun({
+      runs.start({
         id: `c-${parent}`,
         agent: "kid",
         parentSession: `child-${parent}`,
         startedAt: 1000,
       });
-      finishRun(parent, { status: "done", childSession: `child-${parent}` });
+      runs.finish(parent, { status: "done", childSession: `child-${parent}` });
     }
 
     // With windowRows=7 the anchored window (selection r2) would cost 9 rows,
@@ -222,10 +222,10 @@ describe("renderFleetColumn — budget trim", () => {
 
   it("keeps a single run's row and summarizes its overflow children", () => {
     seedRun("r0", 0, "root");
-    finishRun("r0", { status: "done", childSession: "child-r0" });
+    runs.finish("r0", { status: "done", childSession: "child-r0" });
     // Six nested children — the one run alone costs seven rendered rows.
     for (let i = 0; i < 6; i++) {
-      startRun({
+      runs.start({
         id: `c${i}`,
         agent: `kid${i}`,
         parentSession: "child-r0",
@@ -258,9 +258,9 @@ describe("renderFleetColumn — budget trim", () => {
 
   it("holds the budget when a single run overflows and runs are hidden", () => {
     for (let i = 0; i < 3; i++) seedRun(`r${i}`, i * 1000, `a${i}`);
-    finishRun("r1", { status: "done", childSession: "child-r1" });
+    runs.finish("r1", { status: "done", childSession: "child-r1" });
     for (let i = 0; i < 6; i++) {
-      startRun({
+      runs.start({
         id: `k${i}`,
         agent: `kid${i}`,
         parentSession: "child-r1",
@@ -303,8 +303,8 @@ describe("renderFleetColumn — budget trim", () => {
 describe("renderFleetColumn — left edge", () => {
   it("starts every row at column 0", () => {
     for (let i = 0; i < 10; i++) seedRun(`r${i}`, i * 1000, `a${i}`);
-    finishRun("r2", { status: "done", childSession: "child-r2" });
-    startRun({
+    runs.finish("r2", { status: "done", childSession: "child-r2" });
+    runs.start({
       id: "c2",
       agent: "kid",
       parentSession: "child-r2",
@@ -335,21 +335,21 @@ describe("renderFleetColumn — left edge", () => {
 describe("renderFleetColumn — deep nesting", () => {
   it("renders grandchildren with accumulated indent and bands the deep selection", () => {
     seedRun("r0", 0, "root");
-    finishRun("r0", { status: "done", childSession: "child-r0" });
-    startRun({
+    runs.finish("r0", { status: "done", childSession: "child-r0" });
+    runs.start({
       id: "c0",
       agent: "kid",
       parentSession: "child-r0",
       startedAt: 100,
     });
-    startRun({
+    runs.start({
       id: "c1",
       agent: "kid2",
       parentSession: "child-r0",
       startedAt: 150,
     });
-    finishRun("c0", { status: "done", childSession: "child-c0" });
-    startRun({
+    runs.finish("c0", { status: "done", childSession: "child-c0" });
+    runs.start({
       id: "g0",
       agent: "grand",
       parentSession: "child-c0",
@@ -383,15 +383,15 @@ describe("renderFleetColumn — deep nesting", () => {
   it("budgets a three-generation run by its full descendant row count", () => {
     // r0 spans three generations (3 rendered rows); r1 is a plain row.
     seedRun("r0", 0, "root");
-    finishRun("r0", { status: "done", childSession: "child-r0" });
-    startRun({
+    runs.finish("r0", { status: "done", childSession: "child-r0" });
+    runs.start({
       id: "c0",
       agent: "kid",
       parentSession: "child-r0",
       startedAt: 100,
     });
-    finishRun("c0", { status: "done", childSession: "child-c0" });
-    startRun({
+    runs.finish("c0", { status: "done", childSession: "child-c0" });
+    runs.start({
       id: "g0",
       agent: "grand",
       parentSession: "child-c0",

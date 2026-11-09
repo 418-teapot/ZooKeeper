@@ -14,7 +14,7 @@ import { readFileSync, rmSync } from "node:fs";
 import { afterEach, beforeEach, describe, it } from "node:test";
 import { executeHandoff } from "../../core/handoff.js";
 import { buildPlanReference } from "../../core/plan.js";
-import { sessionAgentRegistry } from "../../core/session/agent.js";
+import { SessionAgentRegistry } from "../../core/session/agent.js";
 import { cleanupPlan, createPlanFile } from "../../testkits/plans.js";
 import { makeTmpDir } from "../../testkits/tmp.js";
 import {
@@ -26,6 +26,7 @@ import { createPiHandoffTarget } from "./handoff-target.js";
 import {
   createPiHandoffIdentity,
   createSwitchOpsStore,
+  type PiSwitchState,
 } from "./switch-host.js";
 
 // ---------------------------------------------------------------------------
@@ -40,14 +41,12 @@ let _loggerDir: string;
 
 beforeEach(() => {
   _resetForTesting();
-  sessionAgentRegistry.clear();
   _loggerDir = tmpDir();
   initLogger("pi", { logDir: _loggerDir });
 });
 
 afterEach(() => {
   _resetForTesting();
-  sessionAgentRegistry.clear();
   try {
     rmSync(_loggerDir, { recursive: true, force: true });
   } catch {
@@ -59,17 +58,21 @@ afterEach(() => {
 const EXECUTOR = "alpha";
 
 /**
- * A handoff identity surface over an isolated pending slot.
+ * A handoff identity surface over an isolated process state.
  *
- * The slot is what the replacement session resolves its executor from, so
- * a test reads it to prove the handoff published (or dropped) the target.
+ * The state carries both the pending replacement the replacement session
+ * claims its executor from and the session bindings, so a test reads it to
+ * prove the handoff published (or dropped) the target.
  */
 function handoffIdentity(): {
   identity: ReturnType<typeof createPiHandoffIdentity>;
-  store: ReturnType<typeof createSwitchOpsStore>;
+  state: PiSwitchState;
 } {
-  const store = createSwitchOpsStore();
-  return { identity: createPiHandoffIdentity(store), store };
+  const state: PiSwitchState = {
+    sessionAgents: new SessionAgentRegistry(),
+    switchOps: createSwitchOpsStore(),
+  };
+  return { identity: createPiHandoffIdentity(state), state };
 }
 
 /** A fake pi command context with a recording newSession. */
@@ -223,7 +226,7 @@ describe("pi handoff target — setPrimary", () => {
     const { planPath, baseDir } = createPlanFile("planning-done");
     const { ctx } = fakeCommandCtx();
 
-    const { identity } = handoffIdentity();
+    const { identity, state } = handoffIdentity();
     const handoffTarget = createPiHandoffTarget({
       getCommandCtx: () => ctx,
       identity,
@@ -235,7 +238,7 @@ describe("pi handoff target — setPrimary", () => {
       directory: baseDir,
     });
 
-    assert.equal(sessionAgentRegistry.resolve(sessionID), EXECUTOR);
+    assert.equal(state.sessionAgents.resolve(sessionID), EXECUTOR);
 
     cleanupPlan(planPath);
   });
@@ -245,7 +248,7 @@ describe("pi handoff target — setPrimary", () => {
     const { planPath, baseDir } = createPlanFile("planning-done");
     const { ctx } = fakeCommandCtx();
 
-    const { identity } = handoffIdentity();
+    const { identity, state } = handoffIdentity();
     const handoffTarget = createPiHandoffTarget({
       getCommandCtx: () => ctx,
       identity,
@@ -257,7 +260,7 @@ describe("pi handoff target — setPrimary", () => {
       directory: baseDir,
     });
 
-    assert.equal(sessionAgentRegistry.resolve(sessionID), "beta");
+    assert.equal(state.sessionAgents.resolve(sessionID), "beta");
 
     cleanupPlan(planPath);
   });
@@ -445,7 +448,7 @@ describe("pi handoff target — deliver semantics", () => {
     const sessionID = `test-pending-${Date.now()}`;
     const { planPath, baseDir } = createPlanFile("planning-done");
     const { ctx } = fakeCommandCtx();
-    const { identity, store } = handoffIdentity();
+    const { identity, state } = handoffIdentity();
 
     const handoffTarget = createPiHandoffTarget({
       getCommandCtx: () => ctx,
@@ -458,9 +461,15 @@ describe("pi handoff target — deliver semantics", () => {
       directory: baseDir,
     });
 
-    // The replacement session is not named yet, so its bind-time handlers
-    // resolve the target from the slot.
-    assert.equal(store.pendingPrimary(), EXECUTOR);
+    // The replacement session is not named yet, so its own start claims the
+    // published executor.
+    assert.equal(
+      state.switchOps.claim("sess-replacement", {
+        reason: "new",
+        parentSession: sessionID,
+      }),
+      EXECUTOR,
+    );
 
     cleanupPlan(planPath);
   });
@@ -469,7 +478,7 @@ describe("pi handoff target — deliver semantics", () => {
     const sessionID = `test-pending-cancel-${Date.now()}`;
     const { planPath, baseDir } = createPlanFile("planning-done");
     const { ctx } = fakeCommandCtx({ cancelled: true });
-    const { identity, store } = handoffIdentity();
+    const { identity, state } = handoffIdentity();
 
     const handoffTarget = createPiHandoffTarget({
       getCommandCtx: () => ctx,
@@ -485,18 +494,26 @@ describe("pi handoff target — deliver semantics", () => {
         }),
       /cancelled/,
     );
-    assert.equal(store.pendingPrimary(), undefined);
+    assert.equal(
+      state.switchOps.claim(sessionID, {
+        reason: "new",
+        parentSession: sessionID,
+      }),
+      undefined,
+      "a cancelled replacement publishes no target to claim",
+    );
 
     cleanupPlan(planPath);
   });
 
-  it("a cancelled handoff keeps the queued tool trim", async () => {
+  it("a cancelled handoff drops the operations it opened", async () => {
     const sessionID = `test-cancel-trim-${Date.now()}`;
     const { planPath, baseDir } = createPlanFile("planning-done");
     const { ctx } = fakeCommandCtx({ cancelled: true });
-    const { identity, store } = handoffIdentity();
-    // A switch that ran earlier queued the replacement's tool trim.
-    store.stash({ activeTools: ["lynx"] });
+    const { identity, state } = handoffIdentity();
+    // An earlier replacement queued its tool trim and never claimed it.
+    state.switchOps.begin("sess-stale");
+    state.switchOps.stash({ activeTools: ["lynx"] });
 
     const handoffTarget = createPiHandoffTarget({
       getCommandCtx: () => ctx,
@@ -513,20 +530,24 @@ describe("pi handoff target — deliver semantics", () => {
       /cancelled/,
     );
 
-    // The cancel revokes the handoff's own target only: the queued trim
-    // belongs to the session that will drain it.
-    assert.equal(store.pendingPrimary(), undefined);
-    assert.deepEqual(store.drain(), { activeTools: ["lynx"] });
+    // The handoff opened its own replacement, so the stale trim is dropped
+    // with it: no session exists that could claim either.
+    assert.equal(
+      state.switchOps.claim(sessionID, { reason: "new", parentSession: "x" }),
+      undefined,
+    );
+    assert.equal(state.switchOps.drain(sessionID), undefined);
 
     cleanupPlan(planPath);
   });
 
-  it("a throwing replacement keeps the queued tool trim", async () => {
+  it("a throwing replacement drops the operations it opened", async () => {
     const sessionID = `test-throw-trim-${Date.now()}`;
     const { planPath, baseDir } = createPlanFile("planning-done");
     const { ctx } = fakeCommandCtx({ newSessionError: new Error("boom") });
-    const { identity, store } = handoffIdentity();
-    store.stash({ activeTools: ["lynx"] });
+    const { identity, state } = handoffIdentity();
+    state.switchOps.begin("sess-stale");
+    state.switchOps.stash({ activeTools: ["lynx"] });
 
     const handoffTarget = createPiHandoffTarget({
       getCommandCtx: () => ctx,
@@ -543,8 +564,11 @@ describe("pi handoff target — deliver semantics", () => {
       /boom/,
     );
 
-    assert.equal(store.pendingPrimary(), undefined);
-    assert.deepEqual(store.drain(), { activeTools: ["lynx"] });
+    assert.equal(
+      state.switchOps.claim(sessionID, { reason: "new", parentSession: "x" }),
+      undefined,
+    );
+    assert.equal(state.switchOps.drain(sessionID), undefined);
 
     cleanupPlan(planPath);
   });
@@ -552,12 +576,13 @@ describe("pi handoff target — deliver semantics", () => {
   it("cancelled replacement restores the previous primary", async () => {
     const sessionID = `test-cancel-rollback-${Date.now()}`;
     const { planPath, baseDir } = createPlanFile("planning-done");
-    // The user is planning as a DIFFERENT primary (not the handoff
-    // executor): the handoff is about to strand them on the executor.
-    sessionAgentRegistry.bind(sessionID, "mola");
     const { ctx } = fakeCommandCtx({ cancelled: true });
 
-    const { identity } = handoffIdentity();
+    const { identity, state } = handoffIdentity();
+    // The user is planning as a DIFFERENT primary (not the handoff
+    // executor): the handoff is about to strand them on the executor.
+    state.sessionAgents.bind(sessionID, "mola");
+
     const handoffTarget = createPiHandoffTarget({
       getCommandCtx: () => ctx,
       identity,
@@ -574,7 +599,7 @@ describe("pi handoff target — deliver semantics", () => {
     );
     // No session was created, so the surviving planning session's primary
     // must be restored.
-    assert.equal(sessionAgentRegistry.resolve(sessionID), "mola");
+    assert.equal(state.sessionAgents.resolve(sessionID), "mola");
 
     cleanupPlan(planPath);
   });
@@ -582,11 +607,11 @@ describe("pi handoff target — deliver semantics", () => {
   it("throwing newSession restores the previous primary and rethrows", async () => {
     const sessionID = `test-throw-rollback-${Date.now()}`;
     const { planPath, baseDir } = createPlanFile("planning-done");
-    sessionAgentRegistry.bind(sessionID, "mola");
     const boom = new Error("session runtime exploded");
     const { ctx } = fakeCommandCtx({ newSessionError: boom });
 
-    const { identity } = handoffIdentity();
+    const { identity, state } = handoffIdentity();
+    state.sessionAgents.bind(sessionID, "mola");
     const handoffTarget = createPiHandoffTarget({
       getCommandCtx: () => ctx,
       identity,
@@ -602,7 +627,7 @@ describe("pi handoff target — deliver semantics", () => {
       /session runtime exploded/,
     );
     // The session was never created — the primary must be rolled back.
-    assert.equal(sessionAgentRegistry.resolve(sessionID), "mola");
+    assert.equal(state.sessionAgents.resolve(sessionID), "mola");
 
     cleanupPlan(planPath);
   });
@@ -610,10 +635,11 @@ describe("pi handoff target — deliver semantics", () => {
   it("successful handoff keeps the executor primary (no rollback)", async () => {
     const sessionID = `test-success-primary-${Date.now()}`;
     const { planPath, baseDir } = createPlanFile("planning-done");
-    sessionAgentRegistry.bind(sessionID, "mola");
     const { ctx } = fakeCommandCtx();
 
-    const { identity } = handoffIdentity();
+    const { identity, state } = handoffIdentity();
+    state.sessionAgents.bind(sessionID, "mola");
+
     const handoffTarget = createPiHandoffTarget({
       getCommandCtx: () => ctx,
       identity,
@@ -626,7 +652,7 @@ describe("pi handoff target — deliver semantics", () => {
     });
     // The replacement succeeded — the handoff owns the new primary and
     // must NOT roll back to the planning session's identity.
-    assert.equal(sessionAgentRegistry.resolve(sessionID), EXECUTOR);
+    assert.equal(state.sessionAgents.resolve(sessionID), EXECUTOR);
 
     cleanupPlan(planPath);
   });
@@ -640,8 +666,6 @@ describe("pi handoff target — concurrent handoffs", () => {
   it("keeps two interleaved handoffs' parentage and identity apart", async () => {
     const sessionA = `test-concurrent-a-${Date.now()}`;
     const sessionB = `test-concurrent-b-${Date.now()}`;
-    sessionAgentRegistry.bind(sessionA, "mola");
-    sessionAgentRegistry.bind(sessionB, "mola");
     const planA = createPlanFile("planning-done");
     const planB = createPlanFile("planning-done");
     const fakeA = fakeCommandCtx();
@@ -651,7 +675,10 @@ describe("pi handoff target — concurrent handoffs", () => {
       [sessionB, fakeB.ctx],
     ]);
 
-    const { identity } = handoffIdentity();
+    const { identity, state } = handoffIdentity();
+    // Both sessions are planning as a different primary before the handoff.
+    state.sessionAgents.bind(sessionA, "mola");
+    state.sessionAgents.bind(sessionB, "mola");
     const handoffTarget = createPiHandoffTarget({
       getCommandCtx: (id) =>
         bySession.get(id) as ReturnType<typeof fakeCommandCtx>["ctx"],
@@ -689,8 +716,8 @@ describe("pi handoff target — concurrent handoffs", () => {
     assert.equal(fakeB.sentUserMessages.length, 1);
     assert.ok(fakeB.sentUserMessages[0].includes(planB.planPath));
     // Each session keeps the executor its own handoff carried.
-    assert.equal(sessionAgentRegistry.resolve(sessionA), "alpha");
-    assert.equal(sessionAgentRegistry.resolve(sessionB), "beta");
+    assert.equal(state.sessionAgents.resolve(sessionA), "alpha");
+    assert.equal(state.sessionAgents.resolve(sessionB), "beta");
     assert.ok(
       readFileSync(planA.planPath, "utf-8").includes("status: executing"),
     );
@@ -705,8 +732,6 @@ describe("pi handoff target — concurrent handoffs", () => {
   it("a cancelled handoff rolls back only its own session's identity", async () => {
     const cancelledSession = `test-concurrent-cancel-${Date.now()}`;
     const okSession = `test-concurrent-ok-${Date.now()}`;
-    sessionAgentRegistry.bind(cancelledSession, "mola");
-    sessionAgentRegistry.bind(okSession, "mola");
     const cancelledPlan = createPlanFile("planning-done");
     const okPlan = createPlanFile("planning-done");
     const cancelledFake = fakeCommandCtx({ cancelled: true });
@@ -716,7 +741,10 @@ describe("pi handoff target — concurrent handoffs", () => {
       [okSession, okFake.ctx],
     ]);
 
-    const { identity } = handoffIdentity();
+    const { identity, state } = handoffIdentity();
+    // Both sessions are planning as a different primary before the handoff.
+    state.sessionAgents.bind(cancelledSession, "mola");
+    state.sessionAgents.bind(okSession, "mola");
     const handoffTarget = createPiHandoffTarget({
       getCommandCtx: (id) =>
         bySession.get(id) as ReturnType<typeof fakeCommandCtx>["ctx"],
@@ -742,8 +770,8 @@ describe("pi handoff target — concurrent handoffs", () => {
     assert.equal(ok.status, "fulfilled");
     // The cancelled handoff restores ITS session's planning identity; the
     // successful one keeps its executor.
-    assert.equal(sessionAgentRegistry.resolve(cancelledSession), "mola");
-    assert.equal(sessionAgentRegistry.resolve(okSession), "beta");
+    assert.equal(state.sessionAgents.resolve(cancelledSession), "mola");
+    assert.equal(state.sessionAgents.resolve(okSession), "beta");
     // The failed handoff leaves its plan untouched, the other one runs.
     assert.ok(
       readFileSync(cancelledPlan.planPath, "utf-8").includes(

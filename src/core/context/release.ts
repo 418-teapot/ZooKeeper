@@ -36,9 +36,10 @@
  * Without the round's protection map the phase fails closed — no edit is
  * generated and no pending mark flips.
  *
- * The whole phase runs off one internal release plan, shared by
- * `computeEdits` and `flipReleasedMarks`, so the edit set and the flip set
- * always agree.
+ * The whole phase runs off one internal release plan that decides which
+ * pending marks flip; the plan is shared by `computeEdits` and
+ * `flipReleasedMarks`.  The anchor check decides the writable edits only:
+ * a mark whose anchor fails it still flips and writes no edit.
  *
  * The module never touches `state.nudges`: the nudge watermark is updated
  * by the nudge phase independently, so release and nudge watermarks do not
@@ -50,6 +51,17 @@
  * model-bound copy.  It reads the same protection map, so a protected
  * mark is reported with its stored text.
  *
+ * Both sides verify the anchor content before a placeholder replaces it:
+ * a region counts as a mark's write target when its full text still
+ * fingerprints to the value stored at mark time, or when it already
+ * holds the mark's placeholder.  A host that trims or reorders the
+ * transcript shifts the ordinals, so an address may land on unrelated
+ * content — writing there would delete text no mark ever claimed.  The
+ * check covers the whole region, so a change past the `RECALL_MAX_CHARS`
+ * snapshot cap still fails it; a mark without a fingerprint has no
+ * proof of its content and writes nothing.  A skipped write never
+ * affects the flip: the mark still releases, it just writes nothing.
+ *
  * @module
  */
 
@@ -59,6 +71,7 @@ import {
   PRUNED_TOOL_OUTPUT_REPLACEMENT,
 } from "./measure.js";
 import { isProtectedOrdinal, type ProtectionMap } from "./protection-map.js";
+import { contentFingerprint } from "./spanhash.js";
 import type { Mark, SessionState } from "./state.js";
 
 // ---------------------------------------------------------------------------
@@ -176,6 +189,29 @@ function placeholderFor(region: TextRegion): string {
 }
 
 /**
+ * True when the region is the mark's current write target.
+ *
+ * A host may trim or reorder the transcript, so the mark's
+ * `(ordinal, regionIndex)` address can land on content the mark never
+ * claimed.  The region is a target only when its full text fingerprints
+ * to the mark's stored fingerprint — the snapshot in `Mark.content` is
+ * capped at `RECALL_MAX_CHARS`, so it cannot vouch for the tail — or
+ * when it already holds the mark's placeholder, which makes a repeated
+ * write stable.  A mark without a fingerprint has no proof of its
+ * content and fails closed.
+ *
+ * @param region - The region the mark addresses on this transcript.
+ * @param mark - The mark holding the content fingerprint.
+ * @returns True when the placeholder may replace the region text.
+ */
+function isWriteTarget(region: TextRegion, mark: Mark): boolean {
+  const current = region.get();
+  if (current === placeholderFor(region)) return true;
+  if (mark.contentHash === undefined) return false;
+  return contentFingerprint(current) === mark.contentHash;
+}
+
+/**
  * The gate's release plan for this call.
  *
  * Shared by the edit selection and the mark flip, so both always operate
@@ -241,11 +277,13 @@ function releasePlan(
 
 /**
  * Build the edit one mark would write, or undefined when the anchor is
- * not resolvable on the current transcript.
+ * not resolvable on the current transcript or no longer holds the mark's
+ * content.
  *
- * A mark without a region index, a vanished anchor message, or an
- * out-of-range region index produces no edit — the application site is
- * gone, so nothing is written.
+ * A mark without a region index, a vanished anchor message, an
+ * out-of-range region index, or a region whose text no longer
+ * fingerprints to the mark's stored value produces no edit — the
+ * application site is gone, so nothing is written.
  *
  * @param messages - The transcript.
  * @param mark - The mark to translate.
@@ -254,7 +292,7 @@ function releasePlan(
 function editFor(messages: HostMessage[], mark: Mark): RegionEdit | undefined {
   if (mark.regionIndex === undefined) return undefined;
   const region = messages[mark.anchorOrdinal]?.regions?.[mark.regionIndex];
-  if (!region) return undefined;
+  if (!region || !isWriteTarget(region, mark)) return undefined;
   return {
     messageOrdinal: mark.anchorOrdinal,
     regionIndex: mark.regionIndex,
@@ -272,8 +310,8 @@ function editFor(messages: HostMessage[], mark: Mark): RegionEdit | undefined {
  * An effective mark whose anchor is currently protected writes nothing
  * this round (its record stays).  Unresolvable anchors produce no edit
  * (see `editFor`).  An absent protection map yields no edits.  The plan
- * is shared with `flipReleasedMarks`, so the edit set and the flip set
- * always agree on which pending marks are released.
+ * is shared with `flipReleasedMarks`, so both select the same pending
+ * marks; the anchor check can still drop an edit.
  *
  * The function never mutates `state` or `messages`: it only reads them
  * to select the edits; applying the result is the caller's job.
@@ -330,11 +368,14 @@ export function computeEdits(
  *
  * The overlay follows the release phase's protection: an effective mark
  * inside the protection map writes nothing, so it is not overlaid here
- * either and its stored original stays visible.  Pending marks are not
- * overlaid — they are not yet written to any view.  An unresolvable
- * anchor (missing message or region, or a mark without a region index)
- * is skipped, exactly as `editFor` does, and a transcript with no
- * overlaid mark is returned by reference.
+ * either and its stored original stays visible.  It also follows the
+ * phase's anchor check: when a mark's address no longer holds its
+ * fingerprinted content (or the placeholder), the region is left as
+ * stored, so a shifted anchor never hides unrelated text in a report.  Pending marks
+ * are not overlaid — they are not yet written to any view.  An
+ * unresolvable anchor (missing message or region, or a mark without a
+ * region index) is skipped, exactly as `editFor` does, and a transcript
+ * with no overlaid mark is returned by reference.
  *
  * @param messages - The transcript; ordinals must align with the marks.
  * @param state - The session state holding the mark map.
@@ -349,34 +390,25 @@ export function materializeEffectiveMarks(
   protection: ProtectionMap | undefined,
 ): HostMessage[] {
   if (protection === undefined) return messages;
-  const indicesByOrdinal = new Map<number, number[]>();
+  const result = messages.slice();
+  const overlaid = new Map<number, HostMessage>();
   for (const mark of state.marks.values()) {
     if (!mark.effective || mark.regionIndex === undefined) continue;
     if (isProtectedOrdinal(protection, mark.anchorOrdinal)) continue;
-    const indices = indicesByOrdinal.get(mark.anchorOrdinal);
-    if (indices) indices.push(mark.regionIndex);
-    else indicesByOrdinal.set(mark.anchorOrdinal, [mark.regionIndex]);
-  }
-  if (indicesByOrdinal.size === 0) return messages;
-
-  const result = messages.slice();
-  for (const [ordinal, indices] of indicesByOrdinal) {
-    const message = messages[ordinal];
-    if (!message) continue;
-    const regions = message.regions.slice();
-    let changed = false;
-    for (const regionIndex of indices) {
-      const region = regions[regionIndex];
-      if (!region) continue;
-      regions[regionIndex] = {
-        kind: region.kind,
-        get: () => placeholderFor(region),
-      };
-      changed = true;
+    const message = messages[mark.anchorOrdinal];
+    const region = message?.regions?.[mark.regionIndex];
+    if (!message || !region) continue;
+    if (!isWriteTarget(region, mark)) continue;
+    const text = placeholderFor(region);
+    let copy = overlaid.get(mark.anchorOrdinal);
+    if (!copy) {
+      copy = { ...message, regions: message.regions.slice() };
+      overlaid.set(mark.anchorOrdinal, copy);
+      result[mark.anchorOrdinal] = copy;
     }
-    if (changed) result[ordinal] = { ...message, regions };
+    copy.regions[mark.regionIndex] = { kind: region.kind, get: () => text };
   }
-  return result;
+  return overlaid.size === 0 ? messages : result;
 }
 
 /**
@@ -391,9 +423,9 @@ export function materializeEffectiveMarks(
  * pending.  The placeholder text for flipped marks is produced by
  * `computeEdits`; applying those edits is the caller's job.
  *
- * The plan is shared with `computeEdits` (see `releasePlan`), so the
- * flipped set and the edit set never diverge.  A closed gate leaves
- * every pending mark pending.
+ * The plan is shared with `computeEdits` (see `releasePlan`), so both
+ * select the same pending marks; the anchor check can still drop an
+ * edit.  A closed gate leaves every pending mark pending.
  *
  * @param state - The session state; pending marks are flipped in place.
  * @param options - Gate inputs and the optional flip timestamp.

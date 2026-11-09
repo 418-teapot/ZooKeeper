@@ -99,6 +99,20 @@ export const primarySwitch: ScenarioDefinition = {
       evidence: "trace.jsonl",
     });
 
+    // The start that carries the target is the replacement's own: pi
+    // reports reason "new" and records the replaced session on the new
+    // session's header, which is the evidence ZooKeeper claims it by.
+    ctx.checks.add({
+      id: "switch_replacement_evidence",
+      title: "切换的 session_start 携带 reason=new 与旧会话 parentSession",
+      status:
+        newStart?.reason === "new" &&
+        newStart?.parentSession === initialID &&
+        afterSwitch.sessionId !== null,
+      detail: `reason=${newStart?.reason} parentSession=${newStart?.parentSession} replaced=${initialID}`,
+      evidence: "trace.jsonl",
+    });
+
     // The replacement session's own turn: its prompt must be mola's, which
     // proves the switch target reached the new runtime's bind-time handlers.
     await ctx.pi.prompt("E2E-SWITCH: 记录切换后的身份");

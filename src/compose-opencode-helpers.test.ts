@@ -1,21 +1,23 @@
 /**
- * Tests for helper functions in the ZooKeeper plugin entry point.
+ * Tests for the OpenCode composition helpers and the config parse helpers.
  *
- * Covers: parseLimits, initPluginLogger (from
- * `src/core/config-parse.ts`), injectAgentPrompts,
- * runAfterHandlers, registerSkills.
+ * Covers: parseLimits and initPluginLogger (from
+ * `src/core/config-parse.ts`), injectAgentPrompts, runAfterHandlers,
+ * registerSkillPaths and assembleOpenCodeHooks (from
+ * `src/compose-opencode.ts`), and the plugin object `src/opencode.ts`
+ * derives from them.
  */
 import assert from "node:assert/strict";
 import { afterEach, describe, it } from "node:test";
+import { _resetOpenCodeProcessStateForTesting } from "./adapters/opencode/process.js";
 import {
   assembleOpenCodeHooks,
   injectAgentPrompts,
-  registerSkills,
+  registerSkillPaths,
   runAfterHandlers,
 } from "./compose-opencode.js";
 import { initPluginLogger, parseLimits } from "./core/config-parse.js";
 import type { Capabilities } from "./core/ports/index.js";
-import { sessionAgentRegistry } from "./core/session/agent.js";
 import type { TextCompleteOutput, TransformOutput } from "./core/unit.js";
 import { buildPlugin } from "./opencode.js";
 import { assembleForTest } from "./testkits/compose.js";
@@ -28,7 +30,7 @@ import { _getBufferForTesting, _resetForTesting } from "./utils/logger.js";
 // ---------------------------------------------------------------------------
 
 afterEach(() => {
-  sessionAgentRegistry.clear();
+  _resetOpenCodeProcessStateForTesting();
   _resetForTesting();
 });
 
@@ -608,7 +610,7 @@ describe("transform / text.complete isolation", () => {
       },
     ];
 
-    const plugin = assembleOpenCodeHooks(composed, DEPS, selection);
+    const plugin = assembleOpenCodeHooks(composed, DEPS, selection, []);
     const output: TransformOutput = {
       messages: [{ info: { sessionID: "sess-1" }, parts: [] }],
     };
@@ -634,7 +636,7 @@ describe("transform / text.complete isolation", () => {
       },
     ];
 
-    const plugin = assembleOpenCodeHooks(composed, DEPS, selection);
+    const plugin = assembleOpenCodeHooks(composed, DEPS, selection, []);
     await plugin["experimental.chat.messages.transform"]({}, { messages: [] });
 
     const crashed = crashedEntries();
@@ -659,7 +661,7 @@ describe("transform / text.complete isolation", () => {
       },
     ];
 
-    const plugin = assembleOpenCodeHooks(composed, DEPS, selection);
+    const plugin = assembleOpenCodeHooks(composed, DEPS, selection, []);
     const output: TextCompleteOutput = { text: "hi" };
     await plugin["experimental.text.complete"](
       { sessionID: "s1", messageID: "m1", partID: "p1" },
@@ -676,61 +678,23 @@ describe("transform / text.complete isolation", () => {
   });
 });
 
-describe("registerSkills", () => {
-  // Fail-closed: a skill registers only when its directory name appears in
-  // the profile skills list.  Absent names are skipped silently —
-  // config.toml (via the profile) lists every skill explicitly.
-  const ALL_SKILLS = [
-    "beaver-tdd",
-    "code-review",
-    "git-commit",
-    "grill",
-    "kiwi-distill",
-    "kiwi-verify",
-    "mola-plan",
-    "wiki-ingest",
-    "wiki-query",
-    "wiki-verify",
-  ];
+describe("registerSkillPaths", () => {
+  // The profile scan happens in the start preparation; this sink only
+  // writes the paths it resolved into the host config.
+  const PATHS = ["/zoo/skills/wiki-query", "/zoo/skills/code-review"];
 
-  it("registers every skill in the profile list", () => {
+  it("appends every resolved path to config.skills.paths", () => {
     const pluginConfig: Record<string, any> = {};
-    registerSkills(pluginConfig, [...ALL_SKILLS]);
+    registerSkillPaths(pluginConfig, PATHS);
 
-    assert.ok(pluginConfig.skills);
-    assert.ok(Array.isArray(pluginConfig.skills.paths));
-    assert.equal(pluginConfig.skills.paths.length, 10);
+    assert.deepEqual(pluginConfig.skills, { paths: [...PATHS] });
   });
 
-  it("skips a skill absent from the profile list", () => {
+  it("registers no skill when the profile resolved no directory", () => {
     const pluginConfig: Record<string, any> = {};
-    registerSkills(
-      pluginConfig,
-      ALL_SKILLS.filter((s) => s !== "git-commit"),
-    );
+    registerSkillPaths(pluginConfig, []);
 
-    const paths = pluginConfig.skills.paths as string[];
-    assert.equal(
-      paths.some((p: string) => p.endsWith("git-commit")),
-      false,
-    );
-    // Other listed skills still register.
-    assert.ok(paths.some((p: string) => p.endsWith("code-review")));
-  });
-
-  it("registers no skills when the profile list is empty (fail-closed)", () => {
-    const pluginConfig: Record<string, any> = {};
-    registerSkills(pluginConfig, []);
-
-    const paths = pluginConfig.skills.paths as string[];
-    assert.equal(paths.length, 0, "no listed skills → nothing registers");
-  });
-
-  it("initialises skills config object when missing from pluginConfig", () => {
-    const pluginConfig: Record<string, any> = {};
-    registerSkills(pluginConfig, [...ALL_SKILLS]);
-    assert.ok(pluginConfig.skills);
-    assert.ok(Array.isArray(pluginConfig.skills.paths));
+    assert.deepEqual(pluginConfig.skills.paths, []);
   });
 
   it("preserves existing skills paths when skills object already exists", () => {
@@ -738,23 +702,9 @@ describe("registerSkills", () => {
     const pluginConfig: Record<string, any> = {
       skills: { paths: [existingPath] },
     };
-    registerSkills(pluginConfig, [...ALL_SKILLS]);
+    registerSkillPaths(pluginConfig, PATHS);
 
-    const paths = pluginConfig.skills.paths as string[];
-    assert.ok(paths.includes(existingPath));
-    // Real skills paths are appended
-    assert.ok(paths.some((p: string) => p.endsWith("code-review")));
-  });
-
-  it("swallows ENOENT from readdirSync (error path is safe)", () => {
-    // Cannot mock fs.readdirSync in Bun's node:test, but we verify the
-    // normal case works and the catch block is structured correctly:
-    //   - ENOENT is silently ignored
-    //   - Other errors are logged as warnings (never thrown)
-    // The real skills directory exists, so readdirSync succeeds.
-    const pluginConfig: Record<string, any> = {};
-    registerSkills(pluginConfig, [...ALL_SKILLS]);
-    assert.ok(pluginConfig.skills.paths.length >= 4);
+    assert.deepEqual(pluginConfig.skills.paths, [existingPath, ...PATHS]);
   });
 });
 
@@ -787,7 +737,7 @@ describe("assembleOpenCodeHooks — non-ready selection", () => {
       agent: { dolphin: { mode: "primary" } },
       default_agent: "host-declared",
     };
-    await assembleOpenCodeHooks(composed, DEPS, selection).config(config);
+    await assembleOpenCodeHooks(composed, DEPS, selection, []).config(config);
 
     assert.equal(config.default_agent, "host-declared");
     assert.equal(config.skills, undefined);

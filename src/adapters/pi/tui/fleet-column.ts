@@ -20,7 +20,7 @@
  */
 
 import {
-  childrenIndex,
+  type RunRegistry,
   type RunSnapshot,
   type WindowSlice,
   windowRuns,
@@ -46,6 +46,8 @@ export interface FleetColumnThemeLike {
 
 /** Inputs for the expanded fleet column. */
 export interface FleetColumnOptions {
+  /** The run records of this process. */
+  runs: RunRegistry;
   /**
    * The window's run-row budget (each top-level run costs `1 + descendants`
    * rendered rows; whole runs are windowed, never split).
@@ -207,7 +209,7 @@ export function renderFleetColumn(
   // Index every run that has children, at any depth, so the row count and the
   // anchor search walk the whole tree — not just the top-level runs' direct
   // children.  The same index feeds the renderer, so all three agree.
-  const childrenByParent = childrenIndex(tops);
+  const childrenByParent = opts.runs.childrenIndex(tops);
 
   const descendantCount = (runId: string): number => {
     const children = childrenByParent.get(runId);

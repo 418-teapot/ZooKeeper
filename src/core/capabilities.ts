@@ -20,6 +20,7 @@ import {
   parseLimits,
   parseModeProfile,
 } from "./config-parse.js";
+import type { ConfigSnapshot } from "./config-snapshot.js";
 import type {
   AgentModeMap,
   AutoDebugConfig,
@@ -81,12 +82,14 @@ export function parseCommonConfig(
  * Project the parsed config onto the capability catalog.
  *
  * Only the config-derived keys are produced; the host adds its own ports.
+ * The snapshot is consumed as it is: the generated capability values are
+ * the scope's own, so one configuration generation yields one projection.
  *
- * @param common - The parsed common config.
+ * @param common - The parsed common config snapshot.
  * @returns The config-derived capability slice.
  */
 export function configCapabilities(
-  common: CommonConfig,
+  common: ConfigSnapshot,
 ): Partial<Capabilities> {
   return {
     limits: common.limits,

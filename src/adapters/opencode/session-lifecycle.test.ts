@@ -17,10 +17,13 @@ import {
   type ContextRuntime,
   createContextRuntime,
 } from "../../core/context/runtime.js";
-import { sessionAgentRegistry } from "../../core/session/agent.js";
 import { buildPlugin } from "../../opencode.js";
 import { permitFor } from "../../testkits/context-runtime.js";
 import { _resetForTesting } from "../../utils/logger.js";
+import {
+  _resetOpenCodeProcessStateForTesting,
+  openCodeProcessState,
+} from "./process.js";
 
 /** The agent-role table config.toml declares: dolphin is the orchestrator. */
 const RAW_AGENTS = { agent: { dolphin: { mode: "primary" } } };
@@ -131,9 +134,8 @@ async function deleted(
 
 afterEach(() => {
   _resetForTesting();
-  for (const sessionID of ["s1", "s2", "ghost"]) {
-    sessionAgentRegistry.delete(sessionID);
-  }
+  // A stale binding would let a release assertion pass for the wrong reason.
+  _resetOpenCodeProcessStateForTesting();
 });
 
 describe("session lifetime — first observation", () => {
@@ -159,7 +161,7 @@ describe("session lifetime — first observation", () => {
     await plugin.event({ event: { type: "session.error", properties: {} } });
 
     assert.equal(calls.length, 0);
-    assert.equal(sessionAgentRegistry.resolve(""), undefined);
+    assert.equal(openCodeProcessState().sessionAgents.resolve(""), undefined);
   });
 });
 
@@ -213,8 +215,8 @@ describe("session lifetime — deletion", () => {
       calls.map((call) => call.path.id),
       ["s2"],
     );
-    assert.equal(sessionAgentRegistry.resolve("s1"), undefined);
-    assert.equal(sessionAgentRegistry.resolve("s2"), "dolphin");
+    assert.equal(openCodeProcessState().sessionAgents.resolve("s1"), undefined);
+    assert.equal(openCodeProcessState().sessionAgents.resolve("s2"), "dolphin");
   });
 
   it("does not rebuild a deleted session from a late event", async () => {
@@ -232,19 +234,22 @@ describe("session lifetime — deletion", () => {
     });
     await idle(plugin, "s1");
 
-    assert.equal(sessionAgentRegistry.resolve("s1"), undefined);
+    assert.equal(openCodeProcessState().sessionAgents.resolve("s1"), undefined);
     assert.equal(calls.length, 0);
   });
 
   it("cleans the process-level records of a session it never observed", async () => {
     const { plugin, runtime } = await buildTestPlugin();
     // Records written by an earlier plugin instance in this process.
-    sessionAgentRegistry.bind("ghost", "dolphin");
+    openCodeProcessState().sessionAgents.bind("ghost", "dolphin");
     runtime.setModelLimit(permitFor("ghost"), 1000, "model");
 
     await deleted(plugin, "ghost");
 
-    assert.equal(sessionAgentRegistry.resolve("ghost"), undefined);
+    assert.equal(
+      openCodeProcessState().sessionAgents.resolve("ghost"),
+      undefined,
+    );
     assert.equal(runtime.modelLimit("ghost"), undefined);
   });
 });
@@ -266,8 +271,8 @@ describe("session lifetime — plugin dispose", () => {
 
     // A dispose stops the scopes but does not end the sessions: the agent
     // identity the host reported stays available for the next instance.
-    assert.equal(sessionAgentRegistry.resolve("s1"), "dolphin");
-    assert.equal(sessionAgentRegistry.resolve("s2"), "dolphin");
+    assert.equal(openCodeProcessState().sessionAgents.resolve("s1"), "dolphin");
+    assert.equal(openCodeProcessState().sessionAgents.resolve("s2"), "dolphin");
     await idle(plugin, "s1");
     await plugin.event({
       event: {
@@ -276,7 +281,7 @@ describe("session lifetime — plugin dispose", () => {
       },
     });
     assert.equal(calls.length, 0, "a disposed session must not wake");
-    assert.equal(sessionAgentRegistry.resolve("s1"), "dolphin");
+    assert.equal(openCodeProcessState().sessionAgents.resolve("s1"), "dolphin");
   });
 
   it("keeps the persisted context of a disposed session", async () => {
@@ -289,7 +294,7 @@ describe("session lifetime — plugin dispose", () => {
     await plugin.dispose();
 
     assert.equal(runtime.modelLimit("s1"), undefined);
-    assert.equal(sessionAgentRegistry.resolve("s1"), "dolphin");
+    assert.equal(openCodeProcessState().sessionAgents.resolve("s1"), "dolphin");
   });
 
   it("cleans up a resident plugin with no profile", async () => {

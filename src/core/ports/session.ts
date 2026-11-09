@@ -17,10 +17,10 @@ export interface SessionPort {
    * Backed by the shared `SessionAgentRegistry`: the host entry point owns
    * the bindings (OpenCode populates from `message.updated` events; pi
    * resolves from explicit sources — an existing binding, its runtime's
-   * fixed subagent, the run registry's `childSession`, a pending switch
-   * target, or the orchestrator — then binds).  Returns `undefined` for an unknown
-   * session (fail-closed) — callers must treat an unresolved identity as
-   * "not the orchestrator".
+   * fixed subagent, the run registry's `childSession`, the replacement
+   * `session_start` claim, or the orchestrator — then binds).  Returns
+   * `undefined` for an unknown session (fail-closed) — callers must treat
+   * an unresolved identity as "not the orchestrator".
    */
   resolveAgent: (sessionID: string) => string | undefined;
   /**

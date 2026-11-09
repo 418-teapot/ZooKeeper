@@ -7,12 +7,14 @@
  * The unit binds the injected `zdebug` runner and filesystem ports once
  * (falling back to the default subprocess and `node:fs` wrappers, the
  * same precedence the auto-debug strategy uses) and contributes a single
- * `/debug` command.  The command
- * is the only user entry that creates a Case — no flag parsing, the raw
- * arguments become the Case objective (`docs/autodebug-design.md` §6.4,
- * §8.1) — and on success injects a model-visible startup message through
- * the host's `messageInjector` so the agent starts investigating in
- * place.
+ * `/debug` command.  The unit needs the parsed `[zoo.autodebug]` section,
+ * exactly like the wake strategy: without it the investigation would run
+ * with no loop to continue it, so the command does not register at all.
+ * The command is the only user entry that creates a Case — no flag
+ * parsing, the raw arguments become the Case objective
+ * (`docs/autodebug-design.md` §6.4, §8.1) — and on success injects a
+ * model-visible startup message through the host's `messageInjector` so
+ * the agent starts investigating in place.
  *
  * @module
  */
@@ -34,7 +36,7 @@ import { handleDebugCommand } from "./command.js";
  */
 export const unit = defineCommand({
   name: "debug",
-  needs: ["directory"],
+  needs: ["directory", "autoDebugConfig"],
   wants: ["zdebugExec", "autoDebugFs", "toolHost", "messageInjector"],
   create(caps) {
     const zdebugExec = caps.zdebugExec ?? defaultZdebugExec;

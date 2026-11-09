@@ -25,7 +25,7 @@
  * @module
  */
 
-import type { RunSnapshot } from "../../core/subagent/registry.js";
+import type { RunRegistry, RunSnapshot } from "../../core/subagent/registry.js";
 import type { TodoStateStore } from "../../core/todo/store.js";
 import type { PiToolHostContext } from "./tool-host.js";
 import type { FleetWidget } from "./tui/widget.js";
@@ -77,6 +77,8 @@ export interface PiFleetSession {
 export interface PiFleetSessionDeps {
   /** The session this fleet belongs to. */
   readonly sessionID: string;
+  /** The run records of this process. */
+  readonly runs: RunRegistry;
   /** The active primary agent name, or undefined when none. */
   getPrimary(): string | undefined;
   /** Colorize an agent name per its configured `[agent.<name>].color`. */
@@ -187,6 +189,7 @@ export function createPiFleetSessionRegistry(): PiFleetSessionRegistry {
  */
 export function createPiFleetSession(deps: PiFleetSessionDeps): PiFleetSession {
   const wiring = createFleetWiring({
+    runs: deps.runs,
     getPrimary: deps.getPrimary,
     colorizeAgent: deps.colorizeAgent,
     // The widget belongs to this session, so its scopes registry and todo

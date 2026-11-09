@@ -1,9 +1,14 @@
 /**
- * Process-level subagent run registry — the single source of truth for
- * subagent run state across every session in the pi process.
+ * Subagent run registry — the single source of truth for subagent run state
+ * across every session of a process.
  *
- * The pi host runs all sessions in one process, so a module-level table
- * (keyed by run id) is the natural home for run state.  Each run records
+ * A host runs all its sessions in one process, so one {@link RunRegistry}
+ * instance (a table keyed by run id) is the natural home for run state.  The
+ * instance belongs to the host's process owner (`core/process-state.ts`),
+ * which hands the same instance to every configuration generation and to
+ * every sub-runtime of that process; nothing here is ambient.
+ *
+ * Each run records
  * its `parentSession` (the calling session) and, once the sub-session is
  * created, its `childSession` — the two pointers that let the fleet widget
  * rebuild the parent/child tree.  A nested delegation (beaver/mola → lynx/
@@ -13,19 +18,19 @@
  *
  * Invariants:
  * - **Terminal immutability** — once a run reaches `done` / `error` /
- *   `aborted`, `updateRun` and `finishRun` never change its status,
+ *   `aborted`, `update` and `finish` never change its status,
  *   `endedAt`, `error`, or `sessionPath` again (silently ignored), mirroring
  *   the OpenCode sidebar rule.  Entries are never deleted.
- * - **Finished runs keep metadata only** — `finishRun` releases the run's
+ * - **Finished runs keep metadata only** — `finish` releases the run's
  *   fact log (a fresh empty log takes its place), so resident memory scales
  *   with ACTIVE work, not with the number or size of finished runs.  A
  *   finished run keeps its lifecycle metadata (status, timestamps, `error`,
  *   `sessionPath`, `childSession`, `tokens`, `model`); the facts'
  *   authoritative copy lives in the persisted sub-session file and any
  *   post-finish view rebuilds it on demand through the hydration layer.
- * - **Session isolation** — `topLevelRuns` / `summary` scope by
+ * - **Session isolation** — `topLevel` / `summary` scope by
  *   `parentSession`, so concurrent main sessions never see each other's
- *   runs.  Run ids are globally unique; a duplicate `startRun` never
+ *   runs.  Run ids are globally unique; a duplicate `start` never
  *   clobbers an existing entry.
  * - **Read-only views** — a public query returns a frozen `RunSnapshot`, so
  *   the mutable entry never leaves this module; a producer holds a
@@ -36,11 +41,26 @@
  * is kept visible and the window follows it; an absent/stale selection
  * aligns to the bottom.
  *
- * Pure module-level state plus `resetRegistry()` for tests.
+ * The registry is an explicit object: a host creates one per process, so a
+ * test creates its own instance instead of clearing shared state.
+ *
+ * Ownership is separate from history.  The process table keeps every run,
+ * including the terminal records a reload renders, but a run started by a
+ * runtime is an ACTIVE run of that runtime.  Each runtime creates its own
+ * scope ({@link RunScope}) over the process table, writes through it, and
+ * disposes it when the runtime stops; the stop aborts the runs that scope
+ * started and still runs, while the process history, the terminal records
+ * and every other runtime stay untouched.  A scope reads the whole table, so
+ * a reloaded runtime still renders what the previous generation recorded.
+ *
+ * One writer is a host fact, not a runtime start: a host's subagent
+ * translator (the OpenCode TUI panel rebuilding rows from host events)
+ * writes the table directly.  Those records are process history, so no
+ * scope owns them and no runtime stop ends them.
  *
  * Each run entry owns a `RunLog` (`run-log.ts`): the run's ordered data
  * stream while the run is active.  Fact appends to a live run's log
- * surface through the run-change subscription (`subscribeRunChange`)
+ * surface through the run-change subscription (`subscribe`)
  * alongside lifecycle transitions, so one subscription refreshes consumers
  * on both kinds of change (the streaming partial deliveries stay off this
  * fact-only feed by design — the fleet must not repaint per streamed
@@ -67,7 +87,7 @@ export type RunStatus = "running" | "done" | "error" | "aborted";
  * An immutable snapshot of one tracked subagent run.
  *
  * Every public query hands out a frozen snapshot: a read-only consumer never
- * sees the registry's mutable entry, so a later `updateRun` / `finishRun`
+ * sees the registry's mutable entry, so a later `update` / `finish`
  * cannot change what an already-returned snapshot reports.  Unset optional
  * fields are absent keys, never `undefined` values.
  *
@@ -76,7 +96,7 @@ export type RunStatus = "running" | "done" | "error" | "aborted";
  * `parentSession` is the calling session (the main session for top-level
  * runs, or the parent run's `childSession` for a nested delegation).
  * `childSession` is the sub-session id this run created when it delegated,
- * recorded via `updateRun` once the sub-session exists.
+ * recorded via `update` once the sub-session exists.
  */
 export interface RunSnapshot {
   /** The globally unique run id (the delegation's tool-call / run id). */
@@ -117,8 +137,8 @@ export interface RunSnapshot {
 /**
  * The handle of a run a caller just started.
  *
- * A producer drives the run through the registry (`updateRun` /
- * `finishRun`) and needs exactly two things: the id to address it, and the
+ * A producer drives the run through the registry (`update` /
+ * `finish`) and needs exactly two things: the id to address it, and the
  * live log to append facts to.  The log is shared on purpose — it is the
  * live append stream, not a snapshot — so it is neither copied nor frozen.
  */
@@ -132,7 +152,22 @@ export interface RunHandle {
 /** The registry's mutable entry — the snapshot's shape without `readonly`. */
 type MutableRun = { -readonly [K in keyof RunSnapshot]: RunSnapshot[K] };
 
-/** Input to `startRun`. */
+/**
+ * The state one process table shares with every scope over it.
+ *
+ * `owners` tracks ACTIVE ownership only: a run leaves the map when it
+ * reaches a terminal state, so a scope's stop never walks history.
+ */
+interface RunTable {
+  /** The run table, keyed by run id. */
+  readonly runs: Map<string, MutableRun>;
+  /** The run-change subscribers of the process table. */
+  readonly listeners: Set<RunChangeListener>;
+  /** The scope that started each still-running run. */
+  readonly owners: Map<string, RunScope>;
+}
+
+/** Input to `start`. */
 export interface StartRunInput {
   /** The globally unique run id. */
   id: string;
@@ -150,7 +185,7 @@ export interface StartRunInput {
   sessionPath?: string;
 }
 
-/** Progress fields patchable on a running run via `updateRun`. */
+/** Progress fields patchable on a running run via `update`. */
 export interface UpdateRunPatch {
   /**
    * The delegation's task description.
@@ -178,7 +213,7 @@ export interface UpdateRunPatch {
 }
 
 /**
- * Input to `finishRun` — the terminal outcome plus the run's last progress
+ * Input to `finish` — the terminal outcome plus the run's last progress
  * fields.
  *
  * The final progress batch belongs here: a producer that reads the last
@@ -195,7 +230,7 @@ export interface FinishRunInput extends UpdateRunPatch {
   error?: string;
 }
 
-/** Input to `restoreRun` — one historical run rebuilt from persisted data. */
+/** Input to `restore` — one historical run rebuilt from persisted data. */
 export interface RestoreRunInput extends UpdateRunPatch {
   /** The globally unique run id. */
   id: string;
@@ -237,9 +272,6 @@ export interface WindowSlice {
   selectedIndex: number;
 }
 
-/** The module-level run table, keyed by run id. */
-const registry = new Map<string, MutableRun>();
-
 /**
  * Freeze a shallow copy of one registry entry for a read-only consumer.
  *
@@ -272,37 +304,6 @@ export interface RunChange {
  */
 type RunChangeListener = (change: RunChange) => void;
 
-const runChangeListeners = new Set<RunChangeListener>();
-
-/** Fire the run-change notification for every registered listener. */
-function notifyRunChange(run: MutableRun): void {
-  const change: RunChange = {
-    runId: run.id,
-    parentSession: run.parentSession,
-  };
-  for (const listener of runChangeListeners) listener(change);
-}
-
-/**
- * Subscribe to run changes.
- *
- * The listener is called whenever a run is registered, a running run's
- * fields actually change, a run reaches its terminal state, or any run's
- * fact log receives an append (partial deliveries never reach it) — so a
- * single subscription keeps consumers (fleet widget, card, overlay)
- * current with both lifecycle and transcript changes.  A write that changes
- * nothing publishes nothing.
- *
- * @param listener - Called with the changed run and its parent session.
- * @returns A function that removes the subscription.
- */
-export function subscribeRunChange(listener: RunChangeListener): () => void {
-  runChangeListeners.add(listener);
-  return () => {
-    runChangeListeners.delete(listener);
-  };
-}
-
 /** The terminal statuses — no field may change after one is reached. */
 export const TERMINAL_STATUSES: ReadonlySet<RunStatus> = new Set([
   "done",
@@ -311,54 +312,475 @@ export const TERMINAL_STATUSES: ReadonlySet<RunStatus> = new Set([
 ]);
 
 /**
- * Reset the module-level registry state.
+ * The subagent run table of one process, with its run-change subscribers.
  *
- * Process-global state means tests share one isolate; call this between
- * tests to keep every assertion deterministic.  The run-change subscribers
- * are module-level state too, so they are dropped as well — a subscription
- * left behind by an earlier test would otherwise repaint its session on
- * every later registry write.
+ * A host's process owner creates exactly one instance and hands the same
+ * object to every configuration generation, so a reload keeps the runs a
+ * previous generation recorded.  A test creates its own instance.
  */
-export function resetRegistry(): void {
-  registry.clear();
-  runChangeListeners.clear();
+export class RunRegistry {
+  /** The state this registry shares with every scope over it. */
+  protected readonly table: RunTable;
+
+  /**
+   * Build a registry or a scope over a process table.
+   *
+   * Only the factories in this module call it: the table is the state every
+   * generation and every runtime of one process shares.
+   *
+   * @param table - The table to read and write.
+   */
+  constructor(table: RunTable) {
+    this.table = table;
+  }
+
+  /**
+   * Create a runtime scope over this process table.
+   *
+   * The runtimes of one process create their scopes here: each scope writes
+   * the runs of exactly one runtime, so the runtime's stop ends only its own
+   * running runs.  A direct table write (a host-fact translator) belongs to
+   * no scope, so no stop ends it.
+   *
+   * @returns A fresh scope over the same table.
+   */
+  createScope(): RunScope {
+    return new RunScope(this.table);
+  }
+
+  /**
+   * Subscribe to run changes.
+   *
+   * The listener is called whenever a run is registered, a running run's
+   * fields actually change, a run reaches its terminal state, or any run's
+   * fact log receives an append (partial deliveries never reach it) — so a
+   * single subscription keeps consumers (fleet widget, card, overlay)
+   * current with both lifecycle and transcript changes.  A write that
+   * changes nothing publishes nothing.
+   *
+   * @param listener - Called with the changed run and its parent session.
+   * @returns A function that removes the subscription.
+   */
+  subscribe(listener: RunChangeListener): () => void {
+    this.table.listeners.add(listener);
+    return () => {
+      this.table.listeners.delete(listener);
+    };
+  }
+
+  /** Fire the run-change notification for every registered listener. */
+  private notify(run: MutableRun): void {
+    const change: RunChange = {
+      runId: run.id,
+      parentSession: run.parentSession,
+    };
+    for (const listener of this.table.listeners) listener(change);
+  }
+
+  /**
+   * Register a new running run.
+   *
+   * A duplicate id never clobbers an existing entry — the first `start`
+   * wins (run ids are globally unique, so a collision is a programming error
+   * that must not silently re-parent an existing run).
+   *
+   * The process registry owns no run: only a runtime scope records
+   * ownership (see {@link RunScope.start}).
+   *
+   * @param input - The run to register.
+   * @returns The handle of the registered run (its id and live log); a
+   *   duplicate id returns the first run's handle.
+   */
+  start(input: StartRunInput): RunHandle {
+    return this.register(input);
+  }
+
+  /**
+   * Register a run and record the owning scope before the first change.
+   *
+   * Ownership is written in the same step as the record, before any
+   * subscriber runs: a subscriber that throws on the start notification
+   * leaves the run in the table, and a run without an owner would never be
+   * ended by a stop.  A duplicate id keeps the scope that started it.
+   *
+   * @param input - The run to register.
+   * @param owner - The scope starting the run; absent for the process
+   *   registry, which owns nothing.
+   * @returns The run's handle.
+   */
+  protected register(input: StartRunInput, owner?: RunScope): RunHandle {
+    const existing = this.table.runs.get(input.id);
+    if (existing !== undefined) {
+      return { id: existing.id, log: existing.log };
+    }
+    const run: MutableRun = {
+      id: input.id,
+      agent: input.agent,
+      parentSession: input.parentSession,
+      status: "running",
+      startedAt: input.startedAt ?? Date.now(),
+      log: createRunLog(),
+      ...(input.label !== undefined ? { label: input.label } : {}),
+      ...(input.childSession !== undefined
+        ? { childSession: input.childSession }
+        : {}),
+      ...(input.sessionPath !== undefined
+        ? { sessionPath: input.sessionPath }
+        : {}),
+    };
+    run.log.onFact(() => {
+      this.notify(run);
+    });
+    this.table.runs.set(input.id, run);
+    if (owner !== undefined) this.table.owners.set(input.id, owner);
+    this.notify(run);
+    return { id: run.id, log: run.log };
+  }
+
+  /**
+   * Patch the progress fields of a running run.
+   *
+   * Silently ignored when the run is terminal (its status, progress fields,
+   * and timestamps are frozen) or the id is unknown.  A patch that changes
+   * nothing (empty, or every value already held) publishes no event.
+   *
+   * @param id - The run id.
+   * @param patch - The fields to update.
+   */
+  update(id: string, patch: UpdateRunPatch): void {
+    const run = this.table.runs.get(id);
+    if (run === undefined || TERMINAL_STATUSES.has(run.status)) return;
+    if (!applyProgress(run, patch)) return;
+    this.notify(run);
+  }
+
+  /**
+   * Finish a run, transitioning it to a terminal state.
+   *
+   * Silently ignored when the run is already terminal (its status, `endedAt`,
+   * `error`, and `sessionPath` are frozen — a second finish never overwrites
+   * the first) or the id is unknown.  `endedAt` defaults to the current time.
+   *
+   * The input also carries the run's last progress fields: they are written
+   * in the same step as the terminal transition, and the whole write
+   * publishes exactly one event.  A producer that reads the final values
+   * while the run settles therefore never publishes an intermediate update.
+   *
+   * The finish also RELEASES the run's fact log: the terminal run keeps its
+   * lifecycle metadata only and its `log` becomes a fresh empty log.  The
+   * facts' authoritative copy lives in the persisted sub-session file, and
+   * any post-finish view rebuilds it through the hydration path.  The
+   * released log object stays valid for consumers already holding it (an
+   * open transcript overlay keeps what it projected) but receives no further
+   * appends.  The fresh terminal log is inert by design: it carries no
+   * `onFact` listener, so appending to it fires no run-change notification —
+   * a post-finish append is a programming error.
+   *
+   * @param id - The run id.
+   * @param input - The terminal outcome and the run's last progress fields.
+   */
+  finish(id: string, input: FinishRunInput): void {
+    const run = this.table.runs.get(id);
+    if (run === undefined || TERMINAL_STATUSES.has(run.status)) return;
+    applyProgress(run, input);
+    run.status = input.status;
+    run.endedAt = input.endedAt ?? Date.now();
+    if (input.error !== undefined) run.error = input.error;
+    // The run is no longer active, so no scope's stop may end it again.
+    this.table.owners.delete(id);
+    // Release the run's fact log: resident memory must track ACTIVE work only.
+    // The run keeps its lifecycle metadata; a later view of the finished run's
+    // transcript rebuilds the facts from the persisted sub-session file
+    // through the hydration path.  The released log stays valid for any holder
+    // (the open-overlay edge case) but is no longer the registry's.
+    run.log = createRunLog();
+    this.notify(run);
+  }
+
+  /**
+   * Restore one run from persisted history as an already-terminal entry.
+   *
+   * History rebuilds know the run's outcome up front, so a restored run never
+   * passes through a `running` state: its metadata and its empty terminal log
+   * are created in one step, and exactly one change is published.
+   *
+   * An id already present in the registry is left untouched and publishes
+   * nothing — a live run (or a run restored earlier) keeps what it has, so a
+   * repeated scan is idempotent.
+   *
+   * @param input - The restored run's metadata and terminal outcome.
+   * @returns Whether the run was created (`false` when it already existed).
+   */
+  restore(input: RestoreRunInput): boolean {
+    if (this.table.runs.has(input.id)) return false;
+    const run: MutableRun = {
+      id: input.id,
+      agent: input.agent,
+      parentSession: input.parentSession,
+      status: input.status,
+      startedAt: input.startedAt ?? Date.now(),
+      endedAt: input.endedAt ?? Date.now(),
+      // The terminal log is inert: a restored run has no facts and takes no
+      // appends, and the log carries no listener.
+      log: createRunLog(),
+      ...(input.label !== undefined ? { label: input.label } : {}),
+      ...(input.currentTool !== undefined && input.currentTool !== null
+        ? { currentTool: input.currentTool }
+        : {}),
+      ...(input.tokens !== undefined ? { tokens: input.tokens } : {}),
+      ...(input.model !== undefined ? { model: input.model } : {}),
+      ...(input.error !== undefined ? { error: input.error } : {}),
+      ...(input.childSession !== undefined
+        ? { childSession: input.childSession }
+        : {}),
+      ...(input.sessionPath !== undefined
+        ? { sessionPath: input.sessionPath }
+        : {}),
+    };
+    this.table.runs.set(input.id, run);
+    this.notify(run);
+    return true;
+  }
+
+  /**
+   * Look up a run by id.
+   *
+   * @param id - The run id.
+   * @returns A frozen snapshot of the run, or `undefined` when unknown.
+   */
+  get(id: string): RunSnapshot | undefined {
+    const run = this.table.runs.get(id);
+    return run === undefined ? undefined : snapshot(run);
+  }
+
+  /**
+   * List the top-level runs of a main session, ordered by `startedAt`.
+   *
+   * A run is top-level when its `parentSession` is the main session itself —
+   * nested child runs (whose `parentSession` is a run's `childSession`) are
+   * excluded.
+   *
+   * @param parentSession - The main session id.
+   * @returns Frozen snapshots of the top-level runs, oldest first.
+   */
+  topLevel(parentSession: string): RunSnapshot[] {
+    return [...this.table.runs.values()]
+      .filter((run) => run.parentSession === parentSession)
+      .sort(byStartedAt)
+      .map(snapshot);
+  }
+
+  /**
+   * List the child runs of a run, ordered by `startedAt`.
+   *
+   * A run's children are those whose `parentSession` equals the run's
+   * `childSession` (the sub-session it created when it delegated).  Runs
+   * without a recorded `childSession` have no children.
+   *
+   * @param runId - The parent run id.
+   * @returns Frozen snapshots of the child runs, oldest first.
+   */
+  childrenOf(runId: string): RunSnapshot[] {
+    const parent = this.table.runs.get(runId);
+    if (parent === undefined || parent.childSession === undefined) return [];
+    return [...this.table.runs.values()]
+      .filter((run) => run.parentSession === parent.childSession)
+      .sort(byStartedAt)
+      .map(snapshot);
+  }
+
+  /**
+   * Index the subtrees rooted at the given runs by parent run id.
+   *
+   * The map covers every generation reachable from `roots`: each entry holds a
+   * root's or descendant's child runs, ordered by `startedAt` — the same order
+   * `childrenOf` returns.  A run with no children has no entry, so a consumer
+   * reads `index.get(id) ?? []`.  A read-only consumer can hand the shared
+   * index to the card and the fleet renderers, which then render every depth
+   * from one explicit source instead of querying the registry per level.
+   *
+   * The index is a DAG even when the registry holds a parent/child loop (a run
+   * whose child session points back at an ancestor, which a corrupted history
+   * scan can leave behind): a run enters the index at most once, so a later
+   * edge back to an indexed run is dropped.  A recursive consumer of this map
+   * therefore always terminates.
+   *
+   * @param roots - The run snapshots to walk down from (top-level runs).
+   * @returns Parent-run id → its child runs, at every depth.
+   */
+  childrenIndex(roots: readonly RunSnapshot[]): Map<string, RunSnapshot[]> {
+    const index = new Map<string, RunSnapshot[]>();
+    // Seeding the roots keeps a root out of any child list, so a loop through
+    // a root and a run that delegates into it cannot re-enter the root.
+    const placed = new Set<string>(roots.map((root) => root.id));
+    const walk = (run: RunSnapshot): void => {
+      const children = this.childrenOf(run.id).filter(
+        (child) => !placed.has(child.id),
+      );
+      if (children.length === 0) return;
+      index.set(run.id, children);
+      for (const child of children) {
+        placed.add(child.id);
+        walk(child);
+      }
+    };
+    for (const root of roots) walk(root);
+    return index;
+  }
+
+  /**
+   * Find the run that delegated into a given sub-session.
+   *
+   * The reverse lookup over `childSession`: in the host's in-process
+   * model every sub-session was created by exactly one run, so the first
+   * match is the answer.  Terminal runs still match — the delegation
+   * outlives the run, and identity resolution needs it to (a session
+   * rebuilt from persisted history carries the same `childSession`).
+   *
+   * @param childSession - The sub-session id to look up.
+   * @returns A frozen snapshot of the run whose `childSession` matches, or
+   *   `undefined`.
+   */
+  findByChildSession(childSession: string): RunSnapshot | undefined {
+    for (const run of this.table.runs.values()) {
+      if (run.childSession === childSession) return snapshot(run);
+    }
+    return undefined;
+  }
+
+  /**
+   * Count a main session's runs by status.
+   *
+   * Counts the WHOLE run tree under one main session — every top-level run plus
+   * its nested descendants (a nested delegation lands in the parent run's
+   * `childSession`, so the tree is walked through `parentSession` /
+   * `childSession` links).  The done/failed totals therefore reflect every
+   * delegation the session performed, not just the ones it launched directly.
+   * The `running` field is likewise whole-tree, matching the collapsed line's
+   * running list, which also walks every generation.  `failed` counts `error`
+   * outcomes; `aborted` counts
+   * cancellations in their own field so the collapsed line renders them with
+   * the cancelled presentation instead of the failure one; `running` counts
+   * still-active runs; `done` counts successful completions.
+   *
+   * @param parentSession - The main session id.
+   * @returns The per-status counts.
+   */
+  summary(parentSession: string): RunSummary {
+    let running = 0;
+    let done = 0;
+    let failed = 0;
+    let aborted = 0;
+    const tally = (run: MutableRun): void => {
+      if (run.status === "running") running += 1;
+      else if (run.status === "done") done += 1;
+      else if (run.status === "aborted") aborted += 1;
+      else failed += 1; // error
+    };
+    // Index runs by their calling session once, then walk the tree from the
+    // main session so nested runs are counted without a per-run registry scan.
+    const runsByParent = new Map<string, MutableRun[]>();
+    for (const run of this.table.runs.values()) {
+      const siblings = runsByParent.get(run.parentSession);
+      if (siblings === undefined) runsByParent.set(run.parentSession, [run]);
+      else siblings.push(run);
+    }
+    const counted = new Set<string>();
+    const stack: string[] = [parentSession];
+    while (stack.length > 0) {
+      const session = stack.pop();
+      if (session === undefined) break;
+      for (const run of runsByParent.get(session) ?? []) {
+        if (counted.has(run.id)) continue;
+        counted.add(run.id);
+        tally(run);
+        if (run.childSession !== undefined) stack.push(run.childSession);
+      }
+    }
+    return { running, done, failed, aborted };
+  }
 }
 
 /**
- * Register a new running run.
+ * The run scope of one runtime over the process table.
  *
- * A duplicate id never clobbers an existing entry — the first `startRun`
- * wins (run ids are globally unique, so a collision is a programming error
- * that must not silently re-parent an existing run).
+ * A runtime writes its runs through its scope.  `start` also records the run
+ * as an active run of this scope (a duplicate id never moves an existing run
+ * to another scope), so {@link RunScope.dispose} can end exactly the runs
+ * this runtime started.
  *
- * @param input - The run to register.
- * @returns The handle of the registered run (its id and live log); a
- *   duplicate id returns the first run's handle.
+ * Reads are the process table's, so a scope still renders the runs of every
+ * generation.  A restored run is terminal history, so it is never owned.
+ * A disposed scope refuses every further start: a run started after the stop
+ * would have no owner, so no stop would ever end it.
  */
-export function startRun(input: StartRunInput): RunHandle {
-  const existing = registry.get(input.id);
-  if (existing !== undefined) return { id: existing.id, log: existing.log };
-  const run: MutableRun = {
-    id: input.id,
-    agent: input.agent,
-    parentSession: input.parentSession,
-    status: "running",
-    startedAt: input.startedAt ?? Date.now(),
-    log: createRunLog(),
-    ...(input.label !== undefined ? { label: input.label } : {}),
-    ...(input.childSession !== undefined
-      ? { childSession: input.childSession }
-      : {}),
-    ...(input.sessionPath !== undefined
-      ? { sessionPath: input.sessionPath }
-      : {}),
-  };
-  run.log.onFact(() => {
-    notifyRunChange(run);
+export class RunScope extends RunRegistry {
+  /** Whether this scope stopped; a stopped scope refuses every start. */
+  private disposed = false;
+
+  /**
+   * Register a new running run and own it.
+   *
+   * A stopped scope fails closed: the start throws before any table write, so
+   * it creates no record, takes no id, and owns nothing.  A run that no
+   * runtime owns would run forever, because no stop would end it.
+   *
+   * The ownership is recorded before the change notification, so a throwing
+   * subscriber cannot leave a running run this scope started but does not
+   * own.
+   *
+   * @param input - The run to register.
+   * @returns The run's handle.
+   * @throws Error when this scope is already stopped.
+   */
+  override start(input: StartRunInput): RunHandle {
+    if (this.disposed) {
+      throw new Error(`运行作用域已停止，无法启动运行 "${input.id}"。`);
+    }
+    return this.register(input, this);
+  }
+
+  /**
+   * Stop this scope: abort every run it started that still runs.
+   *
+   * Terminal records keep their status and metadata, other scopes' runs keep
+   * running, and the process table keeps every record.  A throwing
+   * subscriber cannot stop the cleanup: the remaining owned runs are still
+   * closed, and the collected failures are thrown to the caller (the
+   * lifecycle stop report).
+   */
+  dispose(): void {
+    if (this.disposed) return;
+    this.disposed = true;
+    const failures: unknown[] = [];
+    for (const [id, owner] of [...this.table.owners]) {
+      if (owner !== this) continue;
+      try {
+        this.finish(id, { status: "aborted" });
+      } catch (error) {
+        failures.push(error);
+      }
+    }
+    if (failures.length === 0) return;
+    if (failures.length === 1) throw failures[0];
+    throw new AggregateError(
+      failures,
+      `运行作用域释放失败，共 ${failures.length} 项失败。`,
+    );
+  }
+}
+
+/**
+ * Create an empty run registry.
+ *
+ * @returns A fresh registry with no runs and no subscribers.
+ */
+export function createRunRegistry(): RunRegistry {
+  return new RunRegistry({
+    runs: new Map(),
+    listeners: new Set(),
+    owners: new Map(),
   });
-  registry.set(input.id, run);
-  notifyRunChange(run);
-  return { id: run.id, log: run.log };
 }
 
 /**
@@ -415,120 +837,6 @@ function applyProgress(run: MutableRun, patch: UpdateRunPatch): boolean {
 }
 
 /**
- * Patch the progress fields of a running run.
- *
- * Silently ignored when the run is terminal (its status, progress fields,
- * and timestamps are frozen) or the id is unknown.  A patch that changes
- * nothing (empty, or every value already held) publishes no event.
- *
- * @param id - The run id.
- * @param patch - The fields to update.
- */
-export function updateRun(id: string, patch: UpdateRunPatch): void {
-  const run = registry.get(id);
-  if (run === undefined || TERMINAL_STATUSES.has(run.status)) return;
-  if (!applyProgress(run, patch)) return;
-  notifyRunChange(run);
-}
-
-/**
- * Finish a run, transitioning it to a terminal state.
- *
- * Silently ignored when the run is already terminal (its status, `endedAt`,
- * `error`, and `sessionPath` are frozen — a second finish never overwrites
- * the first) or the id is unknown.  `endedAt` defaults to the current time.
- *
- * The input also carries the run's last progress fields: they are written
- * in the same step as the terminal transition, and the whole write
- * publishes exactly one event.  A producer that reads the final values
- * while the run settles therefore never publishes an intermediate update.
- *
- * The finish also RELEASES the run's fact log: the terminal run keeps its
- * lifecycle metadata only and its `log` becomes a fresh empty log.  The
- * facts' authoritative copy lives in the persisted sub-session file, and
- * any post-finish view rebuilds it through the hydration path.  The
- * released log object stays valid for consumers already holding it (an
- * open transcript overlay keeps what it projected) but receives no further
- * appends.  The fresh terminal log is inert by design: it carries no
- * `onFact` listener, so appending to it fires no run-change notification —
- * a post-finish append is a programming error.
- *
- * @param id - The run id.
- * @param input - The terminal outcome and the run's last progress fields.
- */
-export function finishRun(id: string, input: FinishRunInput): void {
-  const run = registry.get(id);
-  if (run === undefined || TERMINAL_STATUSES.has(run.status)) return;
-  applyProgress(run, input);
-  run.status = input.status;
-  run.endedAt = input.endedAt ?? Date.now();
-  if (input.error !== undefined) run.error = input.error;
-  // Release the run's fact log: resident memory must track ACTIVE work only.
-  // The run keeps its lifecycle metadata; a later view of the finished run's
-  // transcript rebuilds the facts from the persisted sub-session file
-  // through the hydration path.  The released log stays valid for any holder
-  // (the open-overlay edge case) but is no longer the registry's.
-  run.log = createRunLog();
-  notifyRunChange(run);
-}
-
-/**
- * Restore one run from persisted history as an already-terminal entry.
- *
- * History rebuilds know the run's outcome up front, so a restored run never
- * passes through a `running` state: its metadata and its empty terminal log
- * are created in one step, and exactly one change is published.
- *
- * An id already present in the registry is left untouched and publishes
- * nothing — a live run (or a run restored earlier) keeps what it has, so a
- * repeated scan is idempotent.
- *
- * @param input - The restored run's metadata and terminal outcome.
- * @returns Whether the run was created (`false` when it already existed).
- */
-export function restoreRun(input: RestoreRunInput): boolean {
-  if (registry.has(input.id)) return false;
-  const run: MutableRun = {
-    id: input.id,
-    agent: input.agent,
-    parentSession: input.parentSession,
-    status: input.status,
-    startedAt: input.startedAt ?? Date.now(),
-    endedAt: input.endedAt ?? Date.now(),
-    // The terminal log is inert: a restored run has no facts and takes no
-    // appends, and the log carries no listener.
-    log: createRunLog(),
-    ...(input.label !== undefined ? { label: input.label } : {}),
-    ...(input.currentTool !== undefined && input.currentTool !== null
-      ? { currentTool: input.currentTool }
-      : {}),
-    ...(input.tokens !== undefined ? { tokens: input.tokens } : {}),
-    ...(input.model !== undefined ? { model: input.model } : {}),
-    ...(input.error !== undefined ? { error: input.error } : {}),
-    ...(input.childSession !== undefined
-      ? { childSession: input.childSession }
-      : {}),
-    ...(input.sessionPath !== undefined
-      ? { sessionPath: input.sessionPath }
-      : {}),
-  };
-  registry.set(input.id, run);
-  notifyRunChange(run);
-  return true;
-}
-
-/**
- * Look up a run by id.
- *
- * @param id - The run id.
- * @returns A frozen snapshot of the run, or `undefined` when unknown.
- */
-export function getRun(id: string): RunSnapshot | undefined {
-  const run = registry.get(id);
-  return run === undefined ? undefined : snapshot(run);
-}
-
-/**
  * Order runs by `startedAt` ascending with a stable id tiebreak.
  *
  * @param a - The first run.
@@ -538,157 +846,6 @@ export function getRun(id: string): RunSnapshot | undefined {
 function byStartedAt(a: RunSnapshot, b: RunSnapshot): number {
   if (a.startedAt !== b.startedAt) return a.startedAt - b.startedAt;
   return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
-}
-
-/**
- * List the top-level runs of a main session, ordered by `startedAt`.
- *
- * A run is top-level when its `parentSession` is the main session itself —
- * nested child runs (whose `parentSession` is a run's `childSession`) are
- * excluded.
- *
- * @param parentSession - The main session id.
- * @returns Frozen snapshots of the top-level runs, oldest first.
- */
-export function topLevelRuns(parentSession: string): RunSnapshot[] {
-  return [...registry.values()]
-    .filter((run) => run.parentSession === parentSession)
-    .sort(byStartedAt)
-    .map(snapshot);
-}
-
-/**
- * List the child runs of a run, ordered by `startedAt`.
- *
- * A run's children are those whose `parentSession` equals the run's
- * `childSession` (the sub-session it created when it delegated).  Runs
- * without a recorded `childSession` have no children.
- *
- * @param runId - The parent run id.
- * @returns Frozen snapshots of the child runs, oldest first.
- */
-export function childrenOf(runId: string): RunSnapshot[] {
-  const parent = registry.get(runId);
-  if (parent === undefined || parent.childSession === undefined) return [];
-  return [...registry.values()]
-    .filter((run) => run.parentSession === parent.childSession)
-    .sort(byStartedAt)
-    .map(snapshot);
-}
-
-/**
- * Index the subtrees rooted at the given runs by parent run id.
- *
- * The map covers every generation reachable from `roots`: each entry holds a
- * root's or descendant's child runs, ordered by `startedAt` — the same order
- * `childrenOf` returns.  A run with no children has no entry, so a consumer
- * reads `index.get(id) ?? []`.  A read-only consumer can hand the shared
- * index to the card and the fleet renderers, which then render every depth
- * from one explicit source instead of querying the registry per level.
- *
- * The index is a DAG even when the registry holds a parent/child loop (a run
- * whose child session points back at an ancestor, which a corrupted history
- * scan can leave behind): a run enters the index at most once, so a later
- * edge back to an indexed run is dropped.  A recursive consumer of this map
- * therefore always terminates.
- *
- * @param roots - The run snapshots to walk down from (top-level runs).
- * @returns Parent-run id → its child runs, at every depth.
- */
-export function childrenIndex(
-  roots: readonly RunSnapshot[],
-): Map<string, RunSnapshot[]> {
-  const index = new Map<string, RunSnapshot[]>();
-  // Seeding the roots keeps a root out of any child list, so a loop through
-  // a root and a run that delegates into it cannot re-enter the root.
-  const placed = new Set<string>(roots.map((root) => root.id));
-  const walk = (run: RunSnapshot): void => {
-    const children = childrenOf(run.id).filter(
-      (child) => !placed.has(child.id),
-    );
-    if (children.length === 0) return;
-    index.set(run.id, children);
-    for (const child of children) {
-      placed.add(child.id);
-      walk(child);
-    }
-  };
-  for (const root of roots) walk(root);
-  return index;
-}
-
-/**
- * Find the run that delegated into a given sub-session.
- *
- * The reverse lookup over `childSession`: in the host's in-process
- * model every sub-session was created by exactly one run, so the first
- * match is the answer.  Terminal runs still match — the delegation
- * outlives the run, and identity resolution needs it to (a session
- * rebuilt from persisted history carries the same `childSession`).
- *
- * @param childSession - The sub-session id to look up.
- * @returns A frozen snapshot of the run whose `childSession` matches, or
- *   `undefined`.
- */
-export function findByChildSession(
-  childSession: string,
-): RunSnapshot | undefined {
-  for (const run of registry.values()) {
-    if (run.childSession === childSession) return snapshot(run);
-  }
-  return undefined;
-}
-
-/**
- * Count a main session's runs by status.
- *
- * Counts the WHOLE run tree under one main session — every top-level run plus
- * its nested descendants (a nested delegation lands in the parent run's
- * `childSession`, so the tree is walked through `parentSession` /
- * `childSession` links).  The done/failed totals therefore reflect every
- * delegation the session performed, not just the ones it launched directly.
- * The `running` field is likewise whole-tree, matching the collapsed line's
- * running list, which also walks every generation.  `failed` counts `error`
- * outcomes; `aborted` counts
- * cancellations in their own field so the collapsed line renders them with
- * the cancelled presentation instead of the failure one; `running` counts
- * still-active runs; `done` counts successful completions.
- *
- * @param parentSession - The main session id.
- * @returns The per-status counts.
- */
-export function summary(parentSession: string): RunSummary {
-  let running = 0;
-  let done = 0;
-  let failed = 0;
-  let aborted = 0;
-  const tally = (run: MutableRun): void => {
-    if (run.status === "running") running += 1;
-    else if (run.status === "done") done += 1;
-    else if (run.status === "aborted") aborted += 1;
-    else failed += 1; // error
-  };
-  // Index runs by their calling session once, then walk the tree from the
-  // main session so nested runs are counted without a per-run registry scan.
-  const runsByParent = new Map<string, MutableRun[]>();
-  for (const run of registry.values()) {
-    const siblings = runsByParent.get(run.parentSession);
-    if (siblings === undefined) runsByParent.set(run.parentSession, [run]);
-    else siblings.push(run);
-  }
-  const counted = new Set<string>();
-  const stack: string[] = [parentSession];
-  while (stack.length > 0) {
-    const session = stack.pop();
-    if (session === undefined) break;
-    for (const run of runsByParent.get(session) ?? []) {
-      if (counted.has(run.id)) continue;
-      counted.add(run.id);
-      tally(run);
-      if (run.childSession !== undefined) stack.push(run.childSession);
-    }
-  }
-  return { running, done, failed, aborted };
 }
 
 /**

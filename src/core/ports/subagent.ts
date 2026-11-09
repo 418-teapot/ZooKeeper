@@ -9,9 +9,20 @@
  */
 
 import type { SubagentDriver } from "../subagent/driver.js";
+import type { RunRegistry } from "../subagent/registry.js";
 
 /** The subagent-delegation capability. */
 export interface SubagentPort {
+  /**
+   * The subagent run records of this runtime.
+   *
+   * The tool writes each delegation through this scope (start, progress,
+   * terminal finish), so the fleet surfaces of the host render from the
+   * same records the tool produced and the runtime's stop ends exactly the
+   * runs it started.  It reads the run table of the host's process owner,
+   * never a second table.
+   */
+  runs: RunRegistry;
   /**
    * Host subagent driver (only on hosts that can execute a delegated run).
    *

@@ -1,12 +1,12 @@
 /**
  * Tests for the pi host wiring (`src/adapters/pi/wire.ts`).
  *
- * Covers: `buildPiContributions` composing the full registry from the
+ * Covers: `composePi` composing the full registry from the
  * active `[zoo.mode.*]` profile (agents/skills/hooks/tools/commands,
  * unconditional pruning contribution, primary-agent Map gating,
  * null/invalid profile → empty composition), `buildPiResolveAgent`'s
- * session identity resolution, the registration boundary (`registerTool`
- * / `registerCommand` / entry renderer / `plugin_init`), the primary
+ * session identity resolution, the published start (`registerTool` /
+ * `registerCommand` / entry renderer / `plugin_init`), the primary
  * tool-deny trim, and the `zoo` fleet widget (seeding, colorization,
  * enter-inspect wiring and post-restart hydration).
  */
@@ -15,7 +15,7 @@ import fs from "node:fs";
 import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, it } from "node:test";
+import { afterEach, beforeEach, describe, it } from "node:test";
 import { initTheme } from "@earendil-works/pi-coding-agent";
 import { buildPiCommandRegistrationPlan } from "../../compose-pi.js";
 import { ASK_TOOL_NAME, type QuestionChannel } from "../../core/ask.js";
@@ -26,29 +26,25 @@ import type {
   SwitchHost,
   SwitchNewSessionOps,
 } from "../../core/ports/switch.js";
-import { sessionAgentRegistry } from "../../core/session/agent.js";
 import type { SubagentDriver } from "../../core/subagent/driver.js";
-import {
-  finishRun,
-  getRun,
-  resetRegistry,
-  startRun,
-  topLevelRuns,
-  updateRun,
-} from "../../core/subagent/registry.js";
+import type { RunRegistry } from "../../core/subagent/registry.js";
 import { createTodoStore } from "../../core/todo/store.js";
 import type { ToolCallContext, ToolContribution } from "../../core/unit.js";
 import { formHarness } from "../../testkits/ask-form.js";
 import {
   COLORS_RAW,
+  composePi,
   fakePiToolHost,
   MODES_RAW,
   mockApi,
   POLY_PROFILE,
   POLY_ZOO,
+  piScope,
   renderZooWidget,
   resetPiTestState,
   SESSION_CTX,
+  startPi,
+  startPiRuntime,
   WIDGET_THEME,
   WIDGET_TUI,
 } from "../../testkits/pi-wiring.js";
@@ -66,21 +62,40 @@ import { createPiQuestionChannel } from "./ask-form.js";
 import { createPiHandoffTarget } from "./handoff-target.js";
 import { beginHydration, resetHydration, waitForHydration } from "./hydrate.js";
 import type { PiSessionWorkRunner } from "./lifecycle-wiring.js";
-import {
-  createPiHandoffIdentity,
-  createSwitchOpsStore,
-  pendingSwitchPrimary,
-} from "./switch-host.js";
+import { createPiProcessState, type PiProcessState } from "./process.js";
+import { buildPiSubagentExtension } from "./publisher.js";
+import { createPiHandoffIdentity } from "./switch-host.js";
 import { TRANSCRIPT_UNAVAILABLE_NOTICE } from "./tui/transcript.js";
-import {
-  buildPiContributions,
-  buildPiHandlers,
-  buildPiResolveAgent,
-  buildPiSubagentExtension,
-  buildPiToolExecute,
-} from "./wire.js";
+import { buildPiResolveAgent, buildPiToolExecute } from "./wire.js";
+
+/**
+ * The pi process this test file drives: one owner per test, exactly as one
+ * pi process keeps its state across the reloads of one generation.
+ */
+let piProcess: PiProcessState = createPiProcessState();
+
+beforeEach(() => {
+  piProcess = createPiProcessState();
+});
 
 afterEach(resetPiTestState);
+
+/** Compose one generation over this test's process state. */
+function compose(
+  scope: Parameters<typeof composePi>[0],
+  deps?: Parameters<typeof composePi>[1],
+): ReturnType<typeof composePi> {
+  return composePi(scope, deps, piProcess);
+}
+
+/** Start one pi instance over this test's process state. */
+function startInstance(
+  scope: Parameters<typeof startPi>[0],
+  pi?: unknown,
+  overrides?: Parameters<typeof startPi>[2],
+): ReturnType<typeof startPi> {
+  return startPi(scope, pi, overrides, piProcess);
+}
 
 // The official transcript message components render through the coding-agent
 // module-level theme singleton; the built-in dark theme ships with the
@@ -92,12 +107,11 @@ initTheme();
 // Profile-driven selection
 // ---------------------------------------------------------------------------
 
-describe("buildPiContributions — profile-driven selection", () => {
-  it("poly full profile → 7 agents incl. dolphin prompt, 11 skills", () => {
-    const { composed, profile } = buildPiContributions(
-      POLY_ZOO,
+describe("composePi — profile-driven selection", () => {
+  it("poly full profile → 7 agents incl. dolphin prompt, 11 skills", async () => {
+    const { composed, profile } = await compose(
+      piScope(POLY_ZOO, MODES_RAW),
       undefined,
-      MODES_RAW,
     );
     assert.equal(profile?.name, "poly");
     assert.equal(composed.agents.length, 7);
@@ -108,8 +122,8 @@ describe("buildPiContributions — profile-driven selection", () => {
     assert.ok(dolphin.prompt.includes("持续维护一个交付闭环"));
   });
 
-  it("poly full profile → full-registry composition incl. hooks/tools/commands", () => {
-    const { composed } = buildPiContributions(POLY_ZOO, undefined, MODES_RAW);
+  it("poly full profile → full-registry composition incl. hooks/tools/commands", async () => {
+    const { composed } = await compose(piScope(POLY_ZOO, MODES_RAW), undefined);
     // afterExec from the registry's hook units, in registry order.
     assert.deepEqual(
       composed.afterExec.map((h) => h.name),
@@ -140,12 +154,12 @@ describe("buildPiContributions — profile-driven selection", () => {
     assert.deepEqual(Object.keys(composed.commands).sort(), ["dcp", "go"]);
   });
 
-  it("agents=[dolphin] → only dolphin, no skills", () => {
+  it("agents=[dolphin] → only dolphin, no skills", async () => {
     const zoo = {
       ...POLY_ZOO,
       mode: { poly: { ...POLY_PROFILE, agents: ["dolphin"], skills: [] } },
     };
-    const { composed } = buildPiContributions(zoo, undefined, MODES_RAW);
+    const { composed } = await compose(piScope(zoo, MODES_RAW), undefined);
     assert.deepEqual(
       composed.agents.map((a) => a.name),
       ["dolphin"],
@@ -153,14 +167,14 @@ describe("buildPiContributions — profile-driven selection", () => {
     assert.deepEqual(composed.skills, []);
   });
 
-  it("agents=[mola] → invalid profile (no orchestrator), nothing composes", () => {
+  it("agents=[mola] → invalid profile (no orchestrator), nothing composes", async () => {
     // dolphin is the product's orchestrator; a profile that omits it
     // cannot run, and the remaining primary is never promoted.
     const zoo = {
       ...POLY_ZOO,
       mode: { poly: { ...POLY_PROFILE, agents: ["mola"] } },
     };
-    const { composed } = buildPiContributions(zoo, undefined, MODES_RAW);
+    const { composed } = await compose(piScope(zoo, MODES_RAW), undefined);
     assert.deepEqual(composed.agents, []);
     assert.deepEqual(composed.report.invalid, {
       orchestrator: "dolphin",
@@ -169,17 +183,17 @@ describe("buildPiContributions — profile-driven selection", () => {
     });
   });
 
-  it("empty agents/skills lists → empty contributions", () => {
+  it("empty agents/skills lists → empty contributions", async () => {
     const zoo = {
       mode: { poly: { ...POLY_PROFILE, agents: [], skills: [] } },
     };
-    const { composed } = buildPiContributions(zoo, undefined, MODES_RAW);
+    const { composed } = await compose(piScope(zoo, MODES_RAW), undefined);
     assert.deepEqual(composed.agents, []);
     assert.deepEqual(composed.skills, []);
   });
 
-  it("absent zoo.mode → null profile, empty contributions", () => {
-    const { composed, profile } = buildPiContributions({});
+  it("absent zoo.mode → null profile, empty contributions", async () => {
+    const { composed, profile } = await compose(piScope({}));
     assert.equal(profile, null);
     assert.deepEqual(composed.agents, []);
     assert.deepEqual(composed.skills, []);
@@ -187,7 +201,7 @@ describe("buildPiContributions — profile-driven selection", () => {
     assert.deepEqual(composed.transform, []);
   });
 
-  it("flags only the replacing commands for control admission", () => {
+  it("flags only the replacing commands for control admission", async () => {
     // The replacing claim is explicit metadata on the contribution, never a
     // command-name lookup: `/go` and the `/<agent>` switches set it, every
     // other command leaves it unset and runs as ordinary session work.
@@ -200,11 +214,9 @@ describe("buildPiContributions — profile-driven selection", () => {
     };
     // The pi switch surface is what contributes the `/<agent>` commands, so
     // a stub host brings them into the same composition.
-    const { composed } = buildPiContributions(
-      POLY_ZOO,
-      { switchHost },
-      MODES_RAW,
-    );
+    const { composed } = await compose(piScope(POLY_ZOO, MODES_RAW), {
+      switchHost,
+    });
     const plan = buildPiCommandRegistrationPlan(composed.commands);
     assert.deepEqual(
       plan
@@ -219,18 +231,18 @@ describe("buildPiContributions — profile-driven selection", () => {
     );
   });
 
-  it("poly full profile → no unknown_unit warnings (all names match the registry)", () => {
+  it("poly full profile → no unknown_unit warnings (all names match the registry)", async () => {
     // pi composes the full profile against the full registry: every
     // hooks/tools/commands/agents/skills name must match a unit or the
     // selection engine warns.
-    buildPiContributions(POLY_ZOO, undefined, MODES_RAW);
+    await compose(piScope(POLY_ZOO, MODES_RAW), undefined);
     const unknownUnits = _getBufferForTesting().filter(
       (entry) => entry.event === "unknown_unit",
     );
     assert.deepEqual(unknownUnits, []);
   });
 
-  it("unknown hooks/tools profile names reach the unknown_unit warning path", () => {
+  it("unknown hooks/tools profile names reach the unknown_unit warning path", async () => {
     // The full-profile composition surfaces unmatched category names to
     // the engine.
     const zoo = {
@@ -242,7 +254,7 @@ describe("buildPiContributions — profile-driven selection", () => {
         },
       },
     };
-    buildPiContributions(zoo, undefined, MODES_RAW);
+    await compose(piScope(zoo, MODES_RAW), undefined);
     const unknownUnits = _getBufferForTesting().filter(
       (entry) => entry.event === "unknown_unit",
     );
@@ -252,7 +264,7 @@ describe("buildPiContributions — profile-driven selection", () => {
     );
   });
 
-  it("ambiguous zoo.mode (two tables) → null profile, empty contributions", () => {
+  it("ambiguous zoo.mode (two tables) → null profile, empty contributions", async () => {
     // No mode state file: multi-profile selection must fail closed.
     process.env.ZOO_MODE_FILE = join(
       tmpdir(),
@@ -261,17 +273,16 @@ describe("buildPiContributions — profile-driven selection", () => {
     const zoo = {
       mode: { poly: POLY_PROFILE, slim: { agents: [], skills: [] } },
     };
-    const { composed, profile } = buildPiContributions(
-      zoo,
+    const { composed, profile } = await compose(
+      piScope(zoo, MODES_RAW),
       undefined,
-      MODES_RAW,
     );
     assert.equal(profile, null);
     assert.deepEqual(composed.agents, []);
     assert.deepEqual(composed.skills, []);
   });
 
-  it("poly profile listing todo + host todoStore/toolHost → todo composes", () => {
+  it("poly profile listing todo + host todoStore/toolHost → todo composes", async () => {
     // The pi entry point forwards its host ports into deps; with both
     // supplied the fail-closed todo unit contributes its tool.
     const zoo = {
@@ -280,19 +291,15 @@ describe("buildPiContributions — profile-driven selection", () => {
         poly: { ...POLY_PROFILE, tools: [...POLY_PROFILE.tools, "todo"] },
       },
     };
-    const { composed } = buildPiContributions(
-      zoo,
-      {
-        toolHost: fakePiToolHost(),
-        todoStore: createTodoStore(async () => []),
-      },
-      MODES_RAW,
-    );
+    const { composed } = await compose(piScope(zoo, MODES_RAW), {
+      toolHost: fakePiToolHost(),
+      todoStore: createTodoStore(async () => []),
+    });
     assert.ok(composed.tools.todo, "todo must register on the pi host");
     assert.equal(typeof composed.tools.todo.execute, "function");
   });
 
-  it("the same todo-listing profile with no host ports → no todo tool", () => {
+  it("the same todo-listing profile with no host ports → no todo tool", async () => {
     // Without the tool host the todo unit is skipped, so the composed
     // tool surface stays empty.
     const zoo = {
@@ -301,7 +308,7 @@ describe("buildPiContributions — profile-driven selection", () => {
         poly: { ...POLY_PROFILE, tools: [...POLY_PROFILE.tools, "todo"] },
       },
     };
-    const { composed } = buildPiContributions(zoo, undefined, MODES_RAW);
+    const { composed } = await compose(piScope(zoo, MODES_RAW), undefined);
     assert.equal(composed.tools.todo, undefined);
     assert.deepEqual(Object.keys(composed.tools).sort(), []);
   });
@@ -315,40 +322,80 @@ describe("buildPiResolveAgent — session identity resolution", () => {
   /** The orchestrator the selection resolves for the poly profile. */
   const ORCHESTRATOR = "dolphin";
 
-  /** The main runtime's sources: no fixed agent, no pending replacement. */
+  /** Main-runtime sources over this test's process state. */
   function mainSources() {
-    return { orchestrator: () => ORCHESTRATOR };
+    return {
+      sessionAgents: piProcess.sessionAgents,
+      runs: piProcess.runs,
+      orchestrator: () => ORCHESTRATOR,
+    };
   }
 
   it("a recorded child session resolves to its delegated run agent", () => {
-    startRun({
+    piProcess.runs.start({
       id: "run-1",
       agent: "beaver",
       parentSession: "root-ses",
       startedAt: 100,
     });
-    updateRun("run-1", { childSession: "child-beaver" });
+    piProcess.runs.update("run-1", { childSession: "child-beaver" });
     const resolve = buildPiResolveAgent(mainSources());
     assert.equal(resolve("child-beaver"), "beaver");
   });
 
   it("the child-session answer is bound so later lookups skip the run table", () => {
-    startRun({
+    piProcess.runs.start({
       id: "run-1",
       agent: "beaver",
       parentSession: "root-ses",
       startedAt: 100,
     });
-    updateRun("run-1", { childSession: "child-beaver" });
-    const resolve = buildPiResolveAgent(mainSources());
-    assert.equal(sessionAgentRegistry.resolve("child-beaver"), undefined);
+    piProcess.runs.update("run-1", { childSession: "child-beaver" });
+    // The run table answers once, then only the binding can.
+    let lookups = 0;
+    const runs = {
+      findByChildSession: (sessionID: string) => {
+        lookups += 1;
+        return piProcess.runs.findByChildSession(sessionID);
+      },
+    } as unknown as RunRegistry;
+    const resolve = buildPiResolveAgent({
+      ...mainSources(),
+      runs,
+    });
+    assert.equal(piProcess.sessionAgents.resolve("child-beaver"), undefined);
     assert.equal(resolve("child-beaver"), "beaver");
-    // The answer is memoized: a later lookup hits the registry directly —
-    // proven by emptying the run table first, so only the binding can
-    // answer now.
-    resetRegistry();
-    assert.equal(sessionAgentRegistry.resolve("child-beaver"), "beaver");
+    assert.equal(piProcess.sessionAgents.resolve("child-beaver"), "beaver");
     assert.equal(resolve("child-beaver"), "beaver");
+    assert.equal(lookups, 1, "the memoized binding answers the second lookup");
+  });
+
+  it("two process owners never exchange identities", () => {
+    // Each owner carries the facts of one process.  A resolver reads only
+    // the owner it was given, so a child session known to one owner is
+    // unknown to the other.
+    const other = createPiProcessState();
+    piProcess.runs.start({
+      id: "run-1",
+      agent: "beaver",
+      parentSession: "root-ses",
+      startedAt: 100,
+    });
+    piProcess.runs.update("run-1", { childSession: "child-beaver" });
+    const mine = buildPiResolveAgent(mainSources());
+    const theirs = buildPiResolveAgent({
+      sessionAgents: other.sessionAgents,
+      runs: other.runs,
+      orchestrator: () => ORCHESTRATOR,
+    });
+
+    assert.equal(mine("child-beaver"), "beaver");
+    assert.equal(
+      other.sessionAgents.resolve("child-beaver"),
+      undefined,
+      "the other owner learns nothing from this one",
+    );
+    assert.equal(theirs("child-beaver"), ORCHESTRATOR);
   });
 
   it("a session the run table does not know falls through to the orchestrator", () => {
@@ -361,21 +408,27 @@ describe("buildPiResolveAgent — session identity resolution", () => {
     // report, so the run table cannot answer yet: the runtime's own fixed
     // agent must.
     const resolve = buildPiResolveAgent({
+      sessionAgents: piProcess.sessionAgents,
+      runs: piProcess.runs,
       fixedAgent: "lynx",
       orchestrator: () => ORCHESTRATOR,
     });
     assert.equal(resolve("child-of-lynx"), "lynx");
-    assert.equal(sessionAgentRegistry.resolve("child-of-lynx"), "lynx");
+    assert.equal(piProcess.sessionAgents.resolve("child-of-lynx"), "lynx");
   });
 
   it("two concurrent sub-session runtimes never exchange identities", async () => {
     // Each runtime is built for one delegation; their sessions are distinct
     // and their events interleave.
     const beaver = buildPiResolveAgent({
+      sessionAgents: piProcess.sessionAgents,
+      runs: piProcess.runs,
       fixedAgent: "beaver",
       orchestrator: () => ORCHESTRATOR,
     });
     const lynx = buildPiResolveAgent({
+      sessionAgents: piProcess.sessionAgents,
+      runs: piProcess.runs,
       fixedAgent: "lynx",
       orchestrator: () => ORCHESTRATOR,
     });
@@ -403,50 +456,65 @@ describe("buildPiResolveAgent — session identity resolution", () => {
 
     assert.equal(left, "beaver");
     assert.equal(right, "lynx");
-    assert.equal(sessionAgentRegistry.resolve("sess-beaver"), "beaver");
-    assert.equal(sessionAgentRegistry.resolve("sess-lynx"), "lynx");
-    assert.equal(sessionAgentRegistry.resolve("sess-beaver-2"), "beaver");
-    assert.equal(sessionAgentRegistry.resolve("sess-lynx-2"), "lynx");
+    assert.equal(piProcess.sessionAgents.resolve("sess-beaver"), "beaver");
+    assert.equal(piProcess.sessionAgents.resolve("sess-lynx"), "lynx");
+    assert.equal(piProcess.sessionAgents.resolve("sess-beaver-2"), "beaver");
+    assert.equal(piProcess.sessionAgents.resolve("sess-lynx-2"), "lynx");
   });
 
-  it("a pending replacement target answers before the orchestrator", () => {
-    const store = createSwitchOpsStore();
-    store.stash({ primary: "mola" });
-    const resolve = buildPiResolveAgent({
-      pendingPrimary: () => store.pendingPrimary(),
-      orchestrator: () => ORCHESTRATOR,
-    });
+  it("a pending replacement target never answers for an unknown session", () => {
+    // A switch target binds only at the replacement's own `session_start`
+    // (see `switch-host.ts`); no unresolvable session may read it.
+    piProcess.switchOps.begin("sess-old");
+    piProcess.switchOps.stash({ primary: "mola" });
+    const resolve = buildPiResolveAgent(mainSources());
 
-    // The replacement session's bind-time events run before the deferred
-    // switch ops are drained, so the target must answer now.
-    assert.equal(resolve("sess-replaced"), "mola");
-    assert.equal(sessionAgentRegistry.resolve("sess-replaced"), "mola");
+    assert.equal(resolve("sess-unrelated"), ORCHESTRATOR);
+    assert.equal(
+      piProcess.sessionAgents.resolve("sess-unrelated"),
+      ORCHESTRATOR,
+    );
+    // The target is still unclaimed: the replacement's own start takes it.
+    assert.equal(
+      piProcess.switchOps.claim("sess-new", {
+        reason: "new",
+        parentSession: "sess-old",
+      }),
+      "mola",
+    );
   });
 
-  it("a drained pending target no longer answers", () => {
-    const store = createSwitchOpsStore();
-    store.stash({ primary: "mola" });
-    const resolve = buildPiResolveAgent({
-      pendingPrimary: () => store.pendingPrimary(),
-      orchestrator: () => ORCHESTRATOR,
-    });
-    store.drain();
+  it("a claimed replacement target answers from the registry", () => {
+    piProcess.switchOps.begin("sess-old");
+    piProcess.switchOps.stash({ primary: "mola" });
+    assert.equal(
+      piProcess.switchOps.claim("sess-new", {
+        reason: "new",
+        parentSession: "sess-old",
+      }),
+      "mola",
+    );
+    const resolve = buildPiResolveAgent(mainSources());
 
-    assert.equal(resolve("sess-after-drain"), "dolphin");
+    // The start bound the target before the session's bind-time events.
+    piProcess.sessionAgents.bind("sess-new", "mola");
+    assert.equal(resolve("sess-new"), "mola");
   });
 
   it("the orchestrator answer is bound and repeats hit the registry", () => {
     const resolve = buildPiResolveAgent(mainSources());
-    assert.equal(sessionAgentRegistry.resolve("root-ses-2"), undefined);
+    assert.equal(piProcess.sessionAgents.resolve("root-ses-2"), undefined);
     assert.equal(resolve("root-ses-2"), "dolphin");
     // The main session is bound, so repeated lookups skip the sources.
-    assert.equal(sessionAgentRegistry.resolve("root-ses-2"), "dolphin");
+    assert.equal(piProcess.sessionAgents.resolve("root-ses-2"), "dolphin");
     assert.equal(resolve("root-ses-2"), "dolphin");
   });
 
   it("a pre-existing registry binding wins over fresh resolution", () => {
-    sessionAgentRegistry.bind("bound-ses", "mola");
+    piProcess.sessionAgents.bind("bound-ses", "mola");
     const resolve = buildPiResolveAgent({
+      sessionAgents: piProcess.sessionAgents,
+      runs: piProcess.runs,
       fixedAgent: "boy",
       orchestrator: () => ORCHESTRATOR,
     });
@@ -454,9 +522,13 @@ describe("buildPiResolveAgent — session identity resolution", () => {
   });
 
   it("no source answering → undefined (fail-closed, no binding created)", () => {
-    const resolve = buildPiResolveAgent({ orchestrator: () => undefined });
+    const resolve = buildPiResolveAgent({
+      sessionAgents: piProcess.sessionAgents,
+      runs: piProcess.runs,
+      orchestrator: () => undefined,
+    });
     assert.equal(resolve("any-session"), undefined);
-    assert.equal(sessionAgentRegistry.resolve("any-session"), undefined);
+    assert.equal(piProcess.sessionAgents.resolve("any-session"), undefined);
   });
 });
 
@@ -468,7 +540,7 @@ describe("buildPiResolveAgent — session identity resolution", () => {
 // Fetch converter availability (probed before selection)
 // ---------------------------------------------------------------------------
 
-describe("buildPiContributions — fetch converter availability", () => {
+describe("composePi — fetch converter availability", () => {
   /** The poly profile with only the fetch tool enabled. */
   const FETCH_ZOO = {
     ...POLY_ZOO,
@@ -485,29 +557,21 @@ describe("buildPiContributions — fetch converter availability", () => {
     outputLines: 1,
   });
 
-  it("selects fetch when the converter probe succeeds", () => {
-    const { composed } = buildPiContributions(
-      FETCH_ZOO,
-      {
-        loadHtmlConverter: () => converter,
-        truncateHead: truncate,
-      },
-      MODES_RAW,
-    );
+  it("selects fetch when the converter probe succeeds", async () => {
+    const { composed } = await compose(piScope(FETCH_ZOO, MODES_RAW), {
+      loadHtmlConverter: () => converter,
+      truncateHead: truncate,
+    });
 
     assert.deepEqual(Object.keys(composed.tools), ["fetch"]);
     assert.ok(composed.report.selected.includes("fetch"));
   });
 
-  it("skips fetch when the converter probe reports no addon", () => {
-    const { composed } = buildPiContributions(
-      FETCH_ZOO,
-      {
-        loadHtmlConverter: () => null,
-        truncateHead: truncate,
-      },
-      MODES_RAW,
-    );
+  it("skips fetch when the converter probe reports no addon", async () => {
+    const { composed } = await compose(piScope(FETCH_ZOO, MODES_RAW), {
+      loadHtmlConverter: () => null,
+      truncateHead: truncate,
+    });
 
     assert.deepEqual(composed.tools, {});
     assert.deepEqual(
@@ -516,36 +580,28 @@ describe("buildPiContributions — fetch converter availability", () => {
     );
   });
 
-  it("does not probe the converter when the profile is absent", () => {
+  it("does not probe the converter when the profile is absent", async () => {
     // A null profile selects nothing and instantiates nothing, so probing
     // the native addon there would only emit a spurious
     // `converter_unavailable` warning for a unit that can never run.
     let probes = 0;
-    const { composed, profile } = buildPiContributions(
-      {},
-      {
-        loadHtmlConverter: () => {
-          probes += 1;
-          return converter;
-        },
-        truncateHead: truncate,
+    const { composed, profile } = await compose(piScope({}, MODES_RAW), {
+      loadHtmlConverter: () => {
+        probes += 1;
+        return converter;
       },
-      MODES_RAW,
-    );
+      truncateHead: truncate,
+    });
 
     assert.equal(profile, null);
     assert.equal(probes, 0);
     assert.deepEqual(composed.tools, {});
   });
 
-  it("skips fetch when the host binds no converter loader", () => {
-    const { composed } = buildPiContributions(
-      FETCH_ZOO,
-      {
-        truncateHead: truncate,
-      },
-      MODES_RAW,
-    );
+  it("skips fetch when the host binds no converter loader", async () => {
+    const { composed } = await compose(piScope(FETCH_ZOO, MODES_RAW), {
+      truncateHead: truncate,
+    });
 
     assert.deepEqual(composed.tools, {});
     assert.deepEqual(
@@ -559,32 +615,30 @@ describe("buildPiContributions — fetch converter availability", () => {
 // Orchestrator seeding
 // ---------------------------------------------------------------------------
 
-describe("buildPiContributions — session agent resolution", () => {
-  it("resolves the selection's orchestrator for an unbound session", () => {
-    const { resolveAgent } = buildPiContributions(
-      POLY_ZOO,
+describe("composePi — session agent resolution", () => {
+  it("resolves the selection's orchestrator for an unbound session", async () => {
+    const { resolveAgent } = await compose(
+      piScope(POLY_ZOO, MODES_RAW),
       undefined,
-      MODES_RAW,
     );
 
     assert.equal(resolveAgent("sess-main"), "dolphin");
   });
 
-  it("lets a binding written after composition win (a switch target)", () => {
+  it("lets a binding written after composition win (a switch target)", async () => {
     // The extension factory re-runs on every session replacement; the
     // switch writes the session binding before `newSession`, so the fresh
     // composition must keep that choice instead of re-resolving it.
-    const { resolveAgent } = buildPiContributions(
-      POLY_ZOO,
+    const { resolveAgent } = await compose(
+      piScope(POLY_ZOO, MODES_RAW),
       undefined,
-      MODES_RAW,
     );
-    sessionAgentRegistry.bind("sess-main", "mola");
+    piProcess.sessionAgents.bind("sess-main", "mola");
 
     assert.equal(resolveAgent("sess-main"), "mola");
   });
 
-  it("follows the declared orchestrator, not the profile's agent order", () => {
+  it("follows the declared orchestrator, not the profile's agent order", async () => {
     // mola is listed first and is a primary, yet the role belongs to
     // dolphin: resolution must follow the declared role.
     const zoo = {
@@ -594,47 +648,45 @@ describe("buildPiContributions — session agent resolution", () => {
       },
     };
 
-    const { resolveAgent } = buildPiContributions(zoo, undefined, MODES_RAW);
+    const { resolveAgent } = await compose(piScope(zoo, MODES_RAW), undefined);
 
     assert.equal(resolveAgent("sess-main"), "dolphin");
   });
 
-  it("resolves nothing when the profile cannot provide the orchestrator", () => {
+  it("resolves nothing when the profile cannot provide the orchestrator", async () => {
     const zoo = {
       ...POLY_ZOO,
       mode: { poly: { ...POLY_PROFILE, agents: ["beaver", "lynx"] } },
     };
 
-    const { resolveAgent } = buildPiContributions(zoo, undefined, MODES_RAW);
+    const { resolveAgent } = await compose(piScope(zoo, MODES_RAW), undefined);
 
     assert.equal(resolveAgent("sess-main"), undefined);
-    assert.equal(sessionAgentRegistry.resolve("sess-main"), undefined);
+    assert.equal(piProcess.sessionAgents.resolve("sess-main"), undefined);
   });
 
-  it("resolves a sub-session runtime to its fixed agent", () => {
+  it("resolves a sub-session runtime to its fixed agent", async () => {
     // The inline factory of a delegation fixes the agent, so every session
     // of that runtime answers with it — even before the run reports.
-    const { resolveAgent } = buildPiContributions(
-      POLY_ZOO,
-      { fixedAgent: "beaver" },
-      MODES_RAW,
-    );
+    const { resolveAgent } = await compose(piScope(POLY_ZOO, MODES_RAW), {
+      fixedAgent: "beaver",
+    });
 
     assert.equal(resolveAgent("sess-child"), "beaver");
   });
 });
 
-describe("buildPiHandlers — registerTool wiring", () => {
+describe("startPi — registerTool wiring", () => {
   it("registers compress and decompress with pi when the profile enables them", async () => {
     const api = mockApi();
-    await buildPiHandlers(POLY_ZOO, api as any, MODES_RAW);
+    await startInstance(piScope(POLY_ZOO, MODES_RAW), api as any);
     const toolNames = api.tools.map((tool: any) => tool.name);
     assert.deepEqual(toolNames.sort(), ["compress", "decompress"]);
   });
 
   it("sets label to the tool name and wraps parameters in an object schema", async () => {
     const api = mockApi();
-    await buildPiHandlers(POLY_ZOO, api as any, MODES_RAW);
+    await startInstance(piScope(POLY_ZOO, MODES_RAW), api as any);
     const compress = api.tools.find((tool: any) => tool.name === "compress");
     assert.ok(compress);
     assert.equal((compress as any).label, "compress");
@@ -645,7 +697,7 @@ describe("buildPiHandlers — registerTool wiring", () => {
 
   it("bridged compress schema accepts what validateCompressArgs accepts", async () => {
     const api = mockApi();
-    await buildPiHandlers(POLY_ZOO, api as any, MODES_RAW);
+    await startInstance(piScope(POLY_ZOO, MODES_RAW), api as any);
     const compress = api.tools.find((tool: any) => tool.name === "compress") as
       | {
           parameters: {
@@ -689,18 +741,20 @@ describe("buildPiHandlers — registerTool wiring", () => {
 
   it("execute wrapper delegates to the contribution and propagates errors", async () => {
     const api = mockApi();
-    await buildPiHandlers(
-      {
-        mode: {
-          poly: {
-            ...POLY_PROFILE,
-            tools: ["decompress"],
-            hooks: POLY_PROFILE.hooks.filter((h) => h !== "context-pruning"),
+    await startInstance(
+      piScope(
+        {
+          mode: {
+            poly: {
+              ...POLY_PROFILE,
+              tools: ["decompress"],
+              hooks: POLY_PROFILE.hooks.filter((h) => h !== "context-pruning"),
+            },
           },
         },
-      },
+        MODES_RAW,
+      ),
       api as any,
-      MODES_RAW,
     );
     const decompress = api.tools.find(
       (tool: any) => tool.name === "decompress",
@@ -723,13 +777,19 @@ describe("buildPiHandlers — registerTool wiring", () => {
     // sub-session path); a contribution's write-back slot is merged INTO it,
     // so a tool payload adds keys (ask's `questions`) but can never displace
     // `sessionPath`.
-    startRun({ id: "call-ask", agent: "beaver", parentSession: "sess-1" });
-    updateRun("call-ask", { sessionPath: "/tmp/ask-run.jsonl" });
+    piProcess.runs.start({
+      id: "call-ask",
+      agent: "beaver",
+      parentSession: "sess-1",
+    });
+    piProcess.runs.update("call-ask", { sessionPath: "/tmp/ask-run.jsonl" });
     const api = mockApi();
-    await buildPiHandlers(
-      { mode: { poly: { ...POLY_PROFILE, tools: ["ask"] } } },
+    await startInstance(
+      piScope(
+        { mode: { poly: { ...POLY_PROFILE, tools: ["ask"] } } },
+        MODES_RAW,
+      ),
       api as any,
-      MODES_RAW,
     );
     const ask = api.tools.find((tool: any) => tool.name === "ask") as
       | { execute: (...args: unknown[]) => Promise<unknown> }
@@ -757,17 +817,19 @@ describe("buildPiHandlers — registerTool wiring", () => {
   it("registers the subagent tool when the profile lists it and a driver is wired", async () => {
     const api = mockApi();
     api.activeTools.push("bash", "edit", "subagent", "compress", "decompress");
-    await buildPiHandlers(
-      {
-        mode: {
-          poly: {
-            ...POLY_PROFILE,
-            tools: ["compress", "decompress", "subagent"],
+    await startInstance(
+      piScope(
+        {
+          mode: {
+            poly: {
+              ...POLY_PROFILE,
+              tools: ["compress", "decompress", "subagent"],
+            },
           },
         },
-      },
+        MODES_RAW,
+      ),
       api as any,
-      MODES_RAW,
     );
     const names = api.tools.map((tool: any) => tool.name).sort();
     assert.deepEqual(names, ["compress", "decompress", "subagent"]);
@@ -795,24 +857,26 @@ describe("buildPiHandlers — registerTool wiring", () => {
     // `{ block: true, reason }`, which pi surfaces as an error tool result.
     const api = mockApi();
     api.activeTools.push("bash", "edit", "subagent", "compress", "decompress");
-    const handlers = await buildPiHandlers(
-      {
-        mode: {
-          poly: {
-            ...POLY_PROFILE,
-            tools: ["subagent"],
+    const handlers = await startInstance(
+      piScope(
+        {
+          mode: {
+            poly: {
+              ...POLY_PROFILE,
+              tools: ["subagent"],
+            },
           },
         },
-      },
+        MODES_RAW,
+      ),
       api as any,
-      MODES_RAW,
     );
 
     // Caller beaver may only delegate to lynx / spider — mola is blocked
     // by the composed allowlist judge.  The subagent prompt is well-formed so
     // the subagent-prompt judge (the other composed judge) lets it through
     // and the allowlist judge is the one that refuses.
-    sessionAgentRegistry.bind("sess-gate", "beaver");
+    piProcess.sessionAgents.bind("sess-gate", "beaver");
     const refusal = await handlers.toolCall(
       {
         type: "tool_call",
@@ -847,6 +911,57 @@ describe("buildPiHandlers — registerTool wiring", () => {
     assert.equal(blocked[0].caller, "beaver");
     assert.equal(blocked[0].level, "warn");
     assert.equal(blocked[0].sessionId, "sess-gate");
+    // The allowlist judge reports no structured cause, and the gate must
+    // not assign one: the field stays absent.
+    assert.equal("cause" in blocked[0], false, "no cause on allowlist");
+  });
+
+  it("logs the target-role cause for a refused target", async () => {
+    // dolphin may delegate anywhere, so only the target's declared role
+    // refuses mola; the refusal carries the structured cause.
+    const api = mockApi();
+    api.activeTools.push("bash", "edit", "subagent", "compress", "decompress");
+    const handlers = await startInstance(
+      piScope(
+        {
+          mode: {
+            poly: {
+              ...POLY_PROFILE,
+              tools: ["subagent"],
+            },
+          },
+        },
+        MODES_RAW,
+      ),
+      api as any,
+    );
+
+    piProcess.sessionAgents.bind("sess-cause", "dolphin");
+    const refusal = await handlers.toolCall(
+      {
+        type: "tool_call",
+        toolName: "subagent",
+        toolCallId: "call-cause",
+        input: {
+          agent: "mola",
+          description: "实现任务",
+          prompt:
+            "**SUMMARY:** implement the thing.\n\n" +
+            "**CONTEXT:** all the facts needed.\n\n" +
+            "**ACCEPTANCE:** verify it.",
+        },
+      },
+      { sessionManager: { getSessionId: () => "sess-cause" } },
+    );
+    assert.equal(refusal?.block, true, "a refusal must block the call");
+
+    const blocked = _getBufferForTesting().filter(
+      (e) =>
+        e.event === "delegation_blocked" && e.judge === "judgeDelegationTarget",
+    );
+    assert.equal(blocked.length, 1, "one target-role refusal expected");
+    assert.equal(blocked[0].target, "mola");
+    assert.equal(blocked[0].cause, "not-a-subagent");
   });
 
   it("forwards the pi signal through the bridge to the tool execute", async () => {
@@ -862,18 +977,20 @@ describe("buildPiHandlers — registerTool wiring", () => {
         return { kind: "ok", text: "done" };
       },
     };
-    await buildPiHandlers(
-      {
-        mode: {
-          poly: {
-            ...POLY_PROFILE,
-            tools: ["subagent"],
-            hooks: [],
+    await startInstance(
+      piScope(
+        {
+          mode: {
+            poly: {
+              ...POLY_PROFILE,
+              tools: ["subagent"],
+              hooks: [],
+            },
           },
         },
-      },
+        MODES_RAW,
+      ),
       api as any,
-      MODES_RAW,
       { subagentDriver: driver },
     );
     const subagent = api.tools.find((tool: any) => tool.name === "subagent") as
@@ -931,20 +1048,20 @@ describe("buildPiHandlers — registerTool wiring", () => {
 // Command registration wiring
 // ---------------------------------------------------------------------------
 
-describe("buildPiHandlers — registerCommand wiring", () => {
+describe("startPi — registerCommand wiring", () => {
   it("registers composed commands with pi when the profile enables them", async () => {
     const api = mockApi();
     // rawConfig supplies the `[agent.*].mode` table, so the switch unit
     // derives the primaries (dolphin, mola) and contributes a command
     // per primary alongside go/dcp — names are config-derived.
-    await buildPiHandlers(POLY_ZOO, api as any, MODES_RAW);
+    await startInstance(piScope(POLY_ZOO, MODES_RAW), api as any);
     const names = api.commands.map((c) => c.name).sort();
     assert.deepEqual(names, ["dcp", "dolphin", "go", "mola"]);
   });
 
   it("preserves description and a handler on each registration", async () => {
     const api = mockApi();
-    await buildPiHandlers(POLY_ZOO, api as any, MODES_RAW);
+    await startInstance(piScope(POLY_ZOO, MODES_RAW), api as any);
     const dcp = api.commands.find((c) => c.name === "dcp");
     assert.ok(dcp, "dcp must be registered");
     assert.equal(dcp.description, "显示上下文用量与缓存命中率");
@@ -953,20 +1070,22 @@ describe("buildPiHandlers — registerCommand wiring", () => {
 
   it("null profile registers no commands (fail-closed)", async () => {
     const api = mockApi();
-    await buildPiHandlers({}, api as any);
+    await startInstance(piScope({}), api as any);
     assert.deepEqual(api.commands, []);
   });
 
   it("commands registered for a profile without commands list stay empty", async () => {
     const api = mockApi();
-    await buildPiHandlers(
-      {
-        mode: {
-          poly: { ...POLY_PROFILE, commands: [] },
+    await startInstance(
+      piScope(
+        {
+          mode: {
+            poly: { ...POLY_PROFILE, commands: [] },
+          },
         },
-      },
+        MODES_RAW,
+      ),
       api as any,
-      MODES_RAW,
     );
     assert.deepEqual(api.commands, []);
   });
@@ -974,7 +1093,7 @@ describe("buildPiHandlers — registerCommand wiring", () => {
   it("/dcp context appends a zoo-notice custom entry (persistent, no LLM context)", async () => {
     const api = mockApi();
     const runtime = createContextRuntime();
-    await buildPiHandlers(POLY_ZOO, api as any, MODES_RAW, {
+    await startInstance(piScope(POLY_ZOO, MODES_RAW), api as any, {
       contextRuntime: runtime,
     });
     const dcp = api.commands.find((c) => c.name === "dcp");
@@ -1023,7 +1142,7 @@ describe("buildPiHandlers — registerCommand wiring", () => {
 
   it("/dcp errors route through notifySessionError into appendEntry", async () => {
     const api = mockApi();
-    await buildPiHandlers(POLY_ZOO, api as any, MODES_RAW);
+    await startInstance(piScope(POLY_ZOO, MODES_RAW), api as any);
     const dcp = api.commands.find((c) => c.name === "dcp");
     assert.ok(dcp && typeof dcp.handler === "function");
 
@@ -1059,7 +1178,7 @@ describe("buildPiHandlers — registerCommand wiring", () => {
     );
     const sessions: any[] = [];
     try {
-      await buildPiHandlers(POLY_ZOO, api as any, MODES_RAW, {
+      await startInstance(piScope(POLY_ZOO, MODES_RAW), api as any, {
         directory: dir,
       });
       const go = api.commands.find((c) => c.name === "go");
@@ -1068,7 +1187,7 @@ describe("buildPiHandlers — registerCommand wiring", () => {
       // The planning session runs as another primary: the handoff must
       // bind the replaced session to the selection's orchestrator, not keep
       // this one.
-      sessionAgentRegistry.bind("sess-go", "mola");
+      piProcess.sessionAgents.bind("sess-go", "mola");
       await (go.handler as (args: string, ctx: unknown) => Promise<void>)("", {
         sessionManager: { getSessionId: () => "sess-go" },
         newSession: async (options: any) => {
@@ -1081,9 +1200,15 @@ describe("buildPiHandlers — registerCommand wiring", () => {
       assert.equal(sessions.length, 1);
       assert.equal(sessions[0].parentSession, "sess-go");
       // The parentage session carries the executor the handoff resolved,
-      // and the replacement session resolves it from the pending slot.
-      assert.equal(sessionAgentRegistry.resolve("sess-go"), "dolphin");
-      assert.equal(pendingSwitchPrimary(), "dolphin");
+      // and the replacement's own start claims it before binding.
+      assert.equal(piProcess.sessionAgents.resolve("sess-go"), "dolphin");
+      assert.equal(
+        piProcess.switchOps.claim("sess-dolphin", {
+          reason: "new",
+          parentSession: "sess-go",
+        }),
+        "dolphin",
+      );
       assert.ok(
         fs
           .readFileSync(join(dir, ".zoo/plans/demo-plan.md"), "utf-8")
@@ -1100,7 +1225,7 @@ describe("buildPiHandlers — registerCommand wiring", () => {
     // in-session channel.  Registering a tool is side-effect free —
     // entries only appear once the tool actually executes and notifies.
     const api = mockApi();
-    await buildPiHandlers(POLY_ZOO, api as any, MODES_RAW);
+    await startInstance(piScope(POLY_ZOO, MODES_RAW), api as any);
 
     const compress = api.tools.find((t: any) => t.name === "compress");
     assert.ok(compress, "compress tool must be registered");
@@ -1109,7 +1234,7 @@ describe("buildPiHandlers — registerCommand wiring", () => {
 
   it("registers a zoo-notice entry renderer with pi", async () => {
     const api = mockApi();
-    await buildPiHandlers(POLY_ZOO, api as any, MODES_RAW);
+    await startInstance(piScope(POLY_ZOO, MODES_RAW), api as any);
     const renderer = api.renderers.find((r) => r.customType === "zoo-notice");
     assert.ok(renderer, "zoo-notice entry renderer must be registered");
     assert.equal(typeof renderer.renderer, "function");
@@ -1120,14 +1245,16 @@ describe("buildPiHandlers — registerCommand wiring", () => {
     // zoo-notice entry, so a profile that enables no /dcp command still
     // needs the renderer.
     const api = mockApi();
-    await buildPiHandlers(
-      {
-        mode: {
-          poly: { ...POLY_PROFILE, commands: [] },
+    await startInstance(
+      piScope(
+        {
+          mode: {
+            poly: { ...POLY_PROFILE, commands: [] },
+          },
         },
-      },
+        MODES_RAW,
+      ),
       api as any,
-      MODES_RAW,
     );
     assert.ok(
       api.renderers.some(
@@ -1142,14 +1269,16 @@ describe("buildPiHandlers — registerCommand wiring", () => {
     // A profile that registers dcp (but no other command) must register
     // the zoo-notice entry renderer so reports draw a card in the TUI.
     const api = mockApi();
-    await buildPiHandlers(
-      {
-        mode: {
-          poly: { ...POLY_PROFILE, commands: ["dcp"] },
+    await startInstance(
+      piScope(
+        {
+          mode: {
+            poly: { ...POLY_PROFILE, commands: ["dcp"] },
+          },
         },
-      },
+        MODES_RAW,
+      ),
       api as any,
-      MODES_RAW,
     );
     const renderer = api.renderers.find((r) => r.customType === "zoo-notice");
     assert.ok(renderer, "zoo-notice entry renderer must be registered");
@@ -1161,7 +1290,7 @@ describe("buildPiHandlers — registerCommand wiring", () => {
     // registered regardless of the profile (a null profile merely yields
     // no notifications to render).
     const api = mockApi();
-    await buildPiHandlers({}, api as any);
+    await startInstance(piScope({}), api as any);
     assert.ok(
       api.renderers.some(
         (r) =>
@@ -1176,7 +1305,7 @@ describe("buildPiHandlers — registerCommand wiring", () => {
 // Primary-switch command wiring
 // ---------------------------------------------------------------------------
 
-describe("buildPiHandlers — primary-switch command wiring", () => {
+describe("startPi — primary-switch command wiring", () => {
   /**
    * A command ctx with the session manager + a ui surface for setWidget
    * and a `newSession` that simulates pi replacing the session and
@@ -1219,9 +1348,34 @@ describe("buildPiHandlers — primary-switch command wiring", () => {
     };
   }
 
+  /**
+   * Record every deferred switch trim this process takes.
+   *
+   * The queued trim reaches the host writer only through the pending-slot
+   * drain of the session that claimed it, so the record tells which session
+   * took the trim and what it carried.
+   *
+   * @returns The drain records, in call order.
+   */
+  function recordSwitchDrains(): Array<{
+    sessionID: string;
+    tools: string[] | undefined;
+  }> {
+    const records: Array<{ sessionID: string; tools: string[] | undefined }> =
+      [];
+    const store = piProcess.switchOps;
+    const drain = store.drain.bind(store);
+    store.drain = (sessionID) => {
+      const tools = drain(sessionID);
+      records.push({ sessionID, tools });
+      return tools;
+    };
+    return records;
+  }
+
   it("registers one /<agent> command per configured primary", async () => {
     const api = mockApi();
-    await buildPiHandlers(POLY_ZOO, api as any, MODES_RAW);
+    await startInstance(piScope(POLY_ZOO, MODES_RAW), api as any);
     const switchNames = api.commands
       .map((c) => c.name)
       .filter((n) => ["dolphin", "mola"].includes(n))
@@ -1232,21 +1386,24 @@ describe("buildPiHandlers — primary-switch command wiring", () => {
   it("switch command replaces the session: trims denied tools and nudges the fleet widget", async () => {
     const api = mockApi();
     api.activeTools.push("webfetch", "edit", "bash");
-    const handlers = await buildPiHandlers(POLY_ZOO, api as any, {
-      ...MODES_RAW,
-      agent: {
-        ...MODES_RAW.agent,
-        dolphin: {
-          mode: "primary",
-          permission: { webfetch: "deny", websearch: "deny", bash: {} },
+    const handlers = await startInstance(
+      piScope(POLY_ZOO, {
+        ...MODES_RAW,
+        agent: {
+          ...MODES_RAW.agent,
+          dolphin: {
+            mode: "primary",
+            permission: { webfetch: "deny", websearch: "deny", bash: {} },
+          },
         },
-      },
-    });
+      }),
+      api as any,
+    );
     const dolphin = api.commands.find((c) => c.name === "dolphin");
     assert.ok(dolphin && typeof dolphin.handler === "function");
 
     // The replacement session starts as mola, then switches to dolphin.
-    sessionAgentRegistry.bind("sess-switch", "mola");
+    piProcess.sessionAgents.bind("sess-switch", "mola");
 
     // The switch command's `setWidget("zoo", ...)` is a "primary changed"
     // notification routed to the fleet widget (it reads the session's
@@ -1259,9 +1416,9 @@ describe("buildPiHandlers — primary-switch command wiring", () => {
     // The replacement session's bind-time handlers run before its first
     // turn and resolve the target the switch published, so the widget it
     // registers already renders the new primary.
-    const { calls, ctx } = widgetRecordingCtx("sess-new");
+    const { calls, ctx } = widgetRecordingCtx("sess-new", "sess-switch");
     await handlers.sessionStart({ type: "session_start", reason: "new" }, ctx);
-    assert.equal(sessionAgentRegistry.resolve("sess-new"), "dolphin");
+    assert.equal(piProcess.sessionAgents.resolve("sess-new"), "dolphin");
     const { lines, dispose } = renderZooWidget(calls);
     assert.ok(lines[0].includes("dolphin"), lines[0]);
     assert.ok(!lines[0].includes("mola"), lines[0]);
@@ -1284,27 +1441,36 @@ describe("buildPiHandlers — primary-switch command wiring", () => {
     // The replacement session's skill contribution runs at bind time, so the
     // target the switch published must already answer there.
     const api = mockApi();
-    const handlers = await buildPiHandlers(POLY_ZOO, api as any, {
-      agent: {
-        dolphin: {
-          mode: "primary",
-          permission: { skill: { "*": "deny", "git-commit": "allow" } },
+    const handlers = await startInstance(
+      piScope(POLY_ZOO, {
+        agent: {
+          dolphin: {
+            mode: "primary",
+            permission: { skill: { "*": "deny", "git-commit": "allow" } },
+          },
+          mola: {
+            mode: "primary",
+            permission: { skill: { "*": "deny", grill: "allow" } },
+          },
         },
-        mola: {
-          mode: "primary",
-          permission: { skill: { "*": "deny", grill: "allow" } },
-        },
-      },
-    });
+      }),
+      api as any,
+    );
     const mola = api.commands.find((c) => c.name === "mola");
     assert.ok(mola && typeof mola.handler === "function");
-    sessionAgentRegistry.bind("sess-switch", "dolphin");
+    piProcess.sessionAgents.bind("sess-switch", "dolphin");
 
     await (mola.handler as (args: string, ctx: unknown) => Promise<void>)(
       "",
       switchCtx(() => {}),
     );
 
+    // The start of the session pi created for the switch claims the target,
+    // so the bind-time skill filter runs as mola.
+    await handlers.sessionStart(
+      { type: "session_start", reason: "new" },
+      startCtx("sess-new", "sess-switch"),
+    );
     const resources = await handlers.resourcesDiscover(undefined, {
       sessionManager: { getSessionId: () => "sess-new" },
     });
@@ -1323,32 +1489,56 @@ describe("buildPiHandlers — primary-switch command wiring", () => {
       writes.push([...names]);
       set(names);
     };
+    const drains = recordSwitchDrains();
     // The host configuration activated ask; the session that drains the
     // queued trim cannot ask.
     api.activeTools.push("bash", "ask");
-    const handlers = await buildPiHandlers(
-      { mode: { poly: { ...POLY_PROFILE, tools: ["compress", "ask"] } } },
+    const handlers = await startInstance(
+      piScope(
+        { mode: { poly: { ...POLY_PROFILE, tools: ["compress", "ask"] } } },
+        MODES_RAW,
+      ),
       api as any,
-      MODES_RAW,
     );
     const target = api.commands.find((c) => c.name === "dolphin");
     assert.ok(target && typeof target.handler === "function");
-    sessionAgentRegistry.bind("sess-switch", "mola");
+    piProcess.sessionAgents.bind("sess-switch", "mola");
 
     await (target.handler as (args: string, ctx: unknown) => Promise<void>)(
       "",
       switchCtx(() => {}),
     );
+    // The replacement's own start claims the queued trim.  That start can
+    // ask, so its bind-time apply keeps ask and the trim stays queued for
+    // the drain below.
+    await handlers.sessionStart(
+      { type: "session_start", reason: "new" },
+      {
+        ...startCtx("sess-new", "sess-switch"),
+        mode: "tui",
+        ui: { custom() {} },
+      },
+    );
+    assert.deepEqual(writes, [], "the bind-time apply keeps the live set");
+
+    // The first turn of the replacement session drains the queued trim with
+    // a context that cannot ask, so the write under test is the drain's.
     await handlers.beforeAgentStart(
       { messageType: "user", systemPrompt: "base" },
       { sessionManager: { getSessionId: () => "sess-new" }, mode: "print" },
     );
 
+    assert.deepEqual(
+      drains,
+      [{ sessionID: "sess-new", tools: ["bash", "ask"] }],
+      "the claim must hand the deferred trim to the session's drain",
+    );
     assert.deepEqual(api.activeTools, ["bash"]);
-    assert.ok(writes.length > 0, "the drain must write the active set");
-    for (const write of writes) {
-      assert.ok(!write.includes("ask"), `a write kept ask: ${write}`);
-    }
+    assert.deepEqual(
+      writes,
+      [["bash"]],
+      "the drain writes the ask-trimmed set exactly once",
+    );
   });
 
   it("the deferred switch trim keeps the target's ask deny", async () => {
@@ -1359,33 +1549,50 @@ describe("buildPiHandlers — primary-switch command wiring", () => {
       writes.push([...names]);
       set(names);
     };
+    const drains = recordSwitchDrains();
     // The replacement session can ask, and its primary denies ask.
     api.activeTools.push("bash", "edit", "ask");
-    const handlers = await buildPiHandlers(
-      { mode: { poly: { ...POLY_PROFILE, tools: ["compress", "ask"] } } },
-      api as any,
-      {
-        agent: {
-          ...MODES_RAW.agent,
-          dolphin: { mode: "primary", permission: { ask: "deny" } },
+    const handlers = await startInstance(
+      piScope(
+        { mode: { poly: { ...POLY_PROFILE, tools: ["compress", "ask"] } } },
+        {
+          agent: {
+            ...MODES_RAW.agent,
+            dolphin: { mode: "primary", permission: { ask: "deny" } },
+          },
         },
-      },
+      ),
+      api as any,
     );
     const target = api.commands.find((c) => c.name === "dolphin");
     assert.ok(target && typeof target.handler === "function");
-    sessionAgentRegistry.bind("sess-switch", "mola");
+    piProcess.sessionAgents.bind("sess-switch", "mola");
 
     await (target.handler as (args: string, ctx: unknown) => Promise<void>)(
       "",
       switchCtx(() => {}),
+    );
+    // The replacement's own start claims the queued trim; its primary
+    // already denies ask, so the stashed trim carries no ask tool.
+    await handlers.sessionStart(
+      { type: "session_start", reason: "new" },
+      {
+        ...startCtx("sess-new", "sess-switch"),
+        mode: "tui",
+        ui: { custom() {} },
+      },
     );
     await handlers.beforeAgentStart(
       { messageType: "user", systemPrompt: "base" },
       askCtx(true, "sess-new"),
     );
 
+    assert.deepEqual(
+      drains,
+      [{ sessionID: "sess-new", tools: ["bash", "edit"] }],
+      "the claim must hand the deferred trim to the session's drain",
+    );
     assert.deepEqual(api.activeTools, ["bash", "edit"]);
-    assert.ok(writes.length > 0, "the drain must write the active set");
     for (const write of writes) {
       assert.ok(!write.includes("ask"), `a write kept ask: ${write}`);
     }
@@ -1395,12 +1602,235 @@ describe("buildPiHandlers — primary-switch command wiring", () => {
     // Without the role table no primary (and therefore no orchestrator)
     // resolves, so the profile is invalid and contributes no command.
     const api = mockApi();
-    await buildPiHandlers(POLY_ZOO, api as any);
+    await startInstance(piScope(POLY_ZOO), api as any);
     const switchNames = api.commands
       .map((c) => c.name)
       .filter((n) => ["dolphin", "mola"].includes(n));
     assert.deepEqual(switchNames, []);
     assert.deepEqual(api.commands, []);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Switch replacement claim
+// ---------------------------------------------------------------------------
+
+/**
+ * A `session_start` context reporting the session pi started and the session
+ * it replaces.
+ *
+ * pi records the replaced session on the new session's header, so a start
+ * that carries no parent (`/new`) or another reason is not the replacement.
+ *
+ * @param sessionID - The session this start names.
+ * @param parentSession - The replaced session, or undefined for a plain new
+ *   session.
+ * @returns The duck-typed pi event context.
+ */
+function startCtx(
+  sessionID: string,
+  parentSession?: string,
+): {
+  sessionManager: {
+    getSessionId(): string;
+    getHeader(): { parentSession?: string };
+  };
+} {
+  return {
+    sessionManager: {
+      getSessionId: () => sessionID,
+      getHeader: () => ({ parentSession }),
+    },
+  };
+}
+
+describe("startPi — switch replacement claim", () => {
+  it("an unrelated session_start never takes the pending switch target", async () => {
+    const api = mockApi();
+    const handlers = await startInstance(
+      piScope(POLY_ZOO, MODES_RAW),
+      api as any,
+    );
+    // A switch published its target and awaits its own replacement.
+    piProcess.switchOps.begin("sess-old");
+    piProcess.switchOps.stash({ primary: "mola" });
+
+    // A reload / resume / startup of another session binds nothing new.
+    await handlers.sessionStart(
+      { type: "session_start", reason: "reload" },
+      startCtx("sess-other"),
+    );
+
+    assert.equal(piProcess.sessionAgents.resolve("sess-other"), "dolphin");
+    // The replacement target still waits for its own session.
+    assert.equal(
+      piProcess.switchOps.claim("sess-new", {
+        reason: "new",
+        parentSession: "sess-old",
+      }),
+      "mola",
+    );
+  });
+
+  it("a plain /new session never takes the pending switch target", async () => {
+    const api = mockApi();
+    const handlers = await startInstance(
+      piScope(POLY_ZOO, MODES_RAW),
+      api as any,
+    );
+    piProcess.switchOps.begin("sess-old");
+    piProcess.switchOps.stash({ primary: "mola" });
+
+    // pi's own `/new` passes no parent session, so its start carries none.
+    await handlers.sessionStart(
+      { type: "session_start", reason: "new" },
+      startCtx("sess-plain"),
+    );
+
+    assert.equal(piProcess.sessionAgents.resolve("sess-plain"), "dolphin");
+    assert.equal(
+      piProcess.switchOps.claim("sess-new", {
+        reason: "new",
+        parentSession: "sess-old",
+      }),
+      "mola",
+    );
+  });
+
+  it("carries the target into a second runtime of the same process", async () => {
+    const api = mockApi();
+    const oldRuntime = await startInstance(
+      piScope(POLY_ZOO, MODES_RAW),
+      api as any,
+    );
+    const mola = oldRuntime.commands.find((c) => c.name === "mola");
+    assert.ok(mola && typeof mola.handler === "function");
+    piProcess.sessionAgents.bind("sess-old", "dolphin");
+    await (mola.handler as (args: string, ctx: unknown) => Promise<void>)("", {
+      sessionManager: { getSessionId: () => "sess-old" },
+      ui: { notify: () => {}, setWidget: () => {} },
+      newSession: async (options?: {
+        withSession?: (newCtx: unknown) => void | Promise<void>;
+      }) => {
+        await options?.withSession?.({
+          ui: { setWidget: () => {} },
+          sessionManager: { getSessionId: () => "sess-new" },
+        });
+        return { cancelled: false };
+      },
+    });
+    // The runtime that handled the switch keeps only the published target:
+    // nothing resolves the new session yet.
+    assert.equal(piProcess.sessionAgents.resolve("sess-new"), undefined);
+
+    // pi re-ran the factory: the second runtime's handlers own the new
+    // session's bind-time events.
+    const fresh = await startInstance(piScope(POLY_ZOO, MODES_RAW), api as any);
+    await fresh.sessionStart(
+      { type: "session_start", reason: "new" },
+      startCtx("sess-new", "sess-old"),
+    );
+
+    assert.equal(piProcess.sessionAgents.resolve("sess-new"), "mola");
+    assert.equal(
+      piProcess.switchOps.claim("sess-again", {
+        reason: "new",
+        parentSession: "sess-old",
+      }),
+      undefined,
+      "the claimed replacement is spent",
+    );
+  });
+
+  it("a failed switch command leaks nothing to the next session", async () => {
+    const api = mockApi();
+    const handlers = await startInstance(
+      piScope(POLY_ZOO, MODES_RAW),
+      api as any,
+    );
+    const mola = api.commands.find((c) => c.name === "mola");
+    assert.ok(mola && typeof mola.handler === "function");
+    // The session runs as dolphin (the orchestrator) and switches to mola;
+    // pi fails the replacement, so no session was created.
+    piProcess.sessionAgents.bind("sess-switch", "dolphin");
+
+    await (mola.handler as (args: string, ctx: unknown) => Promise<void>)("", {
+      sessionManager: { getSessionId: () => "sess-switch" },
+      ui: { notify: () => {}, setWidget: () => {} },
+      newSession: async () => {
+        throw new Error("boom");
+      },
+    });
+
+    // The command reported the failure, restored the surviving session's
+    // primary and dropped the target it published.
+    assert.equal(piProcess.sessionAgents.resolve("sess-switch"), "dolphin");
+    assert.equal(
+      piProcess.switchOps.claim("sess-later", {
+        reason: "new",
+        parentSession: "sess-switch",
+      }),
+      undefined,
+      "the failed switch left no target to claim",
+    );
+
+    // A later session start — even one parented to the session that failed
+    // to switch — never inherits the failed target.
+    await handlers.sessionStart(
+      { type: "session_start", reason: "new" },
+      startCtx("sess-later", "sess-switch"),
+    );
+    assert.equal(piProcess.sessionAgents.resolve("sess-later"), "dolphin");
+  });
+
+  it("a reload of the replacement keeps its claimed target", async () => {
+    const api = mockApi();
+    const handlers = await startInstance(
+      piScope(POLY_ZOO, MODES_RAW),
+      api as any,
+    );
+    piProcess.switchOps.begin("sess-old");
+    piProcess.switchOps.stash({ primary: "mola" });
+    await handlers.sessionStart(
+      { type: "session_start", reason: "new" },
+      startCtx("sess-new", "sess-old"),
+    );
+
+    // pi replays `session_start` on a reload: the claim is spent, but the
+    // binding it wrote answers the session from then on.
+    await handlers.sessionStart(
+      { type: "session_start", reason: "reload" },
+      startCtx("sess-new", undefined),
+    );
+
+    assert.equal(piProcess.sessionAgents.resolve("sess-new"), "mola");
+  });
+
+  it("the replacement session_start binds the published target", async () => {
+    const api = mockApi();
+    const handlers = await startInstance(
+      piScope(POLY_ZOO, MODES_RAW),
+      api as any,
+    );
+    piProcess.switchOps.begin("sess-old");
+    piProcess.switchOps.stash({ primary: "mola" });
+
+    // The replacement pi created for `sess-old` starts with reason "new"
+    // and records `sess-old` as its parent.
+    await handlers.sessionStart(
+      { type: "session_start", reason: "new" },
+      startCtx("sess-new", "sess-old"),
+    );
+
+    assert.equal(piProcess.sessionAgents.resolve("sess-new"), "mola");
+    assert.equal(
+      piProcess.switchOps.claim("sess-again", {
+        reason: "new",
+        parentSession: "sess-old",
+      }),
+      undefined,
+      "the claimed target leaves no pending state behind",
+    );
   });
 });
 
@@ -1423,19 +1853,22 @@ const PERM_DENY_RAW = {
   },
 };
 
-describe("buildPiHandlers — primary tool-deny trim (main session)", () => {
+describe("startPi — primary tool-deny trim (main session)", () => {
   /** A reference tool set carrying the fetch tool the deny tests target. */
   const ALL_TOOLS = ["fetch", "edit", "bash"];
 
   /** Bind the session under test, so the trim has a primary to read. */
   function bindSession(name: string): void {
-    sessionAgentRegistry.bind("sess-1", name);
+    piProcess.sessionAgents.bind("sess-1", name);
   }
 
   it("trims a beaver-primary session's fetch at session start", async () => {
     const api = mockApi();
     api.activeTools.push(...ALL_TOOLS);
-    const handlers = await buildPiHandlers(POLY_ZOO, api as any, PERM_DENY_RAW);
+    const handlers = await startInstance(
+      piScope(POLY_ZOO, PERM_DENY_RAW),
+      api as any,
+    );
     bindSession("beaver");
     await handlers.sessionStart(
       { type: "session_start", reason: "startup" },
@@ -1447,7 +1880,10 @@ describe("buildPiHandlers — primary tool-deny trim (main session)", () => {
   it("keeps fetch for a dolphin session (dolphin denies websearch only)", async () => {
     const api = mockApi();
     api.activeTools.push(...ALL_TOOLS);
-    const handlers = await buildPiHandlers(POLY_ZOO, api as any, PERM_DENY_RAW);
+    const handlers = await startInstance(
+      piScope(POLY_ZOO, PERM_DENY_RAW),
+      api as any,
+    );
     await handlers.sessionStart(
       { type: "session_start", reason: "startup" },
       SESSION_CTX,
@@ -1458,7 +1894,10 @@ describe("buildPiHandlers — primary tool-deny trim (main session)", () => {
   it("applies the trim from before_agent_start (fallback) and is idempotent", async () => {
     const api = mockApi();
     api.activeTools.push(...ALL_TOOLS);
-    const handlers = await buildPiHandlers(POLY_ZOO, api as any, PERM_DENY_RAW);
+    const handlers = await startInstance(
+      piScope(POLY_ZOO, PERM_DENY_RAW),
+      api as any,
+    );
     bindSession("beaver");
     await handlers.beforeAgentStart(
       { messageType: "user", systemPrompt: "base" },
@@ -1476,7 +1915,10 @@ describe("buildPiHandlers — primary tool-deny trim (main session)", () => {
   it("restores fetch when switching from beaver back to dolphin", async () => {
     const api = mockApi();
     api.activeTools.push(...ALL_TOOLS);
-    const handlers = await buildPiHandlers(POLY_ZOO, api as any, PERM_DENY_RAW);
+    const handlers = await startInstance(
+      piScope(POLY_ZOO, PERM_DENY_RAW),
+      api as any,
+    );
     bindSession("beaver");
     await handlers.sessionStart(
       { type: "session_start", reason: "startup" },
@@ -1496,13 +1938,12 @@ describe("buildPiHandlers — primary tool-deny trim (main session)", () => {
     // capability allowlist; the primary denies are not its identity.
     const api = mockApi();
     api.activeTools.push(...ALL_TOOLS);
-    const handlers = await buildPiHandlers(
-      POLY_ZOO,
+    const { publication: handlers } = await startPiRuntime(
+      piScope(POLY_ZOO, PERM_DENY_RAW),
       api as any,
-      PERM_DENY_RAW,
-      {
-        agent: "beaver",
-      },
+      undefined,
+      piProcess,
+      { kind: "subagent", agent: "beaver" },
     );
     await handlers.sessionStart(
       { type: "session_start", reason: "startup" },
@@ -1521,14 +1962,16 @@ describe("buildPiHandlers — primary tool-deny trim (main session)", () => {
         return { kind: "ok", text: "done" };
       },
     };
-    const handlers = await buildPiHandlers(
-      {
-        mode: {
-          poly: { ...POLY_PROFILE, tools: ["subagent", "ask"], hooks: [] },
+    const handlers = await startInstance(
+      piScope(
+        {
+          mode: {
+            poly: { ...POLY_PROFILE, tools: ["subagent", "ask"], hooks: [] },
+          },
         },
-      },
+        PERM_DENY_RAW,
+      ),
       api as any,
-      PERM_DENY_RAW,
       { subagentDriver: driver },
     );
     bindSession("beaver");
@@ -1560,7 +2003,10 @@ describe("buildPiHandlers — primary tool-deny trim (main session)", () => {
 
   it("leaves the tool set untouched with no baseline (fail-closed)", async () => {
     const api = mockApi();
-    const handlers = await buildPiHandlers(POLY_ZOO, api as any, PERM_DENY_RAW);
+    const handlers = await startInstance(
+      piScope(POLY_ZOO, PERM_DENY_RAW),
+      api as any,
+    );
     bindSession("beaver");
     await handlers.sessionStart(
       { type: "session_start", reason: "startup" },
@@ -1572,7 +2018,10 @@ describe("buildPiHandlers — primary tool-deny trim (main session)", () => {
   it("serves no baseline after the extension stopped", async () => {
     const api = mockApi();
     api.activeTools.push(...ALL_TOOLS);
-    const handlers = await buildPiHandlers(POLY_ZOO, api as any, PERM_DENY_RAW);
+    const handlers = await startInstance(
+      piScope(POLY_ZOO, PERM_DENY_RAW),
+      api as any,
+    );
     bindSession("beaver");
     await handlers.sessionStart(
       { type: "session_start", reason: "startup" },
@@ -1599,8 +2048,11 @@ describe("buildPiHandlers — primary tool-deny trim (main session)", () => {
   it("/go handoff: the executor primary's deny is trimmed in the new session", async () => {
     const api = mockApi();
     api.activeTools.push(...ALL_TOOLS);
-    const handlers = await buildPiHandlers(POLY_ZOO, api as any, PERM_DENY_RAW);
-    sessionAgentRegistry.bind("sess-go", "dolphin");
+    const handlers = await startInstance(
+      piScope(POLY_ZOO, PERM_DENY_RAW),
+      api as any,
+    );
+    piProcess.sessionAgents.bind("sess-go", "dolphin");
     // The /go handoff binds the replaced session to the executor (beaver)
     // and publishes it for the replacement session; the generic trim in the
     // new session's bind-time handler then removes beaver's deny.
@@ -1611,7 +2063,7 @@ describe("buildPiHandlers — primary tool-deny trim (main session)", () => {
           return { cancelled: false };
         },
       }),
-      identity: createPiHandoffIdentity(),
+      identity: createPiHandoffIdentity(piProcess),
     });
     const session = await target.create({
       parentage: "sess-go",
@@ -1620,10 +2072,10 @@ describe("buildPiHandlers — primary tool-deny trim (main session)", () => {
     });
     await target.installAgent(session);
     await target.deliver(session, "plan ref");
-    assert.equal(sessionAgentRegistry.resolve("sess-go"), "beaver");
+    assert.equal(piProcess.sessionAgents.resolve("sess-go"), "beaver");
     await handlers.sessionStart(
       { type: "session_start", reason: "new" },
-      SESSION_CTX,
+      startCtx("sess-1", "sess-go"),
     );
     assert.deepEqual(api.activeTools, ["edit", "bash"]);
   });
@@ -1657,7 +2109,7 @@ function askCtx(tui: boolean, sessionID = "sess-ask") {
     : { ...base, mode: "print" };
 }
 
-describe("buildPiHandlers — ask tool visibility", () => {
+describe("startPi — ask tool visibility", () => {
   /** The host double, also recording every active-tool write. */
   function recordingApi() {
     const api = mockApi();
@@ -1672,7 +2124,7 @@ describe("buildPiHandlers — ask tool visibility", () => {
 
   it("registers ask inactive and leaves the other tools at pi's default", async () => {
     const { api } = recordingApi();
-    await buildPiHandlers(ASK_ZOO, api as any, MODES_RAW);
+    await startInstance(piScope(ASK_ZOO, MODES_RAW), api as any);
 
     const ask = api.tools.find((tool: any) => tool.name === "ask") as
       | { defaultActive?: boolean }
@@ -1689,7 +2141,10 @@ describe("buildPiHandlers — ask tool visibility", () => {
   it("activates ask at session start when the session can ask", async () => {
     const { api } = recordingApi();
     api.activeTools.push("bash", "edit");
-    const handlers = await buildPiHandlers(ASK_ZOO, api as any, MODES_RAW);
+    const handlers = await startInstance(
+      piScope(ASK_ZOO, MODES_RAW),
+      api as any,
+    );
 
     await handlers.sessionStart(
       { type: "session_start", reason: "startup" },
@@ -1703,7 +2158,10 @@ describe("buildPiHandlers — ask tool visibility", () => {
     const { api, writes } = recordingApi();
     // The host configuration activated ask, and no session binds it back.
     api.activeTools.push("bash", "ask");
-    const handlers = await buildPiHandlers(ASK_ZOO, api as any, MODES_RAW);
+    const handlers = await startInstance(
+      piScope(ASK_ZOO, MODES_RAW),
+      api as any,
+    );
 
     await handlers.sessionStart(
       { type: "session_start", reason: "startup" },
@@ -1717,7 +2175,10 @@ describe("buildPiHandlers — ask tool visibility", () => {
   it("re-corrects ask on session_tree and before_agent_start", async () => {
     const { api, writes } = recordingApi();
     api.activeTools.push("bash", "edit");
-    const handlers = await buildPiHandlers(ASK_ZOO, api as any, MODES_RAW);
+    const handlers = await startInstance(
+      piScope(ASK_ZOO, MODES_RAW),
+      api as any,
+    );
 
     await handlers.sessionStart(
       { type: "session_start", reason: "startup" },
@@ -1746,12 +2207,15 @@ describe("buildPiHandlers — ask tool visibility", () => {
   it("keeps the primary deny while correcting ask", async () => {
     const { api } = recordingApi();
     api.activeTools.push("fetch", "bash", "ask");
-    const handlers = await buildPiHandlers(ASK_ZOO, api as any, {
-      agent: {
-        ...MODES_RAW.agent,
-        dolphin: { mode: "primary", permission: { fetch: "deny" } },
-      },
-    });
+    const handlers = await startInstance(
+      piScope(ASK_ZOO, {
+        agent: {
+          ...MODES_RAW.agent,
+          dolphin: { mode: "primary", permission: { fetch: "deny" } },
+        },
+      }),
+      api as any,
+    );
 
     await handlers.sessionStart(
       { type: "session_start", reason: "startup" },
@@ -1764,12 +2228,15 @@ describe("buildPiHandlers — ask tool visibility", () => {
   it("keeps ask hidden when the primary denies it and the session can ask", async () => {
     const { api, writes } = recordingApi();
     api.activeTools.push("bash", "edit", "ask");
-    const handlers = await buildPiHandlers(ASK_ZOO, api as any, {
-      agent: {
-        ...MODES_RAW.agent,
-        dolphin: { mode: "primary", permission: { ask: "deny" } },
-      },
-    });
+    const handlers = await startInstance(
+      piScope(ASK_ZOO, {
+        agent: {
+          ...MODES_RAW.agent,
+          dolphin: { mode: "primary", permission: { ask: "deny" } },
+        },
+      }),
+      api as any,
+    );
 
     await handlers.sessionStart(
       { type: "session_start", reason: "startup" },
@@ -1795,12 +2262,16 @@ describe("buildPiHandlers — ask tool visibility", () => {
         return request.questions.map(() => ({ status: "declined" as const }));
       },
     };
-    const handlers = await buildPiHandlers(ASK_ZOO, api as any, MODES_RAW, {
-      askQuestionChannel: (hostCtx) =>
-        (hostCtx as { remoteAsk?: boolean }).remoteAsk === true
-          ? channel
-          : undefined,
-    });
+    const handlers = await startInstance(
+      piScope(ASK_ZOO, MODES_RAW),
+      api as any,
+      {
+        askQuestionChannel: (hostCtx) =>
+          (hostCtx as { remoteAsk?: boolean }).remoteAsk === true
+            ? channel
+            : undefined,
+      },
+    );
     const ctx = {
       sessionManager: { getSessionId: () => "sess-ask" },
       remoteAsk: true,
@@ -1829,7 +2300,10 @@ describe("buildPiHandlers — ask tool visibility", () => {
   it("writes only when the resolved active set changes", async () => {
     const { api, writes } = recordingApi();
     api.activeTools.push("bash", "edit");
-    const handlers = await buildPiHandlers(ASK_ZOO, api as any, MODES_RAW);
+    const handlers = await startInstance(
+      piScope(ASK_ZOO, MODES_RAW),
+      api as any,
+    );
 
     await handlers.sessionStart(
       { type: "session_start", reason: "startup" },
@@ -1859,7 +2333,10 @@ describe("buildPiHandlers — ask tool visibility", () => {
 
   it("corrects ask on the live set when no baseline exists", async () => {
     const { api, writes } = recordingApi();
-    const handlers = await buildPiHandlers(ASK_ZOO, api as any, MODES_RAW);
+    const handlers = await startInstance(
+      piScope(ASK_ZOO, MODES_RAW),
+      api as any,
+    );
 
     // The host reports no active tool, so no baseline exists; the live set
     // is still the truth the ask rule acts on.
@@ -1886,7 +2363,7 @@ describe("buildPiHandlers — ask tool visibility", () => {
     api.activeTools.push("bash", ASK_TOOL_NAME);
     // No agent-role table → the profile resolves no orchestrator, so no
     // session resolves a primary and the permission side answers a deny.
-    const handlers = await buildPiHandlers(ASK_ZOO, api as any);
+    const handlers = await startInstance(piScope(ASK_ZOO), api as any);
 
     await handlers.sessionStart(
       { type: "session_start", reason: "startup" },
@@ -1899,7 +2376,10 @@ describe("buildPiHandlers — ask tool visibility", () => {
   it("writes by the rule when the host reports no current set", async () => {
     const { api, writes } = recordingApi();
     api.activeTools.push("bash", "edit");
-    const handlers = await buildPiHandlers(ASK_ZOO, api as any, MODES_RAW);
+    const handlers = await startInstance(
+      piScope(ASK_ZOO, MODES_RAW),
+      api as any,
+    );
 
     await handlers.sessionStart(
       { type: "session_start", reason: "startup" },
@@ -1925,11 +2405,24 @@ describe("buildPiHandlers — ask tool visibility", () => {
 // Widget seeding on session start
 // ---------------------------------------------------------------------------
 
-/** A ui ctx that records setWidget calls (key + content). */
-function widgetRecordingCtx(sessionID = "sess-seed"): {
+/**
+ * A ui ctx that records setWidget calls (key + content).
+ *
+ * @param sessionID - The session the context names.
+ * @param parentSession - The replaced session pi records on the start, for
+ *   a replacement session.
+ * @returns The recorded calls and the duck-typed pi context.
+ */
+function widgetRecordingCtx(
+  sessionID = "sess-seed",
+  parentSession?: string,
+): {
   calls: Array<[string, unknown]>;
   ctx: {
-    sessionManager: { getSessionId(): string };
+    sessionManager: {
+      getSessionId(): string;
+      getHeader(): { parentSession?: string };
+    };
     ui: {
       notify(): void;
       setWidget(key: string, content: unknown): void;
@@ -1938,7 +2431,10 @@ function widgetRecordingCtx(sessionID = "sess-seed"): {
 } {
   const calls: Array<[string, unknown]> = [];
   const ctx = {
-    sessionManager: { getSessionId: () => sessionID },
+    sessionManager: {
+      getSessionId: () => sessionID,
+      getHeader: () => ({ parentSession }),
+    },
     ui: {
       notify: () => {},
       setWidget: (key: string, content: unknown) => calls.push([key, content]),
@@ -2052,10 +2548,13 @@ function focusedEditorTui(): unknown {
   };
 }
 
-describe("buildPiHandlers — widget seeding", () => {
+describe("startPi — widget seeding", () => {
   it("first beforeAgentStart registers the fleet widget factory under zoo", async () => {
     const api = mockApi();
-    const handlers = await buildPiHandlers(POLY_ZOO, api as any, MODES_RAW);
+    const handlers = await startInstance(
+      piScope(POLY_ZOO, MODES_RAW),
+      api as any,
+    );
     const { calls, ctx } = widgetRecordingCtx();
 
     // The first per-session event registers the `zoo` fleet widget (a
@@ -2072,7 +2571,10 @@ describe("buildPiHandlers — widget seeding", () => {
 
   it("beforeAgentStart seeds the todo column one-shot when session_start never ran", async () => {
     const api = mockApi();
-    const handlers = await buildPiHandlers(POLY_ZOO, api as any, MODES_RAW);
+    const handlers = await startInstance(
+      piScope(POLY_ZOO, MODES_RAW),
+      api as any,
+    );
     // The store's first read scans the transcript, so the fallback seed is
     // observable through a counted history scan.
     const scans = { count: 0 };
@@ -2104,7 +2606,10 @@ describe("buildPiHandlers — widget seeding", () => {
 
   it("re-registers on later beforeAgentStart events without stacking the listener", async () => {
     const api = mockApi();
-    const handlers = await buildPiHandlers(POLY_ZOO, api as any, MODES_RAW);
+    const handlers = await startInstance(
+      piScope(POLY_ZOO, MODES_RAW),
+      api as any,
+    );
     // Registration is idempotent: every trigger re-seeds the widget (pi's
     // setWidget disposes the prior component) and re-binds the listener only
     // after releasing the previous one — so the subscription count never
@@ -2144,7 +2649,10 @@ describe("buildPiHandlers — widget seeding", () => {
 
   it("session_start registers the fleet widget; a later beforeAgentStart re-registers idempotently", async () => {
     const api = mockApi();
-    const handlers = await buildPiHandlers(POLY_ZOO, api as any, MODES_RAW);
+    const handlers = await startInstance(
+      piScope(POLY_ZOO, MODES_RAW),
+      api as any,
+    );
     // A ui that records setWidget calls and counts live terminal-input
     // subscriptions, so the idempotent re-registration can be asserted to
     // release the previous listener instead of stacking a second one.
@@ -2190,7 +2698,10 @@ describe("buildPiHandlers — widget seeding", () => {
 
   it("routes each session's registration to its own fleet resources", async () => {
     const api = mockApi();
-    const handlers = await buildPiHandlers(POLY_ZOO, api as any, MODES_RAW);
+    const handlers = await startInstance(
+      piScope(POLY_ZOO, MODES_RAW),
+      api as any,
+    );
     const first = routableSessionCtx("sess-a");
     const second = routableSessionCtx("sess-b");
 
@@ -2229,7 +2740,10 @@ describe("buildPiHandlers — widget seeding", () => {
 
   it("re-registers the fleet widget after its component is disposed (reload/resume)", async () => {
     const api = mockApi();
-    const handlers = await buildPiHandlers(POLY_ZOO, api as any, MODES_RAW);
+    const handlers = await startInstance(
+      piScope(POLY_ZOO, MODES_RAW),
+      api as any,
+    );
     // A ui that records setWidget calls AND counts live onTerminalInput
     // subscriptions (returning a real unsubscribe), so a re-registration can
     // be asserted to release the previous listener instead of stacking it.
@@ -2286,7 +2800,10 @@ describe("buildPiHandlers — widget seeding", () => {
 
   it("session_start stays silent without a ui surface on ctx", async () => {
     const api = mockApi();
-    const handlers = await buildPiHandlers(POLY_ZOO, api as any, MODES_RAW);
+    const handlers = await startInstance(
+      piScope(POLY_ZOO, MODES_RAW),
+      api as any,
+    );
     // A ui-less ctx (e.g. headless / RPC mode) must not crash the seed:
     // the fail-closed no-ui path no-ops silently.
     await assert.doesNotReject(() =>
@@ -2301,10 +2818,12 @@ describe("buildPiHandlers — widget seeding", () => {
     const api = mockApi();
     // The profile omits the orchestrator, so the selection is invalid:
     // no orchestrator resolves for the session and no seed may run.
-    const handlers = await buildPiHandlers(
-      { mode: { poly: { ...POLY_PROFILE, agents: ["beaver"] } } },
+    const handlers = await startInstance(
+      piScope(
+        { mode: { poly: { ...POLY_PROFILE, agents: ["beaver"] } } },
+        MODES_RAW,
+      ),
       api as any,
-      MODES_RAW,
     );
     let widgetCalls = 0;
     const ctx = {
@@ -2321,11 +2840,14 @@ describe("buildPiHandlers — widget seeding", () => {
       ctx,
     );
     assert.equal(widgetCalls, 0, "no orchestrator → no seed");
-    assert.equal(sessionAgentRegistry.resolve("sess"), undefined);
+    assert.equal(piProcess.sessionAgents.resolve("sess"), undefined);
   });
 
   it("stays silent without a pi switch host (no API)", async () => {
-    const handlers = await buildPiHandlers(POLY_ZOO, undefined, MODES_RAW);
+    const handlers = await startInstance(
+      piScope(POLY_ZOO, MODES_RAW),
+      undefined,
+    );
     let widgetCalls = 0;
     const ctx = {
       sessionManager: { getSessionId: () => "sess" },
@@ -2347,10 +2869,12 @@ describe("buildPiHandlers — widget seeding", () => {
     const api = mockApi();
     // An invalid selection resolves no orchestrator, so the bind-time seed
     // stays off.
-    const handlers = await buildPiHandlers(
-      { mode: { poly: { ...POLY_PROFILE, agents: ["beaver"] } } },
+    const handlers = await startInstance(
+      piScope(
+        { mode: { poly: { ...POLY_PROFILE, agents: ["beaver"] } } },
+        MODES_RAW,
+      ),
       api as any,
-      MODES_RAW,
     );
     let widgetCalls = 0;
     const ctx = {
@@ -2367,12 +2891,15 @@ describe("buildPiHandlers — widget seeding", () => {
       ctx,
     );
     assert.equal(widgetCalls, 0, "no orchestrator → no seed");
-    assert.equal(sessionAgentRegistry.resolve("sess"), undefined);
+    assert.equal(piProcess.sessionAgents.resolve("sess"), undefined);
   });
 
   it("session_start rebuilds the run registry from the message history", async () => {
     const api = mockApi();
-    const handlers = await buildPiHandlers(POLY_ZOO, api as any, MODES_RAW);
+    const handlers = await startInstance(
+      piScope(POLY_ZOO, MODES_RAW),
+      api as any,
+    );
     const history = () => [
       {
         type: "message",
@@ -2432,21 +2959,24 @@ describe("buildPiHandlers — widget seeding", () => {
       ctx,
     );
 
-    assert.equal(topLevelRuns("sess-restore").length, 2);
-    const done = getRun("call-hist-1");
+    assert.equal(piProcess.runs.topLevel("sess-restore").length, 2);
+    const done = piProcess.runs.get("call-hist-1");
     assert.equal(done?.status, "done");
     assert.equal(done?.agent, "beaver");
     assert.equal(done?.label, "实现任务");
     assert.equal(done?.startedAt, 1000);
     assert.equal(done?.endedAt, 2000);
-    const interrupted = getRun("call-hist-2");
+    const interrupted = piProcess.runs.get("call-hist-2");
     assert.equal(interrupted?.status, "aborted");
     assert.equal(interrupted?.endedAt, 3000);
   });
 
   it("session_start registry rebuild is idempotent across repeated triggers", async () => {
     const api = mockApi();
-    const handlers = await buildPiHandlers(POLY_ZOO, api as any, MODES_RAW);
+    const handlers = await startInstance(
+      piScope(POLY_ZOO, MODES_RAW),
+      api as any,
+    );
     const history = () => [
       {
         type: "message",
@@ -2490,13 +3020,20 @@ describe("buildPiHandlers — widget seeding", () => {
       ctx,
     );
 
-    assert.equal(topLevelRuns("sess-again").length, 1, "no duplicate entries");
-    assert.equal(getRun("call-x")?.status, "done");
+    assert.equal(
+      piProcess.runs.topLevel("sess-again").length,
+      1,
+      "no duplicate entries",
+    );
+    assert.equal(piProcess.runs.get("call-x")?.status, "done");
   });
 
   it("session_start leaves the registry untouched without a session manager history", async () => {
     const api = mockApi();
-    const handlers = await buildPiHandlers(POLY_ZOO, api as any, MODES_RAW);
+    const handlers = await startInstance(
+      piScope(POLY_ZOO, MODES_RAW),
+      api as any,
+    );
     // A ui + session-id-only ctx (no buildContextEntries) must not crash and
     // must not touch the registry (fresh session → nothing to rebuild).
     await assert.doesNotReject(() =>
@@ -2505,12 +3042,15 @@ describe("buildPiHandlers — widget seeding", () => {
         { sessionManager: { getSessionId: () => "sess" } },
       ),
     );
-    assert.equal(topLevelRuns("sess").length, 0);
+    assert.equal(piProcess.runs.topLevel("sess").length, 0);
   });
 
   it("session_start rebuilds even when buildContextEntries reads `this`", async () => {
     const api = mockApi();
-    const handlers = await buildPiHandlers(POLY_ZOO, api as any, MODES_RAW);
+    const handlers = await startInstance(
+      piScope(POLY_ZOO, MODES_RAW),
+      api as any,
+    );
     // Regression: pi's real SessionManager.buildContextEntries reads
     // `this.getEntries()`, so the mock must be `this`-dependent too.
     // The function must be invoked as a method
@@ -2568,8 +3108,8 @@ describe("buildPiHandlers — widget seeding", () => {
 
     // The rebuild must run to completion: the registry is seeded and no
     // exception is surfaced to the caller.
-    assert.equal(topLevelRuns("sess-bind").length, 1);
-    const run = getRun("call-bind-1");
+    assert.equal(piProcess.runs.topLevel("sess-bind").length, 1);
+    const run = piProcess.runs.get("call-bind-1");
     assert.equal(run?.status, "done");
     assert.equal(run?.agent, "lynx");
     assert.equal(run?.label, "搜索代码");
@@ -2582,13 +3122,17 @@ describe("buildPiHandlers — widget seeding", () => {
 // session_start — no stop cleanup
 // ---------------------------------------------------------------------------
 
-describe("buildPiHandlers — session_start is not a stop", () => {
+describe("startPi — session_start is not a stop", () => {
   it("keeps the session's published round view on a resume", async () => {
     const api = mockApi();
     const runtime = createContextRuntime();
-    const handlers = await buildPiHandlers(POLY_ZOO, api as any, MODES_RAW, {
-      contextRuntime: runtime,
-    });
+    const handlers = await startInstance(
+      piScope(POLY_ZOO, MODES_RAW),
+      api as any,
+      {
+        contextRuntime: runtime,
+      },
+    );
     // Only a session stop releases the runtime records, so a resume must
     // leave the session's records untouched — the next pruning round
     // republishes the view anyway.
@@ -2606,7 +3150,7 @@ describe("buildPiHandlers — session_start is not a stop", () => {
       numbered: [],
     });
     assert.ok(runtime.roundView("sess-rv"), "the view starts published");
-    sessionAgentRegistry.bind("sess-rv", "dolphin");
+    piProcess.sessionAgents.bind("sess-rv", "dolphin");
 
     await handlers.sessionStart(
       { type: "session_start", reason: "resume" },
@@ -2621,7 +3165,7 @@ describe("buildPiHandlers — session_start is not a stop", () => {
       "a start notice must not clear the cached round view",
     );
     assert.equal(
-      sessionAgentRegistry.resolve("sess-rv"),
+      piProcess.sessionAgents.resolve("sess-rv"),
       "dolphin",
       "a start notice keeps the session's other records too",
     );
@@ -2632,10 +3176,13 @@ describe("buildPiHandlers — session_start is not a stop", () => {
 // Fleet widget enter-inspect wiring
 // ---------------------------------------------------------------------------
 
-describe("buildPiHandlers — fleet widget enter-inspect wiring", () => {
+describe("startPi — fleet widget enter-inspect wiring", () => {
   it("enter on a selected run opens the transcript overlay via ui.custom", async () => {
     const api = mockApi();
-    const handlers = await buildPiHandlers(POLY_ZOO, api as any, MODES_RAW);
+    const handlers = await startInstance(
+      piScope(POLY_ZOO, MODES_RAW),
+      api as any,
+    );
     let opened = 0;
     let factory: unknown;
     const { calls, inputHandler, ctx } = widgetInputCtx({
@@ -2656,7 +3203,7 @@ describe("buildPiHandlers — fleet widget enter-inspect wiring", () => {
     // state machine can be driven (kept alive for the key sequence).
     const { dispose } = renderZooWidget(calls, 80, focusedEditorTui());
 
-    startRun({
+    piProcess.runs.start({
       id: "run-enter",
       agent: "beaver",
       parentSession: "sess-enter",
@@ -2679,7 +3226,10 @@ describe("buildPiHandlers — fleet widget enter-inspect wiring", () => {
     // under the open overlay, forcing a full symmetric re-paint.  enterRun
     // must collapse the widget BEFORE the overlay opens.
     const api = mockApi();
-    const handlers = await buildPiHandlers(POLY_ZOO, api as any, MODES_RAW);
+    const handlers = await startInstance(
+      piScope(POLY_ZOO, MODES_RAW),
+      api as any,
+    );
     let opened = 0;
     const { calls, inputHandler, ctx } = widgetInputCtx({
       custom: () => {
@@ -2694,7 +3244,7 @@ describe("buildPiHandlers — fleet widget enter-inspect wiring", () => {
     );
     const { dispose } = renderZooWidget(calls, 80, focusedEditorTui());
 
-    startRun({
+    piProcess.runs.start({
       id: "run-collapse",
       agent: "beaver",
       parentSession: "sess-enter",
@@ -2722,7 +3272,10 @@ describe("buildPiHandlers — fleet widget enter-inspect wiring", () => {
     // change at close would repaint the whole base again.  The normal ↓
     // path still re-expands afterwards (unchanged semantics).
     const api = mockApi();
-    const handlers = await buildPiHandlers(POLY_ZOO, api as any, MODES_RAW);
+    const handlers = await startInstance(
+      piScope(POLY_ZOO, MODES_RAW),
+      api as any,
+    );
     let opened = 0;
     let factory: unknown;
     const { calls, inputHandler, ctx } = widgetInputCtx({
@@ -2739,7 +3292,7 @@ describe("buildPiHandlers — fleet widget enter-inspect wiring", () => {
     );
     const { dispose } = renderZooWidget(calls, 80, focusedEditorTui());
 
-    startRun({
+    piProcess.runs.start({
       id: "run-close",
       agent: "beaver",
       parentSession: "sess-enter",
@@ -2778,7 +3331,10 @@ describe("buildPiHandlers — fleet widget enter-inspect wiring", () => {
 
   it("does not open an overlay when the cached ctx exposes no ui.custom", async () => {
     const api = mockApi();
-    const handlers = await buildPiHandlers(POLY_ZOO, api as any, MODES_RAW);
+    const handlers = await startInstance(
+      piScope(POLY_ZOO, MODES_RAW),
+      api as any,
+    );
     // No ui.custom on the cached ctx (a host ui surface without the overlay
     // opener).
     const { calls, inputHandler, ctx } = widgetInputCtx();
@@ -2787,7 +3343,7 @@ describe("buildPiHandlers — fleet widget enter-inspect wiring", () => {
       ctx,
     );
     const { dispose } = renderZooWidget(calls, 80, focusedEditorTui());
-    startRun({
+    piProcess.runs.start({
       id: "run-no-ctx",
       agent: "beaver",
       parentSession: "sess-enter",
@@ -2808,7 +3364,10 @@ describe("buildPiHandlers — fleet widget enter-inspect wiring", () => {
     // The log is the single data source: a run whose log carries no facts
     // yet still opens (the key is consumed) and explains itself.
     const api = mockApi();
-    const handlers = await buildPiHandlers(POLY_ZOO, api as any, MODES_RAW);
+    const handlers = await startInstance(
+      piScope(POLY_ZOO, MODES_RAW),
+      api as any,
+    );
     let factory: unknown;
     const { calls, inputHandler, ctx } = widgetInputCtx({
       custom: (f: unknown) => {
@@ -2821,7 +3380,7 @@ describe("buildPiHandlers — fleet widget enter-inspect wiring", () => {
       ctx,
     );
     const { dispose } = renderZooWidget(calls, 80, focusedEditorTui());
-    startRun({
+    piProcess.runs.start({
       id: "run-empty",
       agent: "beaver",
       parentSession: "sess-enter",
@@ -2850,7 +3409,10 @@ describe("buildPiHandlers — fleet widget enter-inspect wiring", () => {
     // projecting the log it was handed — it must neither crash nor blank
     // out; it simply stops receiving appends.
     const api = mockApi();
-    const handlers = await buildPiHandlers(POLY_ZOO, api as any, MODES_RAW);
+    const handlers = await startInstance(
+      piScope(POLY_ZOO, MODES_RAW),
+      api as any,
+    );
     let factory: unknown;
     const { calls, inputHandler, ctx } = widgetInputCtx({
       custom: (f: unknown) => {
@@ -2863,7 +3425,7 @@ describe("buildPiHandlers — fleet widget enter-inspect wiring", () => {
       ctx,
     );
     const { dispose } = renderZooWidget(calls, 80, focusedEditorTui());
-    startRun({
+    piProcess.runs.start({
       id: "run-midfinish",
       agent: "beaver",
       parentSession: "sess-enter",
@@ -2878,18 +3440,18 @@ describe("buildPiHandlers — fleet widget enter-inspect wiring", () => {
     );
     const render = (): string[] =>
       (component as { render(width: number): string[] }).render(80);
-    getRun("run-midfinish")?.log.appendMessage([
-      { type: "text", text: "visible before finish" },
-    ]);
+    piProcess.runs
+      .get("run-midfinish")
+      ?.log.appendMessage([{ type: "text", text: "visible before finish" }]);
     assert.ok(
       render().some((l) => l.includes("visible before finish")),
       `the live fact must render while the run runs: ${render().join(" | ")}`,
     );
     // The run finishes while the overlay is open → the registry releases the
     // live log.  The open overlay keeps what it already projected.
-    finishRun("run-midfinish", { status: "done" });
+    piProcess.runs.finish("run-midfinish", { status: "done" });
     assert.equal(
-      getRun("run-midfinish")?.log.facts().length,
+      piProcess.runs.get("run-midfinish")?.log.facts().length,
       0,
       "the terminal run must hold no facts",
     );
@@ -2906,7 +3468,10 @@ describe("buildPiHandlers — fleet widget enter-inspect wiring", () => {
     // overlay through the log's single stream subscription — no polling, no
     // bus.
     const api = mockApi();
-    const handlers = await buildPiHandlers(POLY_ZOO, api as any, MODES_RAW);
+    const handlers = await startInstance(
+      piScope(POLY_ZOO, MODES_RAW),
+      api as any,
+    );
     let factory: unknown;
     const { calls, inputHandler, ctx } = widgetInputCtx({
       custom: (f: unknown) => {
@@ -2919,7 +3484,7 @@ describe("buildPiHandlers — fleet widget enter-inspect wiring", () => {
       ctx,
     );
     const { dispose } = renderZooWidget(calls, 80, focusedEditorTui());
-    startRun({
+    piProcess.runs.start({
       id: "run-running",
       agent: "beaver",
       parentSession: "sess-enter",
@@ -2940,9 +3505,9 @@ describe("buildPiHandlers — fleet widget enter-inspect wiring", () => {
       lines.join(" | "),
     );
     // A message fact appended while the overlay is open becomes visible.
-    getRun("run-running")?.log.appendMessage([
-      { type: "text", text: "live-tail" },
-    ]);
+    piProcess.runs
+      .get("run-running")
+      ?.log.appendMessage([{ type: "text", text: "live-tail" }]);
     lines = render();
     assert.ok(
       lines.some((l) => l.includes("live-tail")),
@@ -2955,7 +3520,7 @@ describe("buildPiHandlers — fleet widget enter-inspect wiring", () => {
 // Fleet widget enter-inspect — post-restart hydration of rebuilt runs
 // ---------------------------------------------------------------------------
 
-describe("buildPiHandlers — fleet widget enter-inspect hydration", () => {
+describe("startPi — fleet widget enter-inspect hydration", () => {
   afterEach(() => {
     resetHydration();
   });
@@ -3000,7 +3565,10 @@ describe("buildPiHandlers — fleet widget enter-inspect hydration", () => {
     dispose: () => void;
   }> {
     const api = mockApi();
-    const handlers = await buildPiHandlers(POLY_ZOO, api as any, MODES_RAW);
+    const handlers = await startInstance(
+      piScope(POLY_ZOO, MODES_RAW),
+      api as any,
+    );
     let opened = 0;
     let factory: unknown;
     const { calls, inputHandler, ctx } = widgetInputCtx({
@@ -3015,7 +3583,7 @@ describe("buildPiHandlers — fleet widget enter-inspect hydration", () => {
       ctx,
     );
     const { dispose } = renderZooWidget(calls, 80, focusedEditorTui());
-    startRun({
+    piProcess.runs.start({
       id: run.id,
       agent: "beaver",
       parentSession: "sess-enter",
@@ -3025,7 +3593,7 @@ describe("buildPiHandlers — fleet widget enter-inspect hydration", () => {
         : {}),
     });
     beforeFinish?.(run.id);
-    if (run.finish === true) finishRun(run.id, { status: "done" });
+    if (run.finish === true) piProcess.runs.finish(run.id, { status: "done" });
     inputHandler("\u001b[B"); // expand + select the run
     for (let i = 0; i < presses; i++) inputHandler("\r");
     return {
@@ -3095,13 +3663,15 @@ describe("buildPiHandlers — fleet widget enter-inspect hydration", () => {
       (id) => {
         // The run appended facts while it was live (the driver's in-memory
         // record, mirrored on disk by pi's session persistence).
-        getRun(id)?.log.appendMessage([
-          { type: "text", text: "live fact, released at finish" },
-        ]);
+        piProcess.runs
+          .get(id)
+          ?.log.appendMessage([
+            { type: "text", text: "live fact, released at finish" },
+          ]);
       },
     );
     assert.equal(
-      getRun("run-just-done")?.log.facts().length,
+      piProcess.runs.get("run-just-done")?.log.facts().length,
       0,
       "finish must release the live run's in-memory log",
     );
@@ -3182,9 +3752,9 @@ describe("buildPiHandlers — fleet widget enter-inspect hydration", () => {
     ]);
     const h = await openOverlayOn({ id: "run-live", sessionPath: path });
     assert.equal(h.opened(), 1, "a running run opens on the keypress");
-    getRun("run-live")?.log.appendMessage([
-      { type: "text", text: "live tail fact" },
-    ]);
+    piProcess.runs
+      .get("run-live")
+      ?.log.appendMessage([{ type: "text", text: "live tail fact" }]);
     const lines = h.renderOverlay();
     assert.ok(
       lines.some((l) => l.includes("live tail fact")),
@@ -3221,14 +3791,17 @@ describe("buildPiHandlers — fleet widget enter-inspect hydration", () => {
 // Fleet widget enter-inspect — overlay border + title agent colorization
 // ---------------------------------------------------------------------------
 
-describe("buildPiHandlers — transcript overlay border + title agent color", () => {
+describe("startPi — transcript overlay border + title agent color", () => {
   /** Open the overlay for a run and render its component with a stub theme. */
   async function renderOverlayFor(
     raw: unknown,
     run: { id: string; agent: string; label?: string },
   ): Promise<string[]> {
     const api = mockApi();
-    const handlers = await buildPiHandlers(POLY_ZOO, api as any, raw as any);
+    const handlers = await startInstance(
+      piScope(POLY_ZOO, raw as any),
+      api as any,
+    );
     let factory: unknown;
     const { calls, inputHandler, ctx } = widgetInputCtx({
       custom: (f: unknown) => {
@@ -3241,7 +3814,7 @@ describe("buildPiHandlers — transcript overlay border + title agent color", ()
       ctx,
     );
     const { dispose } = renderZooWidget(calls, 200, focusedEditorTui());
-    startRun({
+    piProcess.runs.start({
       id: run.id,
       agent: run.agent,
       parentSession: "sess-enter",
@@ -3339,7 +3912,7 @@ describe("buildPiHandlers — transcript overlay border + title agent color", ()
 // Zoo widget colorization
 // ---------------------------------------------------------------------------
 
-describe("buildPiHandlers — zoo widget colorization", () => {
+describe("startPi — zoo widget colorization", () => {
   /** The truecolor ANSI wrapper for an agent name. */
   function colorize(name: string, hex: string): string {
     const r = Number.parseInt(hex.slice(1, 3), 16);
@@ -3350,7 +3923,10 @@ describe("buildPiHandlers — zoo widget colorization", () => {
 
   it("registers the fleet widget whose collapsed line uses the ANSI-wrapped primary when its color is configured", async () => {
     const api = mockApi();
-    const handlers = await buildPiHandlers(POLY_ZOO, api as any, COLORS_RAW);
+    const handlers = await startInstance(
+      piScope(POLY_ZOO, COLORS_RAW),
+      api as any,
+    );
     const { calls, ctx } = widgetRecordingCtx();
     // The default primary (dolphin) carries #66CCFF → the widget's collapsed
     // line embeds the truecolor-wrapped name (inside the muted status hue).
@@ -3368,7 +3944,10 @@ describe("buildPiHandlers — zoo widget colorization", () => {
     const api = mockApi();
     // MODES_RAW has no color fields → the colors map is empty, so the
     // primary falls back to the plain agent name (fail-closed).
-    const handlers = await buildPiHandlers(POLY_ZOO, api as any, MODES_RAW);
+    const handlers = await startInstance(
+      piScope(POLY_ZOO, MODES_RAW),
+      api as any,
+    );
     const { calls, ctx } = widgetRecordingCtx();
     await handlers.beforeAgentStart(
       { messageType: "user", systemPrompt: "base" },
@@ -3382,14 +3961,17 @@ describe("buildPiHandlers — zoo widget colorization", () => {
 
   it("leaves the collapsed primary plain when the color for that agent is malformed", async () => {
     const api = mockApi();
-    const handlers = await buildPiHandlers(POLY_ZOO, api as any, {
-      ...MODES_RAW,
-      agent: {
-        ...MODES_RAW.agent,
-        dolphin: { mode: "primary", color: "red" }, // invalid hex
-        mola: { mode: "primary", color: "#FFA500" },
-      },
-    });
+    const handlers = await startInstance(
+      piScope(POLY_ZOO, {
+        ...MODES_RAW,
+        agent: {
+          ...MODES_RAW.agent,
+          dolphin: { mode: "primary", color: "red" }, // invalid hex
+          mola: { mode: "primary", color: "#FFA500" },
+        },
+      }),
+      api as any,
+    );
     const { calls, ctx } = widgetRecordingCtx();
     // Malformed color is omitted by the parser → the primary stays plain.
     await handlers.beforeAgentStart(
@@ -3407,7 +3989,7 @@ describe("buildPiHandlers — zoo widget colorization", () => {
 // Primary-switch command widget colorization
 // ---------------------------------------------------------------------------
 
-describe("buildPiHandlers — primary-switch widget colorization", () => {
+describe("startPi — primary-switch widget colorization", () => {
   /**
    * A command ctx whose newSession runs withSession against a
    * per-fresh-session facade (mirroring pi.ts's implementation:
@@ -3448,12 +4030,15 @@ describe("buildPiHandlers — primary-switch widget colorization", () => {
   it("switch command nudges the fleet widget which renders the ANSI-wrapped target name", async () => {
     const api = mockApi();
     api.activeTools.push("webfetch", "edit");
-    const handlers = await buildPiHandlers(POLY_ZOO, api as any, {
-      agent: {
-        ...COLORS_RAW.agent,
-        mola: { mode: "primary", color: "#FFA500" },
-      },
-    });
+    const handlers = await startInstance(
+      piScope(POLY_ZOO, {
+        agent: {
+          ...COLORS_RAW.agent,
+          mola: { mode: "primary", color: "#FFA500" },
+        },
+      }),
+      api as any,
+    );
     const mola = api.commands.find((c) => c.name === "mola");
     assert.ok(mola && typeof mola.handler === "function");
 
@@ -3467,9 +4052,9 @@ describe("buildPiHandlers — primary-switch widget colorization", () => {
 
     // The replacement session registers its widget at bind time and already
     // resolves the switched primary, rendered with its configured color.
-    const { calls, ctx } = widgetRecordingCtx("sess-new");
+    const { calls, ctx } = widgetRecordingCtx("sess-new", "sess-switch");
     await handlers.sessionStart({ type: "session_start", reason: "new" }, ctx);
-    assert.equal(sessionAgentRegistry.resolve("sess-new"), "mola");
+    assert.equal(piProcess.sessionAgents.resolve("sess-new"), "mola");
     const { lines, dispose } = renderZooWidget(calls);
     const r = 0xff;
     const g = 0xa5;
@@ -3486,11 +4071,14 @@ describe("buildPiHandlers — primary-switch widget colorization", () => {
     api.activeTools.push("webfetch", "edit");
     // COLORS_RAW has no color for spider; MODES_RAW has no colors at all.
     // Build with MODES_RAW so the colors map is empty → plain name.
-    const handlers = await buildPiHandlers(POLY_ZOO, api as any, MODES_RAW);
+    const handlers = await startInstance(
+      piScope(POLY_ZOO, MODES_RAW),
+      api as any,
+    );
     const dolphin = api.commands.find((c) => c.name === "dolphin");
     assert.ok(dolphin && typeof dolphin.handler === "function");
 
-    sessionAgentRegistry.bind("sess-switch", "mola");
+    piProcess.sessionAgents.bind("sess-switch", "mola");
     await (dolphin.handler as (args: string, ctx: unknown) => Promise<void>)(
       "",
       switchCtx(() => {}),
@@ -3500,7 +4088,7 @@ describe("buildPiHandlers — primary-switch widget colorization", () => {
     // primary and render it plainly (it has no configured color).
     const { calls, ctx } = widgetRecordingCtx("sess-new");
     await handlers.sessionStart({ type: "session_start", reason: "new" }, ctx);
-    assert.equal(sessionAgentRegistry.resolve("sess-new"), "dolphin");
+    assert.equal(piProcess.sessionAgents.resolve("sess-new"), "dolphin");
 
     const { lines, dispose } = renderZooWidget(calls);
     assert.ok(lines[0].includes("dolphin"), lines[0]);
@@ -3561,6 +4149,7 @@ describe("buildPiToolExecute — tool admission", () => {
       run,
       (sessionID, callCtx) => published.push([sessionID, callCtx]),
       createPiQuestionChannel,
+      piProcess.runs,
     )("call-1", { a: 1 }, caller.signal, onUpdate, ctx);
 
     // The call is admitted for its own context, which is bound under the
@@ -3608,6 +4197,7 @@ describe("buildPiToolExecute — tool admission", () => {
       run,
       () => {},
       createPiQuestionChannel,
+      piProcess.runs,
     )(
       "call-1",
       {},
@@ -3643,6 +4233,7 @@ describe("buildPiToolExecute — tool admission", () => {
       run,
       () => {},
       createPiQuestionChannel,
+      piProcess.runs,
     )("call-1", {}, undefined, undefined, {
       sessionManager: { getSessionId: () => "sess-tool" },
       mode: "tui",
@@ -3661,8 +4252,12 @@ describe("buildPiToolExecute — tool admission", () => {
     const run: PiSessionWorkRunner = {
       runSession: async (_ctx, work) => work(fakePermit()),
     };
-    startRun({ id: "call-data", agent: "beaver", parentSession: "sess-tool" });
-    updateRun("call-data", { sessionPath: "/tmp/run.jsonl" });
+    piProcess.runs.start({
+      id: "call-data",
+      agent: "beaver",
+      parentSession: "sess-tool",
+    });
+    piProcess.runs.update("call-data", { sessionPath: "/tmp/run.jsonl" });
     const result = await buildPiToolExecute(
       {
         name: "probe",
@@ -3675,6 +4270,7 @@ describe("buildPiToolExecute — tool admission", () => {
       run,
       () => {},
       createPiQuestionChannel,
+      piProcess.runs,
     )("call-data", {}, undefined, undefined, {
       sessionManager: { getSessionId: () => "sess-tool" },
     });
@@ -3695,6 +4291,7 @@ describe("buildPiToolExecute — tool admission", () => {
       run,
       (ctx) => published.push(ctx),
       createPiQuestionChannel,
+      piProcess.runs,
     )("call-1", {}, undefined, undefined, {
       sessionManager: { getSessionId: () => "s" },
     });
@@ -3707,7 +4304,7 @@ describe("buildPiToolExecute — tool admission", () => {
   });
 });
 
-describe("buildPiHandlers — tool and command admission", () => {
+describe("startPi — tool and command admission", () => {
   /** The profile with the two stateless tools, so the bridge registers. */
   const TOOL_ZOO = {
     ...POLY_ZOO,
@@ -3722,7 +4319,10 @@ describe("buildPiHandlers — tool and command admission", () => {
 
   it("runs no tool after the session stopped", async () => {
     const api = mockApi();
-    const handlers = await buildPiHandlers(TOOL_ZOO, api as any, MODES_RAW);
+    const handlers = await startInstance(
+      piScope(TOOL_ZOO, MODES_RAW),
+      api as any,
+    );
     const decompress = api.tools.find(
       (tool: any) => tool.name === "decompress",
     ) as { execute: (...args: unknown[]) => Promise<unknown> } | undefined;
@@ -3751,7 +4351,7 @@ describe("buildPiHandlers — tool and command admission", () => {
 
   it("runs no tool without a session id", async () => {
     const api = mockApi();
-    await buildPiHandlers(TOOL_ZOO, api as any, MODES_RAW);
+    await startInstance(piScope(TOOL_ZOO, MODES_RAW), api as any);
     const decompress = api.tools.find(
       (tool: any) => tool.name === "decompress",
     ) as { execute: (...args: unknown[]) => Promise<unknown> } | undefined;
@@ -3779,14 +4379,16 @@ describe("buildPiHandlers — tool and command admission", () => {
         return { kind: "ok", text: "done" };
       },
     };
-    await buildPiHandlers(
-      {
-        mode: {
-          poly: { ...POLY_PROFILE, tools: ["subagent"], hooks: [] },
+    await startInstance(
+      piScope(
+        {
+          mode: {
+            poly: { ...POLY_PROFILE, tools: ["subagent"], hooks: [] },
+          },
         },
-      },
+        MODES_RAW,
+      ),
       api as any,
-      MODES_RAW,
       { subagentDriver: driver },
     );
     const subagent = api.tools.find((tool: any) => tool.name === "subagent") as
@@ -3828,7 +4430,10 @@ describe("buildPiHandlers — tool and command admission", () => {
     // session work would be waited on by that stop and never return, so a
     // replacing command is a control operation.
     const api = mockApi();
-    const handlers = await buildPiHandlers(POLY_ZOO, api as any, MODES_RAW);
+    const handlers = await startInstance(
+      piScope(POLY_ZOO, MODES_RAW),
+      api as any,
+    );
     const mola = api.commands.find((command) => command.name === "mola");
     assert.ok(mola && typeof mola.handler === "function");
 
@@ -3853,9 +4458,15 @@ describe("buildPiHandlers — tool and command admission", () => {
     });
 
     assert.equal(switched, undefined);
-    // The replacement ran to its end: the target reached the pending slot.
-    assert.equal(pendingSwitchPrimary(), "mola");
-    assert.equal(sessionAgentRegistry.resolve("sess-switch"), "mola");
+    // The replacement ran to its end: its own start claims the target.
+    assert.equal(
+      piProcess.switchOps.claim("sess-new", {
+        reason: "new",
+        parentSession: "sess-switch",
+      }),
+      "mola",
+    );
+    assert.equal(piProcess.sessionAgents.resolve("sess-switch"), "mola");
   });
 
   it("does not wait for a plan handoff at the shutdown it triggers", async () => {
@@ -3871,9 +4482,13 @@ describe("buildPiHandlers — tool and command admission", () => {
       "body",
     );
     try {
-      const handlers = await buildPiHandlers(POLY_ZOO, api as any, MODES_RAW, {
-        directory: dir,
-      });
+      const handlers = await startInstance(
+        piScope(POLY_ZOO, MODES_RAW),
+        api as any,
+        {
+          directory: dir,
+        },
+      );
       const go = api.commands.find((command) => command.name === "go");
       assert.ok(go && typeof go.handler === "function");
       const ctx = { sessionManager: { getSessionId: () => "sess-go" } };
@@ -3906,7 +4521,13 @@ describe("buildPiHandlers — tool and command admission", () => {
         "the stop must not wait for /go",
       );
       // The handoff still ran to its end: executor published, plan moved.
-      assert.equal(pendingSwitchPrimary(), "dolphin");
+      assert.equal(
+        piProcess.switchOps.claim("sess-dolphin", {
+          reason: "new",
+          parentSession: "sess-go",
+        }),
+        "dolphin",
+      );
       assert.ok(
         fs
           .readFileSync(join(dir, ".zoo/plans/demo-plan.md"), "utf-8")
@@ -3934,10 +4555,17 @@ describe("buildPiHandlers — tool and command admission", () => {
       });
       return { stdout: "", stderr: "", exitCode: 0 };
     };
-    const handlers = await buildPiHandlers(
-      { ...POLY_ZOO, mode: { poly: { ...POLY_PROFILE, commands: ["debug"] } } },
+    const handlers = await startInstance(
+      piScope(
+        {
+          ...POLY_ZOO,
+          // `/debug` registers only when the wake budget parses.
+          autodebug: { max_wakes: 3 },
+          mode: { poly: { ...POLY_PROFILE, commands: ["debug"] } },
+        },
+        MODES_RAW,
+      ),
       api as any,
-      MODES_RAW,
       { directory: dir, zdebugExec },
     );
     const debug = api.commands.find((command) => command.name === "debug");
@@ -3968,7 +4596,10 @@ describe("buildPiHandlers — tool and command admission", () => {
 
   it("runs no command after the session stopped", async () => {
     const api = mockApi();
-    const handlers = await buildPiHandlers(POLY_ZOO, api as any, MODES_RAW);
+    const handlers = await startInstance(
+      piScope(POLY_ZOO, MODES_RAW),
+      api as any,
+    );
     const dcp = api.commands.find((command) => command.name === "dcp");
     assert.ok(dcp && typeof dcp.handler === "function");
     await handlers.sessionStart(
@@ -3993,7 +4624,7 @@ describe("buildPiHandlers — tool and command admission", () => {
 
   it("runs no command without a session id", async () => {
     const api = mockApi();
-    await buildPiHandlers(POLY_ZOO, api as any, MODES_RAW);
+    await startInstance(piScope(POLY_ZOO, MODES_RAW), api as any);
     const dcp = api.commands.find((command) => command.name === "dcp");
     assert.ok(dcp && typeof dcp.handler === "function");
 
@@ -4010,9 +4641,9 @@ describe("buildPiHandlers — tool and command admission", () => {
 // Fail-closed behaviour
 // ---------------------------------------------------------------------------
 
-describe("buildPiHandlers — null profile fail-closed", () => {
+describe("startPi — null profile fail-closed", () => {
   it("all six handlers no-op with a null profile", async () => {
-    const handlers = await buildPiHandlers({});
+    const handlers = await startInstance(piScope({}));
     // session_start with a ui ctx must not seed anything without a profile
     // (no pi switch host → fail-closed silent no-op).
     await handlers.sessionStart(
@@ -4070,7 +4701,7 @@ describe("buildPiHandlers — null profile fail-closed", () => {
 // plugin_init load-time event
 // ---------------------------------------------------------------------------
 
-describe("buildPiHandlers — plugin_init load-time event", () => {
+describe("startPi — plugin_init load-time event", () => {
   it("emits plugin_init once at load with agents/skills/limits fields", async () => {
     // Init the logger so the load-time plugin_init is attributed to a
     // temp log dir instead of tripping the one-time used-before-init
@@ -4078,7 +4709,7 @@ describe("buildPiHandlers — plugin_init load-time event", () => {
     const logDir = makeTmpDir("zoo-pi-log");
     try {
       initLogger("pi", { logDir });
-      await buildPiHandlers(POLY_ZOO, undefined, MODES_RAW);
+      await startInstance(piScope(POLY_ZOO, MODES_RAW), undefined);
       const inits = _getBufferForTesting().filter(
         (entry) => entry.event === "plugin_init",
       );
@@ -4114,7 +4745,7 @@ describe("buildPiHandlers — plugin_init load-time event", () => {
     const logDir = makeTmpDir("zoo-pi-log");
     try {
       initLogger("pi", { logDir });
-      await buildPiHandlers({});
+      await startInstance(piScope({}));
       const inits = _getBufferForTesting().filter(
         (entry) => entry.event === "plugin_init",
       );
@@ -4134,7 +4765,7 @@ describe("buildPiHandlers — plugin_init load-time event", () => {
     const logDir = makeTmpDir("zoo-pi-log");
     try {
       initLogger("pi", { logDir });
-      await buildPiHandlers(POLY_ZOO);
+      await startInstance(piScope(POLY_ZOO));
 
       // Load-time plugin_init is sessionless and no session exists yet:
       // it stays buffered and no pi.log host-level file is created.
@@ -4185,21 +4816,67 @@ describe("buildPiHandlers — plugin_init load-time event", () => {
 // ---------------------------------------------------------------------------
 
 describe("buildPiSubagentExtension — the child runtime's ZooKeeper", () => {
+  it("writes its session identity into the parent runtime's process state", async () => {
+    // The child runtime is one delegation inside the parent's process: it
+    // inherits the parent's owner, so the identity it resolves is the one
+    // the parent's surfaces read.  A child that created its own owner would
+    // leave the parent's store empty.
+    const api = mockApi();
+    await buildPiSubagentExtension(piScope(POLY_ZOO, MODES_RAW), {
+      agent: "beaver",
+      process: piProcess,
+    })(api as any);
+
+    await api.handlers.before_agent_start?.(
+      { messageType: "user", systemPrompt: "base" },
+      { sessionManager: { getSessionId: () => "sess-inherited" } },
+    );
+
+    assert.equal(
+      piProcess.sessionAgents.resolve("sess-inherited"),
+      "beaver",
+      "the child binds into the parent's session registry",
+    );
+  });
+
   it("reports the close handle of the wiring it builds", async () => {
     const api = mockApi();
-    const closes: Array<() => Promise<CleanupReport>> = [];
 
-    await buildPiHandlers(POLY_ZOO, api as any, MODES_RAW, {
-      entryPath: "/zoo/src/pi.ts",
-      onLifecycle: (close) => closes.push(close),
-    });
+    const handle = await startPiRuntime(
+      piScope(POLY_ZOO, MODES_RAW),
+      api as any,
+      {
+        entryPath: "/zoo/src/pi.ts",
+      },
+      piProcess,
+    );
 
-    assert.equal(closes.length, 1, "the host receives one close handle");
-    const first = await closes[0]();
+    const first = await handle.stop();
     assert.deepEqual(first, { errors: [] });
     // The extension scope is terminal: a repeated close reports the same
     // outcome and disposes nothing twice.
-    assert.deepEqual(await closes[0](), first);
+    assert.deepEqual(await handle.stop(), first);
+  });
+
+  it("closes a child runtime whose start fails, without reporting a close", async () => {
+    const api = mockApi();
+    const failing = {
+      ...api,
+      registerCommand(): void {
+        throw new Error("child write failed");
+      },
+    };
+    const closes: Array<() => Promise<CleanupReport>> = [];
+    const factory = buildPiSubagentExtension(piScope(POLY_ZOO, MODES_RAW), {
+      agent: "beaver",
+      process: piProcess,
+      onClose: (close) => closes.push(close),
+    });
+
+    // The child start closes its own runtime, so the caller receives the
+    // failure and no close handle: nothing is left for it to stop.
+    await assert.rejects(factory(failing as any), /child write failed/);
+    assert.deepEqual(closes, [], "a failed start reports no close handle");
   });
 
   it("builds the child handlers over the captured config snapshot", async () => {
@@ -4213,8 +4890,9 @@ describe("buildPiSubagentExtension — the child runtime's ZooKeeper", () => {
     };
     const api = mockApi();
     const closes: Array<() => Promise<CleanupReport>> = [];
-    const factory = buildPiSubagentExtension(zoo, MODES_RAW, {
+    const factory = buildPiSubagentExtension(piScope(zoo, MODES_RAW), {
       agent: "beaver",
+      process: piProcess,
       entryPath: "/zoo/src/pi.ts",
       onClose: (close) => closes.push(close),
     });
@@ -4227,7 +4905,7 @@ describe("buildPiSubagentExtension — the child runtime's ZooKeeper", () => {
       { messageType: "user", systemPrompt: "base" },
       { sessionManager: { getSessionId: () => "sess-child" } },
     );
-    assert.equal(sessionAgentRegistry.resolve("sess-child"), "beaver");
+    assert.equal(piProcess.sessionAgents.resolve("sess-child"), "beaver");
 
     // The child registers the same profile's surfaces and logs exactly one
     // composition anchor, so the config snapshot is composed once and never
@@ -4249,5 +4927,163 @@ describe("buildPiSubagentExtension — the child runtime's ZooKeeper", () => {
     // The close handle of the child's own scope reaches the caller.
     assert.equal(closes.length, 1);
     assert.deepEqual(await closes[0](), { errors: [] });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Configuration generation — one immutable snapshot per process scope
+// ---------------------------------------------------------------------------
+
+describe("process scope — one configuration generation per scope", () => {
+  /** The base names of the skill directories a discover result carries. */
+  function skillNames(
+    resources: { skillPaths: string[] } | undefined,
+  ): string[] {
+    return (resources?.skillPaths ?? []).map(
+      (path) => path.split("/").pop() ?? "",
+    );
+  }
+
+  it("parses the static config once per generation, not per instance", async () => {
+    // An invalid `[zoo.ask]` section warns when the generation is parsed.
+    // Neither the main instance nor the sub-session it spawns parses again:
+    // both read the scope's snapshot.
+    const scope = piScope({ ...POLY_ZOO, ask: "not-a-table" }, MODES_RAW);
+    const validWarnings = () =>
+      _getBufferForTesting().filter(
+        (entry) => entry.event === "ask_config_invalid",
+      ).length;
+
+    const parentApi = mockApi();
+    await startInstance(scope, parentApi as any);
+    assert.equal(validWarnings(), 1, "the generation parses once");
+
+    const childApi = mockApi();
+    await buildPiSubagentExtension(scope, {
+      agent: "beaver",
+      process: piProcess,
+    })(childApi as any);
+    assert.equal(validWarnings(), 1, "a sub-session must not parse again");
+  });
+
+  it("hands the parent's snapshot to its sub-session", async () => {
+    // The generation's skill rules filter each instance by its own
+    // primary, and the child answers from the SAME snapshot the parent
+    // read: one scope, two instances, no second parse.
+    const raw = {
+      agent: {
+        dolphin: {
+          mode: "primary",
+          permission: { skill: { "*": "deny", grill: "allow" } },
+        },
+        lynx: {
+          mode: "subagent",
+          permission: { skill: { "*": "deny", "wiki-query": "allow" } },
+        },
+      },
+    };
+    const scope = piScope(POLY_ZOO, raw);
+    assert.equal(Object.isFrozen(scope.snapshot.skillPermissions), true);
+
+    const parentApi = mockApi();
+    const parent = await startInstance(scope, parentApi as any);
+    piProcess.sessionAgents.bind("sess-parent", "dolphin");
+    const parentResources = await parent.resourcesDiscover(undefined, {
+      sessionManager: { getSessionId: () => "sess-parent" },
+    });
+    assert.deepEqual(skillNames(parentResources), ["grill"]);
+
+    const childApi = mockApi();
+    await buildPiSubagentExtension(scope, {
+      agent: "lynx",
+      process: piProcess,
+    })(childApi as any);
+    const childResources = (await (
+      childApi.handlers.resources_discover as (...args: unknown[]) => unknown
+    )(undefined, SESSION_CTX)) as { skillPaths: string[] } | undefined;
+    assert.deepEqual(skillNames(childResources), ["wiki-query"]);
+  });
+
+  it("resolves sub-session models from the generation, never agents.json", async () => {
+    // Strict mode: the snapshot's model map is the sole source.  This
+    // process' own agents.json carries an entry for `beaver`, so a
+    // fail-closed result proves the file is never read here.
+    const zoo = {
+      mode: { poly: { ...POLY_PROFILE, tools: ["subagent"], hooks: [] } },
+    };
+    const resolved: string[] = [];
+    const driver: SubagentDriver = {
+      async run(request) {
+        resolved.push(request.model);
+        return { kind: "ok", text: "done" };
+      },
+    };
+    const input = { agent: "beaver", description: "实现任务", prompt: "t" };
+
+    const configuredApi = mockApi();
+    await startInstance(
+      piScope(zoo, MODES_RAW, { beaver: "Dummy/dummy-small" }),
+      configuredApi as any,
+      { subagentDriver: driver },
+    );
+    const configured = configuredApi.tools.find(
+      (tool: any) => tool.name === "subagent",
+    ) as { execute: (...args: unknown[]) => Promise<unknown> } | undefined;
+    assert.ok(configured);
+    await configured.execute(
+      "call-model",
+      input,
+      undefined,
+      undefined,
+      SESSION_CTX,
+    );
+    assert.deepEqual(resolved, ["Dummy/dummy-small"]);
+
+    // An empty map closes the delegation: no inheritance, no fallback.
+    const emptyScope = piScope(zoo, MODES_RAW, {});
+    const closedApi = mockApi();
+    await startInstance(emptyScope, closedApi as any, {
+      subagentDriver: driver,
+    });
+    const closed = closedApi.tools.find(
+      (tool: any) => tool.name === "subagent",
+    ) as { execute: (...args: unknown[]) => Promise<unknown> } | undefined;
+    assert.ok(closed);
+    const refused = (await closed.execute(
+      "call-missing-model",
+      input,
+      undefined,
+      undefined,
+      SESSION_CTX,
+    )) as { content: { text?: string }[] };
+    assert.ok(
+      refused.content[0]?.text?.includes("未配置子 agent 模型"),
+      "a missing entry reports the actionable error",
+    );
+    assert.deepEqual(resolved, ["Dummy/dummy-small"], "the driver never ran");
+
+    // The sub-session inherits that same map: a child built from this
+    // generation answers exactly like its parent, so the delegation closes
+    // there too.
+    const childApi = mockApi();
+    await buildPiSubagentExtension(emptyScope, {
+      agent: "beaver",
+      process: piProcess,
+    })(childApi as any);
+    const child = childApi.tools.find(
+      (tool: any) => tool.name === "subagent",
+    ) as { execute: (...args: unknown[]) => Promise<unknown> } | undefined;
+    assert.ok(child, "the child wires its own subagent tool");
+    const childRefused = (await child.execute(
+      "call-child-model",
+      input,
+      undefined,
+      undefined,
+      SESSION_CTX,
+    )) as { content: { text?: string }[] };
+    assert.ok(
+      childRefused.content[0]?.text?.includes("未配置子 agent 模型"),
+      "the child reads the parent's model map too",
+    );
   });
 });

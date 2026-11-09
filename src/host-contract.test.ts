@@ -10,17 +10,20 @@
  * contract.
  *
  * Boundary: both host entry surfaces driven end to end (`buildPlugin` for
- * OpenCode, `buildPiHandlers` + `registerPiHandlers` for pi), because the
- * contract is about what a host gets after the wiring step, not about the
- * assembly internals (covered by `core/compose.test.ts`).
+ * OpenCode, the pi start publisher for pi), because the contract is about
+ * what a host gets after the wiring step, not about the assembly internals
+ * (covered by `core/compose.test.ts`).
  */
 import assert from "node:assert/strict";
 import { afterEach, describe, it } from "node:test";
-import { buildPiHandlers } from "./adapters/pi/wire.js";
-import { registerPiHandlers } from "./compose-pi.js";
 import { initPluginLogger } from "./core/config-parse.js";
 import { buildPlugin } from "./opencode.js";
-import { mockApi, resetPiTestState } from "./testkits/pi-wiring.js";
+import {
+  mockApi,
+  piScope,
+  resetPiTestState,
+  startPi,
+} from "./testkits/pi-wiring.js";
 import { _getBufferForTesting, _resetForTesting } from "./utils/logger.js";
 
 afterEach(() => {
@@ -153,8 +156,7 @@ function observePi(zoo: Record<string, unknown>): Promise<Observed> {
     // so the observation reads the same log the real host writes.
     initPluginLogger(zoo, "pi");
     const api = mockApi();
-    const handlers = await buildPiHandlers(zoo, api as any, RAW);
-    registerPiHandlers(api as any, handlers);
+    await startPi(piScope(zoo, RAW), api as any);
     return {
       capabilities: [
         ...api.tools.map((tool) => (tool as { name: string }).name),

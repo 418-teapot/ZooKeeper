@@ -5,10 +5,11 @@
  * wiring (state → history → release → fold + block maintenance →
  * two producers → view render → nudge / manual compress → save):
  *
- * - Release notification fires exactly once, text carries the
+ * - Release notification fires only for a written edit, text carries the
  *   "上下文清理" / "约回收" wording.
  * - Log field sets: `prune_completed` counts effective marks
- *   only, `marks_released` carries the forced field, `nudge_injected` /
+ *   only, `marks_released` carries the forced field and reports the
+ *   released marks apart from the written edits, `nudge_injected` /
  *   `manual_compress_injected` carry their payloads.
  * - Robust no-ops for null / undefined / empty inputs and for a lapsed
  *   permit.
@@ -45,12 +46,18 @@ import {
   createContextRuntime,
   type RuntimeFlaggedState,
 } from "../../core/context/runtime.js";
-import { computeSpanHash } from "../../core/context/spanhash.js";
+import {
+  computeSpanHash,
+  contentFingerprint,
+} from "../../core/context/spanhash.js";
 import { allocateBlockId, markKey } from "../../core/context/state.js";
 import { createStateStore } from "../../core/context/store.js";
 import type { Capabilities } from "../../core/ports/index.js";
 import type { ToastPayload, ToolHost } from "../../core/ports/tool-host.js";
-import { sessionAgentResource } from "../../core/session/agent.js";
+import {
+  createSessionAgentResource,
+  SessionAgentRegistry,
+} from "../../core/session/agent.js";
 import {
   contextSessionResources,
   createSessionResourceCatalog,
@@ -146,7 +153,7 @@ function viewChangePending(sessionID: string): boolean {
 function deleteSession(sessionID: string) {
   return createSessionResourceCatalog([
     ...contextSessionResources(runtime),
-    sessionAgentResource,
+    createSessionAgentResource(new SessionAgentRegistry()),
   ]).delete(sessionID);
 }
 
@@ -216,6 +223,8 @@ function transformOutput(
 const TEST_SESSION_IDS = [
   "sess-persist-roundtrip",
   "sess-release-notify",
+  "sess-release-editless",
+  "sess-release-placeholder-replay",
   "sess-release-below",
   "sess-protection-tail",
   "sess-protection-release",
@@ -521,6 +530,7 @@ describe("retained terminal blocks do not force every release", () => {
       anchorOrdinal: 1,
       regionIndex: 1,
       content: "first call output",
+      contentHash: contentFingerprint("first call output"),
       contentTokens: 400,
       effective: false,
       markedAt: 1000,
@@ -798,7 +808,8 @@ describe("persistence round-trip via the shared store", () => {
     state.marks.set(markKey(3, 1), {
       anchorOrdinal: 3,
       regionIndex: 1,
-      content: LONG_OUTPUT.slice(0, 100),
+      content: LONG_OUTPUT,
+      contentHash: contentFingerprint(LONG_OUTPUT),
       contentTokens: 400,
       effective: true,
       markedAt: 1000,
@@ -879,6 +890,7 @@ describe("release notification", () => {
       anchorOrdinal: 1,
       regionIndex: 1,
       content: LONG_OUTPUT,
+      contentHash: contentFingerprint(LONG_OUTPUT),
       contentTokens: 400,
       effective: false,
       markedAt: 1000,
@@ -902,12 +914,127 @@ describe("release notification", () => {
     ) as Record<string, unknown> | undefined;
     assert.ok(releaseLog, "marks_released log event");
     assert.equal(releaseLog.releasedCount, 1);
+    // Every flipped mark wrote its placeholder, so the written stats match
+    // the released stats.
+    assert.equal(releaseLog.editCount, 1);
+    assert.equal(releaseLog.editTokens, 400);
     // Prompt-side total = input + cache read + cache write (output excluded).
     assert.equal(releaseLog.promptTokens, 800000);
     assert.ok(
       !("forced" in releaseLog),
       "no forced field on a threshold release",
     );
+  });
+
+  it("reports no write and no notice when a flipped mark writes nothing", async () => {
+    // The mark's anchor content drifted, so the release flips it but the
+    // placeholder never lands: the notice must not claim a fold that did
+    // not happen, and the log must show both stats apart.
+    const sessionID = "sess-release-editless";
+    setLimit(sessionID, MODEL_LIMIT, "test-model");
+
+    const buildTurn = (): TestMessageEntry[] => [
+      msg("user", "u1", [textPart("do it")], sessionID),
+      msg("assistant", "a1", [toolPart(LONG_OUTPUT)], undefined, {
+        input: 800000,
+        output: 200,
+      }),
+    ];
+
+    const notifyCalls: string[] = [];
+    const config = { ...NO_PROTECTION, releasedPercent: 0 };
+
+    const state = stateOf(sessionID);
+    state.marks.set(markKey(1, 1), {
+      anchorOrdinal: 1,
+      regionIndex: 1,
+      content: "vanished output",
+      contentHash: contentFingerprint("vanished output"),
+      contentTokens: 400,
+      effective: false,
+      markedAt: 1000,
+    });
+
+    const turn = buildTurn();
+    await transform(adapter, turn, config, (t) => notifyCalls.push(t));
+
+    assert.equal(notifyCalls.length, 0, "no notice without a written edit");
+    const toolState = (turn[1]?.parts?.[0] as { state?: { output?: string } })
+      .state;
+    assert.ok(
+      toolState?.output?.includes(LONG_OUTPUT),
+      "the region stays as stored",
+    );
+    assert.ok(
+      !toolState?.output?.includes(PRUNED_TOOL_OUTPUT_REPLACEMENT),
+      "no placeholder was written",
+    );
+    assert.equal(
+      stateOf(sessionID).marks.get(markKey(1, 1))?.effective,
+      true,
+      "the flip is independent of the write",
+    );
+
+    const releaseLog = _getBufferForTesting().find(
+      (e) => e.event === "marks_released",
+    ) as Record<string, unknown> | undefined;
+    assert.ok(releaseLog, "marks_released log event");
+    assert.equal(releaseLog.releasedCount, 1, "the flip is reported");
+    assert.equal(releaseLog.releasedTokens, 400);
+    assert.equal(releaseLog.editCount, 0, "no edit was written");
+    assert.equal(releaseLog.editTokens, 0);
+  });
+
+  it("reports no write and no notice when the placeholder is already on the transcript", async () => {
+    // The previous round wrote the placeholder into the host transcript but
+    // its flip did not persist, so the mark is pending while the region
+    // already holds the placeholder.  Writing it again reclaims nothing:
+    // the stats and the notice must not claim a fold that happened earlier.
+    const sessionID = "sess-release-placeholder-replay";
+    setLimit(sessionID, MODEL_LIMIT, "test-model");
+
+    const buildTurn = (): TestMessageEntry[] => [
+      msg("user", "u1", [textPart("do it")], sessionID),
+      msg(
+        "assistant",
+        "a1",
+        [toolPart(PRUNED_TOOL_OUTPUT_REPLACEMENT)],
+        undefined,
+        { input: 800000, output: 200 },
+      ),
+    ];
+
+    const notifyCalls: string[] = [];
+    const config = { ...NO_PROTECTION, releasedPercent: 0 };
+
+    const state = stateOf(sessionID);
+    state.marks.set(markKey(1, 1), {
+      anchorOrdinal: 1,
+      regionIndex: 1,
+      content: LONG_OUTPUT,
+      contentHash: contentFingerprint(LONG_OUTPUT),
+      contentTokens: 400,
+      effective: false,
+      markedAt: 1000,
+    });
+
+    await transform(adapter, buildTurn(), config, (t) => notifyCalls.push(t));
+
+    assert.equal(notifyCalls.length, 0, "no notice without a changed region");
+    assert.equal(
+      stateOf(sessionID).marks.get(markKey(1, 1))?.effective,
+      true,
+      "the flip is independent of the write",
+    );
+
+    const releaseLog = _getBufferForTesting().find(
+      (e) => e.event === "marks_released",
+    ) as Record<string, unknown> | undefined;
+    assert.ok(releaseLog, "marks_released log event");
+    assert.equal(releaseLog.releasedCount, 1, "the flip is reported");
+    assert.equal(releaseLog.releasedTokens, 400);
+    assert.equal(releaseLog.editCount, 0, "the replay wrote no change");
+    assert.equal(releaseLog.editTokens, 0);
   });
 
   it("keeps marks pending while the releasedPercent gate is closed", async () => {
@@ -928,6 +1055,7 @@ describe("release notification", () => {
       anchorOrdinal: 1,
       regionIndex: 1,
       content: LONG_OUTPUT,
+      contentHash: contentFingerprint(LONG_OUTPUT),
       contentTokens: 400,
       effective: false,
       markedAt: 1000,
@@ -966,6 +1094,7 @@ describe("protection at effect time", () => {
       anchorOrdinal: 1,
       regionIndex: 1,
       content: LONG_OUTPUT,
+      contentHash: contentFingerprint(LONG_OUTPUT),
       contentTokens: 400,
       effective: false,
       markedAt: 1000,
@@ -1014,6 +1143,7 @@ describe("protection at effect time", () => {
       anchorOrdinal: 1,
       regionIndex: 1,
       content: LONG_OUTPUT,
+      contentHash: contentFingerprint(LONG_OUTPUT),
       contentTokens: 400,
       effective: true,
       markedAt: 1000,
@@ -1068,6 +1198,7 @@ describe("log field sets", () => {
       anchorOrdinal: 1,
       regionIndex: 1,
       content: "eff1",
+      contentHash: contentFingerprint("eff1"),
       contentTokens: 200,
       effective: true,
       markedAt: 1000,
@@ -1076,6 +1207,7 @@ describe("log field sets", () => {
       anchorOrdinal: 1,
       regionIndex: 4,
       content: "eff2",
+      contentHash: contentFingerprint("eff2"),
       contentTokens: 300,
       effective: true,
       markedAt: 1000,
@@ -1084,6 +1216,7 @@ describe("log field sets", () => {
       anchorOrdinal: 1,
       regionIndex: 6,
       content: "pending",
+      contentHash: contentFingerprint("pending"),
       contentTokens: 500,
       effective: false,
       markedAt: 1000,
@@ -1118,7 +1251,8 @@ describe("log field sets", () => {
     state.marks.set(markKey(1, 1), {
       anchorOrdinal: 1,
       regionIndex: 1,
-      content: "long enough output",
+      content: LONG_OUTPUT,
+      contentHash: contentFingerprint(LONG_OUTPUT),
       contentTokens: 400,
       effective: false,
       markedAt: 1000,
@@ -1148,6 +1282,7 @@ describe("log field sets", () => {
     assert.ok(entry, "marks_released log event");
     assert.equal(entry.forced, "view_change", "forced reason field");
     assert.equal(entry.releasedCount, 1);
+    assert.equal(entry.editCount, 1, "the forced release wrote its edit");
     assert.equal(notifyCalls.length, 1, "forced release still notifies");
 
     // The flag is consumed — cleared by the release phase on the draft
@@ -2142,6 +2277,7 @@ describe("an uncommitted round leaves nothing behind", () => {
       anchorOrdinal: 1,
       regionIndex: 1,
       content: LONG_OUTPUT,
+      contentHash: contentFingerprint(LONG_OUTPUT),
       contentTokens: 400,
       effective: false,
       markedAt: 1000,
@@ -2363,7 +2499,8 @@ describe("pure adapter pipeline support", () => {
     state.marks.set(markKey(1, 0), {
       anchorOrdinal: 1,
       regionIndex: 0,
-      content: "long output",
+      content: "tool output",
+      contentHash: contentFingerprint("tool output"),
       contentTokens: 100,
       effective: true,
       markedAt: 1000,

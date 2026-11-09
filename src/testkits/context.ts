@@ -30,7 +30,10 @@ import type {
   TokenUsage,
 } from "../core/context/lens.js";
 import { project } from "../core/context/lens.js";
-import { computeSpanHash } from "../core/context/spanhash.js";
+import {
+  computeSpanHash,
+  contentFingerprint,
+} from "../core/context/spanhash.js";
 import type { Block, Mark, SessionState } from "../core/context/state.js";
 
 /**
@@ -376,13 +379,19 @@ export function makeTranscript(count: number): HostMessage[] {
 /**
  * Build a mark fixture: a pending mark over a tool-output region.
  *
+ * The content fingerprint follows the content, as `addPendingMark`
+ * writes them together; pass `contentHash` explicitly to build a
+ * fingerprint-less record.
+ *
  * @param overrides - Fields overriding the defaults.
  * @returns The mark.
  */
 export function makeMark(overrides: Partial<Mark> = {}): Mark {
+  const content = overrides.content ?? "tool output";
   return {
     anchorOrdinal: 0,
-    content: "tool output",
+    content,
+    contentHash: contentFingerprint(content),
     contentTokens: 50,
     effective: false,
     markedAt: 2000,

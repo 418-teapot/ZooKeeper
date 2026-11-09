@@ -274,13 +274,14 @@ export interface PipelineHost<M> {
    *
    * @param messages - The round's message view.
    * @param callID - The tool call identifier.
-   * @returns The `(ordinal, regionIndex)` pair, or null when no part
-   *   carries the call id.
+   * @returns The `(ordinal, regionIndex)` pair with the region's current
+   *   text (the mark's content snapshot), or null when no part carries
+   *   the call id.
    */
   resolveMarkTarget(
     messages: M[],
     callID: string,
-  ): { ordinal: number; regionIndex: number } | null;
+  ): { ordinal: number; regionIndex: number; text: string } | null;
   /**
    * Land a `CompressionPlan` (id-keyed) on the core state as an
    * ordinal-keyed block.

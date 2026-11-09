@@ -106,7 +106,10 @@ describe("pi lifecycle wiring", () => {
     // The extension scope is terminal: a late activation cannot resurrect
     // it, so the wiring reports the refusal instead of handing out an empty
     // scope.
-    await assert.rejects(wiring.activateExtension(), /stopped/);
+    await assert.rejects(
+      wiring.activateExtension(),
+      /pi 扩展生命周期作用域已停止/,
+    );
   });
 
   it("ensures a session without a start notice", async () => {

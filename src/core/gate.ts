@@ -50,6 +50,14 @@ export interface DelegationRequest {
 export interface DelegationRefusal {
   /** Why the delegation was refused. */
   reason: string;
+  /**
+   * Optional structured cause, for the gate-blocked log entry.
+   *
+   * A judge that can classify its refusal reports the cause here so a log
+   * consumer can filter refusals without parsing the reason text.  A judge
+   * that has no classification omits it; the gate never invents one.
+   */
+  cause?: string;
 }
 
 /**
@@ -66,6 +74,8 @@ export interface DelegationGateRefusal {
   judge: string;
   /** Why the delegation was refused. */
   reason: string;
+  /** The judge's structured cause, absent when it reported none. */
+  cause?: string;
 }
 
 /**
@@ -122,7 +132,11 @@ export function composeGate(
     for (const contribution of judges) {
       const refusal = contribution.judge(req);
       if (refusal !== null) {
-        return { judge: contribution.name, reason: refusal.reason };
+        return {
+          judge: contribution.name,
+          reason: refusal.reason,
+          ...(refusal.cause !== undefined ? { cause: refusal.cause } : {}),
+        };
       }
     }
     return null;

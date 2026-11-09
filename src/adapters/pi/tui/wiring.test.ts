@@ -10,8 +10,11 @@
  * transcript overlay for a selected run.
  */
 import assert from "node:assert/strict";
-import { afterEach, describe, it } from "node:test";
-import { resetRegistry, startRun } from "../../../core/subagent/registry.js";
+import { beforeEach, describe, it } from "node:test";
+import {
+  createRunRegistry,
+  type RunRegistry,
+} from "../../../core/subagent/registry.js";
 import type { TodoStateStore } from "../../../core/todo/store.js";
 import type { TodoPhase } from "../../../core/todo/types.js";
 import { makeTheme, stubTui } from "../../../testkits/theme.js";
@@ -26,6 +29,7 @@ async function flush(): Promise<void> {
 /** A deps stub for the wiring, overridable per test. */
 function deps(over: Partial<FleetWiringDeps> = {}): FleetWiringDeps {
   return {
+    runs,
     getPrimary: () => "dolphin",
     colorizeAgent: (name) => name,
     getSessionId: () => "sess-wire",
@@ -72,8 +76,10 @@ function focusedTui(): FleetTuiLike {
   };
 }
 
-afterEach(() => {
-  resetRegistry();
+let runs: RunRegistry = createRunRegistry();
+
+beforeEach(() => {
+  runs = createRunRegistry();
 });
 
 describe("createFleetWiring — todo column", () => {
@@ -155,7 +161,7 @@ describe("createFleetWiring — enter inspect", () => {
       }),
     );
     wiring.fleetWidget.attach(focusedTui(), THEME);
-    startRun({
+    runs.start({
       id: "run-wire",
       agent: "beaver",
       parentSession: "sess-wire",
@@ -173,7 +179,7 @@ describe("createFleetWiring — enter inspect", () => {
   it("leaves enter unconsumed when no overlay opener is cached", () => {
     const wiring = createFleetWiring(deps());
     wiring.fleetWidget.attach(focusedTui(), THEME);
-    startRun({
+    runs.start({
       id: "run-wire-plain",
       agent: "beaver",
       parentSession: "sess-wire",

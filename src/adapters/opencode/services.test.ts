@@ -15,16 +15,16 @@
 import assert from "node:assert/strict";
 import { rmSync } from "node:fs";
 import { afterEach, beforeEach, describe, it } from "node:test";
+import { createConfigScope } from "../../core/config-snapshot.js";
 import {
   type ContextRuntime,
   createContextRuntime,
 } from "../../core/context/runtime.js";
 import { createStateStore } from "../../core/context/store.js";
 import { createLifecycleKernel } from "../../core/lifecycle/index.js";
-import {
-  sessionAgentRegistry,
-  sessionAgentResource,
-} from "../../core/session/agent.js";
+import type { ProcessState } from "../../core/process-state.js";
+import { createProcessState } from "../../core/process-state.js";
+import { createSessionAgentResource } from "../../core/session/agent.js";
 import {
   contextSessionResources,
   createSessionResourceCatalog,
@@ -34,15 +34,13 @@ import { permitFor } from "../../testkits/context-runtime.js";
 import { makeTmpDir } from "../../testkits/tmp.js";
 import { createOpenCodeHostServices, sessionScopeState } from "./services.js";
 
+/** The plugin instance under test. */
+let process: ProcessState;
+
 /** Scratch store directories the current test created. */
 const tmpDirs: string[] = [];
 
 afterEach(() => {
-  // The agent registry is a process-wide singleton; a stale binding would
-  // make the release assertions pass for the wrong reason.
-  for (const sessionID of ["s1", "s2"]) {
-    sessionAgentRegistry.delete(sessionID);
-  }
   for (const dir of tmpDirs.splice(0)) {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -53,12 +51,13 @@ let runtime: ContextRuntime;
 let sessionCatalog: SessionResourceCatalog;
 
 beforeEach(() => {
+  process = createProcessState();
   const dir = makeTmpDir("zoo-opencode-services");
   tmpDirs.push(dir);
   runtime = createContextRuntime(createStateStore(dir));
   sessionCatalog = createSessionResourceCatalog([
     ...contextSessionResources(runtime),
-    sessionAgentResource,
+    createSessionAgentResource(process.sessionAgents),
   ]);
 });
 
@@ -74,7 +73,7 @@ function sandboxWithCachedBlock(sessionID: string): string {
   runtime = createContextRuntime(createStateStore(dir));
   sessionCatalog = createSessionResourceCatalog([
     ...contextSessionResources(runtime),
-    sessionAgentResource,
+    createSessionAgentResource(process.sessionAgents),
   ]);
   void runtime.commit(permitFor(sessionID), (state) => {
     state.blocks.set(1, {
@@ -91,17 +90,42 @@ function sandboxWithCachedBlock(sessionID: string): string {
   return dir;
 }
 
+/** The zoo config enabling one settle strategy (todo-continuation). */
+const SETTLE_ZOO = {
+  mode: {
+    poly: {
+      agents: ["dolphin"],
+      skills: [],
+      hooks: ["todo-continuation"],
+      tools: [],
+      commands: [],
+    },
+  },
+  continuation: { max_wakes: 3 },
+};
+
+/** The agent table marking the profile agent primary. */
+const SETTLE_RAW = { agent: { dolphin: { mode: "primary" } } };
+
 /**
  * Build a kernel over the OpenCode declarations.
  *
- * @param onSettled - The settle strategies the profile contributed.
+ * @param withSettle - Whether the profile contributes a settle strategy
+ *   (and thus builds a loop engine).
  * @returns The kernel plus the declarations it was built from.
  */
-function buildKernel(
-  onSettled: Parameters<typeof createOpenCodeHostServices>[0]["onSettled"] = [],
-) {
+function buildKernel(withSettle = false) {
   const declarations = createOpenCodeHostServices({
-    onSettled,
+    scope: createConfigScope(
+      withSettle ? SETTLE_ZOO : {},
+      withSettle ? SETTLE_RAW : {},
+    ),
+    client: withSettle
+      ? { config: { get: async () => ({ data: SETTLE_RAW }) } }
+      : {},
+    directory: "",
+    process,
+    contextRuntime: runtime,
     sessionCatalog,
   });
   const kernel = createLifecycleKernel(declarations);
@@ -195,7 +219,7 @@ describe("OpenCode session runtime — release mode", () => {
     const dir = sandboxWithCachedBlock("s1");
     const { kernel } = buildKernel();
     await kernel.ensureSession("s1");
-    sessionAgentRegistry.bind("s1", "dolphin");
+    process.sessionAgents.bind("s1", "dolphin");
     runtime.setModelLimit(permitFor("s1"), 1000, "model");
 
     await kernel.stopSession("s1", "dispose", "release-runtime");
@@ -206,7 +230,7 @@ describe("OpenCode session runtime — release mode", () => {
       "a plugin dispose is not a deletion: the compression must survive",
     );
     assert.equal(
-      sessionAgentRegistry.resolve("s1"),
+      process.sessionAgents.resolve("s1"),
       "dolphin",
       "the agent binding outlives the plugin instance",
     );
@@ -221,20 +245,20 @@ describe("OpenCode session runtime — release mode", () => {
     const dir = sandboxWithCachedBlock("s1");
     const { kernel } = buildKernel();
     await kernel.ensureSession("s1");
-    sessionAgentRegistry.bind("s1", "dolphin");
+    process.sessionAgents.bind("s1", "dolphin");
 
     // The reason is diagnostic only: the mode alone selects the cleanup.
     await kernel.stopSession("s1", "extension.reload", "delete-session");
 
     assert.equal(createStateStore(dir).load("s1").blocks.size, 0);
-    assert.equal(sessionAgentRegistry.resolve("s1"), undefined);
+    assert.equal(process.sessionAgents.resolve("s1"), undefined);
   });
 
   it("deletes the persisted context and the binding on a session deletion", async () => {
     const dir = sandboxWithCachedBlock("s1");
     const { kernel } = buildKernel();
     await kernel.ensureSession("s1");
-    sessionAgentRegistry.bind("s1", "dolphin");
+    process.sessionAgents.bind("s1", "dolphin");
 
     await kernel.stopSession("s1", "session.deleted", "delete-session");
 
@@ -243,7 +267,7 @@ describe("OpenCode session runtime — release mode", () => {
       0,
       "the deleted session's file must be gone, not written back",
     );
-    assert.equal(sessionAgentRegistry.resolve("s1"), undefined);
+    assert.equal(process.sessionAgents.resolve("s1"), undefined);
   });
 
   it("keeps a sibling session's context on a dispose", async () => {
@@ -270,7 +294,12 @@ describe("OpenCode host services — declarations", () => {
     const session = await kernel.ensureSession("s1");
 
     assert.ok(extension);
-    assert.deepEqual(Object.keys(extension.services), ["loop"]);
+    assert.deepEqual(Object.keys(extension.services), [
+      "runScope",
+      "capabilities",
+      "composition",
+      "loop",
+    ]);
     assert.deepEqual(Object.keys(session?.services ?? {}), [
       "sessionRuntime",
       "sessionResources",
@@ -288,17 +317,8 @@ describe("OpenCode host services — declarations", () => {
 });
 
 describe("OpenCode session runtime — release", () => {
-  /** A settle strategy that always wakes, so the engine has a budget key. */
-  const WAKE = {
-    name: "strategy",
-    maxWakes: 3,
-    async handle() {
-      return { kind: "wake" as const, text: "keep going" };
-    },
-  };
-
   it("resets the deleted session's loop state only", async () => {
-    const { kernel } = buildKernel([WAKE]);
+    const { kernel } = buildKernel(true);
 
     const first = (await kernel.ensureSession("s1"))?.services.sessionRuntime;
     const second = (await kernel.ensureSession("s2"))?.services.sessionRuntime;
@@ -314,7 +334,7 @@ describe("OpenCode session runtime — release", () => {
   });
 
   it("resets the released session's loop state on a runtime release", async () => {
-    const { kernel } = buildKernel([WAKE]);
+    const { kernel } = buildKernel(true);
 
     const session = (await kernel.ensureSession("s1"))?.services.sessionRuntime;
     assert.ok(session?.engine);
@@ -330,19 +350,19 @@ describe("OpenCode session runtime — release", () => {
   });
 
   it("drops the stopped session's process-level records only", async () => {
-    const { kernel } = buildKernel([WAKE]);
+    const { kernel } = buildKernel(true);
     await kernel.ensureSession("s1");
     await kernel.ensureSession("s2");
     for (const sessionID of ["s1", "s2"]) {
-      sessionAgentRegistry.bind(sessionID, "dolphin");
+      process.sessionAgents.bind(sessionID, "dolphin");
       runtime.setModelLimit(permitFor(sessionID), 1000, "model");
     }
 
     await kernel.stopSession("s1", "session.deleted", "delete-session");
 
-    assert.equal(sessionAgentRegistry.resolve("s1"), undefined);
+    assert.equal(process.sessionAgents.resolve("s1"), undefined);
     assert.equal(runtime.modelLimit("s1"), undefined);
-    assert.equal(sessionAgentRegistry.resolve("s2"), "dolphin");
+    assert.equal(process.sessionAgents.resolve("s2"), "dolphin");
     assert.ok(runtime.modelLimit("s2"));
   });
 });

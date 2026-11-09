@@ -14,8 +14,9 @@
  *
  * The executor primary travels through an injected identity surface: the
  * parentage session's binding is read and written by id, and the executor
- * is published into the pending slot so the replacement session's
- * bind-time handlers resolve it before its first turn.
+ * is published as the pending replacement of that parentage session.  Only
+ * the replacement's own `session_start` claims it (see `switch-host.ts`),
+ * so the target reaches that session's bind-time handlers and no other.
  *
  * @module
  */
@@ -159,15 +160,18 @@ export function createPiHandoffTarget(opts: {
      * handoff is not rolled back.
      *
      * The executor is published into the pending identity slot before the
-     * replacement, so the new session's bind-time handlers resolve it.
+     * replacement, so the new session's bind-time handlers resolve it.  The
+     * replaced session travels with it: only the `session_start` pi reports
+     * for that replacement (reason `new`, parented to the replaced session)
+     * claims the target.
      *
      * The `{ cancelled: true }` result is the replacement outcome and
      * stays awaited — a cancelled replacement means the session was never
      * created.  When the replacement is cancelled or `newSession` throws
      * before the session was created, the parentage session's primary is
-     * restored to the value that preceded the handoff and the pending
-     * target is dropped (the user stays in their planning session, so its
-     * identity must survive).
+     * restored to the value that preceded the handoff and the published
+     * replacement is dropped (the user stays in their planning session, so
+     * its identity must survive).
      *
      * @param session - The created session; its `parentage` is the
      *   session the replacement addresses.
@@ -187,7 +191,7 @@ export function createPiHandoffTarget(opts: {
             "Ensure the pi command context exposes newSession.",
         );
       }
-      identity.stashPrimary(session.agent);
+      identity.publishPrimary(parentage, session.agent);
       let result: { cancelled: boolean };
       try {
         result = await cmdCtx.newSession({
@@ -211,9 +215,10 @@ export function createPiHandoffTarget(opts: {
       } catch (err) {
         // `newSession` threw before the session was created: restore the
         // previous primary so the surviving session's identity is intact,
-        // then propagate the failure (the plan file stays untouched).
+        // drop the published replacement, then propagate the failure (the
+        // plan file stays untouched).
         identity.setPrimary(parentage, previousPrimaries.get(session));
-        identity.stashPrimary(undefined);
+        identity.dropPending();
         throw err;
       }
       if (result?.cancelled === true) {
@@ -221,7 +226,7 @@ export function createPiHandoffTarget(opts: {
         // previous primary before throwing (asymmetric with the catch
         // path above only in that `newSession` resolved).
         identity.setPrimary(parentage, previousPrimaries.get(session));
-        identity.stashPrimary(undefined);
+        identity.dropPending();
         throw new Error(
           "Plan handoff cancelled: the new session was not created.",
         );

@@ -24,7 +24,7 @@
  */
 
 import type { BlockSpan } from "./lens.js";
-import type { HashedSpan } from "./spanhash.js";
+import { contentFingerprint, type HashedSpan } from "./spanhash.js";
 
 /**
  * Canonical character cap for persisted text snapshots (~4K tokens).
@@ -94,8 +94,18 @@ export interface Mark {
   anchorOrdinal: number;
   /** Index of the covered tool-output region within the message. */
   regionIndex?: number;
-  /** Snapshot of the region content at mark time. */
+  /**
+   * Snapshot of the region content at mark time, capped at
+   * `RECALL_MAX_CHARS`; the recall text only, never the write proof.
+   */
   content: string;
+  /**
+   * Fingerprint of the full region content at mark time
+   * (`contentFingerprint`), the write proof for the anchor check.
+   * Absent on a record written before fingerprints existed; such a mark
+   * writes nothing to an original region.
+   */
+  contentHash?: string;
   /** Estimated token count of the content. */
   contentTokens?: number;
   /** False while the mark is pending; true once released. */
@@ -313,7 +323,8 @@ export function blockIdOf(
  * @param ordinal - The message ordinal the mark anchors to.
  * @param regionIndex - The tool region index within the message; absent
  *   means an empty key and the mark is refused (defensive).
- * @param content - The original region text (content snapshot).
+ * @param content - The original region text (content snapshot and
+ *   fingerprint source).
  * @param contentTokens - Estimated reclaim tokens of the region.
  * @param now - Timestamp for the mark.
  * @returns True when the mark was written, false when the position was
@@ -334,6 +345,7 @@ export function addPendingMark(
     anchorOrdinal: ordinal,
     regionIndex,
     content: content.slice(0, RECALL_MAX_CHARS),
+    contentHash: contentFingerprint(content),
     contentTokens,
     effective: false,
     markedAt: now,

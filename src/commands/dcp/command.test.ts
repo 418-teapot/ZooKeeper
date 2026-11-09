@@ -21,6 +21,7 @@ import {
   createContextRuntime,
   type RuntimeFlaggedState,
 } from "../../core/context/runtime.js";
+import { contentFingerprint } from "../../core/context/spanhash.js";
 import { markKey } from "../../core/context/state.js";
 import { createStateStore } from "../../core/context/store.js";
 import type { ToolHost } from "../../core/ports/tool-host.js";
@@ -251,6 +252,7 @@ describe("effective prune marks over storage", () => {
       anchorOrdinal: 1,
       regionIndex: 1,
       content: output,
+      contentHash: contentFingerprint(output),
       contentTokens: 100,
       effective: true,
       markedAt: 1,
@@ -277,6 +279,7 @@ describe("effective prune marks over storage", () => {
       anchorOrdinal: 1,
       regionIndex: 1,
       content: output,
+      contentHash: contentFingerprint(output),
       contentTokens: 100,
       effective: true,
       markedAt: 1,
@@ -305,6 +308,7 @@ describe("effective prune marks over storage", () => {
       anchorOrdinal: 1,
       regionIndex: 1,
       content: output,
+      contentHash: contentFingerprint(output),
       contentTokens: 100,
       effective: true,
       markedAt: 1,
@@ -332,6 +336,7 @@ describe("effective prune marks over storage", () => {
       anchorOrdinal: 1,
       regionIndex: 1,
       content: "original output",
+      contentHash: contentFingerprint("original output"),
       contentTokens: 100,
       effective: true,
       markedAt: 1,

@@ -33,6 +33,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { ContextPruningConfig } from "../../../src/core/config-types.js";
 import type { ContextRuntime } from "../../../src/core/context/runtime.js";
+import { contentFingerprint } from "../../../src/core/context/spanhash.js";
 import { type Mark, markKey } from "../../../src/core/context/state.js";
 import { permitFor } from "../../../src/testkits/context-runtime.js";
 import { compareSnapshots } from "../framework/compare.js";
@@ -109,7 +110,8 @@ async function runAction<M>(
         // Translate the callID-keyed fixture action into the core's
         // `(ordinal, regionIndex)` key through the host's lens mapping.
         // The mark is written into the shared state so the same round's
-        // release phase sees it.
+        // release phase sees it; its content snapshot is the region text
+        // at mark time, as the producers write it.
         const target = host.resolveMarkTarget(messages, action.callID);
         if (target === null) return { result: null, error: null };
         const key = markKey(target.ordinal, target.regionIndex);
@@ -118,7 +120,8 @@ async function runAction<M>(
         const mark: Mark = {
           anchorOrdinal: target.ordinal,
           regionIndex: target.regionIndex,
-          content: "",
+          content: target.text,
+          contentHash: contentFingerprint(target.text),
           contentTokens: action.tokens,
           effective: action.effective,
           markedAt: now,

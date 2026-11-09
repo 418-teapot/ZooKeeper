@@ -10,10 +10,37 @@
  */
 
 import assert from "node:assert/strict";
-import { _resetPendingSwitchOpsForTesting } from "../adapters/pi/switch-host.js";
+import { createPiScope, type PiProcessScope } from "../adapters/pi/config.js";
+import {
+  _resetPiProcessStateForTesting,
+  createPiProcessState,
+  type PiProcessState,
+} from "../adapters/pi/process.js";
+import { createPiRuntime } from "../adapters/pi/publisher.js";
+
+import type { ExtensionAPI } from "../adapters/pi/types.js";
+import {
+  buildPiCapabilities,
+  type PiStartOptions,
+  type PiStartPrepared,
+} from "../adapters/pi/wire.js";
+import type { ComposedResult } from "../core/compose.js";
+import { defineCompositionService } from "../core/composition.js";
+import type { ModeProfile } from "../core/config-types.js";
+import {
+  createLifecycleKernel,
+  defineExtensionService,
+} from "../core/lifecycle/index.js";
+import { ORCHESTRATOR_AGENT_NAME } from "../core/orchestrator.js";
 import type { ToolHost } from "../core/ports/tool-host.js";
-import { sessionAgentRegistry } from "../core/session/agent.js";
-import { resetRegistry } from "../core/subagent/registry.js";
+import {
+  MAIN_ORIGIN,
+  type RuntimeHandle,
+  type RuntimeOrigin,
+  startRuntime,
+} from "../core/runtime.js";
+import type { Selection } from "../core/selection.js";
+import { REGISTRY } from "../registry.js";
 import { _resetForTesting } from "../utils/logger.js";
 import { colorTag, makeTheme, stubTui } from "./theme.js";
 
@@ -89,6 +116,167 @@ export const COLORS_RAW = {
 
 /** Session context shared by the handler tests. */
 export const SESSION_CTX = { sessionManager: { getSessionId: () => "sess-1" } };
+
+/**
+ * The per-agent model map of the fixture profile.
+ *
+ * Mirrors what the installer materialises into agents.json for the agents
+ * of the poly profile.  A generation always starts from an explicit map;
+ * no test reads the developer's `~/.pi/agent/agents.json`.
+ */
+export const PI_AGENT_MODELS: Record<string, string> = {
+  dolphin: "MoonShot/k3.1-pro",
+  mola: "MoonShot/k3.1-pro",
+  beaver: "OpenCodeGo/deepseek-v4.1-flash",
+  lynx: "OpenCodeGo/deepseek-v4.1-flash",
+  spider: "OpenCodeGo/deepseek-v4.1-flash",
+  eagle: "OpenCodeGo/deepseek-v4.1-flash",
+  kiwi: "MoonShot/k3.1-pro",
+};
+
+/**
+ * Build one pi configuration generation for a test.
+ *
+ * The production entry point parses the config and loads agents.json; a
+ * test hands both in, so no test depends on the developer's home.
+ *
+ * @param zooConfig - The `zoo` section of the generation.
+ * @param rawConfig - The whole config root (carries the agent tables).
+ * @param subagentModels - The generation's model map (defaults to the
+ *   fixture profile).
+ * @returns The frozen process scope of the generation.
+ */
+export function piScope(
+  zooConfig: any,
+  rawConfig: any = {},
+  subagentModels: Record<string, string> = PI_AGENT_MODELS,
+): PiProcessScope {
+  return createPiScope({ zooConfig, rawConfig, subagentModels });
+}
+
+/** The result of composing one pi generation in a test. */
+export interface PiComposition {
+  /** The host-agnostic contributions the selection produced. */
+  readonly composed: ComposedResult;
+  /** The selection the composition ran from. */
+  readonly selection: Selection;
+  /** The mode profile of the generation, or `null` when none was declared. */
+  readonly profile: ModeProfile | null;
+  /**
+   * The session → agent resolver of the provision that was composed.
+   *
+   * The provision owns it, and its role state follows the selection the
+   * composition adopted.
+   */
+  readonly resolveAgent: (sessionID: string) => string | undefined;
+  /** The caller resolver the host reads (the same session resolver). */
+  readonly resolveCallerAgent: (
+    sessionID: string,
+  ) => Promise<string | undefined>;
+}
+
+/**
+ * Compose one pi generation through the production service graph.
+ *
+ * The capability provision is the one pi builds in production
+ * (`buildPiCapabilities`); the composition is the shared core service.  A
+ * test therefore reads exactly what the entry point reads, without the
+ * event wiring around it.
+ *
+ * @param scope - The configuration generation to compose.
+ * @param deps - The host ports to provide (none for a bare composition).
+ * @param process - The process state the capabilities read; a fresh one by
+ *   default.
+ * @returns The composed contributions, the selection, and the profile.
+ */
+export async function composePi(
+  scope: PiProcessScope,
+  deps?: NonNullable<Parameters<typeof buildPiCapabilities>[2]>,
+  process: PiProcessState = createPiProcessState(),
+): Promise<PiComposition> {
+  const capabilities = defineExtensionService({
+    name: "capabilities",
+    deps: [],
+    create: () => buildPiCapabilities(scope, process, deps),
+  });
+  const composition = defineCompositionService({
+    scope,
+    capabilities,
+    units: REGISTRY,
+    orchestrator: ORCHESTRATOR_AGENT_NAME,
+  });
+  const kernel = createLifecycleKernel({
+    extension: [capabilities, composition],
+    session: [],
+  });
+  const extension = await kernel.ensureExtension();
+  assert.ok(extension, "the composition scope is created");
+  const provision = extension.services.capabilities;
+  return {
+    composed: extension.services.composition.composed,
+    selection: extension.services.composition.selection,
+    profile: scope.snapshot.modeProfile,
+    resolveAgent: provision.resolveAgent,
+    resolveCallerAgent: provision.resolveCallerAgent,
+  };
+}
+
+/**
+ * Start one pi runtime through the production start protocol.
+ *
+ * The entry points run the same protocol, so a test gets exactly what pi
+ * receives plus the runtime's close handle.  A test that names no API
+ * instance prepares the start without any host write (fail-closed),
+ * matching a host without pi.
+ *
+ * @param scope - The configuration generation to start.
+ * @param pi - The recording pi API stand-in, or absent.
+ * @param overrides - Optional host options and test seams.
+ * @param process - The process state the runtime runs over; a fresh one by
+ *   default, so every test starts from an isolated owner.
+ * @param origin - The runtime origin; the main instance by default.
+ * @returns The runtime handle: the publication and the close handle.
+ */
+export function startPiRuntime(
+  scope: PiProcessScope,
+  pi?: unknown,
+  overrides?: PiStartOptions,
+  process: PiProcessState = createPiProcessState(),
+  origin: RuntimeOrigin = MAIN_ORIGIN,
+): Promise<RuntimeHandle<PiStartPrepared>> {
+  return startRuntime({
+    scope,
+    origin,
+    createRuntime: ({ scope: startScope, origin: startOrigin }) =>
+      createPiRuntime({
+        scope: startScope,
+        origin: startOrigin,
+        process,
+        ...(pi === undefined ? {} : { pi: pi as ExtensionAPI }),
+        ...(overrides === undefined ? {} : { overrides }),
+      }),
+  });
+}
+
+/**
+ * Start one pi instance and return its publication.
+ *
+ * @param scope - The configuration generation to start.
+ * @param pi - The recording pi API stand-in, or absent.
+ * @param overrides - Optional host options and test seams.
+ * @param process - The process state the runtime runs over; a fresh one by
+ *   default.
+ * @returns The publication: the handlers and the registrations pi
+ *   received.
+ */
+export async function startPi(
+  scope: PiProcessScope,
+  pi?: unknown,
+  overrides?: PiStartOptions,
+  process: PiProcessState = createPiProcessState(),
+): Promise<PiStartPrepared> {
+  return (await startPiRuntime(scope, pi, overrides, process)).publication;
+}
 
 /** A minimal stand-in for pi's ExtensionAPI that records handlers. */
 export function mockApi(): {
@@ -186,16 +374,16 @@ export function joinedText(
 }
 
 /**
- * Reset the process-wide state a pi host test can observe: the log
- * buffer, the pending switch operations, the subagent run registry, and the
- * session → agent bindings (so memoized identities never leak between
- * tests).
+ * Reset the process-wide state a pi host test can observe: the log buffer
+ * and the pi process owner (the session bindings, the run records and the
+ * pending switch operations), so one entry test never leaks into the next.
+ *
+ * A test that drives a runtime through {@link startPiRuntime} passes its own
+ * owner instead and needs no reset.
  */
 export function resetPiTestState(): void {
   _resetForTesting();
-  _resetPendingSwitchOpsForTesting();
-  resetRegistry();
-  sessionAgentRegistry.clear();
+  _resetPiProcessStateForTesting();
   delete process.env.ZOO_MODE_FILE;
 }
 

@@ -12,8 +12,13 @@
  *    activates the extension (before composition) and stopped by every path
  *    that stops it: the session contexts, the adapter, the tool host built
  *    on the contexts, the todo catalog, the profile catalog, the tool
- *    baselines, the fleet surface, the switch surface, the composed
- *    profile and the loop engine built from it;
+ *    baselines, the fleet surface, the switch surface, the capability
+ *    provision, the assembled profile and the loop engine built from it;
+ *  - the `runScope` service is the run scope of this runtime: it reads the
+ *    process run table and owns the runs this runtime started, so the
+ *    runtime's stop ends only those.  It is declared first, so it is
+ *    disposed last, after every run-change subscriber released its
+ *    subscription;
  *  - session-scope services are created lazily, once per session, and
  *    release their own resources: the session's entry in the session
  *    contexts, its todo store, its own fleet (widget, todo column, host
@@ -28,21 +33,22 @@
  * A factory receives only the services it declares, so the dependency
  * direction is visible in the declarations: the tool host depends on the
  * session contexts, the switch surface depends on the session contexts,
- * the baselines and the fleet facade, and the session services depend on
- * the extension services they register with.  Nothing here reaches a
- * service locator, and the composition never receives a session-scoped
- * object: it receives these extension-scope ports.
+ * the baselines and the fleet facade, the capability provision on the
+ * ports it reads, the composition on the provision, and the session
+ * services on the extension services they register with.  Nothing here
+ * reaches a service locator, and the composition never receives a
+ * session-scoped object: it receives the extension-scope ports.
  *
- * The switch handoff store stays process-level on purpose (see
+ * The switch handoff store is process-level on purpose (see
  * `switch-host.ts`): a switch spans two factory executions, so its pending
- * operations cannot belong to one extension kernel.
+ * operations belong to the pi process owner, not to one extension kernel.
  *
  * @module
  */
 
 import { ASK_TOOL_NAME } from "../../core/ask.js";
-import type { ComposedResult } from "../../core/compose.js";
-import type { AgentModeMap, ModeProfile } from "../../core/config-types.js";
+import type { HostCapabilities } from "../../core/composition.js";
+import { defineCompositionService } from "../../core/composition.js";
 import type { ContextRuntime } from "../../core/context/runtime.js";
 import {
   defineExtensionService,
@@ -53,23 +59,28 @@ import {
   createLoopEngine,
   type LoopEngine,
 } from "../../core/loop/index.js";
-import type { AgentPermissionMap } from "../../core/permissions/deny-tools.js";
+import { ORCHESTRATOR_AGENT_NAME } from "../../core/orchestrator.js";
 import type { SwitchHost } from "../../core/ports/switch.js";
 import {
   defineSessionResourcesService,
   type SessionResourceCatalog,
 } from "../../core/session/resources.js";
-import type { RunSnapshot } from "../../core/subagent/registry.js";
-import { subscribeRunChange } from "../../core/subagent/registry.js";
+import type {
+  RunRegistry,
+  RunScope,
+  RunSnapshot,
+} from "../../core/subagent/registry.js";
 import type { FetchCandidates } from "../../core/todo/store.js";
-import type { ValidationLimits } from "../../core/validate.js";
+import { REGISTRY } from "../../registry.js";
 import { log } from "../../utils/logger.js";
 import { createPiAdapter } from "./adapter.js";
+import type { PiProcessScope } from "./config.js";
 import {
   createPiFleetSession,
   createPiFleetSessionRegistry,
   type PiFleetSession,
 } from "./fleet-session.js";
+import type { PiProcessState } from "./process.js";
 import {
   createPiSessionContexts,
   type PiSessionContexts,
@@ -77,6 +88,7 @@ import {
 import type { PiHistoryEntry } from "./subagent-scan.js";
 import {
   createPiSwitchHost,
+  type PiSessionStartFacts,
   type PiSwitchHostController,
 } from "./switch-host.js";
 import { scanTodoSnapshots } from "./todo-scan.js";
@@ -251,26 +263,44 @@ export interface PiSwitchSurface {
   /** The composition's switch port, or undefined without a pi API. */
   readonly host: SwitchHost | undefined;
   /**
-   * Take the pending post-replacement tool trim, or `undefined` when none
-   * was queued.
+   * Claim the pending replacement for one `session_start`.
+   *
+   * The facts are the evidence the start carries: pi's reason and the
+   * replaced session it recorded on the new session's header.  Only the
+   * pending replacement's own new session claims the target; every other
+   * start claims nothing.
    */
-  drainPendingOps(): string[] | undefined;
+  claimPending(sessionID: string, facts: PiSessionStartFacts): void;
+  /**
+   * Take one claimed session's post-replacement tool trim, or `undefined`
+   * when that session holds none.
+   */
+  drainPendingOps(sessionID: string): string[] | undefined;
 }
 
 /** The host inputs the service declarations close over. */
 export interface PiServiceHost {
+  /** The configuration generation of this extension instance. */
+  readonly scope: PiProcessScope;
+  /**
+   * The process state this instance runs over: the state every generation
+   * of this process shares.
+   */
+  readonly process: PiProcessState;
   /** The pi extension API, or undefined on a test-only composition. */
   readonly piApi?: ExtensionAPI;
   /** pi's `appendEntry` binding for the tool host's notifications. */
   readonly appendEntry?: PiAppendEntry;
   /**
-   * Compose the active profile over the extension-scope ports.
+   * Build this instance's capability provision over its extension-scope
+   * ports.
    *
-   * The composition reads services the kernel created, so it is the
-   * `composition` service's factory: the loop engine that consumes its
-   * settle strategies is a service of the same graph, created after it.
+   * The provision is a service the kernel creates; the composition service
+   * depends on it and assembles the profile from it.  The loop engine that
+   * consumes the composed settle strategies is a service of the same graph,
+   * created after the composition.
    */
-  composeProfile(ports: PiCompositionPorts): PiContributions;
+  capabilities(ports: PiCompositionPorts): PiCapabilities;
   /** The context records of this extension instance. */
   readonly contextRuntime: ContextRuntime;
   /** The session records of this extension instance. */
@@ -308,20 +338,24 @@ export interface PiCompositionPorts {
   readonly fleet: PiFleetFacade;
   /** The `/<agent>` switch surface. */
   readonly switchHost: PiSwitchSurface;
+  /**
+   * The run scope of this runtime.
+   *
+   * The subagent tool writes every delegation through it, so the runtime's
+   * stop ends exactly the runs this runtime started.
+   */
+  readonly runScope: RunScope;
 }
 
-/** The composed profile and the facts the entry point reads from it. */
-export interface PiContributions {
-  /** The active mode profile, or `null` when the selection loaded none. */
-  readonly profile: ModeProfile | null;
-  /** The host-agnostic contributions of the selection. */
-  readonly composed: ComposedResult;
-  /** The parsed validation limits of the profile. */
-  readonly limits: ValidationLimits;
-  /** The per-agent mode map of the profile. */
-  readonly agentModes: AgentModeMap;
-  /** The per-agent tool-deny rules of the profile. */
-  readonly agentPermissions: AgentPermissionMap;
+/**
+ * The capability provision of one pi extension instance.
+ *
+ * The shared composition service consumes the provision (`values`).  The
+ * session resolvers travel with it because the wiring reads the same
+ * functions the composition bound: both are built once per runtime and
+ * read every session the same way.
+ */
+export interface PiCapabilities extends HostCapabilities {
   /**
    * The session → agent resolver of this runtime.
    *
@@ -334,8 +368,6 @@ export interface PiContributions {
   readonly resolveCallerAgent: (
     sessionID: string,
   ) => Promise<string | undefined>;
-  /** The context records of this extension instance. */
-  readonly contextRuntime: ContextRuntime;
 }
 
 /** The todo transcript scan of pi's live session manager. */
@@ -378,13 +410,16 @@ function createTodoCandidates(
  * no session scope bound writes nothing, so the facade never falls back to
  * another session's fleet.
  *
- * The facade is also the one subscriber to the run registry of this
- * extension instance: every run change repaints the fleet of the session
- * that owns the run, so no producer ever nudges a widget itself.
+ * The facade is also the one subscriber to this process's run registry:
+ * every run change repaints the fleet of the session that owns the run, so
+ * no producer ever nudges a widget itself.
+ *
+ * @param runs - The run records of this process.
+ * @returns The fleet surface, closed over the subscription.
  */
-function createPiFleetSurface(): PiFleetSurface {
+function createPiFleetSurface(runs: RunRegistry): PiFleetSurface {
   const sessions = createPiFleetSessionRegistry();
-  const unsubscribe = subscribeRunChange((change) => {
+  const unsubscribe = runs.subscribe((change) => {
     sessions.refresh(change.parentSession);
   });
 
@@ -411,19 +446,28 @@ function createPiSwitchSurface(
   if (host.piApi === undefined) {
     // No host surface, no `/<agent>` command: the switch command unit
     // contributes nothing when this capability is absent (fail-closed).
-    return { host: undefined, drainPendingOps: () => undefined };
+    return {
+      host: undefined,
+      claimPending: () => {},
+      drainPendingOps: () => undefined,
+    };
   }
-  const controller: PiSwitchHostController = createPiSwitchHost({
-    getBaselineTools: () => deps.toolBaselines.primary(),
-    setActiveTools: (names) => host.piApi?.setActiveTools?.(names),
-    refreshFleetWidget: (sessionID) => deps.fleet.refresh(sessionID),
-    getCommandCtx: (sessionID) =>
-      deps.sessionContexts.commandForSession(sessionID),
-    setContext: (sessionID, ctx) => deps.sessionContexts.bind(sessionID, ctx),
-  });
+  const controller: PiSwitchHostController = createPiSwitchHost(
+    {
+      getBaselineTools: () => deps.toolBaselines.primary(),
+      setActiveTools: (names) => host.piApi?.setActiveTools?.(names),
+      refreshFleetWidget: (sessionID) => deps.fleet.refresh(sessionID),
+      getCommandCtx: (sessionID) =>
+        deps.sessionContexts.commandForSession(sessionID),
+      setContext: (sessionID, ctx) => deps.sessionContexts.bind(sessionID, ctx),
+    },
+    host.process,
+  );
   return {
     host: controller.host,
-    drainPendingOps: controller.drainPendingOps,
+    claimPending: (sessionID, facts) =>
+      controller.claimPending(sessionID, facts),
+    drainPendingOps: (sessionID) => controller.drainPendingOps(sessionID),
   };
 }
 
@@ -440,6 +484,20 @@ function createPiSwitchSurface(
  * @returns The extension and session declarations, in creation order.
  */
 export function createPiHostServices(host: PiServiceHost) {
+  // The run scope of this runtime: one per configuration generation and per
+  // pi sub-session runtime, over the run table the whole process shares.  The
+  // runtime writes through it, so its stop ends only the runs it started.
+  const runs = host.process.runs.createScope();
+
+  // Declared FIRST so it is disposed LAST: the fleet subscribers stop
+  // before the stop aborts the runs they would otherwise repaint.
+  const runScope = defineExtensionService({
+    name: "runScope",
+    deps: [],
+    create: () => runs,
+    dispose: (scope) => scope.dispose(),
+  });
+
   const sessionContexts = defineExtensionService({
     name: "sessionContexts",
     deps: [],
@@ -492,8 +550,8 @@ export function createPiHostServices(host: PiServiceHost) {
 
   const fleet = defineExtensionService({
     name: "fleet",
-    deps: [],
-    create: () => createPiFleetSurface(),
+    deps: [runScope],
+    create: ({ deps }) => createPiFleetSurface(deps.runScope),
     // A stopped extension must not repaint a widget: the subscription ends
     // with this scope.
     dispose: (surface) => surface.dispose(),
@@ -505,11 +563,12 @@ export function createPiHostServices(host: PiServiceHost) {
     create: ({ deps }) => createPiSwitchSurface(host, deps),
   });
 
-  // The composed profile.  It reads extension-scope ports only, so it is a
-  // service like them: the entry point activates the extension to obtain it
-  // instead of composing outside the graph.
-  const composition = defineExtensionService({
-    name: "composition",
+  // The capability provision of this instance: the values the shared
+  // composition service binds.  It is a service so every consumer of the
+  // assembly reads the same provision, and so the assembly is created
+  // inside the graph rather than before it.
+  const capabilities = defineExtensionService({
+    name: "capabilities",
     deps: [
       sessionContexts,
       adapter,
@@ -519,8 +578,20 @@ export function createPiHostServices(host: PiServiceHost) {
       toolBaselines,
       fleet,
       switchHost,
+      runScope,
     ],
-    create: ({ deps }) => host.composeProfile(deps),
+    create: ({ deps }) => host.capabilities(deps),
+  });
+
+  // The assembled profile, produced by the shared composition service over
+  // the capability provision and this generation's snapshot.
+  const composition = defineCompositionService({
+    scope: host.scope,
+    capabilities,
+    units: REGISTRY,
+    // The product's orchestrator role.  The planner decides whether the
+    // enabled profile can provide it; this host holds no fallback.
+    orchestrator: ORCHESTRATOR_AGENT_NAME,
   });
 
   // The loop engine over the composed settle strategies.  A profile that
@@ -573,13 +644,14 @@ export function createPiHostServices(host: PiServiceHost) {
   // is untouched.
   const fleetSession = defineSessionService({
     name: "fleetSession",
-    deps: [fleet, sessionContexts, todoStore, composition],
+    deps: [fleet, sessionContexts, todoStore, capabilities, runScope],
     create: ({ deps, sessionID }) => {
       const session = createPiFleetSession({
         sessionID,
+        runs: deps.runScope,
         // The session's own primary: the shared resolver answers for the
         // session this fleet belongs to, never for a sibling's.
-        getPrimary: () => deps.composition.resolveAgent(sessionID),
+        getPrimary: () => deps.capabilities.resolveAgent(sessionID),
         colorizeAgent: host.colorizeAgent,
         // Fail-closed: without a pi API instance there is no host to write
         // to, so the fleet stays inert.
@@ -626,6 +698,7 @@ export function createPiHostServices(host: PiServiceHost) {
 
   return {
     extension: [
+      runScope,
       sessionContexts,
       adapter,
       toolHost,
@@ -634,6 +707,7 @@ export function createPiHostServices(host: PiServiceHost) {
       toolBaselines,
       fleet,
       switchHost,
+      capabilities,
       composition,
       loop,
     ] as const,

@@ -353,6 +353,10 @@ export function createLifecycleKernel<
       return extensionState === "ready" ? extensionHandle : null;
     } catch (error) {
       const errors: CleanupFailure[] = [];
+      // Abort before the first await: every service the failed scope built
+      // observes the stop at once, so no reader holds a live signal of a
+      // scope that never became ready.
+      controller.abort();
       await disposeCreated(
         extensionCreated,
         "extension",

@@ -31,7 +31,7 @@
  * (and `tool` only when at least one tool is enabled).
  *
  * The exported helper functions (`injectAgentPrompts`,
- * `registerProfileToolsInConfig`, `registerSkills`, `runAfterHandlers`)
+ * `registerProfileToolsInConfig`, `registerSkillPaths`, `runAfterHandlers`)
  * are shared with the config hook and kept public for unit tests.
  * `normalizeToolName` is shared with the tool registration path, and
  * `toToolDefinitionView` / `applyToolDefinitionView` are the thin
@@ -41,8 +41,6 @@
  * @module
  */
 
-import { dirname, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
 import type { ComposedResult } from "./core/compose.js";
 import { runIsolated } from "./core/compose.js";
 import type { WorkPermit } from "./core/lifecycle/index.js";
@@ -52,7 +50,6 @@ import type {
   HostMaterialisation,
   Selection,
 } from "./core/selection.js";
-import { scanSkillDirectories } from "./core/skills.js";
 import {
   collectToolDefinitionChanges,
   createToolDefinitionView,
@@ -71,9 +68,6 @@ import type {
   TransformOutput,
 } from "./core/unit.js";
 import { log } from "./utils/logger.js";
-
-const __dirname = dirname(fileURLToPath(import.meta.url));
-const ROOT_DIR = resolve(__dirname, "..");
 
 // ---------------------------------------------------------------------------
 // Unified slash-command sentinel
@@ -141,25 +135,23 @@ export function injectAgentPrompts(
 }
 
 /**
- * Register the skills named by `profileSkills` from the skills/ directory.
+ * Register the skill directories the profile resolved.
  *
- * Fail-closed: a skill registers only when its directory name appears in
- * `profileSkills`.  Absent names are skipped silently — config.toml (the
- * single source of truth) lists every skill explicitly.  The scan itself is
- * shared with the pi adapter (`scanSkillDirectories`); this function only
- * owns the OpenCode result sink (initialising and appending to
- * `config.skills.paths`).
+ * The paths come from the start preparation (see `publisher.ts`), which
+ * reads the skill directories before any host write; the `config` hook
+ * never scans.  This function only owns the OpenCode result sink
+ * (initialising and appending to `config.skills.paths`).
  *
  * @param config - The config object being mutated by the `config` hook.
- * @param profileSkills - Skill directory names declared by the active profile.
+ * @param skillPaths - Absolute paths of the profile's skill directories.
  */
-export function registerSkills(config: any, profileSkills: string[]): void {
+export function registerSkillPaths(
+  config: any,
+  skillPaths: readonly string[],
+): void {
   config.skills ??= {};
   config.skills.paths ??= [];
-  const skillsDir = resolve(ROOT_DIR, "skills");
-  for (const skillPath of scanSkillDirectories(skillsDir, profileSkills)) {
-    config.skills.paths.push(skillPath);
-  }
+  config.skills.paths.push(...skillPaths);
 }
 
 /**
@@ -539,12 +531,15 @@ function transformSessionID(output: TransformOutput): string {
  * @param composed - The host-agnostic composition result.
  * @param deps - Per-plugin-instance dependencies.
  * @param selection - The selection the composition was built from.
+ * @param skillPaths - Absolute paths of the profile's skill directories,
+ *   read by the start preparation.
  * @returns The hooks object fragment merged into the plugin.
  */
 export function assembleOpenCodeHooks(
   composed: ComposedResult,
   deps: Partial<Capabilities>,
   selection: Selection,
+  skillPaths: readonly string[],
 ): Record<string, any> {
   return {
     ...(Object.keys(composed.tools).length > 0 ? { tool: composed.tools } : {}),
@@ -582,10 +577,7 @@ export function assembleOpenCodeHooks(
       }
 
       injectAgentPrompts(agents, composed.agents);
-      registerSkills(
-        config,
-        composed.skills.map((s) => s.name),
-      );
+      registerSkillPaths(config, skillPaths);
       registerProfileToolsInConfig(config, Object.keys(composed.tools));
       for (const [name, contribution] of Object.entries(composed.commands)) {
         config.command ??= {};
@@ -690,6 +682,9 @@ export function assembleOpenCodeHooks(
                   target: target ?? null,
                   judge: refusal.judge,
                   reason: refusal.reason,
+                  ...(refusal.cause !== undefined
+                    ? { cause: refusal.cause }
+                    : {}),
                 });
                 throw new Error(refusal.reason);
               }

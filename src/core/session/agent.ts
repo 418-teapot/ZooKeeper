@@ -10,18 +10,20 @@
  *  - OpenCode binds from `message.updated` events (the authoritative
  *    per-session agent reported by the host).
  *  - pi resolves from explicit sources — an existing binding, the fixed
- *    agent of a sub-session runtime, the run registry's `childSession`, a
- *    pending switch target, or the orchestrator (see
- *    `buildPiResolveAgent` in `src/adapters/pi/wire.ts`) — binding every
- *    result so later lookups hit this store directly; pi has no
+ *    agent of a sub-session runtime, the run registry's `childSession`, or
+ *    the orchestrator (see `buildPiResolveAgent` in
+ *    `src/adapters/pi/wire.ts`) — binding every result so later lookups
+ *    hit this store directly.  A replacement `session_start` claim binds
+ *    its target here before the session's bind-time events, so the
+ *    resolver answers it as an existing binding.  pi has no
  *    session-deletion event, so pi-side bindings live for the whole
  *    process — that accumulation is bounded by design.
  *
- * `clear` is the test seam; the process-wide singleton lives on the
- * `sessionAgentRegistry` export, shared by every host entry point and
- * read by units through `Capabilities.resolveAgent`.  The binding is a
- * retained session record (see `resources.ts`), so a session deletion
- * removes it.
+ * One instance belongs to the host's process owner
+ * (`core/process-state.ts`), which hands the same instance to every
+ * configuration generation and to every sub-runtime of that process; units
+ * read it through `Capabilities.resolveAgent`.  The binding is a retained
+ * session record (see `resources.ts`), so a session deletion removes it.
  *
  * @module
  */
@@ -74,24 +76,21 @@ export class SessionAgentRegistry {
 }
 
 /**
- * The process-wide registry shared by every host entry point.
+ * Declare the session record over one process's agent registry.
  *
- * The hosts' event handlers are the writers (OpenCode via
- * `message.updated`; pi via lazy resolution inside `resolveAgent`); the
- * session resource catalog removes entries on session deletion; hook units
- * read through `Capabilities.resolveAgent`.
- */
-export const sessionAgentRegistry = new SessionAgentRegistry();
-
-/**
- * The agent binding outlives a runtime release.
+ * The binding outlives a runtime release: identity belongs to the process,
+ * not to a plugin instance, so a stopped runtime keeps it and the next
+ * instance resolves the same session; only a session deletion drops it.
  *
- * Identity belongs to the process, not to a plugin instance: a stopped
- * runtime keeps the binding so the next instance resolves the same session,
- * and only a session deletion drops it.
+ * @param registry - The registry of the process that owns this record.
+ * @returns The retained session record the catalog applies on a stop.
  */
-export const sessionAgentResource: RetainedSessionResource = {
-  name: "sessionAgent",
-  runtime: "retain",
-  delete: (sessionID) => sessionAgentRegistry.delete(sessionID),
-};
+export function createSessionAgentResource(
+  registry: SessionAgentRegistry,
+): RetainedSessionResource {
+  return {
+    name: "sessionAgent",
+    runtime: "retain",
+    delete: (sessionID) => registry.delete(sessionID),
+  };
+}

@@ -9,7 +9,8 @@
  * that permit's session id only after admission:
  *
  *  - `session_start` forwards the real start notice with pi's own reason
- *    (a lifecycle control entry that no permit governs), then seeds the
+ *    (a lifecycle control entry that no permit governs), claims the pending
+ *    switch replacement when this start created its session, then seeds the
  *    `zoo` widget and the todo column at startup / resume, applies the
  *    session's active tool set (its primary's denies plus the ask
  *    visibility rule), and rebuilds the run registry from the persisted
@@ -62,6 +63,7 @@ import type { LoopEngine, StopCause } from "../../core/loop/index.js";
 import type { SkillPermissionMap } from "../../core/permissions/skill-permissions.js";
 import { filterAllowedSkills } from "../../core/permissions/skill-permissions.js";
 import { applyModelVariant } from "../../core/prompt-variant.js";
+import type { RunRegistry } from "../../core/subagent/registry.js";
 import { flushLogs, log } from "../../utils/logger.js";
 import type { PiLifecycleOutcome } from "./lifecycle.js";
 import type { PiSessionContexts } from "./session-contexts.js";
@@ -73,6 +75,7 @@ import {
   settledTurnMessages,
 } from "./settled-turn.js";
 import { type PiHistoryEntry, rebuildSubagentRuns } from "./subagent-scan.js";
+import type { PiSessionStartFacts } from "./switch-host.js";
 import type { PiToolHostContext } from "./tool-host.js";
 import type { PiBoundaryResult, PiEventHandlers } from "./types.js";
 
@@ -100,6 +103,11 @@ export interface PiEventHandlerDeps {
   engine: LoopEngine | undefined;
   /** Per-agent skill permission rules (`[agent.<name>].permission.skill`). */
   skillPermissions: SkillPermissionMap;
+  /**
+   * The run records of this process: the session-bind rebuild restores the
+   * delegation history into them.
+   */
+  runs: RunRegistry;
   /**
    * The composed profile's skill directory names.
    *
@@ -130,8 +138,17 @@ export interface PiEventHandlerDeps {
   /** Seed one session's todo column once (the `before_agent_start` fallback). */
   seedTodoView(sessionID: string | undefined): void;
   /**
-   * Take and apply the pending post-replacement switch operations for the
-   * session this call's context names.
+   * Claim the pending switch replacement for the session this start names.
+   *
+   * The start is the replacement only when it carries pi's `new` reason
+   * and the replaced session on its header; every other start claims
+   * nothing, so a target and trim queued for a replacement never bind or
+   * apply to another session.
+   */
+  claimPendingSwitchOps(sessionID: string, facts: PiSessionStartFacts): void;
+  /**
+   * Take and apply the claimed session's deferred post-replacement switch
+   * operations.
    */
   drainPendingSwitchOps(sessionID: string, ctx: unknown): void;
   /**
@@ -183,6 +200,27 @@ export interface PiEventHandlerDeps {
    * extension, and its tool face stays driver-restricted.
    */
   fixedAgent?: string;
+}
+
+/**
+ * Read the replacement evidence off one `session_start`.
+ *
+ * pi carries the reason on the event and records the replaced session on
+ * the new session's header.
+ *
+ * @param evt - The received event payload.
+ * @param ctx - The event context.
+ * @returns The facts a replacement claim matches on.
+ */
+function sessionStartFacts(evt: unknown, ctx: unknown): PiSessionStartFacts {
+  const reason = (evt as { reason?: unknown } | undefined)?.reason;
+  const header = (
+    ctx as PiToolHostContext | undefined
+  )?.sessionManager?.getHeader?.();
+  return {
+    reason: typeof reason === "string" ? reason : undefined,
+    parentSession: header?.parentSession,
+  };
 }
 
 /**
@@ -255,7 +293,8 @@ export function createPiEventHandlers(
         deps.seedTodoView(permit.sessionID);
         // Resolve this event's session agent through the shared resolver
         // (an existing binding, this runtime's fixed agent, a recorded
-        // child session, a pending switch target, or the orchestrator).
+        // child session, the replacement `session_start` claim, or the
+        // orchestrator).
         // The composed agents list is looked up by that name; an unresolved
         // session or an agent outside the profile returns the system prompt
         // unchanged (silent fail-closed).
@@ -281,6 +320,15 @@ export function createPiEventHandlers(
       await deps.startSession(evt, ctx);
       await deps.runSession(ctx, (permit) => {
         sessionContexts.bind(permit.sessionID, ctx);
+        // Claim the pending switch replacement when this start is its own
+        // new session, so its bind-time work below (and the
+        // `resources_discover` that follows this event) already resolves
+        // the target.  A reload / resume / startup / fork, and a plain
+        // `/new` session, claim nothing.
+        deps.claimPendingSwitchOps(
+          permit.sessionID,
+          sessionStartFacts(evt, ctx),
+        );
         // Set the session's active tools at bind time (startup / reload /
         // resume / replacement): the primary's denies take effect from the
         // first turn, before the /<agent> switch path or a /go handoff
@@ -301,21 +349,22 @@ export function createPiEventHandlers(
         // misclassify every later settle as `awaiting-input` and silently
         // disable the loop for the rest of the process.
         if (deps.engine !== undefined) uiPromptDepths.delete(permit.sessionID);
-        // Rebuild the run registry from the session's persisted message
-        // history.  The registry is process-level state, so a pi exit wipes
-        // it; on restore / resume this rescans the session's `subagent` tool
-        // calls (via `buildContextEntries()`) and rewrites the registry, so
-        // the fleet widget keeps showing historical subagent runs.  The
-        // rebuild is recursive: each finished run's `details.sessionPath`
-        // points at its sub-session file, which is rescanned for nested
-        // delegations (beaver → lynx → ...), reconstructing the full
-        // parent/child tree.  A missing / unreadable sub-session file skips
-        // only that branch (warn).  Idempotent: run ids are the pi run ids
-        // and the registry's terminal-immutability rule never duplicates or
-        // overwrites an existing entry.  Best-effort: an unavailable session
-        // manager / history leaves the registry untouched (fresh session).
-        // The transcript read comes from this event's own context, never
-        // from another session's bound context.
+        // Rebuild the process's run registry from the session's persisted
+        // message history.  The registry belongs to the process, so a pi exit
+        // wipes it; on restore / resume this rescans the session's
+        // `subagent` tool calls (via `buildContextEntries()`) and rewrites
+        // the registry, so the fleet widget keeps showing historical
+        // subagent runs.  The rebuild is recursive: each finished run's
+        // `details.sessionPath` points at its sub-session file, which is
+        // rescanned for nested delegations (beaver → lynx → ...),
+        // reconstructing the full parent/child tree.  A missing / unreadable
+        // sub-session file skips only that branch (warn).  Idempotent: run
+        // ids are the pi run ids and the registry's terminal-immutability
+        // rule never duplicates or overwrites an existing entry.
+        // Best-effort: an unavailable session manager / history leaves the
+        // registry untouched (fresh session).  The transcript read comes
+        // from this event's own context, never from another session's bound
+        // context.
         //
         // Every restored run publishes one run change, and the fleet
         // subscription repaints the session that owns it, so the rebuild
@@ -329,7 +378,7 @@ export function createPiEventHandlers(
             // `this.getEntries()` — an unbound call crashes at runtime.
             const entries =
               sessionManager.buildContextEntries() as PiHistoryEntry[];
-            rebuildSubagentRuns(entries, permit.sessionID);
+            rebuildSubagentRuns(entries, permit.sessionID, deps.runs);
           } catch (err) {
             log.warn({
               hook: "plugin",
@@ -347,8 +396,9 @@ export function createPiEventHandlers(
         // Filter the contributed skill directories by this session's
         // primary `[agent.<name>].permission.skill` rules.  The filter
         // applies at session-bind time against the primary resolved AT THAT
-        // MOMENT (a replacement session resolves the switch target from the
-        // pending slot) —
+        // MOMENT (the `session_start` before this event claimed a switch
+        // replacement's target, so a replacement session already resolves
+        // it) —
         // pi's `resources_discover` fires once per session bind and its
         // results are merge-only (cannot be retracted mid-session), so a
         // later runtime `/mola` switch does NOT re-filter the
@@ -434,6 +484,7 @@ export function createPiEventHandlers(
           target: target ?? null,
           judge: refusal.judge,
           reason: refusal.reason,
+          ...(refusal.cause !== undefined ? { cause: refusal.cause } : {}),
         });
         return { block: true, reason: refusal.reason };
       });
@@ -545,9 +596,10 @@ export function createPiEventHandlers(
               outcome,
               hadActivity,
             });
-            // Only the orchestrator session is continued; a delegated child
-            // session is driven by its own agent and must not be woken by
-            // the root extension.
+            // A sub-session runtime serves one delegation, so its own run
+            // must never be woken by the root extension: skip the judge.
+            // Every session of the main runtime is judged, including a
+            // primary a switch bound there.
             if (deps.fixedAgent !== undefined) {
               log.debug({
                 hook: "loop",

@@ -88,6 +88,30 @@ describe("composeGate", () => {
     assert.deepEqual(refusal, { judge: "first", reason: "refused-a" });
   });
 
+  it("preserves a judge's structured cause and omits an absent one", () => {
+    const gate = composeGate([
+      {
+        name: "target",
+        judge(req) {
+          return req.target === "a"
+            ? { reason: "refused-a", cause: "not-selected" }
+            : { reason: "refused-b" };
+        },
+      },
+    ]);
+    assert.ok(gate !== null);
+    assert.deepEqual(gate({ caller: "beaver", target: "a" }), {
+      judge: "target",
+      reason: "refused-a",
+      cause: "not-selected",
+    });
+    // The gate never invents a cause for a judge that reports none.
+    assert.deepEqual(gate({ caller: "beaver", target: "b" }), {
+      judge: "target",
+      reason: "refused-b",
+    });
+  });
+
   it("is a pure function of the request — missing fields flow through", () => {
     const gate = composeGate([targetJudge("kiwi")]);
     assert.ok(gate !== null);

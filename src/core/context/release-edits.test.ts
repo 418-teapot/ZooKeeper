@@ -33,9 +33,11 @@ import { buildProtectionMap, type ProtectionMap } from "./protection-map.js";
 import {
   computeEdits,
   flipReleasedMarks,
+  materializeEffectiveMarks,
   type ReleaseOptions,
 } from "./release.js";
-import { markKey, type SessionState } from "./state.js";
+import { contentFingerprint } from "./spanhash.js";
+import { markKey, RECALL_MAX_CHARS, type SessionState } from "./state.js";
 
 // ---------------------------------------------------------------------------
 // Fixture helpers
@@ -59,7 +61,12 @@ function openProtection(history: HostMessage[]): ProtectionMap {
  * Seed a lens mark for the given region.
  *
  * `regionIndex` is optional: pass undefined to seed a mark without a
- * region index (the unresolvable-anchor shape).
+ * region index (the unresolvable-anchor shape).  `content` is the mark's
+ * content snapshot and defaults to the fixture's long tool output, so it
+ * matches the region it addresses unless a test states otherwise.  The
+ * stored snapshot and the fingerprint are the ones `addPendingMark`
+ * writes for the same content: a truncated snapshot over the full-text
+ * fingerprint.
  */
 function seedMark(
   state: SessionState,
@@ -67,11 +74,32 @@ function seedMark(
   regionIndex: number | undefined,
   effective: boolean,
   tokens = 100,
+  content = LONG_OUTPUT,
+): void {
+  seedUnhashed(state, ordinal, regionIndex, effective, tokens, content);
+  const key = markKey(ordinal, regionIndex);
+  const mark = state.marks.get(key);
+  if (mark !== undefined) mark.contentHash = contentFingerprint(content);
+}
+
+/**
+ * Seed a mark that carries no content fingerprint.
+ *
+ * The shape of a file written before fingerprints existed, or of a
+ * hand-written record: the anchor check has no proof of the content.
+ */
+function seedUnhashed(
+  state: SessionState,
+  ordinal: number,
+  regionIndex: number | undefined,
+  effective: boolean,
+  tokens = 100,
+  content = LONG_OUTPUT,
 ): void {
   state.marks.set(markKey(ordinal, regionIndex), {
     anchorOrdinal: ordinal,
     ...(regionIndex !== undefined ? { regionIndex } : {}),
-    content: "content snapshot",
+    content: content.slice(0, RECALL_MAX_CHARS),
     contentTokens: tokens,
     effective,
     markedAt: 1,
@@ -163,7 +191,7 @@ describe("computeEdits selection", () => {
   it("effective tool-input marks yield the error-input placeholder", () => {
     const state = makeState();
     const lens = [makeToolMsg("bash", '"ls"', "boom", { status: "error" })];
-    seedMark(state, 0, 0, true, 100);
+    seedMark(state, 0, 0, true, 100, '"ls"');
     const edits = computeEdits(state, lens, {
       protection: openProtection(lens),
       promptTokens: 100_000,
@@ -371,7 +399,7 @@ describe("release round result", () => {
     const texts = runRelease(
       (state) => {
         // Equality at 5% of 100_000 = 5000 pending tokens.
-        seedMark(state, 0, 0, false, 3000); // tool-input
+        seedMark(state, 0, 0, false, 3000, '"ls"'); // tool-input
         seedMark(state, 0, 1, false, 2000); // tool-output
       },
       () => [makeToolMsg("bash", '"ls"', LONG_OUTPUT)],
@@ -468,5 +496,200 @@ describe("release round result", () => {
       LONG_OUTPUT,
     ]);
     assert.deepEqual(second, first);
+  });
+});
+
+// ===========================================================================
+// Anchor content check
+// ===========================================================================
+
+describe("anchor content check", () => {
+  const gate: ReleaseOptions = {
+    promptTokens: 100_000,
+    releasedPercent: 0,
+    pendingViewChange: false,
+  };
+
+  it("shifted ordinal over foreign content — no edit", () => {
+    const state = makeState();
+    const lens = [makeToolMsg("bash", '{"cmd":"ls"}', "new output")];
+    seedMark(state, 0, 1, true, 100, "old output");
+    const edits = computeEdits(state, lens, {
+      ...gate,
+      protection: openProtection(lens),
+    });
+    assert.deepEqual(edits, []);
+  });
+
+  it("shifted anchor keeps the current text through a release round", () => {
+    const lens = [makeToolMsg("bash", '{"cmd":"ls"}', "new output")];
+    const state = makeState();
+    seedMark(state, 0, 1, false, 100, "old output");
+    const options: ReleaseOptions = {
+      ...gate,
+      protection: openProtection(lens),
+    };
+    applyEdits(lens, computeEdits(state, lens, options));
+    const flipped = flipReleasedMarks(state, options);
+    assert.deepEqual(regionTexts(lens), ['{"cmd":"ls"}', "new output"]);
+    assert.equal(flipped.releasedCount, 1, "the flip is independent");
+    assert.equal(state.marks.get(markKey(0, 1))?.effective, true);
+  });
+
+  it("matching snapshot still writes the placeholder", () => {
+    const lens = [makeToolMsg("bash", '{"cmd":"ls"}', LONG_OUTPUT)];
+    const state = makeState();
+    seedMark(state, 0, 1, true, 100);
+    const options: ReleaseOptions = {
+      ...gate,
+      protection: openProtection(lens),
+    };
+    applyEdits(lens, computeEdits(state, lens, options));
+    assert.equal(lens[0].regions[1].get(), PRUNED_TOOL_OUTPUT_REPLACEMENT);
+  });
+
+  it("placeholder already in place — replay stays stable", () => {
+    const lens = [makeToolMsg("bash", '{"cmd":"ls"}', "old output")];
+    const state = makeState();
+    seedMark(state, 0, 1, true, 100, "old output");
+    const options: ReleaseOptions = {
+      ...gate,
+      protection: openProtection(lens),
+    };
+    applyEdits(lens, computeEdits(state, lens, options));
+    applyEdits(lens, computeEdits(state, lens, options));
+    assert.equal(lens[0].regions[1].get(), PRUNED_TOOL_OUTPUT_REPLACEMENT);
+  });
+
+  it("region longer than the recall cap — the anchor matches", () => {
+    const head = "y".repeat(RECALL_MAX_CHARS);
+    const long = `${head}original tail`;
+    const lens = [makeToolMsg("bash", '{"cmd":"ls"}', long)];
+    const state = makeState();
+    seedMark(state, 0, 1, true, 100, long);
+    const edits = computeEdits(state, lens, {
+      ...gate,
+      protection: openProtection(lens),
+    });
+    assert.deepEqual(edits, [
+      {
+        messageOrdinal: 0,
+        regionIndex: 1,
+        text: PRUNED_TOOL_OUTPUT_REPLACEMENT,
+      },
+    ]);
+  });
+
+  it("change beyond the recall cap — no edit", () => {
+    const head = "y".repeat(RECALL_MAX_CHARS);
+    const lens = [makeToolMsg("bash", '{"cmd":"ls"}', `${head}changed tail`)];
+    const state = makeState();
+    seedMark(state, 0, 1, true, 100, `${head}original tail`);
+    const edits = computeEdits(state, lens, {
+      ...gate,
+      protection: openProtection(lens),
+    });
+    assert.deepEqual(edits, []);
+  });
+
+  it("snapshot differing inside the cap — no edit", () => {
+    const long = "y".repeat(RECALL_MAX_CHARS);
+    const lens = [makeToolMsg("bash", '{"cmd":"ls"}', long)];
+    const state = makeState();
+    seedMark(state, 0, 1, true, 100, `z${long.slice(1, RECALL_MAX_CHARS)}`);
+    const edits = computeEdits(state, lens, {
+      ...gate,
+      protection: openProtection(lens),
+    });
+    assert.deepEqual(edits, []);
+  });
+
+  it("mark without a fingerprint — fails closed, no edit", () => {
+    const lens = [makeToolMsg("bash", '{"cmd":"ls"}', LONG_OUTPUT)];
+    const state = makeState();
+    seedUnhashed(state, 0, 1, true);
+    const edits = computeEdits(state, lens, {
+      ...gate,
+      protection: openProtection(lens),
+    });
+    assert.deepEqual(edits, []);
+  });
+
+  it("mark without a fingerprint over its placeholder — replay allowed", () => {
+    const lens = [
+      makeToolMsg("bash", '{"cmd":"ls"}', PRUNED_TOOL_OUTPUT_REPLACEMENT),
+    ];
+    const state = makeState();
+    seedUnhashed(state, 0, 1, true);
+    const edits = computeEdits(state, lens, {
+      ...gate,
+      protection: openProtection(lens),
+    });
+    assert.deepEqual(edits, [
+      {
+        messageOrdinal: 0,
+        regionIndex: 1,
+        text: PRUNED_TOOL_OUTPUT_REPLACEMENT,
+      },
+    ]);
+  });
+});
+
+// ===========================================================================
+// Read-side materialization
+// ===========================================================================
+
+describe("materializeEffectiveMarks anchor check", () => {
+  it("shifted anchor over foreign content — the new text stays visible", () => {
+    const lens = [makeToolMsg("bash", '{"cmd":"ls"}', "new output")];
+    const state = makeState();
+    seedMark(state, 0, 1, true, 100, "old output");
+    const view = materializeEffectiveMarks(lens, state, openProtection(lens));
+    assert.equal(view[0].regions[1].get(), "new output");
+    assert.equal(view, lens, "no overlay");
+  });
+
+  it("matching snapshot — the placeholder replaces the stored original", () => {
+    const lens = [makeToolMsg("bash", '{"cmd":"ls"}', LONG_OUTPUT)];
+    const state = makeState();
+    seedMark(state, 0, 1, true, 100);
+    const view = materializeEffectiveMarks(lens, state, openProtection(lens));
+    assert.equal(view[0].regions[1].get(), PRUNED_TOOL_OUTPUT_REPLACEMENT);
+    assert.equal(view[0].regions[0].get(), '{"cmd":"ls"}');
+  });
+
+  it("change beyond the recall cap — the new text stays visible", () => {
+    const head = "y".repeat(RECALL_MAX_CHARS);
+    const lens = [makeToolMsg("bash", '{"cmd":"ls"}', `${head}changed tail`)];
+    const state = makeState();
+    seedMark(state, 0, 1, true, 100, `${head}original tail`);
+    const view = materializeEffectiveMarks(lens, state, openProtection(lens));
+    assert.equal(view, lens, "no overlay");
+    assert.equal(view[0].regions[1].get(), `${head}changed tail`);
+  });
+
+  it("mark without a fingerprint — the stored original stays visible", () => {
+    const lens = [makeToolMsg("bash", '{"cmd":"ls"}', LONG_OUTPUT)];
+    const state = makeState();
+    seedUnhashed(state, 0, 1, true);
+    const view = materializeEffectiveMarks(lens, state, openProtection(lens));
+    assert.equal(view, lens, "no overlay");
+  });
+
+  it("tool-input anchor — the error-input placeholder", () => {
+    const lens = [makeToolMsg("bash", '"ls"', "boom", { status: "error" })];
+    const state = makeState();
+    seedMark(state, 0, 0, true, 100, '"ls"');
+    const view = materializeEffectiveMarks(lens, state, openProtection(lens));
+    assert.equal(view[0].regions[0].get(), PRUNED_TOOL_ERROR_INPUT_REPLACEMENT);
+  });
+
+  it("pending marks and missing anchors are not overlaid", () => {
+    const lens = [makeToolMsg("bash", '{"cmd":"ls"}', "new output")];
+    const state = makeState();
+    seedMark(state, 0, 1, false, 100, "new output");
+    seedMark(state, 5, 1, true, 100, "elsewhere");
+    const view = materializeEffectiveMarks(lens, state, openProtection(lens));
+    assert.equal(view, lens, "no overlay");
   });
 });

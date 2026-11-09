@@ -672,7 +672,7 @@ const GATE_HANDLERS: Record<
 /**
  * Register the built handlers on pi under their event keys.
  *
- * The handlers come from the host wiring (`buildPiHandlers`); this
+ * The handlers come from the prepared start (`preparePiStart`); this
  * function owns the key → handler pairing and the registration order.  A
  * profile that composes no delegation gate registers no gate key, and a
  * profile that composes no settle handler registers no settle key, so
@@ -682,7 +682,7 @@ const GATE_HANDLERS: Record<
  * rather than leave the session silently unwired.
  *
  * @param pi - pi ExtensionAPI instance.
- * @param handlers - The handlers built by `buildPiHandlers`.
+ * @param handlers - The handlers of the prepared start.
  */
 export function registerPiHandlers(
   pi: ExtensionAPI,

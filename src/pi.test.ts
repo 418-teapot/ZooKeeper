@@ -7,6 +7,7 @@
 import assert from "node:assert/strict";
 import { afterEach, describe, it } from "node:test";
 import { initTheme } from "@earendil-works/pi-coding-agent";
+import { piProcessState } from "./adapters/pi/process.js";
 import { JSON_ERROR_REMINDER_MARKER } from "./core/prompts.js";
 import { zookeeperPi } from "./pi.js";
 import { withModeFile } from "./testkits/mode-file.js";
@@ -167,6 +168,92 @@ describe("zookeeperPi — thin entry wiring", () => {
         | undefined;
       assert.ok(messageEnd);
       assert.equal(messageEnd?.message?.content[0]?.text, "hello");
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Configuration generations
+// ---------------------------------------------------------------------------
+
+describe("zookeeperPi — configuration generations", () => {
+  it("keeps the session identities and the run records across a reload", async () => {
+    // pi replays the extension factory, and every replay is a new
+    // generation of the same process.  The session → agent bindings and the
+    // subagent run records belong to the process, so the reloaded
+    // generation must read the ones the previous one wrote.
+    await withModeFile(JSON.stringify({ mode: "mono" }), async () => {
+      await zookeeperPi(mockApi() as any);
+    });
+    const process = piProcessState();
+    process.sessionAgents.bind("sess-keep", "mola");
+    process.runs.start({
+      id: "call-keep",
+      agent: "lynx",
+      parentSession: "sess-keep",
+      startedAt: 100,
+    });
+
+    await withModeFile(JSON.stringify({ mode: "poly" }), async () => {
+      const api = mockApi();
+      await zookeeperPi(api as any);
+
+      assert.equal(
+        piProcessState(),
+        process,
+        "the reload keeps the process owner",
+      );
+      assert.equal(
+        process.sessionAgents.resolve("sess-keep"),
+        "mola",
+        "the binding survives the reload",
+      );
+      assert.equal(
+        process.runs.get("call-keep")?.agent,
+        "lynx",
+        "the run record survives the reload",
+      );
+
+      // The reloaded handlers read that same owner: the bound session keeps
+      // its agent's prompt instead of falling back to the orchestrator.
+      const prompt = (await api.handlers.before_agent_start(
+        { messageType: "user", systemPrompt: "base" },
+        { sessionManager: { getSessionId: () => "sess-keep" } },
+      )) as { systemPrompt: string } | undefined;
+      assert.ok(prompt, "the handler must admit the bound session");
+      assert.ok(
+        prompt.systemPrompt.includes("你是 mola"),
+        `the bound agent's prompt must survive the reload: ${prompt.systemPrompt}`,
+      );
+    });
+  });
+
+  it("parses a new generation on reload", async () => {
+    // pi replays the extension factory on reload.  Each call is one
+    // configuration generation: the config and the mode state are read
+    // again, so a changed mode file selects the other profile.
+    await withModeFile(JSON.stringify({ mode: "mono" }), async () => {
+      const api = mockApi();
+      await zookeeperPi(api as any);
+      const first = _getBufferForTesting().filter(
+        (entry) => entry.event === "plugin_init",
+      );
+      assert.equal(first.length, 1);
+      assert.deepEqual(first[0].agents, ["dolphin", "mola"]);
+    });
+
+    await withModeFile(JSON.stringify({ mode: "poly" }), async () => {
+      const api = mockApi();
+      await zookeeperPi(api as any);
+      const inits = _getBufferForTesting().filter(
+        (entry) => entry.event === "plugin_init",
+      );
+      assert.equal(inits.length, 2, "the reload composes once");
+      assert.equal(
+        (inits[1].agents as string[]).length,
+        7,
+        "the reload reads the new generation",
+      );
     });
   });
 });

@@ -107,10 +107,32 @@ function ordinalOfMessageId(
  *
  * @param messages - The session messages to scan.
  * @param callID - The tool call identifier (`part.callID`).
+ * @returns The (ordinal, regionIndex) pair with the region's current
+ *   text, or null when the lens has no such region.
+ */
+function resolveMarkTarget(
+  messages: ContextMessageEntry[],
+  callID: string,
+): { ordinal: number; regionIndex: number; text: string } | null {
+  const target = locateTarget(messages, callID);
+  if (target === null) return null;
+  const text =
+    history(messages).messages[target.ordinal]?.regions[
+      target.regionIndex
+    ]?.get();
+  if (text === undefined) return null;
+  return { ...target, text };
+}
+
+/**
+ * Locate the (ordinal, regionIndex) pair a tool part's call id addresses.
+ *
+ * @param messages - The session messages to scan.
+ * @param callID - The tool call identifier (`part.callID`).
  * @returns The (ordinal, regionIndex) pair, or null when no part
  *   carries the call id.
  */
-function resolveMarkTarget(
+function locateTarget(
   messages: ContextMessageEntry[],
   callID: string,
 ): { ordinal: number; regionIndex: number } | null {

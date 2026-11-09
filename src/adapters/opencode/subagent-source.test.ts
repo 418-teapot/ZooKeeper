@@ -14,14 +14,11 @@
  * so the tests exercise the same translation paths production uses.
  */
 import assert from "node:assert/strict";
-import { afterEach, describe, it } from "node:test";
+import { afterEach, beforeEach, describe, it } from "node:test";
 
 import {
-  getRun,
-  resetRegistry,
-  startRun,
-  subscribeRunChange,
-  topLevelRuns,
+  createRunRegistry,
+  type RunRegistry,
 } from "../../core/subagent/registry.js";
 import {
   createSubagentSource,
@@ -36,14 +33,19 @@ import {
 
 const PARENT = "ses-parent";
 
-// bun shares one isolate across every test file, so the module-level
-// registry (and any poll timer a source left behind) must be reset between
-// tests to keep every assertion deterministic.
+// Each test owns its run registry (and disposes the poll timer a source
+// left behind), so every assertion is deterministic.
 const disposers: Array<() => void> = [];
+
+/** The run records of the panel under test. */
+let runs: RunRegistry = createRunRegistry();
+
+beforeEach(() => {
+  runs = createRunRegistry();
+});
 
 afterEach(() => {
   for (const dispose of disposers.splice(0)) dispose();
-  resetRegistry();
 });
 
 /** Resolve after `ms` — the poll interval is real time, so tests wait. */
@@ -115,6 +117,7 @@ function makeSource(
 ): SubagentSource {
   const history = overrides.history ?? [];
   const source = createSubagentSource({
+    runs,
     client: (overrides.client ?? fakeClient()) as SubagentSourceDeps["client"],
     state: overrides.state ?? fakeState(),
     parentSessionId: overrides.parentSessionId ?? PARENT,
@@ -161,14 +164,14 @@ describe("subagent source — live part translation", () => {
       ),
     );
 
-    const runs = topLevelRuns(PARENT);
-    assert.equal(runs.length, 1);
-    assert.equal(runs[0]?.id, "part_1");
-    assert.equal(runs[0]?.status, "running");
-    assert.equal(runs[0]?.agent, "lynx");
-    assert.equal(runs[0]?.parentSession, PARENT);
-    assert.equal(runs[0]?.startedAt, 100);
-    assert.equal(runs[0]?.endedAt, undefined);
+    const [run] = runs.topLevel(PARENT);
+    assert.equal(runs.topLevel(PARENT).length, 1);
+    assert.equal(run?.id, "part_1");
+    assert.equal(run?.status, "running");
+    assert.equal(run?.agent, "lynx");
+    assert.equal(run?.parentSession, PARENT);
+    assert.equal(run?.startedAt, 100);
+    assert.equal(run?.endedAt, undefined);
   });
 
   it("falls back to 'task' when the part carries no subagent type", () => {
@@ -176,7 +179,7 @@ describe("subagent source — live part translation", () => {
     source.onToolPartUpdated(
       partEvent(PARENT, taskPart("part_1", { status: "running" })),
     );
-    assert.equal(getRun("part_1")?.agent, "task");
+    assert.equal(runs.get("part_1")?.agent, "task");
   });
 
   it("maps a completed part to done with the host's end time", () => {
@@ -192,7 +195,7 @@ describe("subagent source — live part translation", () => {
       ),
     );
 
-    const run = getRun("part_1");
+    const run = runs.get("part_1");
     assert.equal(run?.status, "done");
     assert.equal(run?.startedAt, 100);
     assert.equal(run?.endedAt, 900);
@@ -212,7 +215,7 @@ describe("subagent source — live part translation", () => {
       ),
     );
 
-    const run = getRun("part_1");
+    const run = runs.get("part_1");
     assert.equal(run?.status, "error");
     assert.equal(run?.error, "model overloaded");
   });
@@ -230,7 +233,7 @@ describe("subagent source — live part translation", () => {
       ),
     );
 
-    const run = getRun("part_1");
+    const run = runs.get("part_1");
     assert.equal(run?.status, "aborted");
     assert.equal(run?.error, undefined, "a cancellation carries no error text");
   });
@@ -247,8 +250,8 @@ describe("subagent source — live part translation", () => {
       ),
     );
 
-    assert.equal(getRun("part_1")?.status, "aborted");
-    assert.equal(getRun("part_1")?.error, undefined);
+    assert.equal(runs.get("part_1")?.status, "aborted");
+    assert.equal(runs.get("part_1")?.error, undefined);
   });
 
   it("ignores part events of another session", () => {
@@ -256,8 +259,8 @@ describe("subagent source — live part translation", () => {
     source.onToolPartUpdated(
       partEvent("ses-other", taskPart("part_1", { status: "running" })),
     );
-    assert.deepEqual(topLevelRuns(PARENT), []);
-    assert.equal(getRun("part_1"), undefined);
+    assert.deepEqual(runs.topLevel(PARENT), []);
+    assert.equal(runs.get("part_1"), undefined);
   });
 
   it("ignores non-task tools and non-tool parts", () => {
@@ -268,7 +271,7 @@ describe("subagent source — live part translation", () => {
     source.onToolPartUpdated(
       partEvent(PARENT, { type: "text", id: "part_t", text: "hi" }),
     );
-    assert.deepEqual(topLevelRuns(PARENT), []);
+    assert.deepEqual(runs.topLevel(PARENT), []);
   });
 
   it("ignores parts without an id or without a state", () => {
@@ -279,7 +282,7 @@ describe("subagent source — live part translation", () => {
     source.onToolPartUpdated(
       partEvent(PARENT, { type: "tool", tool: "task", id: "part_1" }),
     );
-    assert.deepEqual(topLevelRuns(PARENT), []);
+    assert.deepEqual(runs.topLevel(PARENT), []);
   });
 
   it("does not register a pending part (nothing has started yet)", () => {
@@ -287,7 +290,7 @@ describe("subagent source — live part translation", () => {
     source.onToolPartUpdated(
       partEvent(PARENT, taskPart("part_1", { status: "pending" })),
     );
-    assert.equal(getRun("part_1"), undefined);
+    assert.equal(runs.get("part_1"), undefined);
   });
 
   it("keeps one run per part across repeated events", () => {
@@ -297,8 +300,8 @@ describe("subagent source — live part translation", () => {
         partEvent(PARENT, taskPart("part_1", { status })),
       );
     }
-    assert.equal(topLevelRuns(PARENT).length, 1);
-    assert.equal(getRun("part_1")?.status, "done");
+    assert.equal(runs.topLevel(PARENT).length, 1);
+    assert.equal(runs.get("part_1")?.status, "done");
   });
 });
 
@@ -323,10 +326,14 @@ describe("subagent source — label enrichment", () => {
     const partId = "abcdef123456";
 
     send(source, partId, {});
-    assert.equal(getRun(partId)?.label, "abcdef12", "part id is the fallback");
+    assert.equal(
+      runs.get(partId)?.label,
+      "abcdef12",
+      "part id is the fallback",
+    );
 
     send(source, partId, { input: { prompt: "把 tracker 的职责并入核心" } });
-    assert.equal(getRun(partId)?.label, "把 tracker 的职责并入核心");
+    assert.equal(runs.get(partId)?.label, "把 tracker 的职责并入核心");
 
     send(source, partId, {
       input: {
@@ -334,13 +341,13 @@ describe("subagent source — label enrichment", () => {
         prompt: "把 tracker 的职责并入核心",
       },
     });
-    assert.equal(getRun(partId)?.label, "单源化子代理状态");
+    assert.equal(runs.get(partId)?.label, "单源化子代理状态");
 
     send(source, partId, {
       title: "宿主标题",
       input: { description: "单源化子代理状态" },
     });
-    assert.equal(getRun(partId)?.label, "宿主标题");
+    assert.equal(runs.get(partId)?.label, "宿主标题");
   });
 
   it("never downgrades the label to a weaker title source", () => {
@@ -348,11 +355,11 @@ describe("subagent source — label enrichment", () => {
     const partId = "part_1";
 
     send(source, partId, { title: "宿主标题", input: { prompt: "提示词" } });
-    assert.equal(getRun(partId)?.label, "宿主标题");
+    assert.equal(runs.get(partId)?.label, "宿主标题");
 
     // A later part update that carries only the prompt must not regress it.
     send(source, partId, { input: { prompt: "提示词" } });
-    assert.equal(getRun(partId)?.label, "宿主标题");
+    assert.equal(runs.get(partId)?.label, "宿主标题");
   });
 
   it("does not replace the label from the same source level", () => {
@@ -361,7 +368,7 @@ describe("subagent source — label enrichment", () => {
 
     send(source, partId, { input: { prompt: "最初的提示词" } });
     send(source, partId, { input: { prompt: "改写后的提示词" } });
-    assert.equal(getRun("part_1")?.label, "最初的提示词");
+    assert.equal(runs.get("part_1")?.label, "最初的提示词");
   });
 
   it("keeps the label frozen once the run finished", () => {
@@ -372,7 +379,7 @@ describe("subagent source — label enrichment", () => {
       partEvent(PARENT, taskPart(partId, { status: "completed" })),
     );
     send(source, partId, { title: "更晚的标题", input: {} });
-    assert.equal(getRun(partId)?.label, "宿主标题");
+    assert.equal(runs.get(partId)?.label, "宿主标题");
   });
 });
 
@@ -397,7 +404,7 @@ describe("subagent source — monotone enrichment", () => {
     // The terminal write waits for the final token read, so the run closes a
     // tick after the part event.
     await wait(10);
-    const run = getRun(partId);
+    const run = runs.get(partId);
     assert.equal(run?.status, "done");
     assert.equal(run?.childSession, "ses-child");
     assert.equal(run?.model, "dummy");
@@ -424,7 +431,7 @@ describe("subagent source — monotone enrichment", () => {
       ),
     );
 
-    const run = getRun(partId);
+    const run = runs.get(partId);
     assert.equal(run?.status, "done");
     assert.equal(run?.label, "已完成");
     assert.equal(run?.endedAt, 700);
@@ -440,7 +447,7 @@ describe("subagent source — monotone enrichment", () => {
       partEvent(PARENT, taskPart(partId, { status: "error", error: "later" })),
     );
 
-    const run = getRun(partId);
+    const run = runs.get(partId);
     assert.equal(run?.status, "done");
     assert.equal(run?.error, undefined);
   });
@@ -476,10 +483,10 @@ describe("subagent source — token poll", () => {
     source.onToolPartUpdated(childPart("part_1", "ses-child"));
 
     await wait(620);
-    assert.equal(getRun("part_1")?.tokens, 1200);
+    assert.equal(runs.get("part_1")?.tokens, 1200);
 
     await wait(620);
-    assert.equal(getRun("part_1")?.tokens, 2400);
+    assert.equal(runs.get("part_1")?.tokens, 2400);
     assert.deepEqual(client.calls[0], { sessionID: "ses-child", limit: 20 });
   });
 
@@ -491,7 +498,7 @@ describe("subagent source — token poll", () => {
     });
     source.onToolPartUpdated(childPart("part_1", "ses-child"));
     await wait(620);
-    assert.equal(getRun("part_1")?.tokens, 500);
+    assert.equal(runs.get("part_1")?.tokens, 500);
 
     source.onToolPartUpdated(
       partEvent(
@@ -505,7 +512,7 @@ describe("subagent source — token poll", () => {
     );
     await wait(20);
 
-    const run = getRun("part_1");
+    const run = runs.get("part_1");
     assert.equal(run?.status, "done");
     assert.equal(run?.endedAt, 700);
     assert.equal(run?.tokens, 999, "the final read is authoritative");
@@ -522,11 +529,11 @@ describe("subagent source — token poll", () => {
     });
     source.onToolPartUpdated(childPart("part_1", "ses-child"));
     await wait(620);
-    assert.equal(getRun("part_1")?.tokens, 500, "precondition: polled value");
+    assert.equal(runs.get("part_1")?.tokens, 500, "precondition: polled value");
 
     const snapshots: Array<{ status?: string; tokens?: number }> = [];
-    const off = subscribeRunChange((change) => {
-      const run = getRun(change.runId);
+    const off = runs.subscribe((change) => {
+      const run = runs.get(change.runId);
       snapshots.push({ status: run?.status, tokens: run?.tokens });
     });
     source.onToolPartUpdated(
@@ -566,7 +573,7 @@ describe("subagent source — token poll", () => {
     );
     await wait(20);
 
-    const run = getRun("part_1");
+    const run = runs.get("part_1");
     assert.equal(run?.status, "done");
     assert.equal(run?.tokens, undefined);
   });
@@ -579,8 +586,8 @@ describe("subagent source — token poll", () => {
     source.onToolPartUpdated(childPart("part_1", "ses-child"));
     await wait(620);
 
-    assert.equal(getRun("part_1")?.status, "running");
-    assert.equal(getRun("part_1")?.tokens, undefined);
+    assert.equal(runs.get("part_1")?.status, "running");
+    assert.equal(runs.get("part_1")?.tokens, undefined);
   });
 
   it("stops polling a session that is not a child of the panel session", async () => {
@@ -593,7 +600,7 @@ describe("subagent source — token poll", () => {
     await wait(620);
 
     assert.equal(client.calls.length, 0);
-    assert.equal(getRun("part_1")?.status, "running");
+    assert.equal(runs.get("part_1")?.status, "running");
   });
 
   it("skips a round while the child session is unknown to the state slice", async () => {
@@ -648,18 +655,17 @@ describe("subagent source — token poll", () => {
     await wait(620);
 
     assert.equal(client.calls.length, 0);
-    assert.equal(getRun("part_1")?.status, "running");
+    assert.equal(runs.get("part_1")?.status, "running");
   });
 
   it("stops polling a run that was finished elsewhere", async () => {
-    const { finishRun } = await import("../../core/subagent/registry.js");
     const client = fakeClient([1200]);
     const source = makeSource({
       client: client as SubagentSourceDeps["client"],
       state: fakeState({ "ses-child": PARENT }),
     });
     source.onToolPartUpdated(childPart("part_1", "ses-child"));
-    finishRun("part_1", { status: "aborted" });
+    runs.finish("part_1", { status: "aborted" });
 
     await wait(620);
     assert.equal(client.calls.length, 0, "the run is terminal — stop reading");
@@ -712,7 +718,7 @@ describe("subagent source — reconcile", () => {
     await source.reconcile();
     await wait(10);
 
-    const done = getRun("part_done");
+    const done = runs.get("part_done");
     assert.equal(done?.status, "done");
     assert.equal(done?.label, "已完成");
     assert.equal(done?.agent, "task");
@@ -721,7 +727,7 @@ describe("subagent source — reconcile", () => {
     assert.equal(done?.startedAt, 100);
     assert.equal(done?.endedAt, 900);
 
-    const running = getRun("part_run");
+    const running = runs.get("part_run");
     assert.equal(running?.status, "running");
     assert.equal(running?.label, "进行中");
     assert.equal(running?.startedAt, 950);
@@ -740,12 +746,12 @@ describe("subagent source — reconcile", () => {
     const source = makeSource({ history });
     await source.reconcile();
     await wait(10);
-    const endedAt = getRun("part_1")?.endedAt;
+    const endedAt = runs.get("part_1")?.endedAt;
     await source.reconcile();
     await wait(10);
 
-    assert.equal(topLevelRuns(PARENT).length, 1, "no duplicate runs");
-    assert.equal(getRun("part_1")?.endedAt, endedAt);
+    assert.equal(runs.topLevel(PARENT).length, 1, "no duplicate runs");
+    assert.equal(runs.get("part_1")?.endedAt, endedAt);
   });
 
   it("leaves a finished run untouched when the history is older", async () => {
@@ -771,7 +777,7 @@ describe("subagent source — reconcile", () => {
     await source.reconcile();
     await wait(10);
 
-    const run = getRun("part_1");
+    const run = runs.get("part_1");
     assert.equal(run?.status, "done");
     assert.equal(run?.label, "实时标题");
   });
@@ -805,7 +811,7 @@ describe("subagent source — reconcile", () => {
     await source.reconcile();
     await wait(20);
 
-    const run = getRun("part_1");
+    const run = runs.get("part_1");
     assert.equal(run?.status, "done", "the scanned terminal state wins");
     assert.equal(run?.model, "live-model", "live facts are not overwritten");
     assert.equal(run?.childSession, "ses-x", "a missing field is filled");
@@ -815,7 +821,7 @@ describe("subagent source — reconcile", () => {
     // A run can already exist when the panel mounts (another producer wrote
     // it into the same process-level registry): the scan fills what that run
     // is missing instead of starting a second one.
-    startRun({ id: "part_1", agent: "lynx", parentSession: PARENT });
+    runs.start({ id: "part_1", agent: "lynx", parentSession: PARENT });
     const source = makeSource({
       history: [
         msg([
@@ -832,12 +838,12 @@ describe("subagent source — reconcile", () => {
     });
     await source.reconcile();
 
-    const run = getRun("part_1");
+    const run = runs.get("part_1");
     assert.equal(run?.status, "running");
     assert.equal(run?.label, "扫描来的标题");
     assert.equal(run?.model, "scanned-model");
     assert.equal(run?.childSession, "ses-x");
-    assert.equal(topLevelRuns(PARENT).length, 1);
+    assert.equal(runs.topLevel(PARENT).length, 1);
   });
 
   it("skips pending parts and parts without usable data", async () => {
@@ -853,7 +859,7 @@ describe("subagent source — reconcile", () => {
     await source.reconcile();
     await wait(10);
 
-    assert.deepEqual(topLevelRuns(PARENT), []);
+    assert.deepEqual(runs.topLevel(PARENT), []);
   });
 
   it("survives a history read that is not a list", async () => {
@@ -862,7 +868,7 @@ describe("subagent source — reconcile", () => {
     });
     await source.reconcile();
     await wait(10);
-    assert.deepEqual(topLevelRuns(PARENT), []);
+    assert.deepEqual(runs.topLevel(PARENT), []);
   });
 
   it("swallows a failing history read", async () => {
@@ -871,7 +877,7 @@ describe("subagent source — reconcile", () => {
     await assert.doesNotReject(async () => {
       await source.reconcile(Promise.reject(new Error("history unavailable")));
     });
-    assert.deepEqual(topLevelRuns(PARENT), []);
+    assert.deepEqual(runs.topLevel(PARENT), []);
   });
 
   it("scans the panel session's history and reuses a pre-fetched read", async () => {
@@ -887,7 +893,7 @@ describe("subagent source — reconcile", () => {
       Promise.resolve([msg([taskPart("part_2", { status: "running" })])]),
     );
     assert.deepEqual(scanned, [PARENT], "the pre-fetched list is reused");
-    assert.equal(getRun("part_2")?.status, "running");
+    assert.equal(runs.get("part_2")?.status, "running");
   });
 
   it("starts polling a run recovered from the history", async () => {
@@ -907,7 +913,7 @@ describe("subagent source — reconcile", () => {
     await source.reconcile();
     await wait(620);
 
-    assert.equal(getRun("part_run")?.tokens, 777);
+    assert.equal(runs.get("part_run")?.tokens, 777);
   });
 
   it("reads the final context length of a terminal run from the history", async () => {
@@ -927,8 +933,8 @@ describe("subagent source — reconcile", () => {
     await source.reconcile();
     await wait(20);
 
-    assert.equal(getRun("part_done")?.status, "done");
-    assert.equal(getRun("part_done")?.tokens, 888);
+    assert.equal(runs.get("part_done")?.status, "done");
+    assert.equal(runs.get("part_done")?.tokens, 888);
   });
 
   it("lets a stronger scanned title replace a weaker live label", async () => {
@@ -942,7 +948,7 @@ describe("subagent source — reconcile", () => {
         }),
       ),
     );
-    assert.equal(getRun("part_1")?.label, "investigate the flaky test suite");
+    assert.equal(runs.get("part_1")?.label, "investigate the flaky test suite");
 
     await source.reconcile(
       Promise.resolve([
@@ -956,7 +962,7 @@ describe("subagent source — reconcile", () => {
       ]),
     );
 
-    assert.equal(getRun("part_1")?.label, "修测试");
+    assert.equal(runs.get("part_1")?.label, "修测试");
   });
 
   it("keeps a stronger live label when the scan offers a weaker one", async () => {
@@ -983,7 +989,7 @@ describe("subagent source — reconcile", () => {
       ]),
     );
 
-    assert.equal(getRun("part_1")?.label, "修测试");
+    assert.equal(runs.get("part_1")?.label, "修测试");
   });
 
   it("installs no run or timer when disposed mid-reconcile", async () => {
@@ -1010,7 +1016,7 @@ describe("subagent source — reconcile", () => {
     await scan;
     await wait(620);
 
-    assert.equal(getRun("part_x"), undefined);
+    assert.equal(runs.get("part_x"), undefined);
     assert.equal(client.calls.length, 0, "no poll timer after dispose");
   });
 });
@@ -1034,8 +1040,8 @@ describe("subagent source — terminal history restoration", () => {
       tokens?: number;
       label?: string;
     }> = [];
-    const off = subscribeRunChange((change) => {
-      const run = getRun(change.runId);
+    const off = runs.subscribe((change) => {
+      const run = runs.get(change.runId);
       snapshots.push({
         status: run?.status,
         tokens: run?.tokens,
@@ -1067,7 +1073,7 @@ describe("subagent source — terminal history restoration", () => {
       [{ status: "done", tokens: undefined, label: "已完成" }],
       "one event, never a running state",
     );
-    const run = getRun("part_done");
+    const run = runs.get("part_done");
     assert.equal(run?.agent, "task");
     assert.equal(run?.model, "dummy");
     assert.equal(run?.startedAt, 100);
@@ -1091,7 +1097,7 @@ describe("subagent source — terminal history restoration", () => {
 
     // No wait: the part has no child session, so the restore is complete
     // once the scan returns.
-    const run = getRun("part_done");
+    const run = runs.get("part_done");
     assert.equal(run?.status, "done");
     assert.equal(run?.endedAt, 900);
     assert.equal(client.calls.length, 0, "zero HTTP reads");
@@ -1114,7 +1120,11 @@ describe("subagent source — terminal history restoration", () => {
       ],
     });
     await source.reconcile();
-    assert.equal(getRun("part_done"), undefined, "the read is still in flight");
+    assert.equal(
+      runs.get("part_done"),
+      undefined,
+      "the read is still in flight",
+    );
 
     await wait(80);
     off();
@@ -1188,7 +1198,7 @@ describe("subagent source — terminal history restoration", () => {
     });
     await source.reconcile();
 
-    const run = getRun("part_fail");
+    const run = runs.get("part_fail");
     assert.equal(run?.status, "error");
     assert.equal(run?.error, "provider exploded");
   });
@@ -1211,7 +1221,7 @@ describe("subagent source — terminal history restoration", () => {
     off();
 
     assert.deepEqual(snapshots, [], "the restored run absorbs the rescan");
-    assert.equal(topLevelRuns(PARENT).length, 1);
+    assert.equal(runs.topLevel(PARENT).length, 1);
   });
 
   it("lets a live part win when it registers during the delayed read", async () => {
@@ -1243,7 +1253,7 @@ describe("subagent source — terminal history restoration", () => {
     await wait(100);
     off();
 
-    const run = getRun("part_1");
+    const run = runs.get("part_1");
     assert.equal(run?.status, "running", "the live registration wins");
     assert.equal(run?.label, "实时标题");
     assert.ok(
@@ -1271,7 +1281,7 @@ describe("subagent source — terminal history restoration", () => {
     source.dispose();
     await wait(100);
 
-    assert.equal(getRun("part_done"), undefined);
+    assert.equal(runs.get("part_done"), undefined);
     assert.equal(client.calls.length, 1);
   });
 
@@ -1300,16 +1310,16 @@ describe("subagent source — terminal history restoration", () => {
     await source.reconcile();
 
     assert.equal(
-      getRun("part_run")?.status,
+      runs.get("part_run")?.status,
       "running",
       "the scan does not await the terminal read",
     );
-    assert.equal(getRun("part_run")?.startedAt, 950);
-    assert.equal(getRun("part_done"), undefined);
+    assert.equal(runs.get("part_run")?.startedAt, 950);
+    assert.equal(runs.get("part_done"), undefined);
 
     await wait(160);
-    assert.equal(getRun("part_done")?.status, "done");
-    assert.equal(getRun("part_done")?.tokens, 888);
+    assert.equal(runs.get("part_done")?.status, "done");
+    assert.equal(runs.get("part_done")?.tokens, 888);
   });
 });
 
@@ -1338,7 +1348,7 @@ describe("subagent source — child session settlement", () => {
     source.onSessionIdle({ properties: { sessionID: "ses-child" } });
     await wait(20);
 
-    const run = getRun("part_1");
+    const run = runs.get("part_1");
     assert.equal(run?.status, "running");
     assert.equal(run?.endedAt, undefined);
   });
@@ -1361,12 +1371,12 @@ describe("subagent source — child session settlement", () => {
         taskPart("part_1", { status: "running", time: { start: 100 } }),
       ),
     );
-    assert.equal(getRun("part_1")?.status, "running");
+    assert.equal(runs.get("part_1")?.status, "running");
 
     source.onSessionIdle({ properties: { sessionID: "ses-child" } });
     await wait(20);
 
-    const run = getRun("part_1");
+    const run = runs.get("part_1");
     assert.equal(run?.status, "done");
     assert.equal(run?.endedAt, 800);
   });
@@ -1390,7 +1400,7 @@ describe("subagent source — child session settlement", () => {
     source.onSessionError({ properties: { sessionID: "ses-child" } });
     await wait(20);
 
-    const run = getRun("part_1");
+    const run = runs.get("part_1");
     assert.equal(run?.status, "error");
     assert.equal(run?.error, "provider failed");
   });

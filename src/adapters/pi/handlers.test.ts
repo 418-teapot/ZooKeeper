@@ -1,8 +1,8 @@
 /**
  * Tests for the pi event handlers (`src/adapters/pi/handlers.ts`).
  *
- * The handlers are exercised through the host wiring
- * (`buildPiHandlers`), which is how pi reaches them: identity-dispatch
+ * The handlers are exercised through the production start
+ * (`startPi`), which is how pi reaches them: identity-dispatch
  * prompt injection, `resources_discover` skill filtering by the active
  * primary's permission rules, the compose-driven `tool_result` /
  * `context` chains, the todo tool's cache invalidation on
@@ -10,7 +10,7 @@
  */
 import assert from "node:assert/strict";
 import fs from "node:fs";
-import { afterEach, describe, it } from "node:test";
+import { afterEach, beforeEach, describe, it } from "node:test";
 import { initTheme } from "@earendil-works/pi-coding-agent";
 import { BEAVER_PROMPT } from "../../agents/beaver.js";
 import type { ComposedResult } from "../../core/compose.js";
@@ -24,31 +24,39 @@ import {
   JSON_ERROR_REMINDER_MARKER,
   VERIFY_REMINDER,
 } from "../../core/prompts.js";
-import { sessionAgentRegistry } from "../../core/session/agent.js";
 import {
-  startRun,
-  topLevelRuns,
-  updateRun,
-} from "../../core/subagent/registry.js";
-import {
+  composePi,
   joinedText,
   MODES_RAW,
   mockApi,
   POLY_PROFILE,
   POLY_ZOO,
+  piScope,
   renderZooWidget,
   resetPiTestState,
   SESSION_CTX,
+  startPi,
+  startPiRuntime,
 } from "../../testkits/pi-wiring.js";
 import { _getBufferForTesting, _resetForTesting } from "../../utils/logger.js";
 import { createPiEventHandlers, type PiEventHandlerDeps } from "./handlers.js";
 import { createPiLifecycleWiring } from "./lifecycle-wiring.js";
+import { createPiProcessState, type PiProcessState } from "./process.js";
 import {
   createPiSessionContexts,
   type PiSessionContexts,
 } from "./session-contexts.js";
 import type { PiHistoryEntry } from "./subagent-scan.js";
-import { buildPiContributions, buildPiHandlers } from "./wire.js";
+
+/**
+ * The pi process this test file drives: one owner per test, so a runtime and
+ * the assertions that read its writes share it.
+ */
+let piProcess: PiProcessState = createPiProcessState();
+
+beforeEach(() => {
+  piProcess = createPiProcessState();
+});
 
 afterEach(resetPiTestState);
 
@@ -60,8 +68,17 @@ const SESSION_ID = "sess-1";
  *
  * Identity is per session: a test states which agent drives which session.
  */
+/** Start one pi instance over this test's process state. */
+function startInstance(
+  scope: Parameters<typeof startPi>[0],
+  pi?: unknown,
+  overrides?: Parameters<typeof startPi>[2],
+): ReturnType<typeof startPi> {
+  return startPi(scope, pi, overrides, piProcess);
+}
+
 function bindAgent(sessionID: string, name: string): void {
-  sessionAgentRegistry.bind(sessionID, name);
+  piProcess.sessionAgents.bind(sessionID, name);
 }
 
 // The official transcript message components render through the coding-agent
@@ -103,7 +120,7 @@ describe("session_tree — todo cache invalidation", () => {
 
   it("the todo tool registers with its pi card renderers", async () => {
     const api = mockApi();
-    await buildPiHandlers(TODO_ZOO, api as any, MODES_RAW);
+    await startInstance(piScope(TODO_ZOO, MODES_RAW), api as any);
     const todo = api.tools.find((tool: any) => tool.name === "todo") as any;
     assert.ok(todo, "the todo tool must register when the profile lists it");
     assert.equal(typeof todo.renderCall, "function");
@@ -112,7 +129,10 @@ describe("session_tree — todo cache invalidation", () => {
 
   it("the tool restores once per cache miss and session_tree forces a re-scan", async () => {
     const api = mockApi();
-    const handlers = await buildPiHandlers(TODO_ZOO, api as any, MODES_RAW);
+    const handlers = await startInstance(
+      piScope(TODO_ZOO, MODES_RAW),
+      api as any,
+    );
     const todo = api.tools.find((tool: any) => tool.name === "todo") as any;
     assert.ok(todo, "the todo tool must register when the profile lists it");
 
@@ -151,7 +171,10 @@ describe("session_tree — todo cache invalidation", () => {
 
   it("is a no-op without a session id in the event context", async () => {
     const api = mockApi();
-    const handlers = await buildPiHandlers(TODO_ZOO, api as any, MODES_RAW);
+    const handlers = await startInstance(
+      piScope(TODO_ZOO, MODES_RAW),
+      api as any,
+    );
     await assert.doesNotReject(handlers.sessionTree());
     await assert.doesNotReject(handlers.sessionTree(undefined, {}));
     await assert.doesNotReject(
@@ -164,7 +187,10 @@ describe("session_tree — todo cache invalidation", () => {
   it("piApi absent → no store owned → the handler is a no-op", async () => {
     // Without a real pi API the entry point owns no todo store (the tool
     // never registers, fail-closed): the handler must not crash over it.
-    const handlers = await buildPiHandlers(POLY_ZOO, undefined, MODES_RAW);
+    const handlers = await startInstance(
+      piScope(POLY_ZOO, MODES_RAW),
+      undefined,
+    );
     await assert.doesNotReject(handlers.sessionTree());
     await assert.doesNotReject(
       handlers.sessionTree(undefined, {
@@ -208,7 +234,10 @@ describe("todo view — widget cache refresh triggers", () => {
 
   it("a successful todo tool_result refreshes the widget's todo cache", async () => {
     const api = mockApi();
-    const handlers = await buildPiHandlers(TODO_ZOO, api as any, MODES_RAW);
+    const handlers = await startInstance(
+      piScope(TODO_ZOO, MODES_RAW),
+      api as any,
+    );
     const { calls, ctx } = todoWidgetCtx("sess-todo-widget");
     await handlers.sessionStart({ type: "session_start" }, ctx);
     await flush();
@@ -252,7 +281,10 @@ describe("todo view — widget cache refresh triggers", () => {
 
   it("ignores other tool names and error results", async () => {
     const api = mockApi();
-    const handlers = await buildPiHandlers(TODO_ZOO, api as any, MODES_RAW);
+    const handlers = await startInstance(
+      piScope(TODO_ZOO, MODES_RAW),
+      api as any,
+    );
     const { calls, ctx } = todoWidgetCtx("sess-todo-ignore");
     await handlers.sessionStart({ type: "session_start" }, ctx);
     await flush();
@@ -299,7 +331,10 @@ describe("todo view — widget cache refresh triggers", () => {
 
   it("session_tree re-fetches the todo cache for the widget", async () => {
     const api = mockApi();
-    const handlers = await buildPiHandlers(TODO_ZOO, api as any, MODES_RAW);
+    const handlers = await startInstance(
+      piScope(TODO_ZOO, MODES_RAW),
+      api as any,
+    );
     const scans = { count: 0 };
     const ctx = {
       sessionManager: {
@@ -326,7 +361,10 @@ describe("todo view — widget cache refresh triggers", () => {
 
   it("keeps each session's widget and todo column on that session", async () => {
     const api = mockApi();
-    const handlers = await buildPiHandlers(TODO_ZOO, api as any, MODES_RAW);
+    const handlers = await startInstance(
+      piScope(TODO_ZOO, MODES_RAW),
+      api as any,
+    );
     // Each widget needs its own session's primary: the fleet line is
     // primary-driven, and a session without one renders nothing.
     bindAgent("sess-widget-a", "dolphin");
@@ -406,7 +444,10 @@ describe("todo view — widget cache refresh triggers", () => {
     // Without a pi API the factory owns no todo store; the cache then stays
     // empty, so the widget's todo column resolves to no phases.  All three
     // refresh triggers must remain silent no-ops.
-    const handlers = await buildPiHandlers(POLY_ZOO, undefined, MODES_RAW);
+    const handlers = await startInstance(
+      piScope(POLY_ZOO, MODES_RAW),
+      undefined,
+    );
     await assert.doesNotReject(handlers.sessionTree());
     await assert.doesNotReject(() =>
       handlers.sessionStart(undefined, undefined),
@@ -430,9 +471,12 @@ describe("todo view — widget cache refresh triggers", () => {
 // Prompt injection + skill discovery handlers
 // ---------------------------------------------------------------------------
 
-describe("buildPiHandlers — prompt injection + skill discovery", () => {
+describe("startPi — prompt injection + skill discovery", () => {
   it("poly full → default primary prompt prepended, all 11 skill dirs discovered", async () => {
-    const handlers = await buildPiHandlers(POLY_ZOO, undefined, MODES_RAW);
+    const handlers = await startInstance(
+      piScope(POLY_ZOO, MODES_RAW),
+      undefined,
+    );
     const result = await handlers.beforeAgentStart(
       {
         messageType: "user",
@@ -461,7 +505,7 @@ describe("buildPiHandlers — prompt injection + skill discovery", () => {
   });
 
   it("null profile → prompt untouched, no skill paths", async () => {
-    const handlers = await buildPiHandlers({});
+    const handlers = await startInstance(piScope({}));
     const result = await handlers.beforeAgentStart(
       {
         messageType: "user",
@@ -487,7 +531,7 @@ describe("buildPiHandlers — prompt injection + skill discovery", () => {
         poly: { ...POLY_PROFILE, agents: ["mola"], skills: ["git-commit"] },
       },
     };
-    const handlers = await buildPiHandlers(zoo, undefined, MODES_RAW);
+    const handlers = await startInstance(piScope(zoo, MODES_RAW), undefined);
     const result = await handlers.beforeAgentStart(
       {
         messageType: "user",
@@ -508,7 +552,7 @@ describe("buildPiHandlers — prompt injection + skill discovery", () => {
 // Skill discovery filtering by the primary's permission.skill rules
 // ---------------------------------------------------------------------------
 
-describe("buildPiHandlers — resourcesDiscover skill filtering", () => {
+describe("startPi — resourcesDiscover skill filtering", () => {
   /** Raw config with skill rules mirroring config.toml's [agent.mola]. */
   const MOLA_SKILLS_RAW = {
     agent: {
@@ -545,10 +589,9 @@ describe("buildPiHandlers — resourcesDiscover skill filtering", () => {
   };
 
   it("primary mola → only his allowed skills are contributed", async () => {
-    const handlers = await buildPiHandlers(
-      POLY_ZOO,
+    const handlers = await startInstance(
+      piScope(POLY_ZOO, MOLA_SKILLS_RAW),
       undefined,
-      MOLA_SKILLS_RAW,
     );
     // The session resolves dolphin (the poly profile's orchestrator) by
     // default, but only mola declares skill rules — so a session bound to
@@ -565,10 +608,9 @@ describe("buildPiHandlers — resourcesDiscover skill filtering", () => {
   });
 
   it("primary dolphin → his denied globs are excluded, the rest stay", async () => {
-    const handlers = await buildPiHandlers(
-      POLY_ZOO,
+    const handlers = await startInstance(
+      piScope(POLY_ZOO, DOLPHIN_SKILLS_RAW),
       undefined,
-      DOLPHIN_SKILLS_RAW,
     );
     // The session resolves dolphin, the poly profile's orchestrator.
     const resources = await handlers.resourcesDiscover(undefined, SESSION_CTX);
@@ -587,7 +629,10 @@ describe("buildPiHandlers — resourcesDiscover skill filtering", () => {
     // filtering applies, so the handler contributes exactly as before the
     // filtering change.
     bindAgent(SESSION_ID, "ghost");
-    const handlers = await buildPiHandlers(POLY_ZOO, undefined, MODES_RAW);
+    const handlers = await startInstance(
+      piScope(POLY_ZOO, MODES_RAW),
+      undefined,
+    );
     const resources = await handlers.resourcesDiscover(undefined, SESSION_CTX);
     assert.ok(resources);
     assert.equal(resources.skillPaths.length, 11);
@@ -596,7 +641,10 @@ describe("buildPiHandlers — resourcesDiscover skill filtering", () => {
   it("primary without a skill rules entry → unfiltered (machinery-off)", async () => {
     // The session resolves dolphin, which has no `permission.skill` rules
     // in the raw config → no filtering applies, matching default-allow.
-    const handlers = await buildPiHandlers(POLY_ZOO, undefined, MODES_RAW);
+    const handlers = await startInstance(
+      piScope(POLY_ZOO, MODES_RAW),
+      undefined,
+    );
     const resources = await handlers.resourcesDiscover(undefined, SESSION_CTX);
     assert.ok(resources);
     assert.equal(resources.skillPaths.length, 11);
@@ -604,10 +652,9 @@ describe("buildPiHandlers — resourcesDiscover skill filtering", () => {
 
   it("emits a skills_filtered info event with kept/dropped counts", async () => {
     _resetForTesting();
-    const handlers = await buildPiHandlers(
-      POLY_ZOO,
+    const handlers = await startInstance(
+      piScope(POLY_ZOO, DOLPHIN_SKILLS_RAW),
       undefined,
-      DOLPHIN_SKILLS_RAW,
     );
     await handlers.resourcesDiscover(undefined, SESSION_CTX);
     const filtered = _getBufferForTesting().filter(
@@ -622,7 +669,10 @@ describe("buildPiHandlers — resourcesDiscover skill filtering", () => {
 
   it("emits no filtering event when no filtering applies", async () => {
     _resetForTesting();
-    const handlers = await buildPiHandlers(POLY_ZOO, undefined, MODES_RAW);
+    const handlers = await startInstance(
+      piScope(POLY_ZOO, MODES_RAW),
+      undefined,
+    );
     await handlers.resourcesDiscover(undefined, SESSION_CTX);
     const filtered = _getBufferForTesting().filter(
       (entry) => entry.event === "skills_filtered",
@@ -635,11 +685,14 @@ describe("buildPiHandlers — resourcesDiscover skill filtering", () => {
 // Identity-dispatch prompt injection
 // ---------------------------------------------------------------------------
 
-describe("buildPiHandlers — identity-dispatch prompt injection", () => {
+describe("startPi — identity-dispatch prompt injection", () => {
   it("default primary prompt is prepended", async () => {
     // The main runtime resolves the orchestrator the selection resolved
     // (dolphin) for a session no other source answers.
-    const handlers = await buildPiHandlers(POLY_ZOO, undefined, MODES_RAW);
+    const handlers = await startInstance(
+      piScope(POLY_ZOO, MODES_RAW),
+      undefined,
+    );
 
     const result = await handlers.beforeAgentStart(
       {
@@ -664,7 +717,10 @@ describe("buildPiHandlers — identity-dispatch prompt injection", () => {
     const GPT =
       "- 职责匹配只决定可以委派给谁，不决定一定委派或不委派；**不得**因为下一步动作更方便，或因为存在匹配的 agent，就跳过完整交付成本判断；";
 
-    const handlers = await buildPiHandlers(POLY_ZOO, undefined, MODES_RAW);
+    const handlers = await startInstance(
+      piScope(POLY_ZOO, MODES_RAW),
+      undefined,
+    );
 
     const gpt = await handlers.beforeAgentStart(
       { messageType: "user", systemPrompt: "base" },
@@ -693,7 +749,10 @@ describe("buildPiHandlers — identity-dispatch prompt injection", () => {
     // The session resolves dolphin by default; a binding written after
     // composition (what a switch does) must be reflected by the next
     // before_agent_start: the second primary (mola) prompt is injected.
-    const handlers = await buildPiHandlers(POLY_ZOO, undefined, MODES_RAW);
+    const handlers = await startInstance(
+      piScope(POLY_ZOO, MODES_RAW),
+      undefined,
+    );
     bindAgent(SESSION_ID, "mola");
     const result = await handlers.beforeAgentStart(
       {
@@ -714,9 +773,13 @@ describe("buildPiHandlers — identity-dispatch prompt injection", () => {
   it("a sub-session runtime injects its fixed agent's prompt", async () => {
     // The inline factory a delegation loads fixes the agent, so every
     // session of that runtime is that delegation — no ambient scope.
-    const handlers = await buildPiHandlers(POLY_ZOO, undefined, MODES_RAW, {
-      agent: "beaver",
-    });
+    const { publication: handlers } = await startPiRuntime(
+      piScope(POLY_ZOO, MODES_RAW),
+      undefined,
+      undefined,
+      piProcess,
+      { kind: "subagent", agent: "beaver" },
+    );
     const result = await handlers.beforeAgentStart(
       { messageType: "user", systemPrompt: "base" },
       { sessionManager: { getSessionId: () => "sess-child" } },
@@ -726,9 +789,13 @@ describe("buildPiHandlers — identity-dispatch prompt injection", () => {
   });
 
   it("a sub-session runtime injects a non-orchestrator agent's prompt", async () => {
-    const handlers = await buildPiHandlers(POLY_ZOO, undefined, MODES_RAW, {
-      agent: "lynx",
-    });
+    const { publication: handlers } = await startPiRuntime(
+      piScope(POLY_ZOO, MODES_RAW),
+      undefined,
+      undefined,
+      piProcess,
+      { kind: "subagent", agent: "lynx" },
+    );
     const result = await handlers.beforeAgentStart(
       { messageType: "user", systemPrompt: "base" },
       { sessionManager: { getSessionId: () => "sess-child" } },
@@ -759,10 +826,11 @@ describe("buildPiHandlers — identity-dispatch prompt injection", () => {
         },
       },
     };
-    const { composed, agentModes } = buildPiContributions(zoo, undefined, {
+    const scope = piScope(zoo, {
       agent: { beaver: { mode: "subagent" } },
     });
-    assert.deepEqual(agentModes, { beaver: "subagent" });
+    const { composed } = await composePi(scope);
+    assert.deepEqual(scope.snapshot.agentModes, { beaver: "subagent" });
     // beaver is not the orchestrator and the orchestrator is absent, so the
     // selection is invalid: no agent is composed.
     assert.deepEqual(composed.agents, []);
@@ -772,9 +840,12 @@ describe("buildPiHandlers — identity-dispatch prompt injection", () => {
       primaries: [],
     });
 
-    const handlers = await buildPiHandlers(zoo, undefined, {
-      agent: { beaver: { mode: "subagent" } },
-    });
+    const handlers = await startInstance(
+      piScope(zoo, {
+        agent: { beaver: { mode: "subagent" } },
+      }),
+      undefined,
+    );
     // The session resolves the bound sentinel, which is not in the
     // profile — zero injection.
     const promptResult = await handlers.beforeAgentStart(
@@ -807,9 +878,12 @@ describe("buildPiHandlers — identity-dispatch prompt injection", () => {
 // Compose-driven tool_result handler
 // ---------------------------------------------------------------------------
 
-describe("buildPiHandlers — compose-driven tool_result", () => {
+describe("startPi — compose-driven tool_result", () => {
   it("json-error-nudge in hooks → JSON reminder appended to error output", async () => {
-    const handlers = await buildPiHandlers(POLY_ZOO, undefined, MODES_RAW);
+    const handlers = await startInstance(
+      piScope(POLY_ZOO, MODES_RAW),
+      undefined,
+    );
     const result = await handlers.toolResult(
       {
         type: "tool_result",
@@ -837,7 +911,7 @@ describe("buildPiHandlers — compose-driven tool_result", () => {
         },
       },
     };
-    const handlers = await buildPiHandlers(zoo, undefined, MODES_RAW);
+    const handlers = await startInstance(piScope(zoo, MODES_RAW), undefined);
     const result = await handlers.toolResult(
       {
         type: "tool_result",
@@ -855,7 +929,10 @@ describe("buildPiHandlers — compose-driven tool_result", () => {
     // The root session resolves (and binds) to the config-derived default
     // primary (dolphin here), which satisfies the direct-work nudge's
     // gate.
-    const handlers = await buildPiHandlers(POLY_ZOO, undefined, MODES_RAW);
+    const handlers = await startInstance(
+      piScope(POLY_ZOO, MODES_RAW),
+      undefined,
+    );
     const result = await handlers.toolResult(
       {
         type: "tool_result",
@@ -878,7 +955,7 @@ describe("buildPiHandlers — compose-driven tool_result", () => {
       ...POLY_ZOO,
       mode: { poly: { ...POLY_PROFILE, agents: ["mola"] } },
     };
-    const handlers = await buildPiHandlers(zoo, undefined, MODES_RAW);
+    const handlers = await startInstance(piScope(zoo, MODES_RAW), undefined);
     const result = await handlers.toolResult(
       {
         type: "tool_result",
@@ -895,7 +972,10 @@ describe("buildPiHandlers — compose-driven tool_result", () => {
   it("subagent tool_result → post-subagent nudge fires on the canonical name", async () => {
     // pi registers the delegation tool as "subagent" (the canonical name
     // the core hooks gate on), so the post-subagent nudge fires here.
-    const handlers = await buildPiHandlers(POLY_ZOO, undefined, MODES_RAW);
+    const handlers = await startInstance(
+      piScope(POLY_ZOO, MODES_RAW),
+      undefined,
+    );
     const result = await handlers.toolResult(
       {
         type: "tool_result",
@@ -917,7 +997,10 @@ describe("buildPiHandlers — compose-driven tool_result", () => {
     // "subagent" is in the JSON-recovery exclude list: subagent output
     // may legitimately mention JSON errors without the orchestrator
     // having sent invalid JSON arguments.
-    const handlers = await buildPiHandlers(POLY_ZOO, undefined, MODES_RAW);
+    const handlers = await startInstance(
+      piScope(POLY_ZOO, MODES_RAW),
+      undefined,
+    );
     const result = await handlers.toolResult(
       {
         type: "tool_result",
@@ -946,7 +1029,7 @@ describe("buildPiHandlers — compose-driven tool_result", () => {
         },
       },
     };
-    const handlers = await buildPiHandlers(zoo, undefined, MODES_RAW);
+    const handlers = await startInstance(piScope(zoo, MODES_RAW), undefined);
     const result = await handlers.toolResult(
       {
         type: "tool_result",
@@ -967,14 +1050,17 @@ describe("pi regression — subagent child session must not get the direct-work 
     // run-registry-backed resolver, so it maps to the child's own agent
     // ("beaver") and the dolphin-only nudge never leaks into subagent
     // sessions.
-    const handlers = await buildPiHandlers(POLY_ZOO, undefined, MODES_RAW);
-    startRun({
+    const handlers = await startInstance(
+      piScope(POLY_ZOO, MODES_RAW),
+      undefined,
+    );
+    piProcess.runs.start({
       id: "run-beaver",
       agent: "beaver",
       parentSession: "root-ses",
       startedAt: 100,
     });
-    updateRun("run-beaver", { childSession: "child-beaver" });
+    piProcess.runs.update("run-beaver", { childSession: "child-beaver" });
 
     const childCtx = {
       sessionManager: { getSessionId: () => "child-beaver" },
@@ -1019,9 +1105,12 @@ describe("pi regression — subagent child session must not get the direct-work 
 // Compose-driven context handler
 // ---------------------------------------------------------------------------
 
-describe("buildPiHandlers — compose-driven context handler", () => {
+describe("startPi — compose-driven context handler", () => {
   it("returns the native pi messages, possibly modified by pruning", async () => {
-    const handlers = await buildPiHandlers(POLY_ZOO, undefined, MODES_RAW);
+    const handlers = await startInstance(
+      piScope(POLY_ZOO, MODES_RAW),
+      undefined,
+    );
     const result = (await handlers.contextHandler(
       {
         type: "context",
@@ -1036,7 +1125,10 @@ describe("buildPiHandlers — compose-driven context handler", () => {
   });
 
   it("returns an empty replacement for an empty message array", async () => {
-    const handlers = await buildPiHandlers(POLY_ZOO, undefined, MODES_RAW);
+    const handlers = await startInstance(
+      piScope(POLY_ZOO, MODES_RAW),
+      undefined,
+    );
     const result = (await handlers.contextHandler(
       { type: "context", messages: [] },
       SESSION_CTX,
@@ -1050,7 +1142,7 @@ describe("buildPiHandlers — compose-driven context handler", () => {
 // tool_call — delegation gate
 // ---------------------------------------------------------------------------
 
-describe("buildPiHandlers — tool_call delegation gate", () => {
+describe("startPi — tool_call delegation gate", () => {
   /** The canonical, well-formed delegation prompt. */
   const PROMPT =
     "**SUMMARY:** implement the thing.\n\n" +
@@ -1068,25 +1160,27 @@ describe("buildPiHandlers — tool_call delegation gate", () => {
   }
 
   it("registers the gate handler only when the profile composes judges", async () => {
-    const gated = await buildPiHandlers(POLY_ZOO, undefined, MODES_RAW);
+    const gated = await startInstance(piScope(POLY_ZOO, MODES_RAW), undefined);
     assert.equal(gated.hasGateHandlers, true);
 
     // Neither judge-contributing hook is composed → the gate is null and
     // the key is not registered; a direct call stays inert.
-    const ungated = await buildPiHandlers(
-      {
-        ...POLY_ZOO,
-        mode: {
-          poly: {
-            ...POLY_PROFILE,
-            hooks: POLY_PROFILE.hooks.filter(
-              (h) => h !== "subagent-delegation" && h !== "subagent-prompt",
-            ),
+    const ungated = await startInstance(
+      piScope(
+        {
+          ...POLY_ZOO,
+          mode: {
+            poly: {
+              ...POLY_PROFILE,
+              hooks: POLY_PROFILE.hooks.filter(
+                (h) => h !== "subagent-delegation" && h !== "subagent-prompt",
+              ),
+            },
           },
         },
-      },
+        MODES_RAW,
+      ),
       undefined,
-      MODES_RAW,
     );
     assert.equal(ungated.hasGateHandlers, false);
     assert.equal(
@@ -1096,7 +1190,10 @@ describe("buildPiHandlers — tool_call delegation gate", () => {
   });
 
   it("blocks a refused delegation and passes the rest through", async () => {
-    const handlers = await buildPiHandlers(POLY_ZOO, undefined, MODES_RAW);
+    const handlers = await startInstance(
+      piScope(POLY_ZOO, MODES_RAW),
+      undefined,
+    );
     bindAgent(SESSION_ID, "beaver");
 
     // A non-subagent tool passes through untouched.
@@ -1123,6 +1220,42 @@ describe("buildPiHandlers — tool_call delegation gate", () => {
     const reason = refusal?.reason ?? "";
     assert.ok(reason.includes("beaver can only delegate to"));
     assert.ok(reason.includes("mola"));
+  });
+
+  it("refuses an unselected subagent and a primary target", async () => {
+    // The profile leaves lynx out, so a delegation to it would run an
+    // agent whose role prompt was never composed.
+    const agents = POLY_PROFILE.agents.filter((name) => name !== "lynx");
+    const handlers = await startInstance(
+      piScope(
+        { ...POLY_ZOO, mode: { poly: { ...POLY_PROFILE, agents } } },
+        MODES_RAW,
+      ),
+      undefined,
+    );
+    bindAgent(SESSION_ID, "beaver");
+
+    const unselected = await handlers.toolCall(
+      subagentCall("lynx"),
+      SESSION_CTX,
+    );
+    assert.equal(unselected?.block, true);
+    assert.ok(
+      (unselected?.reason ?? "").includes("未在当前 profile 的 agents 中启用"),
+    );
+
+    // A selected, allowlisted subagent still passes.
+    assert.equal(
+      await handlers.toolCall(subagentCall("spider"), SESSION_CTX),
+      undefined,
+    );
+
+    // A selected primary is refused by its role, whatever the caller may
+    // delegate to.
+    bindAgent(SESSION_ID, "dolphin");
+    const primary = await handlers.toolCall(subagentCall("mola"), SESSION_CTX);
+    assert.equal(primary?.block, true);
+    assert.ok((primary?.reason ?? "").includes("不是可委派的子 agent"));
   });
 });
 
@@ -1162,7 +1295,10 @@ describe("lifecycle scope", () => {
 
   it("ensures the session from the first turn without a session_start", async () => {
     const api = mockApi();
-    const handlers = await buildPiHandlers(POLY_ZOO, api as any, MODES_RAW);
+    const handlers = await startInstance(
+      piScope(POLY_ZOO, MODES_RAW),
+      api as any,
+    );
     const { state, ctx } = lifecycleCtx("sess-first-turn");
 
     await handlers.beforeAgentStart(
@@ -1176,7 +1312,10 @@ describe("lifecycle scope", () => {
 
   it("re-registers on a repeated start without stacking a listener", async () => {
     const api = mockApi();
-    const handlers = await buildPiHandlers(POLY_ZOO, api as any, MODES_RAW);
+    const handlers = await startInstance(
+      piScope(POLY_ZOO, MODES_RAW),
+      api as any,
+    );
     const { state, ctx } = lifecycleCtx("sess-reregister");
     const start = { type: "session_start", reason: "startup" };
 
@@ -1192,10 +1331,9 @@ describe("lifecycle scope", () => {
     // creates publishes one run change, and the fleet subscription repaints
     // that run's session.  The start handler therefore adds no repaint of
     // its own — a start with nothing to restore measures the baseline.
-    const handlers = await buildPiHandlers(
-      POLY_ZOO,
+    const handlers = await startInstance(
+      piScope(POLY_ZOO, MODES_RAW),
       mockApi() as any,
-      MODES_RAW,
     );
     /** One finished delegation in a pi message history. */
     const delegation = (id: string, timestamp: number): PiHistoryEntry[] => [
@@ -1286,7 +1424,7 @@ describe("lifecycle scope", () => {
 
     const withRestore = await startRepaints(restored);
     assert.deepEqual(
-      topLevelRuns("sess-restore-fleet").map((run) => run.id),
+      piProcess.runs.topLevel("sess-restore-fleet").map((run) => run.id),
       ["call-r1", "call-r2"],
       "precondition: the start restored both runs",
     );
@@ -1301,7 +1439,10 @@ describe("lifecycle scope", () => {
 
   it("creates and registers nothing without a session id", async () => {
     const api = mockApi();
-    const handlers = await buildPiHandlers(POLY_ZOO, api as any, MODES_RAW);
+    const handlers = await startInstance(
+      piScope(POLY_ZOO, MODES_RAW),
+      api as any,
+    );
     const state = { widgets: 0, binds: 0 };
     const ctx = {
       ui: {
@@ -1326,7 +1467,10 @@ describe("lifecycle scope", () => {
 
   it("session_shutdown releases the session resources and stops further writes", async () => {
     const api = mockApi();
-    const handlers = await buildPiHandlers(POLY_ZOO, api as any, MODES_RAW);
+    const handlers = await startInstance(
+      piScope(POLY_ZOO, MODES_RAW),
+      api as any,
+    );
     const { state, ctx } = lifecycleCtx("sess-shutdown");
     await handlers.sessionStart(
       { type: "session_start", reason: "startup" },
@@ -1352,7 +1496,10 @@ describe("lifecycle scope", () => {
 
   it("a tool execution bridge admits the call for the event's session", async () => {
     const api = mockApi();
-    const handlers = await buildPiHandlers(TODO_ZOO, api as any, MODES_RAW);
+    const handlers = await startInstance(
+      piScope(TODO_ZOO, MODES_RAW),
+      api as any,
+    );
     assert.ok(handlers, "handlers are wired");
     const todo = api.tools.find((tool: any) => tool.name === "todo") as any;
     const ctx = { sessionManager: { getSessionId: () => "sess-tool-first" } };
@@ -1379,7 +1526,7 @@ describe("lifecycle scope", () => {
 
   it("publishes the tool event's context before ensuring the session", async () => {
     const api = mockApi();
-    await buildPiHandlers(TODO_ZOO, api as any, MODES_RAW);
+    await startInstance(piScope(TODO_ZOO, MODES_RAW), api as any);
     const todo = api.tools.find((tool: any) => tool.name === "todo") as any;
     // A tool call may be the FIRST event a session produces (flows without a
     // `session_start`).  Its context must be published before the session
@@ -1428,7 +1575,10 @@ describe("lifecycle scope", () => {
 
   it("restores two interleaved sessions' plans from their own transcripts", async () => {
     const api = mockApi();
-    const handlers = await buildPiHandlers(TODO_ZOO, api as any, MODES_RAW);
+    const handlers = await startInstance(
+      piScope(TODO_ZOO, MODES_RAW),
+      api as any,
+    );
     const todo = api.tools.find((tool: any) => tool.name === "todo") as any;
     const plan = (task: string) => ({
       sessionManager: {
@@ -1490,7 +1640,10 @@ describe("lifecycle scope", () => {
 
   it("a stopped session's todo state is not resurrected by a late tool call", async () => {
     const api = mockApi();
-    const handlers = await buildPiHandlers(TODO_ZOO, api as any, MODES_RAW);
+    const handlers = await startInstance(
+      piScope(TODO_ZOO, MODES_RAW),
+      api as any,
+    );
     const todo = api.tools.find((tool: any) => tool.name === "todo") as any;
     const ctx = lifecycleCtx("sess-stopped-todo");
     await handlers.sessionStart(
@@ -1528,7 +1681,7 @@ describe("lifecycle scope", () => {
 
   it("a command execution bridge admits the call for the event's session", async () => {
     const api = mockApi();
-    await buildPiHandlers(POLY_ZOO, api as any, MODES_RAW);
+    await startInstance(piScope(POLY_ZOO, MODES_RAW), api as any);
     const dcp = api.commands.find((command) => command.name === "dcp");
     assert.ok(dcp && typeof dcp.handler === "function");
     const before = api.appendedEntries.length;
@@ -1549,7 +1702,7 @@ describe("lifecycle scope", () => {
 // Event admission (runSession)
 // ---------------------------------------------------------------------------
 
-describe("buildPiHandlers — event admission", () => {
+describe("startPi — event admission", () => {
   /** An empty composition: the admitted business paths need no contribution. */
   const EMPTY_COMPOSED: ComposedResult = {
     agents: [],
@@ -1631,7 +1784,10 @@ describe("buildPiHandlers — event admission", () => {
       registerFleetWidget: (sessionID) => log.push(`widget:${sessionID}`),
       refreshTodoView: (sessionID) => log.push(`todo:${sessionID}`),
       seedTodoView: (sessionID) => log.push(`seed:${sessionID}`),
+      claimPendingSwitchOps: (sessionID, facts) =>
+        log.push(`claim:${sessionID}:${facts.reason}:${facts.parentSession}`),
       drainPendingSwitchOps: () => log.push("drain"),
+      runs: piProcess.runs,
       invalidateTodo: (sessionId) => invalidated.push(sessionId),
       resolveAgent: () => undefined,
       resolveCallerAgent: async () => {
@@ -1735,17 +1891,20 @@ describe("buildPiHandlers — event admission", () => {
       ctxOf("s2"),
     );
 
-    // Interleaved sessions never share a surface: each bind, widget write
-    // and todo refresh carries the id of the event that caused it.  The
-    // post-restore repaint is the fleet subscription's, not the handler's.
+    // Interleaved sessions never share a surface: each bind, claim, widget
+    // write and todo refresh carries the id of the event that caused it.
+    // The post-restore repaint is the fleet subscription's, not the
+    // handler's.
     assert.deepEqual(h.log, [
       "start",
       "bind:s1",
+      "claim:s1:startup:undefined",
       "trim",
       "widget:s1",
       "todo:s1",
       "start",
       "bind:s2",
+      "claim:s2:resume:undefined",
       "trim",
       "widget:s2",
       "todo:s2",
@@ -1840,6 +1999,7 @@ describe("buildPiHandlers — event admission", () => {
     assert.deepEqual(h.log, [
       "start",
       "bind:s1",
+      "claim:s1:startup:undefined",
       "trim",
       "widget:s1",
       "todo:s1",

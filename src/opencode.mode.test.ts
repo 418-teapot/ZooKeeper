@@ -10,13 +10,16 @@
  */
 import assert from "node:assert/strict";
 import { afterEach, describe, it } from "node:test";
+import {
+  _resetOpenCodeProcessStateForTesting,
+  openCodeProcessState,
+} from "./adapters/opencode/process.js";
 import { DELEGATION_LEAF_AGENTS_HEADER } from "./agents/parts.js";
 import {
   COMMAND_HANDLED,
   normalizeToolName,
   registerProfileToolsInConfig,
 } from "./compose-opencode.js";
-import { sessionAgentRegistry } from "./core/session/agent.js";
 import type { AgentUnitDescriptor } from "./core/unit.js";
 import { DIRECT_WORK_NUDGE } from "./hooks/direct-work-nudge";
 import { JSON_ERROR_REMINDER } from "./hooks/json-error-nudge";
@@ -193,7 +196,7 @@ function transformMessages(): Array<Record<string, any>> {
 
 afterEach(() => {
   _resetForTesting();
-  sessionAgentRegistry.clear();
+  _resetOpenCodeProcessStateForTesting();
   delete process.env.ZOO_MODE_FILE;
 });
 
@@ -321,15 +324,72 @@ describe("poly full profile — registration parity", () => {
       ),
       /beaver can only delegate to lynx and spider/,
     );
+    // The allowlist judge reports no structured cause: the log field stays
+    // absent instead of being assigned one.
+    const blocked = logEvents().filter((e) => e.event === "gate_blocked");
+    assert.equal(blocked.length, 1, "one gate refusal expected");
+    assert.equal(blocked[0].judge, "judgeDelegationTarget");
+    assert.equal("cause" in blocked[0], false, "no cause on allowlist");
   });
 
   it("tool.execute.before allows an allowlisted delegation (registry caller)", async () => {
-    sessionAgentRegistry.bind("s", "beaver");
+    openCodeProcessState().sessionAgents.bind("s", "beaver");
     const plugin = await makePlugin();
     await plugin["tool.execute.before"](
       { tool: "task", sessionID: "s", callID: "c" },
       { args: { subagent_type: "spider" } },
     );
+  });
+
+  it("tool.execute.before allows a selected subagent", async () => {
+    openCodeProcessState().sessionAgents.bind("s", "beaver");
+    const plugin = await makePlugin();
+    await plugin["tool.execute.before"](
+      { tool: "task", sessionID: "s", callID: "c" },
+      { args: { subagent_type: "lynx" } },
+    );
+  });
+
+  it("tool.execute.before refuses a configured subagent the profile does not select", async () => {
+    // The profile enables no lynx agent unit, so the target would run
+    // without its role prompt: the composed gate refuses it.
+    openCodeProcessState().sessionAgents.bind("s", "beaver");
+    const agents = POLY_PROFILE.agents.filter((name) => name !== "lynx");
+    const client = hostClient({
+      config: { get: async () => ({ data: hostConfig(agents) }) },
+    });
+    const plugin = await buildPlugin(
+      { client },
+      { ...POLY_ZOO, mode: { poly: { ...POLY_PROFILE, agents } } },
+      POLY_RAW,
+    );
+    await assert.rejects(
+      plugin["tool.execute.before"](
+        { tool: "task", sessionID: "s", callID: "c" },
+        { args: { subagent_type: "lynx" } },
+      ),
+      /未在当前 profile 的 agents 中启用/,
+    );
+    const blocked = logEvents().filter((e) => e.event === "gate_blocked");
+    assert.equal(blocked.length, 1, "one gate refusal expected");
+    assert.equal(blocked[0].cause, "not-selected");
+  });
+
+  it("tool.execute.before refuses a primary target by its role", async () => {
+    // dolphin may delegate anywhere, so only the target's declared role can
+    // refuse mola.
+    openCodeProcessState().sessionAgents.bind("s", "dolphin");
+    const plugin = await makePlugin();
+    await assert.rejects(
+      plugin["tool.execute.before"](
+        { tool: "task", sessionID: "s", callID: "c" },
+        { args: { subagent_type: "mola" } },
+      ),
+      /不是可委派的子 agent/,
+    );
+    const blocked = logEvents().filter((e) => e.event === "gate_blocked");
+    assert.equal(blocked.length, 1, "one gate refusal expected");
+    assert.equal(blocked[0].cause, "not-a-subagent");
   });
 
   it("tool.execute.before refuses when the caller cannot be resolved", async () => {
@@ -644,7 +704,7 @@ describe("event-key composition by enabled hook set", () => {
 
     // No delegation judge is enabled — a denied delegation passes even
     // for a caller the allowlist would otherwise restrict.
-    sessionAgentRegistry.bind("s", "beaver");
+    openCodeProcessState().sessionAgents.bind("s", "beaver");
     await plugin["tool.execute.before"](
       { tool: "task", sessionID: "s", callID: "c" },
       { args: { subagent_type: "kiwi" } },
@@ -655,7 +715,7 @@ describe("event-key composition by enabled hook set", () => {
   it("subagent-delegation only → delegation validation, no prompt validation", async () => {
     // The caller is read from the registry the `message.updated` handler
     // writes, exactly as on the live host.
-    sessionAgentRegistry.bind("s", "beaver");
+    openCodeProcessState().sessionAgents.bind("s", "beaver");
     const plugin = await makePlugin({
       ...POLY_ZOO,
       mode: { poly: { ...POLY_PROFILE, hooks: ["subagent-delegation"] } },
@@ -715,7 +775,7 @@ describe("event-key composition by enabled hook set", () => {
 
   it("direct-work-nudge only → after appends the edit nudge for dolphin", async () => {
     const plugin = await pluginWithHooks(["direct-work-nudge"]);
-    sessionAgentRegistry.bind("s", "dolphin");
+    openCodeProcessState().sessionAgents.bind("s", "dolphin");
     const output: { output?: string } = { output: "result" };
     await plugin["tool.execute.after"](
       { tool: "edit", sessionID: "s", callID: "c" },
@@ -983,6 +1043,30 @@ describe("buildPlugin — host config pre-read", () => {
   function probePlugin(client: Record<string, unknown>) {
     return buildPlugin({ client }, PROBE_ZOO, PROBE_RAW);
   }
+
+  it("reads no host config when the profile is absent", async () => {
+    // A null profile selects nothing and instantiates nothing, so the host
+    // config is never read: the pre-read serves the assembly, and there is
+    // no assembly to run.
+    let reads = 0;
+    await buildPlugin(
+      {
+        client: {
+          config: {
+            get: async () => {
+              reads += 1;
+              return { data: READY_HOST };
+            },
+          },
+          session: { get: async () => ({}) },
+        },
+      },
+      {},
+      PROBE_RAW,
+    );
+
+    assert.equal(reads, 0, "an empty profile reads no materialisation fact");
+  });
 
   /** The buffered `selection_invalid` entry of the current pass. */
   function invalidEntry(): Record<string, unknown> | undefined {
@@ -1401,7 +1485,7 @@ describe("null profile — skip profile-driven registration", () => {
         properties: { info: { agent: "dolphin", sessionID: "s3" } },
       },
     });
-    assert.equal(sessionAgentRegistry.resolve("s3"), "dolphin");
+    assert.equal(openCodeProcessState().sessionAgents.resolve("s3"), "dolphin");
   });
 
   it("text.complete is absent — reply-strip is profile-gated", async () => {

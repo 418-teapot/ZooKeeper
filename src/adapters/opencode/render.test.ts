@@ -42,7 +42,10 @@ import {
   type ReleaseOptions,
 } from "../../core/context/release.js";
 import { planViewRender } from "../../core/context/render-plan.js";
-import { computeSpanHash } from "../../core/context/spanhash.js";
+import {
+  computeSpanHash,
+  contentFingerprint,
+} from "../../core/context/spanhash.js";
 import { markKey, type SessionState } from "../../core/context/state.js";
 import { numberView } from "../../core/context/view-refs.js";
 import { isInjectableRegion } from "../../core/context/writable-regions.js";
@@ -91,19 +94,26 @@ function reasoning(text: string): Record<string, unknown> {
  * Seed a lens mark for the given region.
  *
  * `regionIndex` is optional: pass undefined to seed a mark without a
- * region index.
+ * region index.  The mark's content snapshot and fingerprint are the
+ * ones the producers write for the region's text in `snapshot`.
  */
 function seedMark(
   state: SessionState,
+  snapshot: Projection,
   ordinal: number,
   regionIndex: number | undefined,
   effective: boolean,
   tokens = 100,
 ): void {
+  const content =
+    regionIndex === undefined
+      ? ""
+      : (snapshot.messages[ordinal]?.regions[regionIndex]?.get() ?? "");
   state.marks.set(markKey(ordinal, regionIndex), {
     anchorOrdinal: ordinal,
     ...(regionIndex !== undefined ? { regionIndex } : {}),
-    content: "content snapshot",
+    content,
+    contentHash: contentFingerprint(content),
     contentTokens: tokens,
     effective,
     markedAt: 1,
@@ -218,11 +228,11 @@ describe("round render", () => {
         ]),
         entry("assistant", "m4", [text("回答完毕")]),
       ],
-      (state) => {
+      (state, snapshot) => {
         // m1 regions: thinking(0), tool-input(1), tool-output(2),
         // tool-input(3), tool-output(4).
-        seedMark(state, 1, 2, true, 100);
-        seedMark(state, 1, 4, false, 200);
+        seedMark(state, snapshot, 1, 2, true, 100);
+        seedMark(state, snapshot, 1, 4, false, 200);
       },
       { promptTokens: 100_000, releasedPercent: 0, pendingViewChange: false },
     );
@@ -261,7 +271,7 @@ describe("round render", () => {
       (state, lens) => {
         seedBlock(state, lens, 1, 1, 3, "第一段", "摘要正文");
         // a3 regions: tool-input(0), tool-output(1), content(2).
-        seedMark(state, 3, 1, true, 100);
+        seedMark(state, lens, 3, 1, true, 100);
       },
       { promptTokens: 100_000, releasedPercent: 5, pendingViewChange: false },
     );
@@ -290,9 +300,9 @@ describe("round render", () => {
           text("已失败"),
         ]),
       ],
-      (state) => {
+      (state, snapshot) => {
         // a1 regions: tool-input(0), tool-output(1), content(2).
-        seedMark(state, 1, 0, false, 3000);
+        seedMark(state, snapshot, 1, 0, false, 3000);
       },
       { promptTokens: 100_000, releasedPercent: 0, pendingViewChange: false },
     );
@@ -314,11 +324,11 @@ describe("round render", () => {
           toolPart("bash", "ls", LONG_OUTPUT),
         ]),
       ],
-      (state) => {
-        seedMark(state, 1, 2, true, 100); // valid
-        seedMark(state, 9, 0, true, 100); // vanished message
-        seedMark(state, 1, 9, false, 100); // out-of-range region
-        seedMark(state, 0, undefined, false, 100); // no region index
+      (state, snapshot) => {
+        seedMark(state, snapshot, 1, 2, true, 100); // valid
+        seedMark(state, snapshot, 9, 0, true, 100); // vanished message
+        seedMark(state, snapshot, 1, 9, false, 100); // out-of-range region
+        seedMark(state, snapshot, 0, undefined, false, 100); // no region index
       },
       { promptTokens: 100_000, releasedPercent: 0, pendingViewChange: false },
     );
@@ -338,9 +348,9 @@ describe("round render", () => {
         entry("assistant", "a1", [toolPart("bash", "ls", LONG_OUTPUT)]),
         entry("assistant", "a2", [toolPart("bash", "pwd", LONG_OUTPUT)]),
       ],
-      (state) => {
-        seedMark(state, 1, 1, true, 100);
-        seedMark(state, 2, 1, false, 200);
+      (state, snapshot) => {
+        seedMark(state, snapshot, 1, 1, true, 100);
+        seedMark(state, snapshot, 2, 1, false, 200);
       },
       {
         promptTokens: 100_000,
@@ -669,7 +679,7 @@ describe("host adapter immutability", () => {
       ],
       (state, snapshot) => {
         seedBlock(state, snapshot, 1, 0, 2, "第一段", "摘要正文");
-        seedMark(state, 3, 1, true, 100);
+        seedMark(state, snapshot, 3, 1, true, 100);
       },
       options,
     );
@@ -685,7 +695,7 @@ describe("host adapter immutability", () => {
     const before = structuredClone(entries);
     const snapshot = history(entries);
     seedBlock(state, snapshot, 1, 0, 2, "第一段", "摘要正文");
-    seedMark(state, 3, 1, true, 100);
+    seedMark(state, snapshot, 3, 1, true, 100);
     const edits = computeEdits(state, snapshot.messages, {
       ...options,
       protection: buildProtectionMap(snapshot.messages, 0, 0),
@@ -748,8 +758,8 @@ describe("render behavior", () => {
       ]),
     ];
     const state = makeState();
-    seedMark(state, 1, 2, true, 100);
     const snapshot = history(entries);
+    seedMark(state, snapshot, 1, 2, true, 100);
     const edits = computeEdits(state, snapshot.messages, {
       promptTokens: 100_000,
       releasedPercent: 0,

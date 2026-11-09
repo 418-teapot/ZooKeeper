@@ -32,10 +32,8 @@ import type {
   SubagentResult,
 } from "../core/subagent/driver.js";
 import {
-  getRun,
-  resetRegistry,
-  subscribeRunChange,
-  topLevelRuns,
+  createRunRegistry,
+  type RunRegistry,
 } from "../core/subagent/registry.js";
 import type { ToolCallContext } from "../core/unit.js";
 import { composeForTest, facts } from "../testkits/compose.js";
@@ -46,15 +44,15 @@ import {
 } from "../utils/logger.js";
 import { unit } from "./subagent.js";
 
-// The run registry is process-global (bun shares one isolate across every
-// test file), so reset it between tests to keep the registry-write
-// assertions deterministic.
+// Each test owns its run registry, so the registry-write assertions never
+// depend on what an earlier test wrote.
+let runs: RunRegistry = createRunRegistry();
+
 beforeEach(() => {
-  resetRegistry();
+  runs = createRunRegistry();
 });
 
 afterEach(() => {
-  resetRegistry();
   _resetLoggerForTesting();
 });
 
@@ -93,6 +91,7 @@ function makeDeps(
   return {
     limits: {},
     contextConfig: {},
+    runs,
     // The target-role guard reads the parsed agent modes; the default
     // fixture declares beaver as a delegatable subagent so the existing
     // happy-path cases keep running the driver.
@@ -110,8 +109,18 @@ function makeDeps(
   };
 }
 
+/** Configured roles used by the selection-aware target cases. */
+const SELECTION_MODES = {
+  dolphin: "primary",
+  beaver: "subagent",
+  lynx: "subagent",
+} as const;
+
 /** The contributed subagent tool for a set of deps and a fact projection. */
-function tool(deps: Partial<Capabilities>, uses = facts()) {
+function tool(
+  deps: Partial<Capabilities>,
+  uses = facts({ agents: ["beaver"] }),
+) {
   const contributions = unit.create(deps, uses);
   assert.equal(contributions.kind, "tool");
   assert.equal(contributions.tools.length, 1, "exactly one tool contributed");
@@ -139,6 +148,32 @@ describe("subagent tool unit — fail-closed registration", () => {
     assert.deepEqual(result.report.skipped, [
       { name: "subagent", missing: ["subagentDriver"] },
     ]);
+  });
+
+  it("refuses a configured subagent the composed profile does not select", async () => {
+    // The profile selects dolphin only, so lynx keeps its role prompt out
+    // of the run: the composed tool must refuse it.
+    const composed = composeForTest(
+      { ...SUBAGENT_TOOL_PROFILE, agents: ["dolphin"] },
+      [unit],
+      makeDeps({
+        subagentDriver: fakeDriver({ kind: "ok", text: "done" }).driver,
+        agentModes: SELECTION_MODES,
+        subagentModels: { lynx: "Dummy/dummy-small" },
+      }),
+    );
+    const composedTool = composed.tools.subagent;
+    assert.ok(composedTool, "the selected tool must be composed");
+
+    const { text } = await composedTool.execute(
+      { agent: "lynx", description: "扫描代码", prompt: "task" },
+      TOOL_CALL(),
+    );
+
+    assert.ok(
+      text.includes("未在当前 profile 的 agents 中启用"),
+      `reason missing: ${text}`,
+    );
   });
 });
 
@@ -546,6 +581,57 @@ describe("subagent tool execute — target-role guard", () => {
     );
   });
 
+  it("rejects a configured subagent the profile does not select", async () => {
+    const { driver, calls } = fakeDriver({ kind: "ok", text: "done" });
+
+    // lynx is a configured subagent, but the profile enables only dolphin
+    // and beaver, so lynx runs without its role prompt.
+    const t = tool(
+      makeDeps({
+        subagentDriver: driver,
+        agentModes: SELECTION_MODES,
+        subagentModels: { lynx: "Dummy/dummy-small" },
+      }),
+      facts({ agents: ["dolphin", "beaver"] }),
+    );
+
+    const { text: result } = await t.execute(
+      { agent: "lynx", description: "扫描代码", prompt: "task" },
+      TOOL_CALL(),
+    );
+
+    assert.equal(
+      calls.length,
+      0,
+      "driver must not run for a subagent the profile does not select",
+    );
+    assert.ok(
+      result.includes("lynx"),
+      `reason must name the target: ${result}`,
+    );
+    assert.ok(
+      result.includes("未在当前 profile 的 agents 中启用"),
+      `reason missing: ${result}`,
+    );
+  });
+
+  it("runs a configured subagent the profile selects", async () => {
+    const { driver, calls } = fakeDriver({ kind: "ok", text: "done" });
+
+    const t = tool(
+      makeDeps({ subagentDriver: driver, agentModes: SELECTION_MODES }),
+      facts({ agents: ["dolphin", "beaver"] }),
+    );
+
+    const { text: result } = await t.execute(
+      { agent: "beaver", description: "实现任务", prompt: "task" },
+      TOOL_CALL(),
+    );
+
+    assert.equal(calls.length, 1, "a selected subagent runs the driver");
+    assert.equal(result, "done");
+  });
+
   it("logs a target_role_blocked warn entry for a rejected target", async () => {
     const { driver } = fakeDriver({ kind: "ok", text: "done" });
 
@@ -707,7 +793,7 @@ describe("subagent tool execute — progress to registry updates", () => {
           done: false,
           tokens: 150,
         });
-        assert.equal(getRun("call-log")?.tokens, 150);
+        assert.equal(runs.get("call-log")?.tokens, 150);
         ctx.log?.appendMessage(
           [{ type: "text", text: "done" }],
           { totalTokens: 84 },
@@ -716,7 +802,7 @@ describe("subagent tool execute — progress to registry updates", () => {
         ctx.onProgress?.({ done: false, tokens: 234 });
         // While the run is live its registry log holds the driver's facts.
         assert.equal(
-          getRun("call-log")?.log.size,
+          runs.get("call-log")?.log.size,
           4,
           "the live run's log must hold the appended facts",
         );
@@ -729,7 +815,7 @@ describe("subagent tool execute — progress to registry updates", () => {
       TOOL_CALL({ callID: "call-log" }),
     );
 
-    const run = getRun("call-log");
+    const run = runs.get("call-log");
     assert.ok(run);
     // Finishing the run releases its fact log (resident memory tracks active
     // work only; the durable copy lives in the persisted sub-session file).
@@ -751,7 +837,7 @@ describe("subagent tool execute — progress to registry updates", () => {
     const driver: SubagentDriver = {
       async run(_req, ctx) {
         ctx.onProgress?.({ done: false, tokens: 4242 });
-        assert.equal(getRun("call-tokens")?.tokens, 4242);
+        assert.equal(runs.get("call-tokens")?.tokens, 4242);
         return { kind: "ok", text: "done" };
       },
     };
@@ -760,9 +846,9 @@ describe("subagent tool execute — progress to registry updates", () => {
       { agent: "beaver", description: "实现任务", prompt: "t" },
       TOOL_CALL({ callID: "call-tokens" }),
     );
-    assert.equal(getRun("call-tokens")?.tokens, 4242);
+    assert.equal(runs.get("call-tokens")?.tokens, 4242);
     // The log stayed empty, so no scan of it could have produced the number.
-    assert.equal(getRun("call-tokens")?.log.size, 0);
+    assert.equal(runs.get("call-tokens")?.log.size, 0);
   });
 
   it("leaves the run's token total absent when no report carried usage", async () => {
@@ -780,7 +866,7 @@ describe("subagent tool execute — progress to registry updates", () => {
       { agent: "beaver", description: "实现任务", prompt: "t" },
       TOOL_CALL({ callID: "call-notokens" }),
     );
-    assert.equal(getRun("call-notokens")?.tokens, undefined);
+    assert.equal(runs.get("call-notokens")?.tokens, undefined);
   });
 
   it("clears the run's currentTool when the driver reports no current tool", async () => {
@@ -794,12 +880,12 @@ describe("subagent tool execute — progress to registry updates", () => {
     const driver: SubagentDriver = {
       async run(_req, ctx) {
         ctx.onProgress?.({ currentTool: "bash", done: false });
-        toolAfterStart = getRun("call-clear")?.currentTool;
+        toolAfterStart = runs.get("call-clear")?.currentTool;
         // A report with no currentTool field leaves the running tool alone.
         ctx.onProgress?.({ done: false });
-        toolAfterUnrelated = getRun("call-clear")?.currentTool;
+        toolAfterUnrelated = runs.get("call-clear")?.currentTool;
         ctx.onProgress?.({ currentTool: null, done: false });
-        toolAfterClear = getRun("call-clear")?.currentTool;
+        toolAfterClear = runs.get("call-clear")?.currentTool;
         return { kind: "ok", text: "done" };
       },
     };
@@ -811,7 +897,7 @@ describe("subagent tool execute — progress to registry updates", () => {
     assert.equal(toolAfterStart, "bash");
     assert.equal(toolAfterUnrelated, "bash");
     assert.equal(toolAfterClear, undefined);
-    assert.equal(getRun("call-clear")?.currentTool, undefined);
+    assert.equal(runs.get("call-clear")?.currentTool, undefined);
   });
 
   it("asks for a card repaint on every progress report", async () => {
@@ -883,12 +969,12 @@ describe("subagent tool execute — run-registry writes", () => {
     );
     assert.equal(result, "done");
 
-    const run = getRun("call-42");
+    const run = runs.get("call-42");
     assert.ok(run, "the run must be registered under the call id");
     assert.equal(run?.agent, "beaver");
     assert.equal(run?.parentSession, "sess-subagent");
     assert.equal(run?.label, "实现任务");
-    // The running snapshot's currentTool was patched via updateRun.
+    // The running snapshot's currentTool was patched via `runs.update`.
     assert.equal(run?.currentTool, "bash");
     // Terminal state: done with the session path captured from the last
     // snapshot.
@@ -900,10 +986,10 @@ describe("subagent tool execute — run-registry writes", () => {
   it("patches sessionPath on the running run before it finishes", async () => {
     // The driver reads the registry synchronously right after its running
     // (done: false) snapshot is delivered — at that point the tool's
-    // onProgress handler has already run but finishRun has not, so the run
+    // onProgress handler has already run but `runs.finish` has not, so the run
     // must be non-terminal AND already carry sessionPath for enter-inspect.
     // Primitive fields are captured at probe time because the registry
-    // mutates the live run object in place on finishRun.
+    // mutates the live run object in place on `runs.finish`.
     let statusDuring: string | undefined;
     let sessionPathDuring: string | undefined;
     const driver: SubagentDriver = {
@@ -913,8 +999,8 @@ describe("subagent tool execute — run-registry writes", () => {
           done: false,
           sessionPath: "/tmp/running-session.jsonl",
         });
-        statusDuring = getRun("call-running")?.status;
-        sessionPathDuring = getRun("call-running")?.sessionPath;
+        statusDuring = runs.get("call-running")?.status;
+        sessionPathDuring = runs.get("call-running")?.sessionPath;
         return { kind: "ok", text: "done" };
       },
     };
@@ -949,8 +1035,8 @@ describe("subagent tool execute — run-registry writes", () => {
       { agent: "beaver", description: "实现任务", prompt: "t" },
       TOOL_CALL({ callID: "call-e" }),
     );
-    assert.equal(getRun("call-e")?.status, "error");
-    assert.equal(getRun("call-e")?.error, "boom");
+    assert.equal(runs.get("call-e")?.status, "error");
+    assert.equal(runs.get("call-e")?.error, "boom");
 
     const abortT = tool(
       makeDeps({
@@ -965,7 +1051,7 @@ describe("subagent tool execute — run-registry writes", () => {
       { agent: "beaver", description: "实现任务", prompt: "t" },
       TOOL_CALL({ callID: "call-a" }),
     );
-    assert.equal(getRun("call-a")?.status, "aborted");
+    assert.equal(runs.get("call-a")?.status, "aborted");
   });
 
   it("records the child session so nested runs associate through it", async () => {
@@ -983,11 +1069,12 @@ describe("subagent tool execute — run-registry writes", () => {
       { agent: "beaver", description: "实现任务", prompt: "t" },
       TOOL_CALL({ callID: "call-p" }),
     );
-    assert.equal(getRun("call-p")?.childSession, "child-ses-1");
+    assert.equal(runs.get("call-p")?.childSession, "child-ses-1");
 
     // A nested delegation inside the beaver sub-session carries that child
-    // session as its own parentSession (topLevelRuns under the main session
-    // therefore excludes it).  lynx must be declared a valid subagent target.
+    // session as its own parentSession (topLevel under the main session
+    // therefore excludes it).  lynx must be declared a subagent the profile
+    // selects.
     const nestedT = tool(
       makeDeps({
         subagentDriver: driver,
@@ -1001,14 +1088,15 @@ describe("subagent tool execute — run-registry writes", () => {
           lynx: "Dummy/dummy-small",
         },
       }),
+      facts({ agents: ["dolphin", "beaver", "lynx"] }),
     );
     await nestedT.execute(
       { agent: "lynx", description: "调研", prompt: "t" },
       TOOL_CALL({ sessionID: "child-ses-1", callID: "call-c" }),
     );
-    assert.equal(getRun("call-c")?.parentSession, "child-ses-1");
+    assert.equal(runs.get("call-c")?.parentSession, "child-ses-1");
     assert.deepEqual(
-      topLevelRuns("sess-subagent").map((r) => r.id),
+      runs.topLevel("sess-subagent").map((r) => r.id),
       ["call-p"],
       "the nested run must not appear under the main session",
     );
@@ -1036,14 +1124,18 @@ describe("subagent tool execute — run-registry writes", () => {
       { agent: "beaver", description: "任务二", prompt: "t" },
       TOOL_CALL(),
     );
-    const runs = topLevelRuns("sess-subagent");
-    assert.equal(runs.length, 2, "both synthetic runs must be registered");
+    const registered = runs.topLevel("sess-subagent");
+    assert.equal(
+      registered.length,
+      2,
+      "both synthetic runs must be registered",
+    );
     assert.notEqual(
-      runs[0]?.id,
-      runs[1]?.id,
+      registered[0]?.id,
+      registered[1]?.id,
       "consecutive synthetic run ids must never collide",
     );
-    for (const run of runs) {
+    for (const run of registered) {
       assert.ok(
         /^[ -~]+$/.test(run.id),
         `synthetic id must stay ASCII: ${run.id}`,
@@ -1075,9 +1167,9 @@ describe("subagent tool execute — run-registry writes", () => {
     };
     const events: Array<{ runId: string; parentSession: string }> = [];
     const snapshots: Array<Record<string, unknown>> = [];
-    const off = subscribeRunChange((change) => {
+    const off = runs.subscribe((change) => {
       events.push(change);
-      const run = getRun(change.runId);
+      const run = runs.get(change.runId);
       snapshots.push({
         status: run?.status,
         tokens: run?.tokens,

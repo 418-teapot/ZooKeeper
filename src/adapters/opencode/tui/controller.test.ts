@@ -61,7 +61,10 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { after, afterEach, beforeEach, describe, it } from "node:test";
 import type { ContextPruningConfig } from "../../../core/config-types.js";
-import { computeSpanHash } from "../../../core/context/spanhash.js";
+import {
+  computeSpanHash,
+  contentFingerprint,
+} from "../../../core/context/spanhash.js";
 import { textPart } from "../../../testkits/opencode-messages.js";
 import { history } from "../history.js";
 import type { ContextMessageEntry } from "../types.js";
@@ -513,6 +516,7 @@ describe("effective prune marks over storage", () => {
           anchorOrdinal: 1,
           regionIndex: 1,
           content: output,
+          contentHash: contentFingerprint(output),
           effective: true,
           markedAt: 123,
         },
@@ -552,6 +556,7 @@ describe("effective prune marks over storage", () => {
           anchorOrdinal: 1,
           regionIndex: 1,
           content: output,
+          contentHash: contentFingerprint(output),
           effective: true,
           markedAt: 123,
         },
@@ -588,6 +593,7 @@ describe("effective prune marks over storage", () => {
           anchorOrdinal: 1,
           regionIndex: 1,
           content: output,
+          contentHash: contentFingerprint(output),
           effective: true,
           markedAt: 123,
         },

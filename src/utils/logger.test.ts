@@ -11,6 +11,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, it } from "node:test";
+import { initPluginLogger } from "../core/config-parse.js";
 import { restoreEnv, saveEnv } from "../testkits/env.js";
 import { makeTmpDir } from "../testkits/tmp.js";
 import {
@@ -18,6 +19,7 @@ import {
   _getBufferForTesting,
   _resetForTesting,
   _setLogPathForTesting,
+  ensureLogger,
   initLogger,
   log,
 } from "./logger.js";
@@ -606,6 +608,169 @@ describe("logger", () => {
       );
     });
 
+    it("re-init under the same host keeps the primary session", () => {
+      // A reload re-initialises the logger under the same host in one
+      // module.  Both inits share this module state, so the second one must
+      // not drop the primary session the first one established.
+      initLogger("opencode", { logDir: testDir });
+      log.warn({ hook: "config", event: "plugin_init" });
+      log.info({ hook: "h", event: "e", sessionId: "sess-1" });
+      _flushForTesting();
+
+      initLogger("opencode", { logDir: testDir });
+      log.warn({ hook: "config", event: "plugin_init" });
+      _flushForTesting();
+
+      assert.equal(
+        countLines(path.join(testDir, "opencode-sess-1.log")),
+        3,
+        "the sessionless entry of the second init joins the first init's primary session file",
+      );
+      assert.equal(
+        fs.existsSync(path.join(testDir, "opencode.log")),
+        false,
+        "sessionless entries never create a host-level file",
+      );
+    });
+
+    // Each init must apply the full configuration of its own generation:
+    // a field omitted by a later init reverts to its initial (disabled or
+    // default) state instead of inheriting the earlier value.
+
+    it("re-init without maxFileSize stops rotating", () => {
+      initLogger("opencode", { logDir: testDir, maxFileSize: 50 });
+      log.info({ hook: "h", event: "e", sessionId: "sess-1" });
+      _flushForTesting();
+      assert.ok(
+        fs.existsSync(path.join(testDir, "opencode-sess-1.log.1")),
+        "first init must rotate at the configured size limit",
+      );
+
+      initLogger("opencode", { logDir: testDir });
+      log.info({ hook: "h", event: "e", sessionId: "sess-2" });
+      _flushForTesting();
+
+      const newShard = path.join(testDir, "opencode-sess-2.log");
+      assert.ok(fs.existsSync(newShard), "the new shard must exist");
+      assert.equal(
+        fs.existsSync(`${newShard}.1`),
+        false,
+        "no rotation when the re-init omits maxFileSize",
+      );
+    });
+
+    it("re-init without maxBackups uses simple rotation", () => {
+      initLogger("opencode", {
+        logDir: testDir,
+        maxFileSize: 50,
+        maxBackups: 2,
+      });
+      for (let i = 0; i < 2; i++) {
+        log.info({ hook: "h", event: "e", sessionId: "sess-1" });
+        _flushForTesting();
+      }
+      assert.ok(
+        fs.existsSync(path.join(testDir, "opencode-sess-1.log.2")),
+        "first init must cascade to .2 with maxBackups 2",
+      );
+
+      initLogger("opencode", { logDir: testDir, maxFileSize: 50 });
+      for (let i = 0; i < 2; i++) {
+        log.info({ hook: "h", event: "e", sessionId: "sess-2" });
+        _flushForTesting();
+      }
+
+      assert.ok(
+        fs.existsSync(path.join(testDir, "opencode-sess-2.log.1")),
+        "simple rotation must still produce .1",
+      );
+      assert.equal(
+        fs.existsSync(path.join(testDir, "opencode-sess-2.log.2")),
+        false,
+        "no cascade when the re-init omits maxBackups",
+      );
+    });
+
+    it("re-init without retentionDays keeps old files", () => {
+      initLogger("opencode", { logDir: testDir, retentionDays: 30 });
+
+      const oldFile = path.join(testDir, "opencode-old.log");
+      fs.writeFileSync(oldFile, '{"ts":"old"}\n');
+      const past = new Date("2020-01-01").getTime() / 1000;
+      fs.utimesSync(oldFile, past, past);
+
+      initLogger("opencode", { logDir: testDir });
+
+      assert.ok(
+        fs.existsSync(oldFile),
+        "no cleanup when the re-init omits retentionDays",
+      );
+    });
+
+    it("re-init without logDir writes to the default directory", () => {
+      const dirA = path.join(testDir, "dirA");
+      const defaultShard = path.join(
+        os.homedir(),
+        ".zoo",
+        "log",
+        "pi-sess-default.log",
+      );
+      try {
+        initLogger("opencode", { logDir: dirA });
+        log.info({ hook: "h", event: "e", sessionId: "sess-a" });
+        _flushForTesting();
+
+        initLogger("pi");
+        log.info({ hook: "h", event: "e", sessionId: "sess-default" });
+        _flushForTesting();
+
+        assert.equal(
+          fs.existsSync(path.join(dirA, "pi-sess-default.log")),
+          false,
+          "the previous logDir must not receive the new entry",
+        );
+        assert.ok(
+          fs.existsSync(defaultShard),
+          "the entry must land in the default directory",
+        );
+      } finally {
+        fs.rmSync(defaultShard, { force: true });
+      }
+    });
+
+    it("re-init with a new logDir drops the cached shard path", () => {
+      const dirA = path.join(testDir, "dirA");
+      const dirB = path.join(testDir, "dirB");
+
+      initLogger("opencode", { logDir: dirA });
+      log.info({ hook: "h", event: "e", sessionId: "sess-1" });
+      _flushForTesting();
+
+      initLogger("opencode", { logDir: dirB });
+      log.info({ hook: "h", event: "e", sessionId: "sess-1" });
+      _flushForTesting();
+
+      assert.equal(countLines(path.join(dirA, "opencode-sess-1.log")), 1);
+      assert.equal(countLines(path.join(dirB, "opencode-sess-1.log")), 1);
+    });
+
+    it("repeated init does not start a second flush timer", () => {
+      const original = globalThis.setInterval;
+      let intervalCalls = 0;
+      globalThis.setInterval = ((...args: Parameters<typeof setInterval>) => {
+        intervalCalls++;
+        return original(...args);
+      }) as unknown as typeof setInterval;
+      try {
+        initLogger("opencode", { logDir: testDir });
+        initLogger("pi", { logDir: testDir });
+      } finally {
+        globalThis.setInterval = original;
+      }
+
+      assert.equal(intervalCalls, 1, "one flush timer per process");
+    });
+
     it("works when opts are omitted (no defaults, no rotation/cleanup)", () => {
       initLogger("opencode");
 
@@ -674,6 +839,88 @@ describe("logger", () => {
       assert.ok(
         fs.existsSync(oldFile),
         "old file should not be deleted without retentionDays",
+      );
+    });
+  });
+
+  describe("ensureLogger", () => {
+    it("is a no-op for the host this module already initialised", () => {
+      // The OpenCode server entry configures the logger from config.toml;
+      // the TUI entry that loads into the same module must keep that
+      // configuration and its log directory.
+      const dir = path.join(testDir, "configured");
+      initLogger("opencode", { logDir: dir, maxFileSize: 50 });
+
+      ensureLogger("opencode");
+
+      log.info({ hook: "h", event: "e", sessionId: "sess-1" });
+      _flushForTesting();
+      assert.ok(
+        fs.existsSync(path.join(dir, "opencode-sess-1.log.1")),
+        "the configured log directory and rotation survive the bare init",
+      );
+    });
+
+    it("initialises the host when this module has none", () => {
+      const logPath = path.join(testDir, "fresh.log");
+      _setLogPathForTesting(logPath);
+
+      ensureLogger("opencode");
+
+      log.info({ hook: "h", event: "e", sessionId: "sess-1" });
+      _flushForTesting();
+      const entry = JSON.parse(fs.readFileSync(logPath, "utf-8").trim());
+      assert.equal(entry.host, "opencode");
+    });
+
+    it("initialises a host this module has not seen yet", () => {
+      const logPath = path.join(testDir, "other.log");
+      initLogger("pi", { logDir: testDir });
+      _setLogPathForTesting(logPath);
+
+      ensureLogger("opencode");
+
+      log.info({ hook: "h", event: "e", sessionId: "sess-1" });
+      _flushForTesting();
+      const entry = JSON.parse(fs.readFileSync(logPath, "utf-8").trim());
+      assert.equal(entry.host, "opencode");
+    });
+
+    it("keeps the server entry's rotation when the TUI entry initialises later", () => {
+      const logPath = path.join(testDir, "shared.log");
+      _setLogPathForTesting(logPath);
+      initPluginLogger({ logging: { max_file_size_mb: 0.00001 } }, "opencode");
+
+      ensureLogger("opencode");
+
+      log.info({ hook: "h", event: "e", sessionId: "sess-1" });
+      _flushForTesting();
+      assert.ok(
+        fs.existsSync(`${logPath}.1`),
+        "the server entry's rotation config still applies",
+      );
+    });
+
+    it("applies the server entry's configuration when the TUI entry initialised first", () => {
+      const logPath = path.join(testDir, "shared.log");
+      _setLogPathForTesting(logPath);
+      ensureLogger("opencode");
+
+      log.info({ hook: "h", event: "e", sessionId: "sess-1" });
+      _flushForTesting();
+      assert.equal(
+        fs.existsSync(`${logPath}.1`),
+        false,
+        "the bare init configures no rotation",
+      );
+
+      initPluginLogger({ logging: { max_file_size_mb: 0.00001 } }, "opencode");
+
+      log.info({ hook: "h", event: "e", sessionId: "sess-1" });
+      _flushForTesting();
+      assert.ok(
+        fs.existsSync(`${logPath}.1`),
+        "the server entry's config applies after the bare init",
       );
     });
   });

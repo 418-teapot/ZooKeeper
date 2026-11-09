@@ -10,6 +10,7 @@
  */
 import assert from "node:assert/strict";
 import { afterEach, describe, it } from "node:test";
+import type { ModeProfile } from "../../core/config-types.js";
 import type {
   AutoDebugDirEntry,
   AutoDebugFs,
@@ -19,7 +20,7 @@ import type {
 import type { MessageInjector } from "../../core/ports/handoff.js";
 import type { ToastPayload, ToolHost } from "../../core/ports/tool-host.js";
 import type { CommandUnitDescriptor } from "../../core/unit.js";
-import { facts } from "../../testkits/compose.js";
+import { composeForTest, facts } from "../../testkits/compose.js";
 import { _resetForTesting } from "../../utils/logger.js";
 import {
   buildStartupText,
@@ -188,6 +189,37 @@ afterEach(() => {
 // ---------------------------------------------------------------------------
 // Unit descriptor shape
 // ---------------------------------------------------------------------------
+
+describe("/debug unit — auto-debug config gate", () => {
+  /** A profile enabling exactly the `/debug` command. */
+  const PROFILE: ModeProfile = {
+    name: "test",
+    agents: [],
+    skills: [],
+    hooks: [],
+    tools: [],
+    commands: ["debug"],
+  };
+
+  it("registers no command while [zoo.autodebug] is absent", () => {
+    // The wake strategy closes without the section, so the entry that
+    // starts an investigation must close too.
+    const result = composeForTest(PROFILE, [unit], makeDeps());
+    assert.deepEqual(result.commands, {});
+    assert.deepEqual(result.report.skipped, [
+      { name: "debug", missing: ["autoDebugConfig"] },
+    ]);
+  });
+
+  it("registers the command when [zoo.autodebug] is present", () => {
+    const result = composeForTest(PROFILE, [unit], {
+      ...makeDeps(),
+      autoDebugConfig: { maxWakes: 3 },
+    });
+    assert.deepEqual(result.report.skipped, []);
+    assert.equal(result.commands.debug.name, "debug");
+  });
+});
 
 describe("/debug unit descriptor", () => {
   it("declares a single debug command unit", () => {

@@ -4,6 +4,12 @@
  * The entry point declares this host's services (see `services.ts`) and
  * drives them through the operations below:
  *
+ *  - `activateExtension` resolves the extension scope, creating its services
+ *    through the kernel on first call.  The entry point calls it BEFORE
+ *    assembling the hooks, so the capability provision and the assembled
+ *    profile come from services the kernel owns.  The returned service map
+ *    is typed by the declarations, and nothing session-scoped is reachable
+ *    through it.
  *  - `ensureSession` creates (or reuses) the session scope of the id a hook
  *    names.  OpenCode announces creations with `session.created`, but many
  *    hooks can be the FIRST thing the host says about a session (a message
@@ -49,6 +55,7 @@ import {
   type AnySessionServiceDefinition,
   type CleanupReport,
   createLifecycleKernel,
+  type ExtensionScope,
   type LifecycleKernel,
   type ServiceMap,
   type SessionScope,
@@ -105,16 +112,50 @@ export interface SessionWorkRunner {
 }
 
 /**
+ * Raised when activation is attempted after the extension scope stopped.
+ *
+ * The kernel treats a stopped extension as terminal (a late hook must not
+ * resurrect it), so an activation that arrives afterwards cannot be
+ * satisfied.  The wiring reports that instead of handing out a scope whose
+ * services were never created.
+ */
+export class OpenCodeLifecycleStoppedError extends Error {
+  constructor() {
+    super("OpenCode 扩展生命周期作用域已停止");
+    this.name = "OpenCodeLifecycleStoppedError";
+  }
+}
+
+/**
  * The lifecycle operations one OpenCode plugin instance drives.
  *
  * Session services stay reachable only through their own session scope and
  * an explicit session id, so a caller can never hold another session's
- * state.
+ * state.  The extension parameter makes
+ * {@link OpenCodeLifecycleWiring.activateExtension} return the declared
+ * services by name.
  */
 export interface OpenCodeLifecycleWiring<
+  Extension extends
+    readonly AnyExtensionServiceDefinition[] = readonly AnyExtensionServiceDefinition[],
   Session extends
     readonly AnySessionServiceDefinition[] = readonly AnySessionServiceDefinition[],
 > extends SessionWorkRunner {
+  /**
+   * Activate the extension scope.
+   *
+   * Resolves the extension's services, creating them through the kernel on
+   * first call (concurrent callers share one creation and later calls reuse
+   * it), so the entry point assembles the hooks from the capability
+   * provision and the composition the kernel owns.  The session scopes stay
+   * uncreated: they appear when a hook first names one.
+   *
+   * @returns The extension scope, whose `services` map is typed by the
+   *   declared extensions.
+   * @throws {OpenCodeLifecycleStoppedError} When the extension already
+   *   stopped.
+   */
+  activateExtension(): Promise<ExtensionScope<ServiceMap<Extension>>>;
   /**
    * Ensure the session scope of `sessionID`.
    *
@@ -432,7 +473,7 @@ export function createOpenCodeLifecycleWiring<
   const Session extends readonly AnySessionServiceDefinition[],
 >(
   options: OpenCodeLifecycleWiringOptions<Extension, Session>,
-): OpenCodeLifecycleWiring<Session> {
+): OpenCodeLifecycleWiring<Extension, Session> {
   const kernel: LifecycleKernel<Extension, Session> = createLifecycleKernel({
     extension: options.extensionServices,
     session: options.sessionServices,
@@ -442,6 +483,14 @@ export function createOpenCodeLifecycleWiring<
   // kernel tombstones a stopped id without exposing that fact, and a
   // deletion of an unknown session still needs the process-level release.
   const owned = new Set<string>();
+
+  async function activateExtension(): Promise<
+    ExtensionScope<ServiceMap<Extension>>
+  > {
+    const scope = await kernel.ensureExtension();
+    if (scope === null) throw new OpenCodeLifecycleStoppedError();
+    return scope as ExtensionScope<ServiceMap<Extension>>;
+  }
 
   async function ensureSession(
     rawSessionID: string | null | undefined,
@@ -510,5 +559,5 @@ export function createOpenCodeLifecycleWiring<
     return report;
   }
 
-  return { ensureSession, runSession, handleEvent, dispose };
+  return { activateExtension, ensureSession, runSession, handleEvent, dispose };
 }

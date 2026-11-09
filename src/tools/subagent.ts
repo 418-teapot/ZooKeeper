@@ -28,11 +28,12 @@
  * 1. Resolves the CALLER agent from the session the call names: the call
  *    context carries the session id, and the shared `resolveCallerAgent`
  *    port answers that session's agent.  No ambient identity is read.
- * 2. Fails closed on the TARGET role: only agents declared
- *    `mode = "subagent"` in the parsed config are valid delegation
- *    targets.  A missing modes map, a target absent from it, or a target
- *    declared with another mode returns a tool-level text explaining WHY
- *    (never throws, never runs the driver).
+ * 2. Fails closed on the TARGET role and its selection: only agents
+ *    declared `mode = "subagent"` in the parsed config AND enabled by the
+ *    active profile are valid delegation targets.  A missing modes map, a
+ *    target absent from it, a target declared with another mode, or a
+ *    configured subagent the profile does not select returns a tool-level
+ *    text explaining WHY (never throws, never runs the driver).
  * 3. Computes the TARGET agent's capability set as `baseline − deniedTools`
  *    via `computeCapabilitySet`, where the baseline is the host's full
  *    untrimmed tool list (`caps.subagentBaseline()`) and the denies come from
@@ -68,8 +69,8 @@ import type {
   SubagentResult,
 } from "../core/subagent/driver.js";
 import type { UpdateRunPatch } from "../core/subagent/registry.js";
-import { finishRun, startRun, updateRun } from "../core/subagent/registry.js";
 import { runSubagent } from "../core/subagent/run.js";
+import { checkDelegationTarget } from "../core/subagent/target.js";
 import {
   defineTool,
   type ToolCallContext,
@@ -188,14 +189,17 @@ function formatSubagentResult(result: SubagentResult): string {
  *
  * @param driver - The host driver that executes the subagent.
  * @param caps - The capability surfaces the tool needs: `resolveCallerAgent`
- *   for the calling session's agent, `subagentBaseline` for the capability
+ *   for the calling session's agent, `runs` for the run records the
+ *   delegation is written into, `subagentBaseline` for the capability
  *   baseline, `agentModes` for the declared subagent role of the target,
  *   and `agentPermissions` for the target's tool-level denies.
+ * @param selectedAgents - The agent names the active profile selects; a
+ *   configured subagent outside this list is not a valid target.
  * @returns The subagent tool definition.
  */
 export function createSubagentTool(
   driver: SubagentDriver,
-  caps: Pick<Capabilities, "resolveCallerAgent"> &
+  caps: Pick<Capabilities, "resolveCallerAgent" | "runs"> &
     Partial<
       Pick<
         Capabilities,
@@ -205,7 +209,9 @@ export function createSubagentTool(
         | "subagentModels"
       >
     >,
+  selectedAgents: readonly string[],
 ): ToolDefinition {
+  const { runs } = caps;
   return {
     description:
       "将任务委派给一个专用的子 agent 执行。子 agent 使用全新上下文，不会继承当前会话，需要在 prompt 中提供完整的背景、目标、约束和验收标准。该工具会同步等待子 agent 完成，并返回其最终回复。",
@@ -239,25 +245,28 @@ export function createSubagentTool(
         };
       }
 
-      // 2. Target-role guard — only agents declared `mode = "subagent"`
-      // in the parsed config are valid delegation targets.  A missing
-      // modes map, a target absent from it, or a target declared with
-      // another mode (e.g. a primary) fails closed with an explanatory
-      // text (never throws, never runs the driver).  The valid target
-      // set comes from the parsed config only — no hardcoded agent list.
-      const targetMode = caps.agentModes?.[input.agent];
-      if (targetMode !== "subagent") {
+      // 2. Target guard — only agents declared `mode = "subagent"` in the
+      // parsed config AND selected by the active profile are valid
+      // delegation targets.  A missing modes map, a target declared with
+      // another mode (e.g. a primary), or a configured subagent the
+      // profile does not select fails closed with an explanatory text
+      // (never throws, never runs the driver).  Both facts come from the
+      // config and the selection only — no hardcoded agent list.
+      const verdict = checkDelegationTarget(
+        input.agent,
+        caps.agentModes,
+        selectedAgents,
+      );
+      if (verdict.kind === "refused") {
         log.warn({
           hook: "subagent-tool",
           event: "target_role_blocked",
           sessionId: sessionID,
           caller,
           target: input.agent,
-          reason: "not-a-subagent",
+          reason: verdict.cause,
         });
-        return {
-          text: `"${input.agent}" 不是可委派的子 agent：仅在配置中声明 mode = "subagent" 的 agent 才能作为委派目标。`,
-        };
+        return { text: verdict.reason };
       }
 
       // 3. Capability set for the TARGET agent: `baseline − deniedTools`.
@@ -297,7 +306,7 @@ export function createSubagentTool(
       const model = configuredModel;
 
       // 6. Registry write — the host forwards its tool-call id on the call
-      // context, and it doubles as the run id in the process-level run
+      // context, and it doubles as the run id in the host process's run
       // registry (the fleet widget's source of truth).  A run without one
       // (OpenCode, test invocations) is tracked with a synthetic id derived
       // from the caller/agent plus a module-level monotonic counter, so
@@ -305,7 +314,7 @@ export function createSubagentTool(
       // collide within one millisecond).
       const runId =
         call.callID ?? `${caller}-${input.agent}-${++syntheticRunSeq}`;
-      const handle = startRun({
+      const handle = runs.start({
         id: runId,
         agent: input.agent,
         parentSession: sessionID,
@@ -348,7 +357,7 @@ export function createSubagentTool(
             // log for every progress report is O(n) per report and O(n²) over
             // a run, while the driver has already read each usage figure as
             // it appended the fact.  Fields an absent report omits are left
-            // untouched, and `updateRun` drops a value the run already holds.
+            // untouched, and `runs.update` drops a value the run already holds.
             const patch: UpdateRunPatch = {};
             if (progress.currentTool !== undefined) {
               patch.currentTool = progress.currentTool;
@@ -369,7 +378,7 @@ export function createSubagentTool(
             }
             if (Object.keys(patch).length > 0) {
               if (progress.done) finalPatch = patch;
-              else updateRun(runId, patch);
+              else runs.update(runId, patch);
             }
 
             // Repaint the host's live card on every report.  The card body
@@ -383,7 +392,7 @@ export function createSubagentTool(
       // 8. Finish the registry run (terminal state, immutable thereafter).
       //    The last progress batch lands in this same write, so the run
       //    publishes exactly one terminal event.
-      finishRun(runId, {
+      runs.finish(runId, {
         ...finalPatch,
         status:
           result.kind === "ok"
@@ -416,17 +425,20 @@ export function createSubagentTool(
  * The tool contribution carries the subagent delegation adapter; the unit
  * declares `subagentDriver` as a need, so composition skips the unit on
  * hosts without one (OpenCode) — zero tools are contributed (fail-closed).
+ * The unit reads the selected agents, so a configured subagent the profile
+ * does not enable is refused.
  */
 export const unit = defineTool({
   name: "subagent",
-  needs: ["subagentDriver", "resolveCallerAgent"],
+  needs: ["subagentDriver", "resolveCallerAgent", "runs"],
   wants: [
     "subagentBaseline",
     "agentModes",
     "agentPermissions",
     "subagentModels",
   ],
-  create(caps) {
-    return createSubagentTool(caps.subagentDriver, caps);
+  uses: ["agents"],
+  create(caps, uses) {
+    return createSubagentTool(caps.subagentDriver, caps, uses.agents);
   },
 });

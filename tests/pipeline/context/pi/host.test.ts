@@ -79,7 +79,8 @@ describe("pi host — resolveMarkTarget", () => {
   test("resolves a call id to its linked toolResult's tool-output region", () => {
     const host = createPiPipelineHost(SANDBOX);
     const target = host.resolveMarkTarget(toolView(), "c1");
-    expect(target).toEqual({ ordinal: 2, regionIndex: 0 });
+    // The region's current text is the mark's content snapshot.
+    expect(target).toEqual({ ordinal: 2, regionIndex: 0, text: "total 12" });
   });
 
   test("falls back to the toolCall block's tool-input region without a result", () => {
@@ -94,7 +95,11 @@ describe("pi host — resolveMarkTarget", () => {
     // The thinking block occupies region 0; the toolCall block is the
     // second content block → tool-input region index 1.
     const target = host.resolveMarkTarget(messages, "c9");
-    expect(target).toEqual({ ordinal: 1, regionIndex: 1 });
+    expect(target).toEqual({
+      ordinal: 1,
+      regionIndex: 1,
+      text: JSON.stringify({ cmd: "ls" }),
+    });
   });
 
   test("returns null for an unknown call id", () => {

@@ -6,8 +6,9 @@
  * exclusion of non-directory entries, symlink-to-directory following,
  * broken-link skipping, and fail-closed empty results for a missing
  * directory or a non-directory path.  The real skills/ contents are
- * exercised by the behavior tests (`registerSkills` in
- * `src/index.test.ts`, `collectSkillPaths` in `src/pi.test.ts`).
+ * exercised by the behavior tests (`collectSkillPaths` in
+ * `src/pi.test.ts`, the profile scan of the OpenCode start publisher in
+ * `src/adapters/opencode/publisher.test.ts`).
  */
 import assert from "node:assert/strict";
 import { mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";

@@ -17,13 +17,10 @@ import assert from "node:assert/strict";
 import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, it } from "node:test";
+import { afterEach, beforeEach, describe, it } from "node:test";
 import {
-  finishRun,
-  getRun,
-  resetRegistry,
-  startRun,
-  updateRun,
+  createRunRegistry,
+  type RunRegistry,
 } from "../../../core/subagent/registry.js";
 import { makeTheme } from "../../../testkits/theme.js";
 import { resetHydration, waitForHydration } from "../hydrate.js";
@@ -90,8 +87,13 @@ function toolContext(
   return { toolCallId, state: {}, ...extra };
 }
 
+let runs: RunRegistry = createRunRegistry();
+
+beforeEach(() => {
+  runs = createRunRegistry();
+});
+
 afterEach(() => {
-  resetRegistry();
   resetHydration();
 });
 
@@ -113,6 +115,7 @@ describe("pi renderCall", () => {
     const container = renderCall(
       { agent: "beaver", description: "编写单元测试" },
       { isPartial: true },
+      runs,
     );
     const lines = renderComponent(container, 80);
     assert.equal(
@@ -126,6 +129,7 @@ describe("pi renderCall", () => {
     const container = renderCall(
       { agent: "beaver", description: "编写单元测试" },
       { isPartial: false },
+      runs,
     );
     const lines = renderComponent(container, 80);
     assert.equal(
@@ -142,6 +146,7 @@ describe("pi renderCall", () => {
       const container = renderCall(
         { agent: "mola", description: "计划" },
         { isPartial: true, state },
+        runs,
       );
       const line = renderComponent(container, 80)[0] ?? "";
       glyphs.push(line.trim().charAt(0));
@@ -154,11 +159,12 @@ describe("pi renderCall", () => {
   });
 
   it("renders the model badge from the registry run when known", () => {
-    startRun({ id: "tc-model", agent: "beaver", parentSession: "main-1" });
-    updateRun("tc-model", { model: "openai/gpt-codex" });
+    runs.start({ id: "tc-model", agent: "beaver", parentSession: "main-1" });
+    runs.update("tc-model", { model: "openai/gpt-codex" });
     const container = renderCall(
       { agent: "beaver", description: "写测试" },
       toolContext("tc-model", { isPartial: true }),
+      runs,
     );
     const lines = renderComponent(container, 80);
     assert.ok(
@@ -173,10 +179,11 @@ describe("pi renderCall", () => {
   });
 
   it("omits the model segment when the run has resolved no model", () => {
-    startRun({ id: "tc-nomodel", agent: "beaver", parentSession: "main-1" });
+    runs.start({ id: "tc-nomodel", agent: "beaver", parentSession: "main-1" });
     const container = renderCall(
       { agent: "beaver", description: "写测试" },
       toolContext("tc-nomodel", { isPartial: true }),
+      runs,
     );
     const lines = renderComponent(container, 80);
     assert.ok(
@@ -192,7 +199,7 @@ describe("pi renderCall", () => {
 
 describe("pi renderResult — structured projection from the run log", () => {
   it("running body projects current tool, tool calls, outputs and stats — never a title", () => {
-    const run = startRun({
+    const run = runs.start({
       id: "tc-live",
       agent: "beaver",
       parentSession: "main-1",
@@ -202,13 +209,14 @@ describe("pi renderResult — structured projection from the run log", () => {
     run.log.appendToolStart("bash", { command: "ls -la" }, 1);
     run.log.appendToolEnd("bash", [{ type: "text", text: "ok" }], false, 2);
     run.log.appendMessage([{ type: "text", text: "working on it" }]);
-    updateRun("tc-live", { currentTool: "edit" });
+    runs.update("tc-live", { currentTool: "edit" });
 
     const component = renderResult(
       streamed("one-line progress text"),
       { isPartial: true },
       THEME,
       toolContext("tc-live"),
+      runs,
     );
     const lines = renderComponent(component, 80);
     const body = lines.filter((l) => l.length > 0);
@@ -240,7 +248,7 @@ describe("pi renderResult — structured projection from the run log", () => {
   });
 
   it("collapsed windows each region to GLANCE_LINES, expanded shows all", () => {
-    const run = startRun({
+    const run = runs.start({
       id: "tc-window",
       agent: "beaver",
       parentSession: "main-1",
@@ -254,6 +262,7 @@ describe("pi renderResult — structured projection from the run log", () => {
         { isPartial: true },
         THEME,
         toolContext("tc-window"),
+        runs,
       ),
       80,
     ).filter((l) => l.includes("→"));
@@ -270,6 +279,7 @@ describe("pi renderResult — structured projection from the run log", () => {
         { isPartial: true, expanded: true },
         THEME,
         toolContext("tc-window"),
+        runs,
       ),
       80,
     ).filter((l) => l.includes("→"));
@@ -286,14 +296,14 @@ describe("pi renderResult — structured projection from the run log", () => {
       content: [{ type: "text", text: "line one\nline two" }],
       timestamp: 1500,
     });
-    const run = startRun({
+    const run = runs.start({
       id: "tc-done",
       agent: "lynx",
       parentSession: "main-1",
       startedAt: 1000,
     });
     run.log.appendMessage([{ type: "text", text: "line one\nline two" }]);
-    finishRun("tc-done", { status: "done", endedAt: 2000 });
+    runs.finish("tc-done", { status: "done", endedAt: 2000 });
     const result = {
       content: [{ type: "text", text: "" }],
       details: { sessionPath },
@@ -302,7 +312,13 @@ describe("pi renderResult — structured projection from the run log", () => {
     // First paint: the released log is empty, so the placeholder shows while
     // the persisted file parses.
     const first = renderComponent(
-      renderResult(result, { isPartial: false }, THEME, toolContext("tc-done")),
+      renderResult(
+        result,
+        { isPartial: false },
+        THEME,
+        toolContext("tc-done"),
+        runs,
+      ),
       80,
     );
     assert.ok(
@@ -311,7 +327,13 @@ describe("pi renderResult — structured projection from the run log", () => {
     );
     await waitForHydration("tc-done");
     const lines = renderComponent(
-      renderResult(result, { isPartial: false }, THEME, toolContext("tc-done")),
+      renderResult(
+        result,
+        { isPartial: false },
+        THEME,
+        toolContext("tc-done"),
+        runs,
+      ),
       80,
     ).filter((l) => l.length > 0);
     assert.ok(
@@ -335,7 +357,7 @@ describe("pi renderResult — structured projection from the run log", () => {
       content: [{ type: "text", text: "# heading\n\nbody paragraph" }],
       timestamp: 1500,
     });
-    const run = startRun({
+    const run = runs.start({
       id: "tc-exp",
       agent: "lynx",
       parentSession: "main-1",
@@ -343,7 +365,7 @@ describe("pi renderResult — structured projection from the run log", () => {
     run.log.appendMessage([
       { type: "text", text: "# heading\n\nbody paragraph" },
     ]);
-    finishRun("tc-exp", { status: "done" });
+    runs.finish("tc-exp", { status: "done" });
     const result = {
       content: [{ type: "text", text: "" }],
       details: { sessionPath },
@@ -354,6 +376,7 @@ describe("pi renderResult — structured projection from the run log", () => {
         { isPartial: false, expanded: true },
         THEME,
         toolContext("tc-exp"),
+        runs,
       ),
       80,
     );
@@ -368,6 +391,7 @@ describe("pi renderResult — structured projection from the run log", () => {
         { isPartial: false, expanded: true },
         THEME,
         toolContext("tc-exp"),
+        runs,
       ),
       80,
     );
@@ -376,19 +400,20 @@ describe("pi renderResult — structured projection from the run log", () => {
   });
 
   it("terminal error state renders ■ with the failure reason", () => {
-    const run = startRun({
+    const run = runs.start({
       id: "tc-err",
       agent: "beaver",
       parentSession: "main-1",
     });
     run.log.appendMessage([{ type: "text", text: "partial work" }]);
-    finishRun("tc-err", { status: "error", error: "provider exploded" });
+    runs.finish("tc-err", { status: "error", error: "provider exploded" });
     const lines = renderComponent(
       renderResult(
         streamed("delivered error text"),
         { isPartial: false },
         THEME,
         toolContext("tc-err"),
+        runs,
       ),
       80,
     );
@@ -403,18 +428,19 @@ describe("pi renderResult — structured projection from the run log", () => {
   });
 
   it("terminal aborted state renders ■ (muted square)", () => {
-    startRun({
+    runs.start({
       id: "tc-abort",
       agent: "beaver",
       parentSession: "main-1",
     });
-    finishRun("tc-abort", { status: "aborted" });
+    runs.finish("tc-abort", { status: "aborted" });
     const lines = renderComponent(
       renderResult(
         streamed(""),
         { isPartial: false },
         THEME,
         toolContext("tc-abort"),
+        runs,
       ),
       80,
     );
@@ -428,18 +454,19 @@ describe("pi renderResult — structured projection from the run log", () => {
     // The status hue lives ONLY on the title's marker segment: the raw
     // (unstripped) render shows the theme wrap around the dot alone, while
     // every body line (error reason, final-output preview) stays uncolored.
-    const run = startRun({
+    const run = runs.start({
       id: "tc-hue",
       agent: "beaver",
       parentSession: "main-1",
     });
     run.log.appendMessage([{ type: "text", text: "partial work" }]);
-    finishRun("tc-hue", { status: "error", error: "provider exploded" });
+    runs.finish("tc-hue", { status: "error", error: "provider exploded" });
     const component = renderResult(
       streamed(""),
       { isPartial: false },
       THEME,
       toolContext("tc-hue"),
+      runs,
     );
     const raw = (component as Renderable).render(80);
     const title = raw.find((l) => l.includes("subagent(beaver)"));
@@ -466,20 +493,21 @@ describe("pi renderResult — structured projection from the run log", () => {
   });
 
   it("terminal title carries the resolved model badge", () => {
-    const run = startRun({
+    const run = runs.start({
       id: "tc-tmodel",
       agent: "beaver",
       parentSession: "main-1",
     });
-    updateRun("tc-tmodel", { model: "anthropic/claude-opus" });
+    runs.update("tc-tmodel", { model: "anthropic/claude-opus" });
     run.log.appendMessage([{ type: "text", text: "done" }]);
-    finishRun("tc-tmodel", { status: "done" });
+    runs.finish("tc-tmodel", { status: "done" });
     const lines = renderComponent(
       renderResult(
         streamed(""),
         { isPartial: false },
         THEME,
         toolContext("tc-tmodel"),
+        runs,
       ),
       80,
     );
@@ -492,19 +520,20 @@ describe("pi renderResult — structured projection from the run log", () => {
   });
 
   it("renders nested child rows via childrenOf", () => {
-    startRun({
+    runs.start({
       id: "tc-parent",
       agent: "beaver",
       parentSession: "main-1",
       childSession: "child-1",
     });
-    startRun({ id: "tc-child", agent: "lynx", parentSession: "child-1" });
+    runs.start({ id: "tc-child", agent: "lynx", parentSession: "child-1" });
     const lines = renderComponent(
       renderResult(
         streamed(""),
         { isPartial: true },
         THEME,
         toolContext("tc-parent"),
+        runs,
       ),
       80,
     );
@@ -515,20 +544,20 @@ describe("pi renderResult — structured projection from the run log", () => {
   });
 
   it("renders nested child rows at every depth, not only the first", () => {
-    startRun({
+    runs.start({
       id: "tc-deep-parent",
       agent: "beaver",
       parentSession: "main-1",
       childSession: "deep-1",
     });
-    startRun({
+    runs.start({
       id: "tc-deep-child",
       agent: "lynx",
       parentSession: "deep-1",
       childSession: "deep-2",
       startedAt: 10,
     });
-    startRun({
+    runs.start({
       id: "tc-deep-grand",
       agent: "spider",
       parentSession: "deep-2",
@@ -540,6 +569,7 @@ describe("pi renderResult — structured projection from the run log", () => {
         { isPartial: true },
         THEME,
         toolContext("tc-deep-parent"),
+        runs,
       ),
       80,
     );
@@ -554,34 +584,35 @@ describe("pi renderResult — structured projection from the run log", () => {
   });
 
   it("badges a successful title with a grandchild failure", () => {
-    startRun({
+    runs.start({
       id: "tc-badge-parent",
       agent: "beaver",
       parentSession: "main-1",
       childSession: "badge-1",
     });
-    startRun({
+    runs.start({
       id: "tc-badge-child",
       agent: "lynx",
       parentSession: "badge-1",
       childSession: "badge-2",
       startedAt: 10,
     });
-    startRun({
+    runs.start({
       id: "tc-badge-grand",
       agent: "spider",
       parentSession: "badge-2",
       startedAt: 20,
     });
-    finishRun("tc-badge-child", { status: "done" });
-    finishRun("tc-badge-grand", { status: "error" });
-    finishRun("tc-badge-parent", { status: "done" });
+    runs.finish("tc-badge-child", { status: "done" });
+    runs.finish("tc-badge-grand", { status: "error" });
+    runs.finish("tc-badge-parent", { status: "done" });
     const lines = renderComponent(
       renderResult(
         streamed(""),
         { isPartial: false },
         THEME,
         toolContext("tc-badge-parent"),
+        runs,
       ),
       200,
     );
@@ -606,7 +637,7 @@ describe("pi renderResult — structured projection from the run log", () => {
     });
     // First paint: no registry run yet, so the card cold-start hydrates.
     renderComponent(
-      renderResult(result, { isPartial: false }, THEME, context),
+      renderResult(result, { isPartial: false }, THEME, context, runs),
       80,
     );
     await waitForHydration("tc-backfill");
@@ -618,15 +649,16 @@ describe("pi renderResult — structured projection from the run log", () => {
       { isPartial: false },
       THEME,
       context,
+      runs,
     );
-    startRun({
+    runs.start({
       id: "tc-backfill",
       agent: "beaver",
       parentSession: "main-1",
       childSession: "backfill-child",
       startedAt: 1000,
     });
-    startRun({
+    runs.start({
       id: "tc-backfill-child",
       agent: "lynx",
       parentSession: "backfill-child",
@@ -640,8 +672,8 @@ describe("pi renderResult — structured projection from the run log", () => {
   });
 
   it("stops the spinner timer once the registry run is terminal", () => {
-    startRun({ id: "tc-stop", agent: "beaver", parentSession: "main-1" });
-    finishRun("tc-stop", { status: "done" });
+    runs.start({ id: "tc-stop", agent: "beaver", parentSession: "main-1" });
+    runs.finish("tc-stop", { status: "done" });
     let invalidations = 0;
     const state: Record<string, unknown> = {};
     renderResult(
@@ -654,6 +686,7 @@ describe("pi renderResult — structured projection from the run log", () => {
           invalidations += 1;
         },
       }),
+      runs,
     );
     const timer = state.spinnerTimer as { hasRef?: () => boolean } | undefined;
     assert.equal(
@@ -694,13 +727,13 @@ describe("pi renderResult — structured projection from the run log", () => {
     );
     // The history scanner rebuilt the run (terminal, real lifecycle) but
     // never filled its fact log.
-    startRun({
+    runs.start({
       id: "tc-scanned",
       agent: "spider",
       parentSession: "main-1",
       startedAt: 1000,
     });
-    finishRun("tc-scanned", { status: "done", endedAt: 6000 });
+    runs.finish("tc-scanned", { status: "done", endedAt: 6000 });
     const context = toolContext("tc-scanned");
     const result = {
       content: [{ type: "text", text: "delivered" }],
@@ -708,7 +741,7 @@ describe("pi renderResult — structured projection from the run log", () => {
     };
     // First paint: placeholder (log empty, hydration not settled).
     const first = renderComponent(
-      renderResult(result, { isPartial: false }, THEME, context),
+      renderResult(result, { isPartial: false }, THEME, context, runs),
       80,
     );
     assert.ok(
@@ -717,7 +750,7 @@ describe("pi renderResult — structured projection from the run log", () => {
     );
     await waitForHydration("tc-scanned");
     const second = renderComponent(
-      renderResult(result, { isPartial: false }, THEME, context),
+      renderResult(result, { isPartial: false }, THEME, context, runs),
       80,
     ).filter((l) => l.length > 0);
     assert.ok(
@@ -743,18 +776,24 @@ describe("pi renderResult — structured projection from the run log", () => {
       content: [{ type: "text", text: "the final answer" }],
       timestamp: 1500,
     });
-    const run = startRun({
+    const run = runs.start({
       id: "tc-raced",
       agent: "lynx",
       parentSession: "main-1",
       startedAt: 1000,
     });
     run.log.appendMessage([{ type: "text", text: "the final answer" }]);
-    finishRun("tc-raced", { status: "done", endedAt: 2000, sessionPath });
+    runs.finish("tc-raced", { status: "done", endedAt: 2000, sessionPath });
     const result = { content: [] };
 
     const first = renderComponent(
-      renderResult(result, { isPartial: true }, THEME, toolContext("tc-raced")),
+      renderResult(
+        result,
+        { isPartial: true },
+        THEME,
+        toolContext("tc-raced"),
+        runs,
+      ),
       80,
     );
     assert.ok(
@@ -767,7 +806,13 @@ describe("pi renderResult — structured projection from the run log", () => {
     );
     await waitForHydration("tc-raced");
     const lines = renderComponent(
-      renderResult(result, { isPartial: true }, THEME, toolContext("tc-raced")),
+      renderResult(
+        result,
+        { isPartial: true },
+        THEME,
+        toolContext("tc-raced"),
+        runs,
+      ),
       80,
     ).filter((l) => l.length > 0);
     assert.ok(
@@ -787,6 +832,7 @@ describe("pi renderResult — structured projection from the run log", () => {
         { isPartial: true },
         THEME,
         toolContext("tc-unknown"),
+        runs,
       ),
       80,
     );
@@ -803,6 +849,7 @@ describe("pi renderResult — structured projection from the run log", () => {
         { isPartial: false },
         THEME,
         toolContext("tc-gone"),
+        runs,
       ),
       80,
     );
@@ -891,7 +938,7 @@ describe("pi renderResult — structured projection from the run log", () => {
 
     // First paint: placeholder while the session file parses asynchronously.
     const first = renderComponent(
-      renderResult(result, { isPartial: false }, THEME, context),
+      renderResult(result, { isPartial: false }, THEME, context, runs),
       80,
     );
     assert.ok(
@@ -905,7 +952,7 @@ describe("pi renderResult — structured projection from the run log", () => {
     await waitForHydration("tc-restored");
     assert.ok(invalidations >= 1, "hydration must invalidate the card");
     const second = renderComponent(
-      renderResult(result, { isPartial: false }, THEME, context),
+      renderResult(result, { isPartial: false }, THEME, context, runs),
       80,
     ).filter((l) => l.length > 0);
     assert.ok(
@@ -923,7 +970,7 @@ describe("pi renderResult — structured projection from the run log", () => {
       )}`,
     );
     assert.equal(
-      getRun("tc-restored"),
+      runs.get("tc-restored"),
       undefined,
       "hydration must not register the restored run into the registry",
     );
@@ -950,12 +997,18 @@ describe("pi renderResult — structured projection from the run log", () => {
       details: { sessionPath, outcome: "aborted" },
     };
     renderComponent(
-      renderResult(result, { isPartial: false }, THEME, context),
+      renderResult(result, { isPartial: false }, THEME, context, runs),
       80,
     );
     await waitForHydration("tc-outcome-aborted");
     const raw = (
-      renderResult(result, { isPartial: false }, THEME, context) as Renderable
+      renderResult(
+        result,
+        { isPartial: false },
+        THEME,
+        context,
+        runs,
+      ) as Renderable
     ).render(80);
     const title = raw.find((l) => l.includes("subagent(lynx)"));
     assert.ok(title !== undefined, `title expected: ${raw.join(" | ")}`);
@@ -984,12 +1037,18 @@ describe("pi renderResult — structured projection from the run log", () => {
       details: { sessionPath },
     };
     renderComponent(
-      renderResult(result, { isPartial: false }, THEME, context),
+      renderResult(result, { isPartial: false }, THEME, context, runs),
       80,
     );
     await waitForHydration("tc-legacy");
     const raw = (
-      renderResult(result, { isPartial: false }, THEME, context) as Renderable
+      renderResult(
+        result,
+        { isPartial: false },
+        THEME,
+        context,
+        runs,
+      ) as Renderable
     ).render(80);
     const title = raw.find((l) => l.includes("subagent(beaver)"));
     assert.ok(title !== undefined, `title expected: ${raw.join(" | ")}`);

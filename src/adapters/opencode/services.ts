@@ -8,6 +8,19 @@
  * sibling, and an echo is only ever matched against the session that
  * injected it.
  *
+ *  - the `runScope` extension service is the run scope of this runtime: it
+ *    reads the process run table and owns exactly the runs this runtime
+ *    started through the `runs` capability, so the plugin's dispose ends
+ *    those and leaves the process history alone.  A TUI panel is not part
+ *    of this scope: its translator writes the process run table directly
+ *    (a host fact), so the rows it records and the panel's own run-change
+ *    subscription belong to the panel's lifetime, not to this stop.
+ *  - the `capabilities` extension service owns this instance's capability
+ *    provision: the values the shared composition service binds, and the
+ *    materialisation facts the host answers (read while the service is
+ *    created, never during the assembly).
+ *  - the `composition` extension service assembles the active profile over
+ *    that provision (see `core/composition.ts`).
  *  - the `loop` extension service owns the loop engine, built once per
  *    plugin instance when the active profile contributed a settle
  *    strategy.
@@ -35,28 +48,80 @@
  * @module
  */
 
+import { readHostMaterialisation } from "../../compose-opencode.js";
+import { configCapabilities } from "../../core/capabilities.js";
+import {
+  defineCompositionService,
+  type HostCapabilities,
+} from "../../core/composition.js";
+import type {
+  ConfigSnapshot,
+  ProcessScope,
+} from "../../core/config-snapshot.js";
+import type { ContextRuntime } from "../../core/context/runtime.js";
 import {
   defineExtensionService,
   defineSessionService,
   type ServiceMap,
   type SessionScope,
 } from "../../core/lifecycle/index.js";
-import {
-  createLoopEngine,
-  type LoopEngine,
-  type SettledContribution,
-} from "../../core/loop/index.js";
+import { createLoopEngine, type LoopEngine } from "../../core/loop/index.js";
+import { ORCHESTRATOR_AGENT_NAME } from "../../core/orchestrator.js";
+import type { Capabilities } from "../../core/ports/index.js";
+import type { ProcessState } from "../../core/process-state.js";
 import {
   defineSessionResourcesService,
   type SessionResourceCatalog,
 } from "../../core/session/resources.js";
+import type { RunScope } from "../../core/subagent/registry.js";
+import { REGISTRY } from "../../registry.js";
+import { createV1Adapter } from "./adapter.js";
+import { createOpenCodeHandoffTarget } from "./handoff-target.js";
+import { createOpenCodeMessageInjector } from "./message-injector.js";
+import { todoSourceFromClient } from "./todo-source.js";
+import { createV1ToolHost, resolveSessionAgent } from "./tool-host.js";
 
 /** The host inputs the service declarations close over. */
 export interface OpenCodeServiceHost {
-  /** The settle strategies the active profile contributed. */
-  readonly onSettled: readonly SettledContribution[];
+  /** The configuration generation of this plugin instance. */
+  readonly scope: ProcessScope<ConfigSnapshot>;
+  /**
+   * The OpenCode SDK client of this instance: the todo read, the tool host,
+   * the message injector, the handoff target and the host config pre-read
+   * all go through it.
+   */
+  readonly client: any;
+  /** The working directory the host adapter reports. */
+  readonly directory: string;
+  /** The process state this instance runs over (shared, never created here). */
+  readonly process: ProcessState;
+  /** The context records of this plugin instance. */
+  readonly contextRuntime: ContextRuntime;
   /** The session records of this plugin instance. */
   readonly sessionCatalog: SessionResourceCatalog;
+  /** Test seam: the `zdebug` runner for the auto-debug strategy. */
+  readonly zdebugExec?: Partial<Capabilities>["zdebugExec"];
+}
+
+/**
+ * The capability provision of one OpenCode plugin instance.
+ *
+ * The shared composition service consumes the provision.  The session
+ * resolvers travel with it because the infrastructure hooks and the
+ * delegation gate read the same functions the composition bound.
+ */
+export interface OpenCodeCapabilities extends HostCapabilities {
+  /**
+   * The session → agent resolver of this plugin instance.
+   *
+   * It reads the shared session agent registry, which the always-on event
+   * hook populates from `message.updated` events.
+   */
+  readonly resolveAgent: (sessionID: string) => string | undefined;
+  /** The asynchronous caller resolver the delegation gate reads. */
+  readonly resolveCallerAgent: (
+    sessionID: string,
+  ) => Promise<string | undefined>;
 }
 
 /**
@@ -138,21 +203,107 @@ function createSessionRuntime(
 /**
  * Create the service declarations of one OpenCode plugin instance.
  *
+ * The capability provision is created first: it builds the values the
+ * assembly binds and asks the host what it will materialise.  The
+ * composition service then assembles the active profile over it, and the
+ * loop engine over the composed settle strategies.
+ *
  * @param host - The host inputs the factories close over.
  * @returns The extension and session declarations, in creation order.
  */
 export function createOpenCodeHostServices(host: OpenCodeServiceHost) {
+  // The run scope of this plugin instance: one per runtime, over the run
+  // table the whole process shares.  The runtime writes its runs through it,
+  // so the plugin's dispose ends only the runs this runtime started.  A run a
+  // panel translator wrote into the table is a host fact outside this scope,
+  // so this stop never ends it.
+  const runs = host.process.runs.createScope();
+
+  // Declared FIRST so it is disposed LAST: this runtime's other services stop
+  // before the runs they may still read end.
+  const runScope = defineExtensionService({
+    name: "runScope",
+    deps: [],
+    create: (): RunScope => runs,
+    dispose: (scope) => scope.dispose(),
+  });
+
+  const capabilities = defineExtensionService({
+    name: "capabilities",
+    deps: [runScope],
+    create: async ({ deps }): Promise<OpenCodeCapabilities> => {
+      const resolveAgent = (sessionID: string): string | undefined =>
+        host.process.sessionAgents.resolve(sessionID);
+      // The gate's caller resolution is the registry read above, then the
+      // host's own `session.get` — the SDK exposes no other access method.
+      const resolveCallerAgent = (sessionID: string) =>
+        resolveSessionAgent(sessionID, host.client, resolveAgent);
+      // A disabled selection asks the host nothing, and an unreadable
+      // config stays an unavailable fact — the planner closes this
+      // configuration instead of treating "unknown" as "unconstrained".
+      const materialisation =
+        host.scope.snapshot.modeProfile === null
+          ? undefined
+          : await readHostMaterialisation(host.client);
+      return {
+        values: {
+          ...configCapabilities(host.scope.snapshot),
+          // The run records of this runtime: a host subagent driver writes
+          // each delegation through this scope, so the plugin's dispose
+          // ends only the runs this runtime started.
+          runs: deps.runScope,
+          contextRuntime: host.contextRuntime,
+          // OpenCode serves the todo read from its SDK client; the
+          // assembly is the single place that binds the backend.
+          todoSource: todoSourceFromClient(host.client),
+          directory: host.directory,
+          zdebugExec: host.zdebugExec,
+          resolveAgent,
+          resolveCallerAgent,
+          toolHost: createV1ToolHost(host.client, resolveAgent),
+          adapter: createV1Adapter(),
+          messageInjector: createOpenCodeMessageInjector(
+            host.client,
+            resolveAgent,
+          ),
+          // The `/go` handoff target.  Built from host facts only — the
+          // executor agent travels with each handoff call, so the target
+          // is the same for every selection.
+          handoffTarget: createOpenCodeHandoffTarget(
+            host.client,
+            host.directory,
+          ),
+        },
+        ...(materialisation === undefined ? {} : { materialisation }),
+        resolveAgent,
+        resolveCallerAgent,
+      };
+    },
+  });
+
+  // The assembled profile, produced by the shared composition service over
+  // the capability provision and this generation's snapshot.
+  const composition = defineCompositionService({
+    scope: host.scope,
+    capabilities,
+    units: REGISTRY,
+    // The product's orchestrator role.  The planner decides whether the
+    // enabled profile can provide it; this host holds no fallback.
+    orchestrator: ORCHESTRATOR_AGENT_NAME,
+  });
+
   const loop = defineExtensionService({
     name: "loop",
-    deps: [],
-    create: () => ({
-      // Fail-closed: a profile that contributes no settle strategy gets no
-      // engine, so the settle path cannot wake anything.
-      engine:
-        host.onSettled.length > 0
-          ? createLoopEngine([...host.onSettled])
-          : undefined,
-    }),
+    deps: [composition],
+    create: ({ deps }) => {
+      const strategies = deps.composition.composed.onSettled;
+      return {
+        // Fail-closed: a profile that contributes no settle strategy gets
+        // no engine, so the settle path cannot wake anything.
+        engine:
+          strategies.length > 0 ? createLoopEngine([...strategies]) : undefined,
+      };
+    },
   });
 
   // The engine's per-session budget and awaiting lock are the session's own
@@ -166,7 +317,7 @@ export function createOpenCodeHostServices(host: OpenCodeServiceHost) {
   });
 
   return {
-    extension: [loop] as const,
+    extension: [runScope, capabilities, composition, loop] as const,
     session: [
       sessionRuntime,
       defineSessionResourcesService(host.sessionCatalog),

@@ -82,6 +82,7 @@ interface PersistedMark {
   anchorOrdinal: number;
   regionIndex?: number;
   content: string;
+  contentHash?: string;
   contentTokens?: number;
   effective: boolean;
   markedAt: number;
@@ -217,6 +218,7 @@ function parsePersistedMark(value: unknown): PersistedMark | null {
   const anchorOrdinal = value.anchorOrdinal;
   const regionIndex = value.regionIndex;
   const content = value.content;
+  const contentHash = value.contentHash;
   const contentTokens = value.contentTokens;
   const effective = value.effective;
   const markedAt = value.markedAt;
@@ -225,6 +227,9 @@ function parsePersistedMark(value: unknown): PersistedMark | null {
   if (!isNonNegInt(anchorOrdinal)) return null;
   if (regionIndex !== undefined && !isNonNegInt(regionIndex)) return null;
   if (typeof content !== "string") return null;
+  if (contentHash !== undefined && typeof contentHash !== "string") {
+    return null;
+  }
   if (contentTokens !== undefined && !isNonNegInt(contentTokens)) return null;
   if (typeof effective !== "boolean") return null;
   if (!isNonNegInt(markedAt)) return null;
@@ -237,6 +242,7 @@ function parsePersistedMark(value: unknown): PersistedMark | null {
     markedAt,
   };
   if (regionIndex !== undefined) mark.regionIndex = regionIndex;
+  if (contentHash !== undefined) mark.contentHash = contentHash;
   if (contentTokens !== undefined) mark.contentTokens = contentTokens;
   if (effectiveAt !== undefined) mark.effectiveAt = effectiveAt;
   if (releasedAt !== undefined) mark.releasedAt = releasedAt;
@@ -400,6 +406,9 @@ export function createStateStore(storageDir?: string): StateStore {
       };
       if (mark.regionIndex !== undefined) {
         entry.regionIndex = mark.regionIndex;
+      }
+      if (mark.contentHash !== undefined) {
+        entry.contentHash = mark.contentHash;
       }
       if (mark.contentTokens !== undefined) {
         entry.contentTokens = mark.contentTokens;

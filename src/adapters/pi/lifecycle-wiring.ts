@@ -27,9 +27,9 @@
  *    later ensure cannot recreate anything.
  *
  * pi runs one wiring instance per extension runtime, and a sub-session loads
- * its own.  The composition root therefore hands that runtime's close handle
- * to the driver that created it (see `wire.ts`), so a teardown always stops
- * the scope of the runtime it belongs to.
+ * its own.  The runtime owner therefore hands that runtime's close handle to
+ * the driver that created it (see `publisher.ts`), so a teardown always
+ * stops the scope of the runtime it belongs to.
  *
  * @module
  */
@@ -100,7 +100,7 @@ export interface PiLifecycleWiringOptions<
  */
 export class PiLifecycleStoppedError extends Error {
   constructor() {
-    super("pi extension lifecycle scope already stopped");
+    super("pi 扩展生命周期作用域已停止");
     this.name = "PiLifecycleStoppedError";
   }
 }

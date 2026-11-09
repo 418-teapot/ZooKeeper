@@ -86,8 +86,7 @@ import {
 } from "@earendil-works/pi-tui";
 import type { DisplayHue } from "../../../core/display.js";
 import {
-  childrenIndex,
-  getRun,
+  type RunRegistry,
   type RunSnapshot,
   type RunStatus,
   TERMINAL_STATUSES,
@@ -199,16 +198,20 @@ interface CardProjection {
  * an id that no entry matches.
  *
  * @param run - The run the card renders, when the registry knows it.
+ * @param runs - The run records of this process.
  * @returns The root id and the full index.
  */
-function cardTree(run: RunSnapshot | undefined): {
+function cardTree(
+  run: RunSnapshot | undefined,
+  runs: RunRegistry,
+): {
   rootId: string;
   childrenByParent: ReadonlyMap<string, RunSnapshot[]>;
 } {
   if (run === undefined) {
     return { rootId: "", childrenByParent: new Map() };
   }
-  return { rootId: run.id, childrenByParent: childrenIndex([run]) };
+  return { rootId: run.id, childrenByParent: runs.childrenIndex([run]) };
 }
 
 /**
@@ -457,11 +460,13 @@ class CollapsedPreview implements Component {
  * @param context - The tool render context (tool-call id for the registry
  *   run lookup, shared renderer state for the spinner frame, `isPartial`
  *   for the running/terminal switch).
+ * @param runs - The run records of this process.
  * @returns A component tree (empty once the run is terminal).
  */
 export function renderCall(
   args: SubagentToolArgs,
-  context?: PiRenderContextLike,
+  context: PiRenderContextLike | undefined,
+  runs: RunRegistry,
 ): Component {
   const container = new Container();
   // Terminal: yield the title to the renderResult terminal branch — an
@@ -470,7 +475,7 @@ export function renderCall(
   if (context?.isPartial === false) return container;
 
   const state = context?.state ?? {};
-  const run = getRun(context?.toolCallId ?? "");
+  const run = runs.get(context?.toolCallId ?? "");
   // Read-only: the running renderResult body owns the frame counter so
   // each rebuild advances the frame exactly once for both stacked cards.
   const frame = state.frame ?? 0;
@@ -525,18 +530,20 @@ export function renderCall(
  * @param context - The tool render context (tool-call id for the registry
  *   run lookup, renderer state for the spinner, `invalidate` for the
  *   animation timer and the hydration repaint).
+ * @param runs - The run records of this process.
  * @returns A component tree.
  */
 export function renderResult(
   result: SubagentToolResult,
   options: PiRenderOptionsLike,
   theme: MarkdownThemeSource,
-  context?: PiRenderContextLike,
+  context: PiRenderContextLike | undefined,
+  runs: RunRegistry,
 ): Component {
   const isPartial = options.isPartial === true;
   const state = context?.state ?? {};
   const toolCallId = context?.toolCallId ?? "";
-  const run = getRun(toolCallId);
+  const run = runs.get(toolCallId);
   // Active = a partial render whose registry run has not gone terminal.
   // A terminal run needs no animation ticks even when a late partial
   // render arrives (e.g. a result update racing the finish).
@@ -586,7 +593,7 @@ export function renderResult(
           () => ({
             log: hydration.log,
             meta: metaFromRun(run),
-            ...cardTree(run),
+            ...cardTree(run, runs),
           }),
           markdownTheme,
           expanded,
@@ -608,7 +615,7 @@ export function renderResult(
       () => ({
         log: run.log,
         meta: metaFromRun(run),
-        ...cardTree(run),
+        ...cardTree(run, runs),
       }),
       markdownTheme,
       expanded,
@@ -645,11 +652,11 @@ export function renderResult(
           // restored card first rendered, so resolve the children lazily: a
           // run that appeared since the last projection contributes its
           // subtree, and only a run never rebuilt falls back to none.
-          const live = getRun(toolCallId);
+          const live = runs.get(toolCallId);
           return {
             log: hydration.log,
             meta,
-            ...cardTree(live),
+            ...cardTree(live, runs),
           };
         },
         markdownTheme,
@@ -735,8 +742,12 @@ function manageSpinnerTimer(
  * uses it to build the full markdown theme for markdown-flagged lines;
  * `renderCall` renders only a plain-text title, so it does not need the
  * theme.
+ *
+ * @param runs - The run records of this process: the renderers look a run
+ *   up by the tool-call id pi reports.
+ * @returns The renderer pair pi registers on the subagent tool.
  */
-export function buildSubagentCardRenderer(): {
+export function buildSubagentCardRenderer(runs: RunRegistry): {
   renderCall: (args: unknown, theme: unknown, context?: unknown) => unknown;
   renderResult: (
     result: unknown,
@@ -747,13 +758,18 @@ export function buildSubagentCardRenderer(): {
 } {
   return {
     renderCall: (args, _theme, context) =>
-      renderCall(args as SubagentToolArgs, context as PiRenderContextLike),
+      renderCall(
+        args as SubagentToolArgs,
+        context as PiRenderContextLike | undefined,
+        runs,
+      ),
     renderResult: (result, options, theme, context) =>
       renderResult(
         result as SubagentToolResult,
         (options ?? {}) as PiRenderOptionsLike,
         (theme ?? {}) as MarkdownThemeSource,
         context as PiRenderContextLike | undefined,
+        runs,
       ),
   };
 }

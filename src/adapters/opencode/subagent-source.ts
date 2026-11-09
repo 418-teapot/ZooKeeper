@@ -4,9 +4,9 @@
  *
  * The panel used to own a private subagent state machine (its own status
  * enum, its own merge rules, its own entry map).  This module replaces it
- * with a translator: every host fact is written into the process-level run
- * registry (`src/core/subagent/registry.ts`) and the panel renders from the
- * registry.  The translator holds no run state of its own, so there is
+ * with a translator: every host fact is written into the run registry of the
+ * OpenCode process (`src/core/subagent/registry.ts`) and the panel renders
+ * from the registry.  The translator holds no run state of its own, so there is
  * exactly one place where run lifecycle and progress live.
  *
  * Two rules cover what the retired merge table encoded:
@@ -32,13 +32,9 @@
  */
 
 import {
-  finishRun,
-  getRun,
-  restoreRun,
-  startRun,
+  type RunRegistry,
   TERMINAL_STATUSES,
   type UpdateRunPatch,
-  updateRun,
 } from "../../core/subagent/registry.js";
 import { log } from "../../utils/logger.js";
 
@@ -66,6 +62,8 @@ const TOKEN_READ_MESSAGE_LIMIT = 20;
  * imports (and testable without a TUI runtime).
  */
 export interface SubagentSourceDeps {
+  /** The run records of this process. */
+  runs: RunRegistry;
   /** HTTP client slice — source for the token reads of child sessions. */
   client: {
     session: {
@@ -312,11 +310,12 @@ function terminalOutcome(
 /**
  * Create the subagent fact translator for one panel mount.
  *
- * @param deps - The host surfaces (client, state, session, history fetch).
+ * @param deps - The run records and the host surfaces (client, state,
+ *   session, history fetch).
  * @returns The event handlers the panel wires onto the host bus.
  */
 export function createSubagentSource(deps: SubagentSourceDeps): SubagentSource {
-  const { client, state: stateSlice, parentSessionId } = deps;
+  const { runs, client, state: stateSlice, parentSessionId } = deps;
 
   // The title source that produced each run's current label.  The registry
   // stores the label value only; remembering its provenance is what lets a
@@ -383,7 +382,7 @@ export function createSubagentSource(deps: SubagentSourceDeps): SubagentSource {
   function pollOnce(partId: string, childSession: string): void {
     if (pendingTokenFetches.has(partId)) return;
     try {
-      if (getRun(partId)?.status !== "running") {
+      if (runs.get(partId)?.status !== "running") {
         stopPolling(partId);
         return;
       }
@@ -404,7 +403,7 @@ export function createSubagentSource(deps: SubagentSourceDeps): SubagentSource {
       pendingTokenFetches.add(partId);
       void readContextTokens(childSession)
         .then((tokens) => {
-          if (tokens !== undefined) updateRun(partId, { tokens });
+          if (tokens !== undefined) runs.update(partId, { tokens });
         })
         .finally(() => {
           pendingTokenFetches.delete(partId);
@@ -424,7 +423,7 @@ export function createSubagentSource(deps: SubagentSourceDeps): SubagentSource {
   function ensurePolling(partId: string, childSession: string): void {
     if (disposed) return;
     if (pollTimers.has(partId)) return;
-    if (getRun(partId)?.status !== "running") return;
+    if (runs.get(partId)?.status !== "running") return;
     pollTimers.set(
       partId,
       setInterval(() => pollOnce(partId, childSession), TOKEN_POLL_INTERVAL_MS),
@@ -450,7 +449,7 @@ export function createSubagentSource(deps: SubagentSourceDeps): SubagentSource {
     stopPolling(partId);
     labelRanks.delete(partId);
     const finish = (tokens?: number): void => {
-      finishRun(partId, {
+      runs.finish(partId, {
         status: outcome,
         ...(tokens !== undefined ? { tokens } : {}),
         ...(endedAt !== undefined ? { endedAt } : {}),
@@ -473,7 +472,7 @@ export function createSubagentSource(deps: SubagentSourceDeps): SubagentSource {
    * part reached a terminal state, closes it.
    */
   function applyLive(partId: string, state: Record<string, unknown>): void {
-    const existing = getRun(partId);
+    const existing = runs.get(partId);
     if (existing !== undefined && TERMINAL_STATUSES.has(existing.status)) {
       // Terminal absorption: a late or duplicated event changes nothing.
       return;
@@ -502,7 +501,7 @@ export function createSubagentSource(deps: SubagentSourceDeps): SubagentSource {
     }
 
     if (existing === undefined) {
-      startRun({
+      runs.start({
         id: partId,
         agent: extractAgent(input),
         parentSession: parentSessionId,
@@ -514,7 +513,7 @@ export function createSubagentSource(deps: SubagentSourceDeps): SubagentSource {
     }
     // Progress facts land the same way whether the run was just registered
     // or already known (a just-started run is still running).
-    if (Object.keys(patch).length > 0) updateRun(partId, patch);
+    if (Object.keys(patch).length > 0) runs.update(partId, patch);
 
     const outcome = terminalOutcome(state);
     if (outcome === undefined) {
@@ -555,8 +554,8 @@ export function createSubagentSource(deps: SubagentSourceDeps): SubagentSource {
     const model = extractModel(metadata);
     const { startedAt, endedAt } = extractTimes(state);
     const restore = (tokens?: number): void => {
-      if (disposed || getRun(partId) !== undefined) return;
-      restoreRun({
+      if (disposed || runs.get(partId) !== undefined) return;
+      runs.restore({
         id: partId,
         agent: extractAgent(input),
         parentSession: parentSessionId,
@@ -588,7 +587,7 @@ export function createSubagentSource(deps: SubagentSourceDeps): SubagentSource {
    * them — plus the terminal transition when the scan sees it.
    */
   function applyScanned(partId: string, state: Record<string, unknown>): void {
-    const existing = getRun(partId);
+    const existing = runs.get(partId);
     if (existing === undefined) {
       const outcome = terminalOutcome(state);
       if (outcome !== undefined) {
@@ -623,7 +622,7 @@ export function createSubagentSource(deps: SubagentSourceDeps): SubagentSource {
       patch.label = title.label;
       labelRanks.set(partId, title.rank);
     }
-    if (Object.keys(patch).length > 0) updateRun(partId, patch);
+    if (Object.keys(patch).length > 0) runs.update(partId, patch);
 
     const outcome = terminalOutcome(state);
     if (outcome === undefined) {

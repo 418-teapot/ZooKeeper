@@ -10,9 +10,10 @@
 import assert from "node:assert/strict";
 import { rmSync } from "node:fs";
 import { afterEach, beforeEach, describe, it } from "node:test";
+import { createConfigScope } from "../../core/config-snapshot.js";
 import { createContextRuntime } from "../../core/context/runtime.js";
-import type { Decision } from "../../core/loop/settle.js";
-import { sessionAgentResource } from "../../core/session/agent.js";
+import { createProcessState } from "../../core/process-state.js";
+import { createSessionAgentResource } from "../../core/session/agent.js";
 import {
   contextSessionResources,
   createSessionResourceCatalog,
@@ -40,13 +41,38 @@ afterEach(() => {
   }
 });
 
-/** A settle strategy that always wakes. */
-const WAKE = {
-  name: "strategy",
-  maxWakes: 3,
-  async handle(): Promise<Decision> {
-    return { kind: "wake", text: "finish the work" };
+/**
+ * The profile the compositions under test run: the product's orchestrator
+ * plus the todo-continuation strategy, which is the settle strategy the
+ * engine is built from.
+ */
+const ZOO = {
+  mode: {
+    poly: {
+      agents: ["dolphin", "mola"],
+      skills: [],
+      hooks: ["todo-continuation"],
+      tools: [],
+      commands: [],
+    },
   },
+  continuation: { max_wakes: 3 },
+};
+
+/** The agent table marking both profile agents primary. */
+const AGENTS: Record<string, unknown> = {
+  dolphin: { mode: "primary" },
+  mola: { mode: "primary" },
+};
+
+/** The host config serving the materialisation facts of the profile. */
+const HOST_CONFIG = {
+  config: { get: async () => ({ data: { agent: AGENTS } }) },
+};
+
+/** The todo list one settled turn is judged against: unfinished work. */
+const ACTIVE_TODOS = {
+  data: [{ content: "finish the work", status: "in_progress" }],
 };
 
 /** The transcript a settled turn is classified from: plain, no tools. */
@@ -59,22 +85,45 @@ const SETTLED_TRANSCRIPT = {
 /**
  * Build the infrastructure hooks over the real OpenCode lifecycle wiring.
  *
+ * The profile decides the orchestrator the gate compares against, so a
+ * busier configuration is a `ready` one and an empty one resolves no role.
+ *
  * @param agents - Session → agent bindings the resolver answers from.
- * @param orchestrator - The orchestrator the selection resolved.
+ * @param ready - Whether the instance runs the profile (and thus a role).
  * @returns The hooks, the lifecycle, and the recorded `promptAsync` bodies.
  */
-function makeHooks(
+async function makeHooks(
   agents: Record<string, string>,
-  orchestrator: string | undefined,
-) {
+  ready = true,
+): Promise<{
+  hooks: ReturnType<typeof buildInfraHooks>;
+  wakes: Array<{ agent?: string; parts: unknown[] }>;
+  wiring: ReturnType<typeof createOpenCodeLifecycleWiring>;
+}> {
   const wakes: Array<{ agent?: string; parts: unknown[] }> = [];
   const contextRuntime = createContextRuntime();
+  const process = createProcessState();
   const sessionCatalog = createSessionResourceCatalog([
     ...contextSessionResources(contextRuntime),
-    sessionAgentResource,
+    createSessionAgentResource(process.sessionAgents),
   ]);
+  const client = {
+    ...(ready ? HOST_CONFIG : {}),
+    session: {
+      messages: async () => SETTLED_TRANSCRIPT,
+      todo: async () => ACTIVE_TODOS,
+      promptAsync: async (input: { body: { agent?: string } }) => {
+        wakes.push(input.body as { agent?: string; parts: unknown[] });
+        return {};
+      },
+    },
+  };
   const declarations = createOpenCodeHostServices({
-    onSettled: [WAKE],
+    scope: createConfigScope(ready ? ZOO : {}, ready ? { agent: AGENTS } : {}),
+    client,
+    directory: "",
+    process,
+    contextRuntime,
     sessionCatalog,
   });
   const wiring = createOpenCodeLifecycleWiring({
@@ -82,19 +131,13 @@ function makeHooks(
     sessionServices: declarations.session,
     sessionCatalog,
   });
+  const { services } = await wiring.activateExtension();
   const hooks = buildInfraHooks({
-    client: {
-      session: {
-        messages: async () => SETTLED_TRANSCRIPT,
-        promptAsync: async (input: { body: { agent?: string } }) => {
-          wakes.push(input.body as { agent?: string; parts: unknown[] });
-          return {};
-        },
-      },
-    },
+    client,
+    sessionAgents: process.sessionAgents,
     resolveAgent: (sessionID) => agents[sessionID],
     promptVariants: [],
-    orchestrator,
+    orchestrator: services.composition.selection.orchestrator,
     contextRuntime,
     sessions: {
       sessionState: async (sessionID) =>
@@ -105,11 +148,11 @@ function makeHooks(
   return { hooks, wakes, wiring };
 }
 
+/** The hooks one activated instance exposes. */
+type Hooks = Awaited<ReturnType<typeof makeHooks>>["hooks"];
+
 /** Send one `session.idle` event for `sessionID`. */
-async function idle(
-  hooks: ReturnType<typeof makeHooks>["hooks"],
-  sessionID: string,
-): Promise<void> {
+async function idle(hooks: Hooks, sessionID: string): Promise<void> {
   await hooks.event({
     event: { type: "session.idle", properties: { sessionID } },
   });
@@ -117,18 +160,18 @@ async function idle(
 
 describe("infra hooks — orchestrator gate", () => {
   it("wakes the session that resolved as the declared orchestrator", async () => {
-    const { hooks, wakes } = makeHooks({ s1: "planner" }, "planner");
+    const { hooks, wakes } = await makeHooks({ s1: "dolphin" });
 
     await idle(hooks, "s1");
 
     assert.equal(wakes.length, 1, "the orchestrator session must wake");
-    assert.equal(wakes[0].agent, "planner");
+    assert.equal(wakes[0].agent, "dolphin");
   });
 
   it("does not treat a known agent as the orchestrator by name", async () => {
-    // dolphin is a real agent, but this selection's orchestrator is
-    // another one: only the resolved role may wake.
-    const { hooks, wakes } = makeHooks({ s1: "dolphin" }, "planner");
+    // mola is a real primary of the profile, but the selection resolves
+    // dolphin as the orchestrator: only the resolved role may wake.
+    const { hooks, wakes } = await makeHooks({ s1: "mola" });
 
     await idle(hooks, "s1");
 
@@ -136,7 +179,7 @@ describe("infra hooks — orchestrator gate", () => {
   });
 
   it("stays inert when the selection resolved no orchestrator", async () => {
-    const { hooks, wakes } = makeHooks({ s1: "dolphin" }, undefined);
+    const { hooks, wakes } = await makeHooks({ s1: "dolphin" }, false);
 
     await idle(hooks, "s1");
 
@@ -146,10 +189,7 @@ describe("infra hooks — orchestrator gate", () => {
 
 describe("infra hooks — per-session state", () => {
   /** Send one `session.error` abort for `sessionID`. */
-  async function abort(
-    hooks: ReturnType<typeof makeHooks>["hooks"],
-    sessionID: string,
-  ): Promise<void> {
+  async function abort(hooks: Hooks, sessionID: string): Promise<void> {
     await hooks.event({
       event: {
         type: "session.error",
@@ -159,7 +199,7 @@ describe("infra hooks — per-session state", () => {
   }
 
   it("records an abort on a session whose first event is the abort", async () => {
-    const { hooks, wakes } = makeHooks({ s1: "planner" }, "planner");
+    const { hooks, wakes } = await makeHooks({ s1: "dolphin" });
 
     // No `session.created` ever arrives: the abort is the first thing this
     // instance hears about the session.
@@ -170,7 +210,7 @@ describe("infra hooks — per-session state", () => {
   });
 
   it("consumes the abort once, so the next settle is judged again", async () => {
-    const { hooks, wakes } = makeHooks({ s1: "planner" }, "planner");
+    const { hooks, wakes } = await makeHooks({ s1: "dolphin" });
 
     await abort(hooks, "s1");
     await idle(hooks, "s1");
@@ -180,15 +220,15 @@ describe("infra hooks — per-session state", () => {
   });
 
   it("keeps one session's abort away from its sibling", async () => {
-    const { hooks, wakes } = makeHooks(
-      { s1: "planner", s2: "planner" },
-      "planner",
-    );
+    const { hooks, wakes } = await makeHooks({
+      s1: "dolphin",
+      s2: "dolphin",
+    });
 
     await abort(hooks, "s1");
     await idle(hooks, "s2");
 
     assert.equal(wakes.length, 1);
-    assert.equal(wakes[0].agent, "planner");
+    assert.equal(wakes[0].agent, "dolphin");
   });
 });

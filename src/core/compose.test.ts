@@ -477,25 +477,6 @@ describe("assemble — orchestrator role policy", () => {
     });
   });
 
-  it("never binds capabilities for an invalid selection", () => {
-    const { selection } = assemble({
-      profile: ALL_UNITS_PROFILE,
-      units: makeUnits(),
-      bindings: capabilityBindings({
-        values: BASE_CAPS,
-        selected: {
-          handoffTarget: () => {
-            throw new Error("an invalid selection must not bind");
-          },
-        },
-      }),
-      agentModes: FULL_MODES,
-      orchestrator: "ghost",
-    });
-
-    assert.equal(selection.status, "invalid");
-  });
-
   it("runs no factory when the host will not materialise a selected agent", () => {
     // The profile resolves dolphin as its orchestrator and the host
     // materialises it, but beaver and mola are missing from the host's
@@ -583,31 +564,6 @@ describe("assemble — orchestrator role policy", () => {
       cause: "no-api",
       detail: "宿主 SDK 客户端缺少 config.get",
     });
-  });
-
-  it("never binds capabilities when the host facts are unavailable", () => {
-    const { selection, composed } = assemble({
-      profile: ALL_UNITS_PROFILE,
-      units: makeUnits(),
-      bindings: capabilityBindings({
-        values: BASE_CAPS,
-        selected: {
-          handoffTarget: () => {
-            throw new Error("an undecidable selection must not bind");
-          },
-        },
-      }),
-      agentModes: FULL_MODES,
-      orchestrator: "dolphin",
-      materialisation: {
-        kind: "unavailable",
-        cause: "request-failed",
-        detail: "instance not ready",
-      },
-    });
-
-    assert.equal(selection.status, "invalid");
-    assert.deepEqual(composed.agents, []);
   });
 
   it("logs the unanswered host fact on the invalid selection entry", () => {

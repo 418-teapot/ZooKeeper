@@ -769,6 +769,48 @@ describe("lifecycle kernel", () => {
     assert.deepEqual(disposed, ["created"]);
   });
 
+  it("aborts the failed extension signal, and a stop keeps it terminal", async () => {
+    let creates = 0;
+    const signals: AbortSignal[] = [];
+
+    const created = defineExtensionService({
+      name: "created",
+      deps: [],
+      create: ({ signal }) => {
+        signals.push(signal);
+        return {};
+      },
+    });
+    const failing = defineExtensionService({
+      name: "failing",
+      deps: [created],
+      create: ({ signal }) => {
+        signals.push(signal);
+        creates += 1;
+        throw new Error("create-boom");
+      },
+    });
+    const kernel = createLifecycleKernel({
+      extension: [created, failing],
+      session: [],
+    });
+
+    await assert.rejects(kernel.ensureExtension(), /create-boom/);
+    assert.deepEqual(
+      signals.map((signal) => signal.aborted),
+      [true, true],
+      "the failed scope's signal is aborted for every service it built",
+    );
+
+    // The start that failed closes the runtime: a later ensure must not
+    // rebuild the scope it already gave up on.
+    assert.deepEqual(await kernel.stopExtension("start.failed"), {
+      errors: [],
+    });
+    assert.equal(await kernel.ensureExtension(), null);
+    assert.equal(creates, 1, "nothing is rebuilt after the failure");
+  });
+
   it("propagates session create errors and cleans up partial work", async () => {
     const disposed: string[] = [];
 

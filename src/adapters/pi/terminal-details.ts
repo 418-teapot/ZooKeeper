@@ -15,7 +15,10 @@
  */
 
 import { isRecord } from "../../core/records.js";
-import { getRun, TERMINAL_STATUSES } from "../../core/subagent/registry.js";
+import {
+  type RunRegistry,
+  TERMINAL_STATUSES,
+} from "../../core/subagent/registry.js";
 
 /**
  * Wrap text in a truecolor ANSI foreground sequence for a `#RRGGBB` hex.
@@ -44,8 +47,8 @@ export function truecolorWrap(hex: string, text: string): string {
  * behind.  It carries:
  *
  * - `sessionPath` — the sub-session file path the driver reported mid-run,
- *   looked up by run id (the tool-call id) in the process-level run
- *   registry; a view re-hydrates the run's facts from it after a restart.
+ *   looked up by run id (the tool-call id) in the process's run registry; a
+ *   view re-hydrates the run's facts from it after a restart.
  * - `outcome` — the run's terminal status (`done` / `error` / `aborted`),
  *   present only when the run has already reached a terminal state.  The
  *   restored-render path uses it to show the true lifecycle status (an
@@ -56,13 +59,15 @@ export function truecolorWrap(hex: string, text: string): string {
  * is not a subagent delegation) contribute an empty object.
  *
  * @param toolCallId - pi's tool-call id for the finished call.
+ * @param runs - The run records of this process.
  * @returns The `{ sessionPath?, outcome? }` payload, or `{}` when there
  *   is nothing to point at.
  */
 export function terminalToolDetails(
   toolCallId: unknown,
+  runs: RunRegistry,
 ): Record<string, unknown> {
-  const run = typeof toolCallId === "string" ? getRun(toolCallId) : undefined;
+  const run = typeof toolCallId === "string" ? runs.get(toolCallId) : undefined;
   if (run === undefined) return {};
   const details: Record<string, unknown> = {};
   if (run.sessionPath !== undefined) details.sessionPath = run.sessionPath;
@@ -80,14 +85,16 @@ export function terminalToolDetails(
  * @param toolCallId - pi's tool-call id for the finished call.
  * @param contributionDetails - Whatever the contribution wrote back (a
  *   non-record is dropped).
+ * @param runs - The run records of this process.
  * @returns The persisted details record.
  */
 export function mergeTerminalToolDetails(
   toolCallId: unknown,
   contributionDetails: unknown,
+  runs: RunRegistry,
 ): Record<string, unknown> {
   return {
     ...(isRecord(contributionDetails) ? contributionDetails : {}),
-    ...terminalToolDetails(toolCallId),
+    ...terminalToolDetails(toolCallId, runs),
   };
 }

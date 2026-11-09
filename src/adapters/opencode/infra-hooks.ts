@@ -31,7 +31,7 @@ import {
   applyModelVariant,
   type PromptVariantPair,
 } from "../../core/prompt-variant.js";
-import { sessionAgentRegistry } from "../../core/session/agent.js";
+import type { SessionAgentRegistry } from "../../core/session/agent.js";
 import { log } from "../../utils/logger.js";
 import { ABORT_ERROR_NAMES, newInjectedMessageID } from "./message-shape.js";
 import type { OpenCodeSessionState } from "./services.js";
@@ -65,6 +65,8 @@ export interface InfraSessionLifecycle {
 export interface InfraHookDeps {
   /** The host client (session APIs, model limits). */
   client: any;
+  /** The session → agent bindings of this process. */
+  sessionAgents: SessionAgentRegistry;
   /** Resolve a session's bound agent from the shared registry. */
   resolveAgent(sessionID: string): string | undefined;
   /**
@@ -99,7 +101,14 @@ export interface InfraHookDeps {
  * @returns The `event` and `experimental.chat.system.transform` hooks.
  */
 export function buildInfraHooks(deps: InfraHookDeps) {
-  const { client, resolveAgent, orchestrator, sessions, contextRuntime } = deps;
+  const {
+    client,
+    sessionAgents,
+    resolveAgent,
+    orchestrator,
+    sessions,
+    contextRuntime,
+  } = deps;
 
   return {
     async event(input: {
@@ -135,7 +144,7 @@ export function buildInfraHooks(deps: InfraHookDeps) {
         const session = await sessions.sessionState(info?.sessionID);
         if (session === null) return;
         if (info?.agent) {
-          sessionAgentRegistry.bind(session.sessionID, info.agent);
+          sessionAgents.bind(session.sessionID, info.agent);
         }
         // Budget bookkeeping: only a real user message resets the
         // per-session reminder counter.  This host's own wake

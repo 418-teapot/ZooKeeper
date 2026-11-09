@@ -142,5 +142,5 @@ export function composeToolHooks(
     commands: [],
   };
   const { composed, selection } = assembleForTest(profile, REGISTRY, deps);
-  return assembleOpenCodeHooks(composed, deps, selection).tool;
+  return assembleOpenCodeHooks(composed, deps, selection, []).tool;
 }

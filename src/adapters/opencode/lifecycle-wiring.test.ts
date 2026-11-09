@@ -25,6 +25,7 @@
 import assert from "node:assert/strict";
 import { rmSync } from "node:fs";
 import { afterEach, beforeEach, describe, it } from "node:test";
+import { createConfigScope } from "../../core/config-snapshot.js";
 import {
   type ContextRuntime,
   createContextRuntime,
@@ -35,10 +36,9 @@ import {
   defineSessionService,
   type WorkPermit,
 } from "../../core/lifecycle/index.js";
-import {
-  sessionAgentRegistry,
-  sessionAgentResource,
-} from "../../core/session/agent.js";
+import type { ProcessState } from "../../core/process-state.js";
+import { createProcessState } from "../../core/process-state.js";
+import { createSessionAgentResource } from "../../core/session/agent.js";
 import {
   contextSessionResources,
   createSessionResourceCatalog,
@@ -64,6 +64,7 @@ let _loggerDir: string;
 const _storeDirs: string[] = [];
 
 /** The plugin instance under test. */
+let process: ProcessState;
 let store: StateStore;
 let runtime: ContextRuntime;
 let sessionCatalog: SessionResourceCatalog;
@@ -74,9 +75,10 @@ function installSandbox(): StateStore {
   _storeDirs.push(dir);
   store = createStateStore(dir);
   runtime = createContextRuntime(store);
+  process = createProcessState();
   sessionCatalog = createSessionResourceCatalog([
     ...contextSessionResources(runtime),
-    sessionAgentResource,
+    createSessionAgentResource(process.sessionAgents),
   ]);
   return store;
 }
@@ -90,9 +92,6 @@ beforeEach(() => {
 
 afterEach(() => {
   _resetForTesting();
-  for (const sessionID of ["s1", "s2", "ghost"]) {
-    sessionAgentRegistry.delete(sessionID);
-  }
   for (const dir of _storeDirs.splice(0)) {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -143,7 +142,13 @@ function sessionEvent(type: string, id?: string) {
 /** Wiring over the real OpenCode declarations. */
 function buildWiring() {
   const declarations = createOpenCodeHostServices({
-    onSettled: [],
+    // No profile: the composition declares no settle strategy, so this
+    // wiring carries an engine-less session runtime.
+    scope: createConfigScope({}, {}),
+    client: {},
+    directory: "",
+    process,
+    contextRuntime: runtime,
     sessionCatalog,
   });
   return createOpenCodeLifecycleWiring({
@@ -190,7 +195,7 @@ function buildRecordingWiring(options: { failSession?: boolean } = {}) {
 describe("OpenCode lifecycle wiring — first use", () => {
   it("creates the session scope without waiting for session.created", async () => {
     const wiring = buildWiring();
-    sessionAgentRegistry.bind("s1", "dolphin");
+    process.sessionAgents.bind("s1", "dolphin");
 
     const first = await wiring.ensureSession("s1");
     const second = await wiring.ensureSession("s1");
@@ -289,12 +294,12 @@ describe("OpenCode lifecycle wiring — host session events", () => {
   it("deletes the process-level records of an owned deleted session", async () => {
     const wiring = buildWiring();
     await wiring.ensureSession("s1");
-    sessionAgentRegistry.bind("s1", "dolphin");
+    process.sessionAgents.bind("s1", "dolphin");
     runtime.setModelLimit(permitFor("s1"), 1000, "model");
 
     await wiring.handleEvent(sessionEvent("session.deleted", "s1"));
 
-    assert.equal(sessionAgentRegistry.resolve("s1"), undefined);
+    assert.equal(process.sessionAgents.resolve("s1"), undefined);
     assert.equal(runtime.modelLimit("s1"), undefined);
   });
 
@@ -302,12 +307,12 @@ describe("OpenCode lifecycle wiring — host session events", () => {
     const wiring = buildWiring();
     // The host wrote process-level records for a session whose events
     // predate this plugin instance: no scope exists, the records do.
-    sessionAgentRegistry.bind("ghost", "dolphin");
+    process.sessionAgents.bind("ghost", "dolphin");
     runtime.setModelLimit(permitFor("ghost"), 1000, "model");
 
     await wiring.handleEvent(sessionEvent("session.deleted", "ghost"));
 
-    assert.equal(sessionAgentRegistry.resolve("ghost"), undefined);
+    assert.equal(process.sessionAgents.resolve("ghost"), undefined);
     assert.equal(runtime.modelLimit("ghost"), undefined);
   });
 
@@ -315,12 +320,12 @@ describe("OpenCode lifecycle wiring — host session events", () => {
     const wiring = buildWiring();
     await wiring.ensureSession("s1");
     await wiring.ensureSession("s2");
-    sessionAgentRegistry.bind("s1", "dolphin");
-    sessionAgentRegistry.bind("s2", "dolphin");
+    process.sessionAgents.bind("s1", "dolphin");
+    process.sessionAgents.bind("s2", "dolphin");
 
     await wiring.handleEvent(sessionEvent("session.deleted", "s1"));
 
-    assert.equal(sessionAgentRegistry.resolve("s2"), "dolphin");
+    assert.equal(process.sessionAgents.resolve("s2"), "dolphin");
   });
 });
 
@@ -330,7 +335,7 @@ describe("OpenCode lifecycle wiring — deletion boundary", () => {
     const wiring = buildWiring();
 
     await wiring.handleEvent(sessionEvent("session.created", "s1"));
-    sessionAgentRegistry.bind("s1", "dolphin");
+    process.sessionAgents.bind("s1", "dolphin");
     await wiring.handleEvent(sessionEvent("session.deleted", "s1"));
 
     assert.deepEqual(
@@ -339,7 +344,7 @@ describe("OpenCode lifecycle wiring — deletion boundary", () => {
       "the scope disposer must not be followed by the unknown fallback",
     );
     assert.equal(
-      sessionAgentRegistry.resolve("s1"),
+      process.sessionAgents.resolve("s1"),
       undefined,
       "the scope disposer still deleted the session's records",
     );
@@ -349,29 +354,29 @@ describe("OpenCode lifecycle wiring — deletion boundary", () => {
     const { deletes } = sandboxStore();
     const wiring = buildWiring();
     await wiring.ensureSession("s1");
-    sessionAgentRegistry.bind("s1", "dolphin");
+    process.sessionAgents.bind("s1", "dolphin");
 
     await wiring.handleEvent(sessionEvent("session.deleted", "s1"));
 
     assert.deepEqual(deletes, ["s1"]);
-    assert.equal(sessionAgentRegistry.resolve("s1"), undefined);
+    assert.equal(process.sessionAgents.resolve("s1"), undefined);
   });
 
   it("keeps the unknown-session fallback for a deleted ghost", async () => {
     const { deletes } = sandboxStore();
     const wiring = buildWiring();
-    sessionAgentRegistry.bind("ghost", "dolphin");
+    process.sessionAgents.bind("ghost", "dolphin");
 
     await wiring.handleEvent(sessionEvent("session.deleted", "ghost"));
 
     assert.deepEqual(deletes, ["ghost"]);
-    assert.equal(sessionAgentRegistry.resolve("ghost"), undefined);
+    assert.equal(process.sessionAgents.resolve("ghost"), undefined);
   });
 
   it("returns the fallback failures to the caller and logs them once", async () => {
     const { store } = sandboxStore();
     const wiring = buildWiring();
-    sessionAgentRegistry.bind("ghost", "dolphin");
+    process.sessionAgents.bind("ghost", "dolphin");
     store.delete = () => {
       throw new Error("boom");
     };
@@ -406,13 +411,13 @@ describe("OpenCode lifecycle wiring — deletion boundary", () => {
     const wiring = buildWiring();
     await wiring.ensureSession("s1");
     await stageBlock("s1");
-    sessionAgentRegistry.bind("s1", "dolphin");
+    process.sessionAgents.bind("s1", "dolphin");
 
     await wiring.dispose();
 
     assert.deepEqual(deletes, [], "a dispose must not delete persisted state");
     assert.equal(store.load("s1").blocks.get(1)?.summary, "kept");
-    assert.equal(sessionAgentRegistry.resolve("s1"), "dolphin");
+    assert.equal(process.sessionAgents.resolve("s1"), "dolphin");
   });
 
   it("deletes the context when the host reports the deletion after a dispose", async () => {

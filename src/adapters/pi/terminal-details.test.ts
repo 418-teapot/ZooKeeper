@@ -7,20 +7,20 @@
  * never lets a contribution displace the bridge's own keys.
  */
 import assert from "node:assert/strict";
-import { afterEach, describe, it } from "node:test";
+import { beforeEach, describe, it } from "node:test";
 import {
-  finishRun,
-  resetRegistry,
-  startRun,
-  updateRun,
+  createRunRegistry,
+  type RunRegistry,
 } from "../../core/subagent/registry.js";
 import {
   mergeTerminalToolDetails,
   terminalToolDetails,
 } from "./terminal-details.js";
 
-afterEach(() => {
-  resetRegistry();
+let runs: RunRegistry = createRunRegistry();
+
+beforeEach(() => {
+  runs = createRunRegistry();
 });
 
 describe("terminal tool details", () => {
@@ -31,12 +31,16 @@ describe("terminal tool details", () => {
     // — the sub-session file path the driver reported mid-run, looked up by
     // run id (the pi tool-call id) in the run registry.  A run that has not
     // reached a terminal state yet contributes no `outcome`.
-    startRun({ id: "call-pointer", agent: "beaver", parentSession: "sess-1" });
-    updateRun("call-pointer", {
+    runs.start({
+      id: "call-pointer",
+      agent: "beaver",
+      parentSession: "sess-1",
+    });
+    runs.update("call-pointer", {
       sessionPath: "/home/u/.pi/agent/sessions/x/s.jsonl",
     });
     assert.deepEqual(
-      terminalToolDetails("call-pointer"),
+      terminalToolDetails("call-pointer", runs),
       { sessionPath: "/home/u/.pi/agent/sessions/x/s.jsonl" },
       "details must carry the session path pointer and nothing else",
     );
@@ -46,31 +50,38 @@ describe("terminal tool details", () => {
     // A tool with no registry run (compress / decompress) and a run that
     // never reported a path (a host that does not persist sessions) both
     // contribute an empty details object.
-    assert.deepEqual(terminalToolDetails("call-unknown"), {});
-    assert.deepEqual(terminalToolDetails(undefined), {});
-    assert.deepEqual(terminalToolDetails(42), {});
-    startRun({ id: "call-no-path", agent: "beaver", parentSession: "s" });
-    assert.deepEqual(terminalToolDetails("call-no-path"), {});
+    assert.deepEqual(terminalToolDetails("call-unknown", runs), {});
+    assert.deepEqual(terminalToolDetails(undefined, runs), {});
+    assert.deepEqual(terminalToolDetails(42, runs), {});
+    runs.start({ id: "call-no-path", agent: "beaver", parentSession: "s" });
+    assert.deepEqual(terminalToolDetails("call-no-path", runs), {});
   });
 
   it("the bridge's own keys win a details collision", () => {
     // A contribution may not displace the run's fact pointer by writing a
     // details record that carries the same key: the write-back slot is
     // merged INTO the bridge's own details, never over them.
-    startRun({ id: "call-clash", agent: "beaver", parentSession: "sess-1" });
-    updateRun("call-clash", { sessionPath: "/real/run.jsonl" });
+    runs.start({ id: "call-clash", agent: "beaver", parentSession: "sess-1" });
+    runs.update("call-clash", { sessionPath: "/real/run.jsonl" });
     assert.deepEqual(
-      mergeTerminalToolDetails("call-clash", {
-        sessionPath: "/forged/path",
-        questions: [],
-      }),
+      mergeTerminalToolDetails(
+        "call-clash",
+        {
+          sessionPath: "/forged/path",
+          questions: [],
+        },
+        runs,
+      ),
       { sessionPath: "/real/run.jsonl", questions: [] },
     );
     // Nothing written back, or a payload that is not a record, adds no keys.
-    assert.deepEqual(mergeTerminalToolDetails("call-clash", undefined), {
+    assert.deepEqual(mergeTerminalToolDetails("call-clash", undefined, runs), {
       sessionPath: "/real/run.jsonl",
     });
-    assert.deepEqual(mergeTerminalToolDetails("call-unknown", "nope"), {});
+    assert.deepEqual(
+      mergeTerminalToolDetails("call-unknown", "nope", runs),
+      {},
+    );
   });
 
   it("terminal details carry the run's terminal outcome", () => {
@@ -78,14 +89,14 @@ describe("terminal tool details", () => {
     // to the session pointer: the restored-render path needs the real
     // lifecycle status to color the title's dot (an aborted run must not
     // fall back to the bare isError binary, which reads as done).
-    startRun({
+    runs.start({
       id: "call-aborted",
       agent: "beaver",
       parentSession: "sess-1",
       sessionPath: "/home/u/.pi/agent/sessions/x/a.jsonl",
     });
-    finishRun("call-aborted", { status: "aborted" });
-    assert.deepEqual(terminalToolDetails("call-aborted"), {
+    runs.finish("call-aborted", { status: "aborted" });
+    assert.deepEqual(terminalToolDetails("call-aborted", runs), {
       sessionPath: "/home/u/.pi/agent/sessions/x/a.jsonl",
       outcome: "aborted",
     });
@@ -94,13 +105,13 @@ describe("terminal tool details", () => {
   it("terminal details omit outcome while the run is still running", () => {
     // A running run's details carry the pointer only: the outcome field
     // appears exclusively on terminal statuses (done / error / aborted).
-    startRun({
+    runs.start({
       id: "call-live",
       agent: "beaver",
       parentSession: "sess-1",
       sessionPath: "/home/u/.pi/agent/sessions/x/l.jsonl",
     });
-    assert.deepEqual(terminalToolDetails("call-live"), {
+    assert.deepEqual(terminalToolDetails("call-live", runs), {
       sessionPath: "/home/u/.pi/agent/sessions/x/l.jsonl",
     });
   });

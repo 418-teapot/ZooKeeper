@@ -369,33 +369,52 @@ function startFlushTimer(): void {
 // ---------------------------------------------------------------------------
 
 /**
- * Initialise the logger once per process with the host name and optional
- * configuration.
+ * Initialise the logger with the host name and the configuration of one
+ * configuration generation.
  *
- * One-shot process init: the host is a process-level constant — there is no
- * second initialisation step and no per-session state.  The log-file shard
- * is derived from each entry's session id; sessionless entries are
- * attributed to the process's first session (see `log`).  Sets up the log
- * directory, cleans old log files, and starts the flush timer.
+ * Every generation calls this again after a reload, so the call rebuilds the
+ * logger configuration from `opts` and the process keeps logging under the
+ * host the current generation names.  The log-file shard is derived from each
+ * entry's session id; sessionless entries are attributed to the process's
+ * first session (see `log`).  Sets up the log directory, cleans old log
+ * files, and starts the flush timer; the timer is idempotent — a later call
+ * keeps the running one.
  *
- * When a config field is omitted the corresponding behaviour is skipped
- * (no file rotation, no backup trimming, no old-log cleanup).
+ * A re-init under the same host keeps the primary session the process
+ * already established: the entries logged after it still belong to that
+ * session.  A host change starts a fresh attribution, so the new host's
+ * sessionless entries never join the previous host's session file.
+ *
+ * When a config field is omitted the corresponding behaviour is disabled
+ * (no file rotation, no backup trimming, no old-log cleanup).  Each call
+ * re-establishes the whole configuration from `opts` alone: a field omitted
+ * here reverts to its initial state and never inherits the value of a
+ * previous init.
  *
  * @param host - The host name (e.g. `"opencode"`, `"pi"`).
  * @param opts - Optional overrides for log directory, file size, backups,
  *   and retention.
  */
 export function initLogger(host: string, opts?: Partial<LoggerOptions>): void {
+  // An init under the host the module already logged for is a re-init of
+  // the same process (a reload, a new plugin instance), so the
+  // primary-session attribution survives it.
+  const sameHost = host === _host;
   _host = host;
+  // Reset the tunables to their initial state so an omitted field of this
+  // init cannot inherit the value of the previous one.
+  _logDir = DEFAULT_LOG_DIR;
+  _maxFileSize = undefined;
+  _maxBackups = undefined;
+  _retentionDays = undefined;
   // Drop cached shard paths from a previous init so a re-init with a
   // different logDir/host cannot write to stale files.
   _logFilePaths.clear();
-  // Reset the primary-session attribution from a previous init so a
-  // re-init cannot retroactively attribute new sessionless entries to the
-  // prior host's session.  Safe in production: init precedes the first
-  // sessioned entry, so a fresh primary session is re-established on the
-  // first sessioned log of the new host.
-  _primarySessionId = null;
+  // Drop the primary-session attribution only when the host changes: the
+  // new host's sessionless entries must not be attributed to the previous
+  // host's session.  A same-host re-init keeps it, because the entry that
+  // re-initialised the logger logs into the same process's session.
+  if (!sameHost) _primarySessionId = null;
 
   if (opts?.logDir) {
     _logDir = resolve(opts.logDir.replace(/^~/, homedir()));
@@ -413,6 +432,27 @@ export function initLogger(host: string, opts?: Partial<LoggerOptions>): void {
   ensureDir(_logDir);
   cleanupOldLogs();
   startFlushTimer();
+}
+
+/**
+ * Initialise the logger for one host only when this module has not done so.
+ *
+ * Two entries of one host can share this module (the OpenCode server entry and
+ * the TUI panel).  Only the first caller initialises, and it applies no
+ * configuration; a later `initPluginLogger` still applies the host's config
+ * over it.  Re-initialising under the host this module already logs for would
+ * discard the configuration an earlier entry applied, so that call does
+ * nothing.
+ *
+ * An entry that never shares its module with another keeps the default
+ * logger: no file rotation and no old-log cleanup.  Two processes of one host
+ * therefore never rotate the same shard.
+ *
+ * @param host - The host name this entry logs under.
+ */
+export function ensureLogger(host: string): void {
+  if (_host === host) return;
+  initLogger(host);
 }
 
 /**

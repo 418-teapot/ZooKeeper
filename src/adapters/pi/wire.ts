@@ -1,19 +1,24 @@
 /**
- * Pi host wiring — composition, registration, and the loop engine.
+ * Pi host wiring — capability provision, registration, and the loop engine.
  *
- * Turns the `zoo` config into the pi-facing wiring: the profile-driven
- * composition (`buildPiContributions`), the session → agent resolver
+ * Turns the `zoo` config into the pi-facing wiring: the host capability
+ * provision the shared composition service consumes
+ * (`buildPiCapabilities`), the session → agent resolver
  * (`buildPiResolveAgent`), the profile skill-directory lookup
- * (`collectSkillPaths`), and the registration boundary itself
- * (`buildPiHandlers`) — the host services the lifecycle kernel creates (see
- * `services.ts`: the session contexts, the adapter, the tool host built on
- * the contexts, the todo and profile catalogs, the tool baselines, the
- * fleet surface and the switch surface), the composed contributions, the
- * loop engine, and pi's `registerTool` / `registerCommand` /
- * `registerEntryRenderer` calls.
+ * (`collectSkillPaths`), and the preparation of a start (`preparePiStart`)
+ * — the host services the lifecycle kernel creates (see `services.ts`: the
+ * session contexts, the adapter, the tool host built on the contexts, the
+ * todo and profile catalogs, the tool baselines, the fleet surface, the
+ * switch surface, the capability provision, the assembled profile), the
+ * loop engine over the composed contributions, the event handlers, and the
+ * tool / command / renderer registrations pi receives.
+ *
+ * This module performs no pi host call: a start is prepared here and
+ * published by `publisher.ts`, so every fallible step completes before the
+ * first host write.
  *
  * The entry point activates the extension scope BEFORE composing, so the
- * composition receives extension-scope ports the kernel owns.  Session
+ * provision receives extension-scope ports the kernel owns.  Session
  * scopes come into existence only when an event names a session.
  *
  * The fourteen event handlers themselves are built by
@@ -21,11 +26,13 @@
  * their wiring surfaces.
  *
  * The pieces the composition and the loop engine need are lifecycle
- * services too (see `services.ts`): the `composition` service composes the
- * profile over the extension-scope ports, and the `loop` service builds the
- * engine over the composed settle strategies.  Both `buildPiHandlers` and
- * the per-session scopes read them from the extension scope, so no host
- * code has to hand a session its loop resources.
+ * services too (see `services.ts`): the `capabilities` service builds the
+ * provision over the extension-scope ports, the `composition` service
+ * assembles the profile over that provision through the shared core
+ * service, and the `loop` service builds the engine over the composed
+ * settle strategies.  Both `preparePiStart` and the per-session scopes
+ * read them from the extension scope, so no host code has to hand a
+ * session its loop resources.
  *
  * @module
  */
@@ -39,31 +46,23 @@ import {
   buildPiCommandRegistrationPlan,
   type HtmlConverterLoader,
   loadPiHtmlConverter,
-  registerPiHandlers,
 } from "../../compose-pi.js";
 import { ASK_TOOL_NAME } from "../../core/ask.js";
-import { capabilityBindings } from "../../core/bindings.js";
-import {
-  configCapabilities,
-  parseCommonConfig,
-} from "../../core/capabilities.js";
-import { assemble } from "../../core/compose.js";
-import { parseAgentColors, parseAskConfig } from "../../core/config-parse.js";
+import { configCapabilities } from "../../core/capabilities.js";
 import type { HostAdapter } from "../../core/context/lens.js";
 import {
   type ContextRuntime,
   createContextRuntime,
 } from "../../core/context/runtime.js";
 import type { CleanupReport, WorkPermit } from "../../core/lifecycle/index.js";
-import { ORCHESTRATOR_AGENT_NAME } from "../../core/orchestrator.js";
-import { parseSkillPermissions } from "../../core/permissions/skill-permissions.js";
 import type { QuestionChannelProvider } from "../../core/ports/ask.js";
 import type { Capabilities } from "../../core/ports/index.js";
 import type { SwitchHost } from "../../core/ports/switch.js";
 import type { ToolHost } from "../../core/ports/tool-host.js";
+import { originAgent, type RuntimeOrigin } from "../../core/runtime.js";
 import {
-  sessionAgentRegistry,
-  sessionAgentResource,
+  createSessionAgentResource,
+  type SessionAgentRegistry,
 } from "../../core/session/agent.js";
 import {
   contextSessionResources,
@@ -71,30 +70,31 @@ import {
 } from "../../core/session/resources.js";
 import { scanSkillDirectories } from "../../core/skills.js";
 import type { SubagentDriver } from "../../core/subagent/driver.js";
-import type { RunSnapshot } from "../../core/subagent/registry.js";
-import { findByChildSession } from "../../core/subagent/registry.js";
+import type {
+  RunRegistry,
+  RunScope,
+  RunSnapshot,
+} from "../../core/subagent/registry.js";
 import { todoSourceFromStore } from "../../core/todo/source.js";
 import type { ToolCallContext, ToolContribution } from "../../core/unit.js";
-import { REGISTRY } from "../../registry.js";
 import { log } from "../../utils/logger.js";
 import { createPiAdapter } from "./adapter.js";
-import { loadAgentsJson } from "./agent-models.js";
 import { createPiQuestionChannel } from "./ask-form.js";
+import type { PiProcessScope } from "./config.js";
 import { createPiEventHandlers } from "./handlers.js";
 import { createPiHandoffTarget, type PiCommandCtx } from "./handoff-target.js";
 import type { PiLifecycleContext } from "./lifecycle.js";
 import {
   createPiLifecycleWiring,
+  type PiLifecycleWiring,
   type PiSessionWorkRunner,
   SDK_STOP_REASON,
 } from "./lifecycle-wiring.js";
 import { createPiMessageInjector } from "./message-injector.js";
-import { createPiHostServices, type PiContributions } from "./services.js";
+import type { PiProcessState } from "./process.js";
+import { createPiHostServices, type PiCapabilities } from "./services.js";
 import { createPiSubagentDriver } from "./subagent.js";
-import {
-  createPiHandoffIdentity,
-  pendingSwitchPrimary,
-} from "./switch-host.js";
+import { createPiHandoffIdentity } from "./switch-host.js";
 import { mergeTerminalToolDetails, truecolorWrap } from "./terminal-details.js";
 import { withAskVisibility } from "./tool-availability.js";
 import {
@@ -126,6 +126,10 @@ const __dirname = dirname(realpathSync(fileURLToPath(import.meta.url)));
  * exchange identities.
  */
 export interface PiAgentSources {
+  /** The session → agent bindings of this process. */
+  readonly sessionAgents: SessionAgentRegistry;
+  /** The subagent run records of this process. */
+  readonly runs: RunRegistry;
   /**
    * The agent this runtime's factory fixed, or `undefined` in a main
    * runtime.  A sub-session runtime is built for exactly one delegation, so
@@ -133,12 +137,6 @@ export interface PiAgentSources {
    * events that precede the run's first progress report.
    */
   fixedAgent?: string;
-  /**
-   * The replacement target a pending switch queued, or `undefined` when no
-   * replacement awaits its first turn.  Read lazily: the replacement
-   * session's bind-time events run before any later drain clears it.
-   */
-  pendingPrimary?: () => string | undefined;
   /**
    * The orchestrator the selection resolved, or `undefined` when it
    * resolved none.  Read lazily: the resolver is built before the planner
@@ -151,88 +149,88 @@ export interface PiAgentSources {
  * Build the session → agent resolver for the pi host.
  *
  * The answer comes from explicit sources only, in this order:
- *  (a) the shared session agent registry — an existing binding wins;
+ *  (a) the shared session agent registry — an existing binding wins, which
+ *      includes the target a switch replacement bound at its own
+ *      `session_start`;
  *  (b) the fixed agent of this runtime (a sub-session runtime built for one
  *      delegation) — the answering source for a sub-session's own events;
  *  (c) reverse lookup by session id in the subagent run registry — a
  *      session recorded as some run's `childSession` is driven by that
  *      run's delegated agent;
- *  (d) the pending replacement target of a switch that has not completed
- *      its first turn yet;
- *  (e) the orchestrator the selection resolved — the main-session answer.
+ *  (d) the orchestrator the selection resolved — the main-session answer.
  *
  * Every answer except an absent orchestrator is bound into the shared
  * registry, so later lookups hit it in O(1).  A memo never goes stale: a
  * childSession belongs to exactly one run, a run's `agent` is fixed at
- * creation, a runtime's fixed agent outlives the runtime, and a pending
- * replacement target is published by the switch that created the session.
- * With no source answering, the session resolves to `undefined`
- * (fail-closed, unbound).
+ * creation, and a runtime's fixed agent outlives the runtime.  A pending
+ * switch target is never a source: only the replacement's own
+ * `session_start` claims it (see `switch-host.ts`), so a resolver answer
+ * never applies one session's target to another.  With no source
+ * answering, the session resolves to `undefined` (fail-closed, unbound).
  *
- * @param sources - The explicit identity facts of this runtime.
+ * @param sources - The explicit identity facts of this runtime: the process
+ *   state's two stores and this runtime's own facts.
  * @returns The resolver handed to `Capabilities.resolveAgent`.
  */
 export function buildPiResolveAgent(
   sources: PiAgentSources,
 ): (sessionID: string) => string | undefined {
+  const { sessionAgents, runs } = sources;
   return (sessionID: string): string | undefined => {
-    const known = sessionAgentRegistry.resolve(sessionID);
+    const known = sessionAgents.resolve(sessionID);
     if (known !== undefined) return known;
     const fixed = sources.fixedAgent;
     if (fixed !== undefined) {
-      sessionAgentRegistry.bind(sessionID, fixed);
+      sessionAgents.bind(sessionID, fixed);
       return fixed;
     }
-    const run = findByChildSession(sessionID);
+    const run = runs.findByChildSession(sessionID);
     if (run !== undefined) {
-      sessionAgentRegistry.bind(sessionID, run.agent);
+      sessionAgents.bind(sessionID, run.agent);
       return run.agent;
-    }
-    const pending = sources.pendingPrimary?.();
-    if (pending !== undefined) {
-      sessionAgentRegistry.bind(sessionID, pending);
-      return pending;
     }
     const orchestrator = sources.orchestrator();
     if (orchestrator === undefined) return undefined;
-    sessionAgentRegistry.bind(sessionID, orchestrator);
+    sessionAgents.bind(sessionID, orchestrator);
     return orchestrator;
   };
 }
 
 /**
- * Compose the profile-driven contributions for pi.
+ * Build the pi host's capability provision.
  *
- * The full registry is fed to the assembly pipeline — pi composes every
- * category and consumes the agent, skill, after-exec, transform, and
- * command slots (the `unknown_unit` warning fires when a profile name
- * has no matching registry unit).  `Capabilities` are adapted to the pi host:
- * `client` is empty, `directory` is the process working directory,
- * `resolveAgent` identifies each session through the shared
- * session agent registry (subagent child sessions → their delegated
- * agent, the root session → the orchestrator the selection resolved;
- * see `buildPiResolveAgent`), and the host adapter / tool host are taken
- * from `hostDeps` when provided (the entry point supplies the
- * kernel-created adapter and tool host).
+ * The shared composition service consumes this provision: it binds these
+ * values, materialises the profile and returns the host-agnostic assembly
+ * (see `core/composition.ts`).  pi composes every category and consumes the
+ * agent, skill, after-exec, transform, and command slots (the
+ * `unknown_unit` warning fires when a profile name has no matching registry
+ * unit).  `Capabilities` are adapted to the pi host: `client` is empty,
+ * `directory` is the process working directory, and `resolveAgent`
+ * identifies each session through the shared session agent registry
+ * (subagent child sessions → their delegated agent, the root session → the
+ * orchestrator the composition resolved; see `buildPiResolveAgent`).  The
+ * host adapter / tool host are taken from `hostDeps` (the entry point
+ * supplies the kernel-created services).
  *
- * This host also declares the product's orchestrator role
- * (`ORCHESTRATOR_AGENT_NAME`) to the planner: a profile that cannot
- * provide it as a primary is invalid and loads nothing.  When the
- * selection resolves an orchestrator, the shared session resolver reports
- * it for a session no other explicit source answers; an unresolved role
- * leaves every unbound session unresolved (fail-closed).
+ * The session resolver depends on the orchestrator a selection pass
+ * resolves, so this provision adopts every finished selection: the role
+ * state lives here, in the runtime's own provision, and the composition
+ * never depends back on it.  An unresolved role is adopted as `undefined`,
+ * so an unbound session stays unresolved (fail-closed).
  *
- * Exported for unit testing — `zookeeperPi` wires this with the config
- * loaded from disk.
+ * Exported for unit testing — `zookeeperPi` wires this with the scope of
+ * its configuration generation.
  *
- * @param zooConfig - The `zoo` section of config.toml.
- * @param hostDeps - Optional host adapter and tool host (the entry point
- *   passes the extension-scope services the kernel created).
- * @returns The parsed profile (or `null`), the composed result, and the
- *   parsed validation limits.
+ * @param scope - The configuration generation this provision belongs to.
+ * @param processState - The process state this runtime runs over: the identity
+ *   and run stores every generation of this process shares.
+ * @param hostDeps - Optional host ports (the entry point passes the
+ *   extension-scope services the kernel created).
+ * @returns The capability provision and the instance's session resolvers.
  */
-export function buildPiContributions(
-  zooConfig: any,
+export function buildPiCapabilities(
+  scope: PiProcessScope,
+  processState: PiProcessState,
   hostDeps?: {
     /**
      * The context records of this extension instance.  The entry point
@@ -258,6 +256,14 @@ export function buildPiContributions(
      * reports the Case was created but could not auto-start.
      */
     messageInjector?: Partial<Capabilities>["messageInjector"];
+    /**
+     * The run scope of this runtime.
+     *
+     * The subagent tool writes every delegation through it, so the runtime's
+     * stop ends exactly the runs this runtime started.  Absent in a bare
+     * composition (a unit test): the subagent tool then contributes nothing.
+     */
+    runs?: RunScope;
     /**
      * Host subagent driver (only supplied by the real pi entry point).
      * Undefined without it — the subagent tool unit then contributes no
@@ -313,25 +319,21 @@ export function buildPiContributions(
      */
     askQuestionChannel?: Partial<Capabilities>["askQuestionChannel"];
   },
-  rawConfig?: any,
-): PiContributions {
-  const common = parseCommonConfig(zooConfig, rawConfig);
-  const { modeProfile, agentModes, agentPermissions, limits } = common;
-  // The ask-tool timeout (seconds), parsed fail to skip.  Injected only
-  // here (pi host) — the ask tool is not registered on OpenCode.
-  const askConfig = parseAskConfig(zooConfig);
+): PiCapabilities {
+  const { modeProfile, askConfig, subagentModels } = scope.snapshot;
 
-  // The orchestrator the planner resolves, read lazily by the session
-  // resolver: the resolver is built before the planning pass runs.
+  // The orchestrator the composition resolves, read lazily by the session
+  // resolver: the resolver exists before the composition pass runs.
   let selectedOrchestrator: string | undefined;
   // The one session → agent resolver of this runtime.  Event handlers, the
   // subagent tool's caller resolution and the primary trim all read it, so
   // every surface answers a session the same way.
   const resolveAgent = buildPiResolveAgent({
+    sessionAgents: processState.sessionAgents,
+    runs: processState.runs,
     ...(hostDeps?.fixedAgent === undefined
       ? {}
       : { fixedAgent: hostDeps.fixedAgent }),
-    pendingPrimary: pendingSwitchPrimary,
     orchestrator: () => selectedOrchestrator,
   });
   // The caller resolver the delegation gate and the subagent tool read: the
@@ -355,115 +357,103 @@ export function buildPiContributions(
   // instance, so two instances never share state.
   const contextRuntime = hostDeps?.contextRuntime ?? createContextRuntime();
 
-  const bindings = capabilityBindings({
-    values: {
-      ...configCapabilities(common),
-      askTimeoutSeconds: askConfig?.timeoutSeconds,
-      switchHost: hostDeps?.switchHost,
-      // The pi subagent driver (in-process SDK session execution).  Only the
-      // real pi entry point supplies one; unit tests and other hosts omit it
-      // so the subagent tool never registers (fail-closed).
-      subagentDriver: hostDeps?.subagentDriver,
-      // The todo port (pi host only).  The extension-scope service provides
-      // a routing catalog; without it the todo tool unit is skipped
-      // (fail-closed).
-      todoStore: hostDeps?.todoStore,
-      // The todo read port the progress hooks consume.  pi has no SDK client
-      // to read todos from, so the port is bound to the same catalog the
-      // todo tool uses.  The catalog's session stores are released with
-      // their session scopes, so an unbound session is read through the
-      // transcript without being cached.  Absent without a catalog: the
-      // nudge hooks keep firing without the todo reminder, and the
-      // continuation hook degrades to an empty list (fail-closed in both
-      // cases).
-      todoSource:
-        hostDeps?.todoStore === undefined
-          ? undefined
-          : todoSourceFromStore(hostDeps.todoStore),
-      // The full untrimmed tool baseline for subagent capability
-      // computation, passed through as a thunk: the unit invokes it inside
-      // `execute`, which is always post-load, so the supplier (pi's
-      // `getActiveTools`, forbidden during extension loading) never runs at
-      // assembly time.
-      subagentBaseline: hostDeps?.subagentBaseline,
-      // The per-agent model map for subagent sessions, materialised by the
-      // installer into `~/.pi/agent/agents.json` as `{provider, model}`
-      // pairs (mapped values are concatenated `"provider/model"` strings).
-      // Read once at extension-load time (fail-closed to empty when
-      // missing/invalid); strict mode: this map is the sole model source —
-      // the subagent tool errors (never inherits or falls back) when the
-      // target agent's entry is absent.
-      subagentModels: loadAgentsJson(),
-      // The probed converter, bound by value.  `null` here means the addon
-      // is unavailable or no profile is active; either way no key is
-      // declared.
-      htmlConverter: htmlConverter ?? undefined,
-      // The host head truncator for the fetch pipeline.  Absent without it
-      // (fail-closed, paired with the converter).
-      truncateHead: hostDeps?.truncateHead,
-      // The ask tool's question-channel provider.  Without it the ask tool
-      // unit is skipped (fail-closed, so `ask` never registers on
-      // OpenCode).
-      askQuestionChannel: hostDeps?.askQuestionChannel,
-      // pi has no SDK client: the context-pruning transform runs and
-      // returns the pruned replacement to pi.  The release notification
-      // does not need a client: it posts through the unified pi tool
-      // host's `notify` port as a `zoo-notice` appendEntry entry.  The
-      // marking producers (dedup / purge-errors) have no
-      // user-visible notification on pi.
-      zdebugExec: hostDeps?.zdebugExec,
-      contextRuntime,
-      directory: hostDeps?.directory ?? process.cwd(),
-      resolveCallerAgent,
-      toolHost: hostDeps?.toolHost,
-      // The `/debug` startup injector: sends a model-visible user message
-      // into the current session.  Only the real pi entry point supplies it.
-      messageInjector: hostDeps?.messageInjector,
-      // Native pi host adapter.  The pi adapter names no session of its
-      // own: the entry paths pass the session id to the transform.  A
-      // unit test that only inspects the composed shape gets the same
-      // adapter.
-      adapter: hostDeps?.adapter ?? createPiAdapter(),
-      // The `/go` handoff target.  `getCommandCtx` resolves the command
-      // context of the parentage session the command handler bound when it
-      // was admitted.  Built from host facts only — the executor agent
-      // travels with each handoff call, so the target is the same for
-      // every selection.
-      handoffTarget: createPiHandoffTarget({
-        getCommandCtx: (sessionID) => hostDeps?.getCommandCtx?.(sessionID),
-        identity: createPiHandoffIdentity(),
-      }),
-    },
-    selected: {
-      // The shared session → agent resolver, built above so the entry
-      // point can expose the same function.
-      resolveAgent: () => resolveAgent,
-    },
-  });
-  const { selection, composed } = assemble({
-    profile: modeProfile,
-    units: REGISTRY,
-    bindings,
-    agentModes,
-    // The product's orchestrator role.  The planner decides whether the
-    // enabled profile can provide it; this host holds no fallback.
-    orchestrator: ORCHESTRATOR_AGENT_NAME,
-  });
-
-  // Publish the resolved orchestrator to the shared resolver.  An
-  // unresolved role stays `undefined`, so an unbound session fails closed
-  // instead of borrowing another agent's prompt.
-  selectedOrchestrator = selection.orchestrator;
+  const values: Partial<Capabilities> = {
+    ...configCapabilities(scope.snapshot),
+    askTimeoutSeconds: askConfig?.timeoutSeconds,
+    switchHost: hostDeps?.switchHost,
+    // The pi subagent driver (in-process SDK session execution).  Only the
+    // real pi entry point supplies one; unit tests and other hosts omit it
+    // so the subagent tool never registers (fail-closed).
+    subagentDriver: hostDeps?.subagentDriver,
+    // The run records of this runtime: the subagent tool writes each
+    // delegation into its own scope, so the runtime's stop ends only its
+    // own runs.
+    runs: hostDeps?.runs,
+    // The todo port (pi host only).  The extension-scope service provides
+    // a routing catalog; without it the todo tool unit is skipped
+    // (fail-closed).
+    todoStore: hostDeps?.todoStore,
+    // The todo read port the progress hooks consume.  pi has no SDK client
+    // to read todos from, so the port is bound to the same catalog the
+    // todo tool uses.  The catalog's session stores are released with
+    // their session scopes, so an unbound session is read through the
+    // transcript without being cached.  Absent without a catalog: the
+    // nudge hooks keep firing without the todo reminder, and the
+    // continuation hook degrades to an empty list (fail-closed in both
+    // cases).
+    todoSource:
+      hostDeps?.todoStore === undefined
+        ? undefined
+        : todoSourceFromStore(hostDeps.todoStore),
+    // The full untrimmed tool baseline for subagent capability
+    // computation, passed through as a thunk: the unit invokes it inside
+    // `execute`, which is always post-load, so the supplier (pi's
+    // `getActiveTools`, forbidden during extension loading) never runs at
+    // assembly time.
+    subagentBaseline: hostDeps?.subagentBaseline,
+    // The per-agent model map for subagent sessions, materialised by the
+    // installer into `~/.pi/agent/agents.json` as `{provider, model}`
+    // pairs (mapped values are concatenated `"provider/model"` strings).
+    // Read once per configuration generation by the entry point (fail-closed
+    // to empty when missing/invalid); strict mode: this map is the sole
+    // model source — the subagent tool errors (never inherits or falls
+    // back) when the target agent's entry is absent.
+    subagentModels,
+    // The probed converter, bound by value.  `null` here means the addon
+    // is unavailable or no profile is active; either way no key is
+    // declared.
+    htmlConverter: htmlConverter ?? undefined,
+    // The host head truncator for the fetch pipeline.  Absent without it
+    // (fail-closed, paired with the converter).
+    truncateHead: hostDeps?.truncateHead,
+    // The ask tool's question-channel provider.  Without it the ask tool
+    // unit is skipped (fail-closed, so `ask` never registers on
+    // OpenCode).
+    askQuestionChannel: hostDeps?.askQuestionChannel,
+    // pi has no SDK client: the context-pruning transform runs and
+    // returns the pruned replacement to pi.  The release notification
+    // does not need a client: it posts through the unified pi tool
+    // host's `notify` port as a `zoo-notice` appendEntry entry.  The
+    // marking producers (dedup / purge-errors) have no
+    // user-visible notification on pi.
+    zdebugExec: hostDeps?.zdebugExec,
+    contextRuntime,
+    directory: hostDeps?.directory ?? process.cwd(),
+    resolveCallerAgent,
+    toolHost: hostDeps?.toolHost,
+    // The `/debug` startup injector: sends a model-visible user message
+    // into the current session.  Only the real pi entry point supplies it.
+    messageInjector: hostDeps?.messageInjector,
+    // Native pi host adapter.  The pi adapter names no session of its
+    // own: the entry paths pass the session id to the transform.  A
+    // unit test that only inspects the composed shape gets the same
+    // adapter.
+    adapter: hostDeps?.adapter ?? createPiAdapter(),
+    // The `/go` handoff target.  `getCommandCtx` resolves the command
+    // context of the parentage session the command handler bound when it
+    // was admitted.  Built from host facts only — the executor agent
+    // travels with each handoff call, so the target is the same for
+    // every selection.
+    handoffTarget: createPiHandoffTarget({
+      getCommandCtx: (sessionID) => hostDeps?.getCommandCtx?.(sessionID),
+      identity: createPiHandoffIdentity(processState),
+    }),
+    // The one session → agent resolver of this runtime: the composition
+    // binds it as a capability and the wiring reads it from this
+    // provision, so every surface answers a session the same way.
+    resolveAgent,
+  };
 
   return {
-    profile: modeProfile,
-    composed,
-    limits,
-    agentModes,
-    agentPermissions,
+    values,
+    // Adopt the role a composition pass resolved.  An unresolved role
+    // stays `undefined`, so an unbound session fails closed instead of
+    // borrowing another agent's prompt.
+    adopt: (selection) => {
+      selectedOrchestrator = selection.orchestrator;
+    },
     resolveAgent,
     resolveCallerAgent,
-    contextRuntime,
   };
 }
 
@@ -477,7 +467,7 @@ export function buildPiContributions(
  * pi's `loadSkillsFromDir` discovers a skill when a directory contains
  * SKILL.md.  A skill registers only when its directory name appears in
  * `profileSkills` AND the directory actually exists under skills/
- * (mirroring the OpenCode adapter's fail-closed `registerSkills`).  The
+ * (mirroring the OpenCode preparation's fail-closed scan).  The
  * scan itself is shared with OpenCode (`scanSkillDirectories`); this
  * wrapper only supplies the base directory resolved from pi's module
  * location.
@@ -541,6 +531,8 @@ type PiOnUpdate = (partial: PiRepaintSignal) => void;
  * @param publish - Binds a tool call's context under its session id.
  * @param questionChannel - Builds the call's question channel from pi's
  *   own context, or omits it when pi cannot ask.
+ * @param runs - The run records of this process (the terminal details read
+ *   the run the call id names).
  * @returns The bridge pi registers for the tool.
  */
 export function buildPiToolExecute(
@@ -548,6 +540,7 @@ export function buildPiToolExecute(
   run: PiSessionWorkRunner,
   publish: (sessionID: string, ctx: unknown) => void,
   questionChannel: QuestionChannelProvider,
+  runs: RunRegistry,
 ): (
   toolCallId: unknown,
   params: unknown,
@@ -605,7 +598,7 @@ export function buildPiToolExecute(
           content: [{ type: "text" as const, text: outcome.text }],
           // The tool's payload is merged INTO (never over) the bridge's own
           // details, so the run's fact pointer always survives.
-          details: mergeTerminalToolDetails(toolCallId, outcome.data),
+          details: mergeTerminalToolDetails(toolCallId, outcome.data, runs),
         };
       },
       caller,
@@ -616,133 +609,163 @@ export function buildPiToolExecute(
   };
 }
 
+/** One tool registration a pi start publishes. */
+export interface PiToolRegistration {
+  readonly name: string;
+  readonly label: string;
+  readonly description: string;
+  /** The JSON-Schema parameter object pi validates the arguments with. */
+  readonly parameters: object;
+  /** Set when pi must register the tool inactive (the ask tool). */
+  readonly defaultActive?: boolean;
+  /** Live transcript card renderer, for a composed tool with one. */
+  readonly renderCall?: unknown;
+  /** Live transcript card body renderer, paired with `renderCall`. */
+  readonly renderResult?: unknown;
+  /** The admitted execution bridge pi calls. */
+  readonly execute: (
+    toolCallId: unknown,
+    params: unknown,
+    signal: unknown,
+    onUpdate: unknown,
+    ctx: unknown,
+  ) => Promise<PiToolBridgeResult>;
+}
+
+/** One command registration a pi start publishes. */
+export interface PiCommandStart {
+  readonly name: string;
+  readonly description: string;
+  /** The admitted handler pi invokes with pi's own command context. */
+  readonly handler: (args: string, ctx: unknown) => Promise<void>;
+}
+
+/** The prepared pi start: every host write, computed and unwritten. */
+export interface PiStartPrepared extends PiEventHandlers {
+  /** The tool registrations publish writes, in composition order. */
+  readonly tools: readonly PiToolRegistration[];
+  /** The command registrations publish writes, in composition order. */
+  readonly commands: readonly PiCommandStart[];
+  /** The `zoo-notice` entry renderer publish registers. */
+  readonly noticeRenderer: unknown;
+}
+
+/** The options of one pi start. */
+export interface PiStartOptions {
+  /** Subagent driver used in place of the real pi SDK driver. */
+  subagentDriver?: SubagentDriver;
+  /**
+   * Test seam: the per-(session, strategy) reminder-budget store to
+   * observe and seed.  Defaults to a fresh store when omitted.
+   */
+  remindersUsed?: Map<string, Map<string, number>>;
+  /**
+   * Test seam: workspace root the auto-debug strategy scans for Cases.
+   * Defaults to the process working directory.
+   */
+  directory?: string;
+  /** Test seam: `zdebug` runner for the auto-debug strategy. */
+  zdebugExec?: Partial<Capabilities>["zdebugExec"];
+  /**
+   * Path of this host's extension file entry.  The sub-session resource
+   * loader leaves it out, because the child loads ZooKeeper from the
+   * inline factory instead.
+   */
+  entryPath?: string;
+  /** Test seam: the instance's context runtime to inspect in place. */
+  contextRuntime?: ContextRuntime;
+  /**
+   * Question-channel provider of this runtime.  The entry point leaves it
+   * out to get pi's own dialog; a framework host that asks through another
+   * surface (IPC, a remote UI) injects its own.  One provider feeds both
+   * the ask tool's execution bridge and the tool's visibility.
+   */
+  askQuestionChannel?: QuestionChannelProvider;
+  /**
+   * Test seam: the enhancer chain applied to the composed tool definitions.
+   * Defaults to the composed `tool.definition` contributions.
+   */
+  applyToolDefinitions?: typeof applyToolDefinitionContributions;
+  /**
+   * The inline extension factory a sub-session of this runtime loads.  The
+   * start publisher supplies it, so a nested sub-session starts through the
+   * same publisher.  Absent when the runtime holds no pi API instance: the
+   * subagent tool then registers no tool (fail-closed).
+   */
+  childRuntime?: (
+    onClose: (close: () => Promise<CleanupReport>) => void,
+    agent: string,
+  ) => (pi: ExtensionAPI) => Promise<void>;
+}
+
+/** The extension-scope declarations of one pi runtime instance. */
+type PiExtensionDeclarations = ReturnType<
+  typeof createPiHostServices
+>["extension"];
+
 /**
- * Build the inline extension factory ZooKeeper's sub-sessions load.
+ * The resources one pi runtime owns before its first fallible step.
  *
- * The factory captures the config snapshot of the composition root that
- * built it — it never reads config.toml again — so a sub-session composes
- * the same profile as its parent.  It builds a full handler set for the
- * child runtime, which means a nested sub-session creates its own inline
- * factory in turn.  `onClose` receives the close handle of the lifecycle
- * wiring the factory created, so the driver that owns the run can stop that
- * scope before it disposes the SDK session.
- *
- * @param zooConfig - The `zoo` section of the captured config snapshot.
- * @param rawConfig - The whole captured config root.
- * @param options - The delegated agent, the host's extension file entry and
- *   the close reporter.
- * @returns The factory pi loads into the sub-session runtime.
+ * Every member is created synchronously: the lifecycle wiring, the context
+ * records and the question channel exist before the extension activates, so
+ * a start that fails in any phase still has a runtime to close.
  */
-export function buildPiSubagentExtension(
-  zooConfig: any,
-  rawConfig: any,
-  options: {
-    /**
-     * The agent this sub-session runtime is built for.  Every session of
-     * the runtime is that delegation, so it answers identity directly.
-     */
-    agent: string;
-    /** The host's extension file entry, left out of the sub-session. */
-    entryPath?: string;
-    /** Receives the close handle of the wiring the factory creates. */
-    onClose?: (close: () => Promise<CleanupReport>) => void;
-  },
-): (pi: ExtensionAPI) => Promise<void> {
-  return async (childPi: ExtensionAPI): Promise<void> => {
-    registerPiHandlers(
-      childPi,
-      await buildPiHandlers(zooConfig, childPi, rawConfig, {
-        agent: options.agent,
-        ...(options.entryPath !== undefined
-          ? { entryPath: options.entryPath }
-          : {}),
-        ...(options.onClose !== undefined
-          ? { onLifecycle: options.onClose }
-          : {}),
-      }),
-    );
-  };
+export interface PiRuntimeInstance {
+  /** The context records of this extension instance. */
+  readonly contextRuntime: ContextRuntime;
+  /** The question-channel provider this instance resolved. */
+  readonly askQuestionChannel: QuestionChannelProvider;
+  /** The lifecycle wiring of this instance. */
+  readonly lifecycle: PiLifecycleWiring<PiExtensionDeclarations>;
+  /**
+   * Stop this instance's extension scope.  pi never sends
+   * `session_shutdown` for an SDK-created session, so a host that owns the
+   * runtime (a subagent driver) stops the scope itself, before it disposes
+   * the session.
+   */
+  readonly stop: () => Promise<CleanupReport>;
+}
+
+/** The explicit inputs of one pi runtime instance. */
+export interface PiRuntimeInstanceInput {
+  /** The configuration generation this instance belongs to. */
+  readonly scope: PiProcessScope;
+  /** The origin of this runtime. */
+  readonly origin: RuntimeOrigin;
+  /** The process state this instance runs over (shared, never created here). */
+  readonly process: PiProcessState;
+  /** The pi ExtensionAPI instance, or absent in a unit test. */
+  readonly piApi?: ExtensionAPI;
+  /** Optional host options and test seams. */
+  readonly overrides?: PiStartOptions;
+}
+
+/** The inputs of one pi start. */
+export interface PiStartInput extends PiRuntimeInstanceInput {
+  /** The resources this runtime owns. */
+  readonly instance: PiRuntimeInstance;
 }
 
 /**
- * Build the pi handlers and register the profile's pi surfaces.
+ * Create the resources of one pi runtime instance.
  *
- * Activates the host services (session contexts, adapter, tool host, todo
- * catalog, profile catalog, tool baselines, fleet surface, switch surface)
- * through the lifecycle kernel, which also composes the profile against
- * those extension-scope ports and builds the loop engine when the profile
- * contributes a settle strategy, registers the composed tools / commands /
- * notice renderer with pi, and returns the event handlers over those
- * surfaces.
+ * Declares the host services, wires them to the lifecycle kernel and binds
+ * the close handle, without creating any service and without calling pi:
+ * both are synchronous, so the owner exists before the first fallible step
+ * of the start (the activation and the enhancer chain, see
+ * `preparePiStart`).
  *
- * Asynchronous because the extension activation awaits the kernel and the
- * tool-registration boundary awaits the composed `tool.definition`
- * enhancers (a contributor's `handle` may return a promise), so pi's own
- * async extension factory must wait for the tools to be registered.
- *
- * Exported for unit testing — `zookeeperPi` wires this with the config
- * loaded from disk.
- *
- * @param zooConfig - The `zoo` section of config.toml.
- * @param piApi - Optional pi ExtensionAPI instance; without it the
- *   registration-bound and tool-hosting surfaces stay closed (fail-closed)
- *   and no tool, command, or renderer is registered.
- * @param rawConfig - The whole parsed config root (carries the top-level
- *   `agent` table).
- * @param overrides - Optional host options.  The entry path and the
- *   lifecycle reporter are what a sub-session needs from its composition
- *   root; the remaining fields are test seams (a bridge test injects a fake
- *   subagent driver so the registered tool executes without loading the
- *   real pi SDK).
- * @returns A promise of the fourteen handlers plus the registration gates.
+ * @param input - The generation, the origin, the pi API instance and the
+ *   host options of this runtime.
+ * @returns The instance resources, including the close handle.
  */
-export async function buildPiHandlers(
-  zooConfig: any,
-  piApi?: ExtensionAPI,
-  rawConfig?: any,
-  overrides?: {
-    /** Subagent driver used in place of the real pi SDK driver. */
-    subagentDriver?: SubagentDriver;
-    /**
-     * The agent this runtime is built for.  Set by the inline factory a
-     * sub-session loads; absent in the main runtime.
-     */
-    agent?: string;
-    /**
-     * Test seam: the per-(session, strategy) reminder-budget store to
-     * observe and seed.  Defaults to a fresh store when omitted.
-     */
-    remindersUsed?: Map<string, Map<string, number>>;
-    /**
-     * Test seam: workspace root the auto-debug strategy scans for
-     * Cases.  Defaults to the process working directory.
-     */
-    directory?: string;
-    /** Test seam: `zdebug` runner for the auto-debug strategy. */
-    zdebugExec?: Partial<Capabilities>["zdebugExec"];
-    /**
-     * Path of this host's extension file entry.  The sub-session resource
-     * loader leaves it out, because the child loads ZooKeeper from the
-     * inline factory instead.
-     */
-    entryPath?: string;
-    /**
-     * Receives the close handle of this handler instance's lifecycle wiring.
-     * The subagent driver passes its per-run reporter here, so it can stop
-     * the child's extension scope before disposing the SDK session.
-     */
-    onLifecycle?: (close: () => Promise<CleanupReport>) => void;
-    /** Test seam: the instance's context runtime to inspect in place. */
-    contextRuntime?: ContextRuntime;
-    /**
-     * Question-channel provider of this runtime.  The entry point leaves it
-     * out to get pi's own dialog; a framework host that asks through another
-     * surface (IPC, a remote UI) injects its own.  One provider feeds both
-     * the ask tool's execution bridge and the tool's visibility.
-     */
-    askQuestionChannel?: QuestionChannelProvider;
-  },
-): Promise<PiEventHandlers> {
+export function createPiRuntimeInstance(
+  input: PiRuntimeInstanceInput,
+): PiRuntimeInstance {
+  const { scope, origin, process, piApi, overrides } = input;
+  // The agent this runtime is fixed to: the origin is the only main/child
+  // difference, so every surface below derives from it.
+  const fixedAgent = originAgent(origin);
   // The single pi tool host routes every in-session chat notification
   // (tool prompts, /dcp reports, command failures) through pi's
   // `appendEntry` channel as a `zoo-notice` custom entry — persistent,
@@ -756,16 +779,16 @@ export async function buildPiHandlers(
     typeof piApi?.appendEntry === "function"
       ? piApi.appendEntry.bind(piApi)
       : undefined;
-  // The per-agent status-bar colors (`[agent.<name>].color`), parsed
-  // fail-closed from the whole config root.  Only the `zoo` widget text
-  // is colorized below — the tool / command surfaces stay plain.
-  const agentColors = parseAgentColors(rawConfig ?? {});
-  // The per-agent skill permission rules (`[agent.<name>].permission.skill`),
-  // parsed fail-closed from the whole config root.  `resources_discover`
-  // filters the contributed skill directories by the active primary's
-  // rules; an agent absent from the map (or no primary) contributes
-  // unfiltered (default-allow, machinery-off unchanged).
-  const skillPermissions = parseSkillPermissions(rawConfig ?? {});
+  // The per-agent status-bar colors (`[agent.<name>].color`) of this
+  // generation.  Only the `zoo` widget text is colorized below — the tool /
+  // command surfaces stay plain.
+  const agentColors = scope.snapshot.agentColors;
+  // The per-agent skill permission rules
+  // (`[agent.<name>].permission.skill`) of this generation.
+  // `resources_discover` filters the contributed skill directories by the
+  // active primary's rules; an agent absent from the map (or no primary)
+  // contributes unfiltered (default-allow, machinery-off unchanged).
+  const skillPermissions = scope.snapshot.skillPermissions;
   // Wrap a name in a truecolor ANSI foreground sequence when the agent
   // has a configured color; otherwise return it unchanged (fail-closed).
   // pi's widget Text component preserves ANSI codes and is
@@ -808,7 +831,7 @@ export async function buildPiHandlers(
   const contextRuntime = overrides?.contextRuntime ?? createContextRuntime();
   const sessionCatalog = createSessionResourceCatalog([
     ...contextSessionResources(contextRuntime),
-    sessionAgentResource,
+    createSessionAgentResource(process.sessionAgents),
   ]);
 
   // The question-channel provider of this runtime.  The ask tool's
@@ -822,10 +845,12 @@ export async function buildPiHandlers(
   // touches — the session contexts, the adapter, the tool host built on
   // the contexts, the todo catalog, the profile catalog, the tool
   // baselines, the fleet surface and the switch surface — is a lifecycle
-  // service, so the kernel creates (and stops) them.  The composition itself is a service over
-  // those ports, and the loop engine a service over the composition, so no
-  // service here receives a session-scoped store.
+  // service, so the kernel creates (and stops) them.  The capability
+  // provision is a service over those ports, the composition a service
+  // over that provision, and the loop engine a service over the
+  // composition, so no service here receives a session-scoped store.
   const declarations = createPiHostServices({
+    scope,
     contextRuntime,
     sessionCatalog,
     piApi,
@@ -833,102 +858,95 @@ export async function buildPiHandlers(
     colorizeAgent,
     titleForRun: runTitle,
     borderColorizeForRun: agentBorderColorize,
-    composeProfile: (ports) =>
-      buildPiContributions(
-        zooConfig,
-        {
-          contextRuntime,
-          adapter: ports.adapter,
-          toolHost: ports.toolHost,
-          switchHost: ports.switchHost.host,
-          // The agent this runtime is fixed to (a sub-session runtime), so
-          // the session resolver answers it without any ambient state.
-          ...(overrides?.agent === undefined
-            ? {}
-            : { fixedAgent: overrides.agent }),
-          // Test seams: workspace root and `zdebug` runner for the
-          // auto-debug strategy.  Both default to the real host behaviour
-          // when omitted.
-          directory: overrides?.directory,
-          zdebugExec: overrides?.zdebugExec,
-          // The `/go` handoff target reads the command context of the
-          // session it replaces: the command bridge bound that context when
-          // its session admitted the command.
-          getCommandCtx: (sessionID) =>
-            ports.sessionContexts.commandForSession(sessionID),
-          // The `/debug` startup injector sends a model-visible user message
-          // through pi's `sendUserMessage`.  Only the real pi API instance
-          // provides it; test-only compositions stay without one.
-          messageInjector: piApi ? createPiMessageInjector(piApi) : undefined,
-          // The pi subagent driver — the in-process SDK session executor.
-          // Only wired when a real pi API instance is present (the extension
-          // runs inside pi); test-only and driver-less compositions stay
-          // closed.  A test override replaces the SDK driver with a fake so
-          // bridge tests run without loading the pi SDK.  The skill seam is
-          // injected from the same config/profile sources the main session's
-          // `resources_discover` uses: each sub-session is seeded with the
-          // skill directories its OWN `[agent.<name>.permission.skill]` rules
-          // allow.  The profile catalog is read lazily, per run, so a
-          // delegation that starts after composition sees the published
-          // value.
-          subagentDriver:
-            overrides?.subagentDriver ??
-            (piApi
-              ? createPiSubagentDriver({
-                  skillPermissions,
-                  getProfileSkills: () => ports.profileCatalog.get(),
-                  collectSkillPaths,
-                  // The child loads ZooKeeper through the inline factory
-                  // captured from this composition root, and its own run
-                  // reports back the close handle of that runtime.
-                  entryPath: overrides?.entryPath,
-                  createChildExtension: (onClose, agent) =>
-                    buildPiSubagentExtension(zooConfig, rawConfig, {
-                      agent,
-                      entryPath: overrides?.entryPath,
-                      onClose,
-                    }),
-                })
-              : undefined),
-          // The todo port (pi host only).  The extension-scope catalog routes
-          // every call to the store of the session the call names, so the
-          // todo tool unit and the `session_tree` handler reach the state of
-          // the session they belong to without owning it.  Absent without a
-          // pi API instance: the tool unit is then skipped (fail-closed) and
-          // `todo` never registers on a host that cannot restore its state
-          // from the transcript.
-          todoStore: piApi === undefined ? undefined : ports.todo,
-          // The subagent capability baseline: the shared untrimmed active
-          // tool set minus `ask` (a sub-session has no question channel),
-          // captured lazily on first use and cached.  Both faces read the
-          // same capture, so the main session's primary denies and ask
-          // visibility never reach a sub-session.  The capture is DEFERRED
-          // because pi forbids calling action methods (including
-          // `getActiveTools`) during extension loading; the first consumer
-          // always runs post-bind, so the capture is the real untrimmed
-          // universe.  `undefined` when unavailable (also after the
-          // extension stopped) → capability computation yields an empty set
-          // (fail-closed).
-          subagentBaseline:
-            piApi === undefined
-              ? undefined
-              : () => ports.toolBaselines.subagent(),
-          // Native HTML→Markdown converter for the fetch tool.  Wired here
-          // (the real pi entry point); the wrapper warns once when the addon
-          // is unavailable, the assembly then declares no `htmlConverter`
-          // key, and the planner skips the fetch unit (fail-closed).
-          loadHtmlConverter: loadPiHtmlConverter,
-          // Host head truncator for the fetch pipeline.  Wired here alongside
-          // the converter loader; the fetch unit registers only when both are
-          // present.
-          truncateHead,
-          // The ask tool's question-channel provider: the one this runtime
-          // resolved, so the ask unit registers on pi only and stays closed
-          // on OpenCode.
-          askQuestionChannel,
-        },
-        rawConfig,
-      ),
+    process,
+    capabilities: (ports) =>
+      buildPiCapabilities(scope, process, {
+        contextRuntime,
+        runs: ports.runScope,
+        adapter: ports.adapter,
+        toolHost: ports.toolHost,
+        switchHost: ports.switchHost.host,
+        // The agent this runtime is fixed to (a sub-session runtime), so
+        // the session resolver answers it without any ambient state.
+        ...(fixedAgent === undefined ? {} : { fixedAgent }),
+        // Test seams: workspace root and `zdebug` runner for the
+        // auto-debug strategy.  Both default to the real host behaviour
+        // when omitted.
+        directory: overrides?.directory,
+        zdebugExec: overrides?.zdebugExec,
+        // The `/go` handoff target reads the command context of the
+        // session it replaces: the command bridge bound that context when
+        // its session admitted the command.
+        getCommandCtx: (sessionID) =>
+          ports.sessionContexts.commandForSession(sessionID),
+        // The `/debug` startup injector sends a model-visible user message
+        // through pi's `sendUserMessage`.  Only the real pi API instance
+        // provides it; test-only compositions stay without one.
+        messageInjector: piApi ? createPiMessageInjector(piApi) : undefined,
+        // The pi subagent driver — the in-process SDK session executor.
+        // Only wired when a real pi API instance is present (the extension
+        // runs inside pi); test-only and driver-less compositions stay
+        // closed.  A test override replaces the SDK driver with a fake so
+        // bridge tests run without loading the pi SDK.  The skill seam is
+        // injected from the same config/profile sources the main session's
+        // `resources_discover` uses: each sub-session is seeded with the
+        // skill directories its OWN `[agent.<name>.permission.skill]` rules
+        // allow.  The profile catalog is read lazily, per run, so a
+        // delegation that starts after composition sees the published
+        // value.
+        subagentDriver:
+          overrides?.subagentDriver ??
+          (piApi
+            ? createPiSubagentDriver({
+                skillPermissions,
+                getProfileSkills: () => ports.profileCatalog.get(),
+                collectSkillPaths,
+                // The child loads ZooKeeper through the inline factory
+                // captured from this composition root, and its own run
+                // reports back the close handle of that runtime.
+                entryPath: overrides?.entryPath,
+                ...(overrides?.childRuntime === undefined
+                  ? {}
+                  : { createChildExtension: overrides.childRuntime }),
+              })
+            : undefined),
+        // The todo port (pi host only).  The extension-scope catalog routes
+        // every call to the store of the session the call names, so the
+        // todo tool unit and the `session_tree` handler reach the state of
+        // the session they belong to without owning it.  Absent without a
+        // pi API instance: the tool unit is then skipped (fail-closed) and
+        // `todo` never registers on a host that cannot restore its state
+        // from the transcript.
+        todoStore: piApi === undefined ? undefined : ports.todo,
+        // The subagent capability baseline: the shared untrimmed active
+        // tool set minus `ask` (a sub-session has no question channel),
+        // captured lazily on first use and cached.  Both faces read the
+        // same capture, so the main session's primary denies and ask
+        // visibility never reach a sub-session.  The capture is DEFERRED
+        // because pi forbids calling action methods (including
+        // `getActiveTools`) during extension loading; the first consumer
+        // always runs post-bind, so the capture is the real untrimmed
+        // universe.  `undefined` when unavailable (also after the
+        // extension stopped) → capability computation yields an empty set
+        // (fail-closed).
+        subagentBaseline:
+          piApi === undefined
+            ? undefined
+            : () => ports.toolBaselines.subagent(),
+        // Native HTML→Markdown converter for the fetch tool.  Wired here
+        // (the real pi entry point); the wrapper warns once when the addon
+        // is unavailable, the assembly then declares no `htmlConverter`
+        // key, and the planner skips the fetch unit (fail-closed).
+        loadHtmlConverter: loadPiHtmlConverter,
+        // Host head truncator for the fetch pipeline.  Wired here alongside
+        // the converter loader; the fetch unit registers only when both are
+        // present.
+        truncateHead,
+        // The ask tool's question-channel provider: the one this runtime
+        // resolved, so the ask unit registers on pi only and stays closed
+        // on OpenCode.
+        askQuestionChannel,
+      }),
     // Test seam: the budget store the loop engine records into.
     ...(overrides?.remindersUsed === undefined
       ? {}
@@ -952,16 +970,62 @@ export async function buildPiHandlers(
     getSessionID: resolveSessionID,
   });
 
-  // A host that owns this runtime (the subagent driver of a parent session)
-  // receives the close handle now, while the wiring exists: pi never sends
-  // `session_shutdown` for an SDK-created session, so that host stops this
-  // scope itself, before it disposes the session.
-  overrides?.onLifecycle?.(() =>
+  // The close handle of this instance's extension scope.  pi never sends
+  // `session_shutdown` for an SDK-created session, so a host that owns this
+  // runtime (a subagent driver) stops the scope itself, before it disposes
+  // the session.
+  const stop = (): Promise<CleanupReport> =>
     lifecycle.stopExtension({
       type: "session_shutdown",
       reason: SDK_STOP_REASON,
-    }),
-  );
+    });
+
+  return { contextRuntime, askQuestionChannel, lifecycle, stop };
+}
+
+/**
+ * Build the pi handlers and prepare the profile's pi surfaces.
+ *
+ * Activates the host services (session contexts, adapter, tool host, todo
+ * catalog, profile catalog, tool baselines, fleet surface, switch surface)
+ * through the lifecycle kernel, which also composes the profile against
+ * those extension-scope ports and builds the loop engine when the profile
+ * contributes a settle strategy.  The pass then builds the event handlers
+ * over those surfaces and every registration pi is to receive: the tools
+ * (after the composed `tool.definition` enhancers ran), the commands with
+ * their admitted handlers, and the notice entry renderer.  Nothing is
+ * written to pi here — `publisher.ts` performs the writes.
+ *
+ * Asynchronous because the extension activation awaits the kernel and the
+ * enhancer chain awaits each contributor's `handle` (which may return a
+ * promise); both are fallible, so both run in this phase.
+ *
+ * Exported for unit testing — the start publisher wires this with the scope
+ * of its configuration generation and the instance resources it created.
+ *
+ * @param input - The generation, the origin, the pi API instance, the host
+ *   options, and the resources this runtime owns.
+ * @returns The prepared start: the handlers and the registrations.
+ */
+export async function preparePiStart(
+  input: PiStartInput,
+): Promise<PiStartPrepared> {
+  const { scope, origin, piApi, overrides, instance } = input;
+  // The agent this runtime is fixed to: the origin is the only main/child
+  // difference, so every surface below derives from it.
+  const fixedAgent = originAgent(origin);
+  const applyToolDefinitions =
+    overrides?.applyToolDefinitions ?? applyToolDefinitionContributions;
+  // The per-agent skill permission rules
+  // (`[agent.<name>].permission.skill`) of this generation.
+  // `resources_discover` filters the contributed skill directories by the
+  // active primary's rules; an agent absent from the map (or no primary)
+  // contributes unfiltered (default-allow, machinery-off unchanged).
+  const skillPermissions = scope.snapshot.skillPermissions;
+  // The context records, the question channel and the lifecycle wiring this
+  // runtime owns: created before the first fallible step, so a failed start
+  // has them to close.
+  const { contextRuntime, askQuestionChannel, lifecycle } = instance;
 
   // Activate the extension scope BEFORE anything else: the profile is
   // composed over services the kernel created, not over objects this
@@ -970,6 +1034,7 @@ export async function buildPiHandlers(
   const extension = await lifecycle.activateExtension();
   const {
     sessionContexts,
+    capabilities,
     todo,
     profileCatalog,
     toolBaselines,
@@ -979,16 +1044,17 @@ export async function buildPiHandlers(
     loop,
   } = extension.services;
 
-  // The composed profile and the loop engine over its settle strategies
+  // The assembled profile and the loop engine over its settle strategies
   // are services of this extension scope: the composition reads the
-  // extension-scope ports, and the engine is created after it.
-  const {
-    composed,
-    limits,
-    agentPermissions,
-    resolveAgent,
-    resolveCallerAgent,
-  } = composition;
+  // capability provision, and the engine is created after it.  The session
+  // resolvers belong to the provision that built them.
+  const { composed } = composition;
+  const { resolveAgent, resolveCallerAgent } = capabilities;
+  // The run scope of this runtime: the card renderers, the terminal tool
+  // details, the history rebuild and the fleet widget read the process table
+  // through it, and the subagent tool writes into it.
+  const { runScope: runs } = extension.services;
+  const snapshot = scope.snapshot;
 
   // Loop-engine wiring.  The composed strategies judge a stopped turn; each
   // declares its own wake allowance (`maxWakes`) and reads its own config,
@@ -1010,7 +1076,7 @@ export async function buildPiHandlers(
   const askDeniedByPrimary = (sessionID: string): boolean => {
     const primary = resolveAgent(sessionID);
     if (primary === undefined) return true;
-    return (agentPermissions[primary] ?? []).includes(ASK_TOOL_NAME);
+    return (snapshot.agentPermissions[primary] ?? []).includes(ASK_TOOL_NAME);
   };
 
   // Write one active-tool set: the candidate set, then the ask rule.
@@ -1068,7 +1134,7 @@ export async function buildPiHandlers(
   // every other tool as it is.  A sub-session runtime is skipped: the
   // driver already restricts its tool face by the capability allowlist.
   const applyActiveTools = (sessionID: string, ctx: unknown): void => {
-    if (overrides?.agent !== undefined) return;
+    if (fixedAgent !== undefined) return;
     const primary = resolveAgent(sessionID);
     const baseline =
       primary === undefined ? undefined : toolBaselines.primary();
@@ -1081,7 +1147,7 @@ export async function buildPiHandlers(
       return;
     }
     const denied =
-      primary === undefined ? [] : (agentPermissions[primary] ?? []);
+      primary === undefined ? [] : (snapshot.agentPermissions[primary] ?? []);
     const deniedSet = new Set(denied);
     // Always resolve the FULL `baseline minus denies` set (never a delta):
     // this both removes the current primary's denies and restores tools a
@@ -1131,7 +1197,7 @@ export async function buildPiHandlers(
     event: "plugin_init",
     agents: composed.agents.map((agent) => agent.name),
     skills: composed.skills.map((skill) => skill.name),
-    limits,
+    limits: snapshot.limits,
   });
 
   // Publish the composed profile's skill directory names.  The subagent
@@ -1139,111 +1205,99 @@ export async function buildPiHandlers(
   // so both consume this one publication — no mutable local is handed out.
   profileCatalog.publish(composed.skills.map((skill) => skill.name));
 
-  // Register profile tools with pi when an API instance is supplied.
-  // The composed `tool.definition` contributions (the subagent-prompt format
-  // hint, when the subagent-prompt hook unit is enabled) run at this
-  // registration boundary: pi has no native `tool.definition` event, so
-  // the OpenCode chain is applied here instead — enriching the tool
-  // arguments' descriptions before pi registers the tools, with the tool
-  // itself staying policy-free.  The delegation gate is enforced
-  // separately on pi's native `tool_call` event (see `registerPiHandlers`
-  // and `handlers.toolCall`).
-  const definitionEnrichedTools = await applyToolDefinitionContributions(
+  // Build the tool registrations publish writes.  The composed
+  // `tool.definition` contributions (the subagent-prompt format hint, when
+  // the subagent-prompt hook unit is enabled) run here: pi has no native
+  // `tool.definition` event, so the OpenCode chain is applied at this
+  // boundary instead — enriching the tool arguments' descriptions before pi
+  // registers the tools, with the tool itself staying policy-free.  The
+  // delegation gate is enforced separately on pi's native `tool_call` event
+  // (see `handlers.toolCall`).
+  const definitionEnrichedTools = await applyToolDefinitions(
     composed.tools,
     composed.toolDefinition,
   );
-  if (piApi?.registerTool) {
-    // pi draws a live transcript card for the subagent and todo tools.  The
-    // card renderers are adapter-owned (they read pi TUI state), so
-    // registration installs them by tool name; every other tool registers
-    // without one.
-    const cardRenderers = new Map([
-      ["subagent", buildSubagentCardRenderer()],
-      ["todo", buildTodoCardRenderer()],
-    ]);
-    const registered = new Set<string>();
-    for (const tool of Object.values(definitionEnrichedTools)) {
-      if (registered.has(tool.name)) continue;
-      registered.add(tool.name);
-      const args = tool.args ?? {};
-      const required = tool.required ?? Object.keys(args);
-      const card = cardRenderers.get(tool.name);
-      piApi.registerTool({
-        name: tool.name,
-        label: tool.name,
-        description: tool.description,
-        // The ask tool registers inactive: the model may ask the user only
-        // while the session has a question channel, which the bind-time
-        // events decide (see `applyToolSet`).  Every other tool keeps pi's
-        // own registration default.
-        ...(tool.name === ASK_TOOL_NAME ? { defaultActive: false } : {}),
-        ...(card === undefined
-          ? {}
-          : { renderCall: card.renderCall, renderResult: card.renderResult }),
-        // pi's validateToolArguments accepts plain JSON-Schema parameters.
-        parameters: {
-          type: "object",
-          properties: args,
-          ...(required.length > 0 ? { required } : {}),
-        } as unknown as object,
-        execute: buildPiToolExecute(
-          tool,
-          lifecycle,
-          (sessionID, ctx) => sessionContexts.bind(sessionID, ctx),
-          askQuestionChannel,
-        ),
-      } as unknown as Parameters<ExtensionAPI["registerTool"]>[0]);
-    }
+  // pi draws a live transcript card for the subagent and todo tools.  The
+  // card renderers are adapter-owned (they read pi TUI state), so
+  // registration installs them by tool name; every other tool registers
+  // without one.
+  const cardRenderers = new Map([
+    ["subagent", buildSubagentCardRenderer(runs)],
+    ["todo", buildTodoCardRenderer()],
+  ]);
+  const tools: PiToolRegistration[] = [];
+  const registered = new Set<string>();
+  for (const tool of Object.values(definitionEnrichedTools)) {
+    if (registered.has(tool.name)) continue;
+    registered.add(tool.name);
+    const args = tool.args ?? {};
+    const required = tool.required ?? Object.keys(args);
+    const card = cardRenderers.get(tool.name);
+    tools.push({
+      name: tool.name,
+      label: tool.name,
+      description: tool.description,
+      // The ask tool registers inactive: the model may ask the user only
+      // while the session has a question channel, which the bind-time
+      // events decide (see `applyToolSet`).  Every other tool keeps pi's
+      // own registration default.
+      ...(tool.name === ASK_TOOL_NAME ? { defaultActive: false } : {}),
+      ...(card === undefined
+        ? {}
+        : { renderCall: card.renderCall, renderResult: card.renderResult }),
+      // pi's validateToolArguments accepts plain JSON-Schema parameters.
+      parameters: {
+        type: "object",
+        properties: args,
+        ...(required.length > 0 ? { required } : {}),
+      } as unknown as object,
+      execute: buildPiToolExecute(
+        tool,
+        lifecycle,
+        (sessionID, ctx) => sessionContexts.bind(sessionID, ctx),
+        askQuestionChannel,
+        runs,
+      ),
+    });
   }
 
-  // Register profile commands with pi when an API instance is supplied.
-  // Each handler is admitted for the session its own command context names:
-  // a command that arrives without a session or after the session stopped
-  // runs nothing.  A command the contribution marks as replacing (`/go` and
-  // the `/<agent>` switches) is admitted as a CONTROL operation, because pi
-  // tears its session down inside the replacement call and a stop waiting
-  // for that call would never return.  Every other command is ordinary
-  // session work, so a stop cancels it and waits for it to return.  The
-  // context reaches the session contexts only after admission either way.
-  if (piApi?.registerCommand) {
-    const plan = buildPiCommandRegistrationPlan(composed.commands);
-    for (const registration of plan) {
-      piApi.registerCommand(registration.name, {
-        description: registration.description,
-        handler: (args: string, ctx: unknown) => {
-          const work = (permit: WorkPermit) => {
-            // The command context is the session's own: the handoff target
-            // and the switch host resolve it from the command entry by the
-            // permit's session id.
-            sessionContexts.bindCommand(permit.sessionID, ctx as PiCommandCtx);
-            return registration.handler(args, ctx as PiCommandContext, permit);
-          };
-          return registration.replacesSession
-            ? lifecycle.runControl(ctx, work)
-            : lifecycle.runSession(ctx, work);
-        },
-      });
-    }
-  }
+  // Build the command registrations publish writes.  Each handler is
+  // admitted for the session its own command context names: a command that
+  // arrives without a session or after the session stopped runs nothing.  A
+  // command the contribution marks as replacing (`/go` and the `/<agent>`
+  // switches) is admitted as a CONTROL operation, because pi tears its
+  // session down inside the replacement call and a stop waiting for that
+  // call would never return.  Every other command is ordinary session work,
+  // so a stop cancels it and waits for it to return.  The context reaches
+  // the session contexts only after admission either way.
+  const commands: PiCommandStart[] = buildPiCommandRegistrationPlan(
+    composed.commands,
+  ).map((registration) => ({
+    name: registration.name,
+    description: registration.description,
+    handler: async (args: string, ctx: unknown): Promise<void> => {
+      const work = (permit: WorkPermit) => {
+        // The command context is the session's own: the handoff target and
+        // the switch host resolve it from the command entry by the permit's
+        // session id.
+        sessionContexts.bindCommand(permit.sessionID, ctx as PiCommandCtx);
+        return registration.handler(args, ctx as PiCommandContext, permit);
+      };
+      await (registration.replacesSession
+        ? lifecycle.runControl(ctx, work)
+        : lifecycle.runSession(ctx, work));
+    },
+  }));
 
-  // Register the `zoo-notice` entry renderer so appended notification
-  // entries draw a card in the TUI chat transcript.  Registered
-  // unconditionally whenever the renderer API is present (independent of
-  // the profile / composed commands): every notify — tool prompts, /dcp
+  // The `zoo-notice` entry renderer: every notify — tool prompts, /dcp
   // reports, command failures — posts a `zoo-notice` entry that needs a
-  // renderer.  The renderer itself is duck-typed (no pi package import);
-  // absent API degrades to nothing.
-  if (piApi?.registerEntryRenderer) {
-    piApi.registerEntryRenderer(
-      "zoo-notice",
-      buildPiNoticeEntryRenderer() as unknown as Parameters<
-        ExtensionAPI["registerEntryRenderer"]
-      >[1],
-    );
-  }
+  // renderer, so it is built independently of the profile and the composed
+  // commands.  The renderer itself is duck-typed (no pi package import).
+  const noticeRenderer = buildPiNoticeEntryRenderer();
+
   // The fourteen handlers close over the wiring surfaces assembled above;
   // their bodies live in `handlers.ts`.
-  return createPiEventHandlers({
+  const handlers = createPiEventHandlers({
     sessionContexts,
     contextRuntime,
     composed,
@@ -1255,23 +1309,34 @@ export async function buildPiHandlers(
     registerFleetWidget,
     refreshTodoView: (sessionID) => fleet.refreshTodoView(sessionID),
     seedTodoView: (sessionID) => fleet.seedTodoView(sessionID),
-    // The switch surface's pending post-replacement operations ride the
-    // explicit process-level handoff store, because a switch spans two
-    // factory executions — see `adapters/pi/switch-host.ts`.  The queued
-    // trim is applied through the same writer as the primary trim, so the
-    // ask rule answers with this session's context.
+    // The switch surface's pending replacement rides the explicit
+    // process-level handoff store, because a switch spans two factory
+    // executions — see `adapters/pi/switch-host.ts`.  The replacement's own
+    // `session_start` claims it: that start binds the target primary before
+    // the session's bind-time handlers resolve it, and keeps the deferred
+    // trim for the session that drains it.  A sub-session runtime inherits
+    // its parent's store but serves one delegation, so it never claims.
+    claimPendingSwitchOps: (sessionID, facts) => {
+      if (fixedAgent !== undefined) return;
+      switchHost.claimPending(sessionID, facts);
+    },
+    // The queued trim is applied through the same writer as the primary
+    // trim, so the ask rule answers with this session's context.
     drainPendingSwitchOps: (sessionID, ctx) => {
-      if (overrides?.agent !== undefined) return;
-      const deferred = switchHost.drainPendingOps();
+      if (fixedAgent !== undefined) return;
+      const deferred = switchHost.drainPendingOps(sessionID);
       if (deferred === undefined) return;
       applyToolSet(sessionID, ctx, deferred);
     },
+    runs,
     invalidateTodo: (sessionId) => todo.invalidate(sessionId),
     resolveAgent,
     resolveCallerAgent,
-    ...(overrides?.agent === undefined ? {} : { fixedAgent: overrides.agent }),
+    ...(fixedAgent === undefined ? {} : { fixedAgent }),
     runSession: (ctx, work, signal) => lifecycle.runSession(ctx, work, signal),
     startSession: (event, ctx) => lifecycle.startSession(event, ctx),
     stopExtension: (event) => lifecycle.stopExtension(event),
   });
+
+  return { ...handlers, tools, commands, noticeRenderer };
 }

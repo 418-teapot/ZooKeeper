@@ -1,12 +1,13 @@
 /**
- * Pi subagent-history scanner — rebuilds the process-level run registry from
- * the pi session message history.
+ * Pi subagent-history scanner — rebuilds the process's run registry from the
+ * pi session message history.
  *
- * The run registry (`src/core/subagent/registry.ts`) is process-level state:
- * when pi exits, every live `running` / finished entry is lost, so a session
- * restore / resume renders an empty fleet widget.  This module rescans the
- * current session's persisted message history (via
- * `sessionManager.buildContextEntries()`) and rewrites the registry from it.
+ * The run registry (`src/core/subagent/registry.ts`) belongs to the pi
+ * process: when pi exits, every live `running` / finished entry is lost, so a
+ * session restore / resume renders an empty fleet widget.  This module
+ * rescans the current session's persisted message history (via
+ * `sessionManager.buildContextEntries()`) and rewrites the given registry
+ * from it.
  *
  * The scanner understands the pi message shape (see `src/adapters/pi/types.ts`
  * and `history.ts`): an assistant `toolCall` block is the call half of a tool
@@ -76,8 +77,8 @@ import {
 import { homedir } from "node:os";
 import { join } from "node:path";
 import {
+  type RunRegistry,
   type RunStatus,
-  restoreRun,
   TERMINAL_STATUSES,
 } from "../../core/subagent/registry.js";
 import { log } from "../../utils/logger.js";
@@ -526,7 +527,6 @@ export function extractSubagentRuns(
  *   `childSession` for nested levels).
  * @param options - Optional `sessionsRoot` override (tests point it at a
  *   fixture directory).
- * @returns The number of runs (re)written into the registry.
  */
 export interface RebuildOptions {
   /** The pi sessions root (`<data>/sessions`); defaults to
@@ -543,12 +543,14 @@ export interface RebuildOptions {
  *
  * @param entries - The pi context entries from `buildContextEntries()`.
  * @param parentSession - The calling session id the runs are scoped to.
+ * @param runs - The run records of this process.
  * @param options - Optional sessions-root override.
  * @returns The number of runs (re)written into the registry.
  */
 export function rebuildSubagentRuns(
   entries: PiHistoryEntry[],
   parentSession: string,
+  runs: RunRegistry,
   options?: RebuildOptions,
 ): number {
   const sessionsRoot = options?.sessionsRoot;
@@ -561,7 +563,7 @@ export function rebuildSubagentRuns(
   // on the first pointer-less run so the sessions root is swept at most
   // once regardless of how many runs need a path lookup.
   const pathIndex = new SessionPathIndex(sessionsRoot, options?.indexIO);
-  return rebuildLevel(entries, parentSession, visited, pathIndex);
+  return rebuildLevel(entries, parentSession, runs, visited, pathIndex);
 }
 
 /**
@@ -692,6 +694,7 @@ export class SessionPathIndex {
  *
  * @param entries - The pi history entries for this level.
  * @param parentSession - The session id this level's runs are scoped to.
+ * @param runs - The run records of this process.
  * @param visited - The shared set of session ids already scanned on this
  *   rebuild (global across branches — each session file is scanned once).
  * @param pathIndex - The shared session-id → path index (built lazily on
@@ -701,12 +704,13 @@ export class SessionPathIndex {
 function rebuildLevel(
   entries: PiHistoryEntry[],
   parentSession: string,
+  runs: RunRegistry,
   visited: Set<string>,
   pathIndex: SessionPathIndex,
 ): number {
-  const runs = extractSubagentRuns(entries, parentSession);
+  const scannedRuns = extractSubagentRuns(entries, parentSession);
   let written = 0;
-  for (const scanned of runs) {
+  for (const scanned of scannedRuns) {
     const nestedPath = resolveNestedPath(scanned, pathIndex);
     // The sub-session file is read ONCE here: its message entries feed the
     // nested rescan, and its header record supplies the child-session id.
@@ -725,7 +729,7 @@ function rebuildLevel(
     // partially-scanned history is completed on a later scan without
     // duplicating anything.
     if (
-      restoreRun({
+      runs.restore({
         id: scanned.id,
         agent: scanned.agent,
         parentSession,
@@ -778,7 +782,13 @@ function rebuildLevel(
       continue;
     }
     visited.add(nestedParent);
-    written += rebuildLevel(nested.entries, nestedParent, visited, pathIndex);
+    written += rebuildLevel(
+      nested.entries,
+      nestedParent,
+      runs,
+      visited,
+      pathIndex,
+    );
   }
   return written;
 }

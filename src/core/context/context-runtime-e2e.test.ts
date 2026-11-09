@@ -16,7 +16,10 @@ import { callFor, permitFor } from "../../testkits/context-runtime.js";
 import { makeTmpDir } from "../../testkits/tmp.js";
 import { createCompressTool } from "../../tools/compress.js";
 import type { ContextPruningConfig } from "../config-types.js";
-import { sessionAgentResource } from "../session/agent.js";
+import {
+  createSessionAgentResource,
+  SessionAgentRegistry,
+} from "../session/agent.js";
 import {
   contextSessionResources,
   createSessionResourceCatalog,
@@ -25,6 +28,7 @@ import { PRUNED_TOOL_OUTPUT_REPLACEMENT } from "./message-parts.js";
 import { contextPruningTransformHandler } from "./pipeline.js";
 import { buildProtectionMap } from "./protection-map.js";
 import { type ContextRuntime, createContextRuntime } from "./runtime.js";
+import { contentFingerprint } from "./spanhash.js";
 import { markKey } from "./state.js";
 import { createStateStore, type StateStore } from "./store.js";
 
@@ -48,9 +52,12 @@ interface FixtureMessage {
   parts: unknown[];
 }
 
+/** The long assistant text the transcript carries at ordinal 1. */
+const TOOL_TEXT = "y".repeat(2000);
+
 /** A short transcript whose assistant carries a text part. */
 function transcript(sessionID: string): FixtureMessage[] {
-  const text = "y".repeat(2000);
+  const text = TOOL_TEXT;
   return [
     {
       info: { role: "user", id: "u1", sessionID },
@@ -98,12 +105,14 @@ function seedPendingMark(
   runtime: ContextRuntime,
   sessionID: string,
   ordinal: number,
+  content: string,
 ): void {
   runtime.read(permitFor(sessionID), (state) => {
     state.marks.set(markKey(ordinal, 0), {
       anchorOrdinal: ordinal,
       regionIndex: 0,
-      content: "x",
+      content,
+      contentHash: contentFingerprint(content),
       contentTokens: 100,
       effective: false,
       markedAt: 1000,
@@ -155,7 +164,7 @@ describe("one process, two plugin instances", () => {
 
     const secondCatalog = createSessionResourceCatalog([
       ...contextSessionResources(second.runtime),
-      sessionAgentResource,
+      createSessionAgentResource(new SessionAgentRegistry()),
     ]);
     await secondCatalog.delete(sessionID);
     assert.equal(second.store.load(sessionID).blocks.size, 0);
@@ -167,7 +176,7 @@ describe("one session, overlapping entries", () => {
     const { runtime } = sandboxRuntime();
     const sessionID = "overlap";
     const messages = transcript(sessionID);
-    seedPendingMark(runtime, sessionID, 1);
+    seedPendingMark(runtime, sessionID, 1, TOOL_TEXT);
     // The published view is the address space the tool resolves its refs
     // in; publish the same transcript both entries operate on.
     const published = adapter.history(messages);
@@ -224,7 +233,7 @@ describe("cancellation mid-round", () => {
     const messages = transcript(sessionID);
 
     // Round 1: a healthy transform commits an effective release.
-    seedPendingMark(runtime, sessionID, 1);
+    seedPendingMark(runtime, sessionID, 1, TOOL_TEXT);
     await contextPruningTransformHandler(
       runtime,
       permitFor(sessionID),
@@ -240,7 +249,7 @@ describe("cancellation mid-round", () => {
 
     // Round 2: the host cancels the call while the adapter applies the
     // release edits — the commitment point of the whole round.
-    seedPendingMark(runtime, sessionID, 2);
+    seedPendingMark(runtime, sessionID, 2, "continue");
     const controller = new AbortController();
     const cancelling = {
       ...adapter,
@@ -281,7 +290,7 @@ describe("cancellation after the commit", () => {
     const { runtime, store } = sandboxRuntime();
     const sessionID = "committed-then-cancelled";
     const messages = transcript(sessionID);
-    seedPendingMark(runtime, sessionID, 1);
+    seedPendingMark(runtime, sessionID, 1, TOOL_TEXT);
 
     // The session stops right after the commit succeeded.
     const controller = new AbortController();

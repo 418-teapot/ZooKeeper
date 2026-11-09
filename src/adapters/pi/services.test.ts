@@ -10,31 +10,23 @@
  * extension stop — rather than which fields the services keep.
  */
 import assert from "node:assert/strict";
-import { afterEach, describe, it } from "node:test";
+import { beforeEach, describe, it } from "node:test";
 import { createContextRuntime } from "../../core/context/runtime.js";
 import {
   createLifecycleKernel,
   defineExtensionService,
 } from "../../core/lifecycle/index.js";
-import {
-  sessionAgentRegistry,
-  sessionAgentResource,
-} from "../../core/session/agent.js";
+import { createSessionAgentResource } from "../../core/session/agent.js";
 import {
   contextSessionResources,
   createSessionResourceCatalog,
 } from "../../core/session/resources.js";
-import {
-  finishRun,
-  type RunSnapshot,
-  resetRegistry,
-  startRun,
-  updateRun,
-} from "../../core/subagent/registry.js";
+import type { RunSnapshot } from "../../core/subagent/registry.js";
 import type { TodoPhase } from "../../core/todo/types.js";
-import { renderZooWidget } from "../../testkits/pi-wiring.js";
+import { piScope, renderZooWidget } from "../../testkits/pi-wiring.js";
 import { _getBufferForTesting, _resetForTesting } from "../../utils/logger.js";
 import { createPiLifecycleWiring } from "./lifecycle-wiring.js";
+import { createPiProcessState, type PiProcessState } from "./process.js";
 import {
   createPiHostServices,
   createPiProfileCatalog,
@@ -42,11 +34,13 @@ import {
   type PiServiceHost,
 } from "./services.js";
 import type { ExtensionAPI } from "./types.js";
-import { buildPiContributions } from "./wire.js";
+import { buildPiCapabilities } from "./wire.js";
 
-afterEach(() => {
-  sessionAgentRegistry.clear();
-  resetRegistry();
+/** The pi process this test file drives: one owner per test. */
+let piProcess: PiProcessState = createPiProcessState();
+
+beforeEach(() => {
+  piProcess = createPiProcessState();
   _resetForTesting();
 });
 
@@ -73,7 +67,7 @@ const CONTEXT = createContextRuntime();
 /** The session records of the instance under test. */
 const SESSION_CATALOG = createSessionResourceCatalog([
   ...contextSessionResources(CONTEXT),
-  sessionAgentResource,
+  createSessionAgentResource(createPiProcessState().sessionAgents),
 ]);
 
 /** The pure host helpers the services take from the entry point. */
@@ -274,10 +268,13 @@ describe("pi profile catalog", () => {
 describe("pi host services — declarations", () => {
   /** Build the declarations over a pi API stand-in and a null profile. */
   function buildHost(piApi?: ExtensionAPI): PiServiceHost {
+    const scope = piScope({});
     return {
+      scope,
+      process: piProcess,
       piApi,
       appendEntry: undefined,
-      composeProfile: () => buildPiContributions({}),
+      capabilities: () => buildPiCapabilities(scope, piProcess),
       contextRuntime: CONTEXT,
       sessionCatalog: SESSION_CATALOG,
       ...HOST_HELPERS,
@@ -473,9 +470,14 @@ describe("pi host services — declarations", () => {
     const { services } = await wiring.activateExtension();
 
     assert.equal(services.switchHost.host, undefined);
-    // Draining without the surface is a no-op, never a throw: the command
-    // handler calls it unconditionally.
-    services.switchHost.drainPendingOps();
+    // Claiming and draining without the surface are no-ops, never throws:
+    // the `session_start` and `before_agent_start` handlers call them
+    // unconditionally.
+    services.switchHost.claimPending("s1", {
+      reason: "new",
+      parentSession: "s0",
+    });
+    assert.equal(services.switchHost.drainPendingOps("s1"), undefined);
   });
 
   it("releases the extension-owned state when the extension stops", async () => {
@@ -517,7 +519,7 @@ describe("pi host services — declarations", () => {
     // The widget renders nothing without a primary; with one, the session
     // registration reaches the host ui it was bound to.  The binding is
     // per session, so it names the session under test.
-    sessionAgentRegistry.bind("s1", "dolphin");
+    piProcess.sessionAgents.bind("s1", "dolphin");
     const calls: unknown[] = [];
     services.sessionContexts.bind("s1", {
       sessionManager: { getSessionId: () => "s1" },
@@ -543,8 +545,8 @@ describe("pi host services — declarations", () => {
     const extensionScope = await kernel.ensureExtension();
     assert.ok(extensionScope !== null);
     const { services } = extensionScope;
-    sessionAgentRegistry.bind("s1", "dolphin");
-    sessionAgentRegistry.bind("s2", "dolphin");
+    piProcess.sessionAgents.bind("s1", "dolphin");
+    piProcess.sessionAgents.bind("s2", "dolphin");
     /** A ui recording the widget registrations of exactly one session. */
     const widgetUi = () => {
       const calls: Array<[string, unknown]> = [];
@@ -615,8 +617,8 @@ describe("pi host services — declarations", () => {
     const extensionScope = await kernel.ensureExtension();
     assert.ok(extensionScope);
     const { services } = extensionScope;
-    sessionAgentRegistry.bind("s1", "dolphin");
-    sessionAgentRegistry.bind("s2", "dolphin");
+    piProcess.sessionAgents.bind("s1", "dolphin");
+    piProcess.sessionAgents.bind("s2", "dolphin");
 
     /** One session's ui plus a tui counting the widget's render requests. */
     const sessionUi = () => {
@@ -661,14 +663,14 @@ describe("pi host services — declarations", () => {
       const beforeA = a.state.renders;
       const beforeB = b.state.renders;
 
-      startRun({
+      piProcess.runs.start({
         id: "run-1",
         agent: "lynx",
         parentSession: "s1",
         startedAt: 1,
       });
-      updateRun("run-1", { tokens: 5 });
-      finishRun("run-1", { status: "done", endedAt: 2 });
+      piProcess.runs.update("run-1", { tokens: 5 });
+      piProcess.runs.finish("run-1", { status: "done", endedAt: 2 });
 
       assert.equal(
         a.state.renders - beforeA,
@@ -696,7 +698,7 @@ describe("pi host services — declarations", () => {
     const extensionScope = await kernel.ensureExtension();
     assert.ok(extensionScope);
     const { services } = extensionScope;
-    sessionAgentRegistry.bind("s1", "dolphin");
+    piProcess.sessionAgents.bind("s1", "dolphin");
     const calls: Array<[string, unknown]> = [];
     const state = { renders: 0 };
     const tui = {
@@ -718,7 +720,7 @@ describe("pi host services — declarations", () => {
     services.fleet.register("s1");
     const widget = renderZooWidget(calls, 80, tui);
     try {
-      startRun({
+      piProcess.runs.start({
         id: "run-1",
         agent: "lynx",
         parentSession: "s1",
@@ -727,7 +729,7 @@ describe("pi host services — declarations", () => {
       assert.equal(state.renders, 1, "a live extension routes the change");
 
       await kernel.stopExtension("extension.stop");
-      startRun({
+      piProcess.runs.start({
         id: "run-2",
         agent: "lynx",
         parentSession: "s1",
@@ -756,7 +758,8 @@ describe("pi host services — declarations", () => {
       extensionNames.filter((name) => sessionNames.includes(name)),
       [],
     );
-    assert.deepEqual(extensionNames.slice(0, 3), [
+    assert.deepEqual(extensionNames.slice(0, 4), [
+      "runScope",
       "sessionContexts",
       "adapter",
       "toolHost",

@@ -244,7 +244,7 @@ zdebug doctor                            # 环境自检（git 可用性、平台
 
 ### 7.3 配置与 fail-closed
 
-`[zoo.autodebug]`：`max_wakes`（缺失/非法 → 策略不贡献，整个功能静默关闭）。判据时限来自 Case 自身声明的 `timeout_ms`，缺该值（或非正整数）按判据未物化沉默。zdebug 二进制不可用 → 不贡献。
+`[zoo.autodebug]`：`max_wakes`（缺失/非法 → 策略不贡献，`/debug` 命令也不注册，整个功能静默关闭）。判据时限来自 Case 自身声明的 `timeout_ms`，缺该值（或非正整数）按判据未物化沉默。zdebug 二进制不可用 → 不贡献。
 
 ### 7.4 verify 契约
 

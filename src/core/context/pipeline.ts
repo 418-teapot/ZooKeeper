@@ -19,7 +19,9 @@
  *    the round's protection map: a mark anchored at a protected ordinal
  *    writes no placeholder and does not flip.  Runs FIRST so marks
  *    written last turn take effect this turn (the two-turn lifecycle).
- *    The notify callback and the `marks_released` log fire on a flip.
+ *    The `marks_released` log fires on a flip and reports the flipped
+ *    marks apart from the written edits; the user notice fires only when
+ *    an edit was actually written.
  * 3. **Fold** — `fold` computes the folded view; every active block
  *    that does not render is retired: a block whose span no longer
  *    validates or whose interval does not resolve against the unit grid
@@ -83,7 +85,13 @@ import { MANUAL_COMPRESS_TEMPLATE } from "../prompts.js";
 import type { TransformOutput } from "../unit.js";
 import { formatTokens } from "./context-report.js";
 import { type FoldExpiryReason, fold } from "./fold.js";
-import type { HostAdapter, HostMessage, Projection, ViewItem } from "./lens.js";
+import type {
+  HostAdapter,
+  HostMessage,
+  Projection,
+  RegionEdit,
+  ViewItem,
+} from "./lens.js";
 import { promptSideTokens } from "./measure.js";
 import type { ModelLimitInfo } from "./model-limits.js";
 import {
@@ -277,6 +285,48 @@ function readPhase(
 // ---------------------------------------------------------------------------
 
 /**
+ * Count the pending marks whose placeholder this release actually writes.
+ *
+ * `computeEdits` also re-applies every effective mark, so the raw edit
+ * count overstates a release: only a pending mark is one this call folds.
+ * A pending mark whose anchor fails the content check produces no edit, so
+ * it counts nothing here even though it flips.  A pending mark whose region
+ * already holds the placeholder — the previous round wrote it but its flip
+ * did not persist — writes the same text again and reclaims nothing, so it
+ * counts nothing either.  Must be read before `flipReleasedMarks`, which
+ * makes every planned mark effective.
+ *
+ * @param state - The session state holding the marks.
+ * @param edits - The edits the release call writes.
+ * @param view - The transcript before the edits are applied.
+ * @returns The written count and the written marks' reclaim tokens.
+ */
+function writtenTotals(
+  state: RuntimeFlaggedState,
+  edits: RegionEdit[],
+  view: HostMessage[],
+): { count: number; tokens: number } {
+  // Addresses whose region text this call changes.  An edit the adapter
+  // cannot write (no region index, no such region) changes nothing.
+  const changing = new Set<string>();
+  for (const edit of edits) {
+    if (edit.regionIndex === undefined) continue;
+    const region = view[edit.messageOrdinal]?.regions?.[edit.regionIndex];
+    if (!region || region.get() === edit.text) continue;
+    changing.add(`${edit.messageOrdinal}:${edit.regionIndex}`);
+  }
+  let count = 0;
+  let tokens = 0;
+  for (const mark of state.marks.values()) {
+    if (mark.effective || mark.regionIndex === undefined) continue;
+    if (!changing.has(`${mark.anchorOrdinal}:${mark.regionIndex}`)) continue;
+    count++;
+    tokens += mark.contentTokens ?? 0;
+  }
+  return { count, tokens };
+}
+
+/**
  * Release the round's region edits.
  *
  * Effective marks from earlier turns write their placeholders again
@@ -292,7 +342,10 @@ function readPhase(
  * adapter lens NOW, before the producers and the nudge eligibility
  * scan — those read region text (context gates, placeholder-prefixed
  * skip, reclaim estimates) and must observe the placeholder text.  The
- * notify callback and the `marks_released` log fire on a flip.
+ * `marks_released` log fires on a flip and reports the flipped marks and
+ * the written edits apart: an anchor that fails the content check still
+ * flips, so a release can write nothing.  The user notice fires only when
+ * an edit was actually written, and it reports that written count.
  *
  * Both halves read the round's protection map: a mark anchored at a
  * protected ordinal writes no placeholder and does not flip, so the
@@ -311,6 +364,9 @@ function releasePhase(ctx: PipelinePhaseContext): void {
     protection: ctx.protection,
   };
   const releaseEdits = computeEdits(state, ctx.view, releaseOptions);
+  // Read against the view before the edits land: a region that already
+  // holds its placeholder is a replay, not a fold this round.
+  const written = writtenTotals(state, releaseEdits, ctx.view);
   ctx.messages = adapter.applyEdits(ctx.messages, releaseEdits);
   ctx.snapshot = adapter.history(ctx.messages);
   ctx.view = ctx.snapshot.messages;
@@ -323,6 +379,8 @@ function releasePhase(ctx: PipelinePhaseContext): void {
         sessionId,
         releasedCount: released.releasedCount,
         releasedTokens: released.releasedTokens,
+        editCount: written.count,
+        editTokens: written.tokens,
         pendingTokensBefore: curPendingTokens,
         promptTokens: ctx.promptTokens,
         ...(released.forced ? { forced: "view_change" } : {}),
@@ -330,10 +388,13 @@ function releasePhase(ctx: PipelinePhaseContext): void {
     });
 
     // Queue the user-visible notice: it is posted only after the commit
-    // succeeds, so a lapsed permit reports no cleanup.
-    ctx.notices.push(
-      `上下文清理：已折叠 ${released.releasedCount} 个工具调用，约回收 ${formatTokens(released.releasedTokens)} tokens`,
-    );
+    // succeeds, so a lapsed permit reports no cleanup.  It reports the
+    // written edits — a flip without an edit reclaimed nothing.
+    if (written.count > 0) {
+      ctx.notices.push(
+        `上下文清理：已折叠 ${written.count} 个工具调用，约回收 ${formatTokens(written.tokens)} tokens`,
+      );
+    }
   }
 }
 
@@ -755,7 +816,8 @@ function summarizePhase(ctx: PipelinePhaseContext): PruneSummary {
  * user-visible notice and the nudge toast fire only after the commit
  * succeeded, and the log surface keeps its event contracts
  * (`prune_completed` counts effective marks only, `marks_released` carries
- * the forced field, `nudge_injected` / `manual_compress_injected` carry
+ * the forced field and reports the flipped marks and the written edits
+ * apart, `nudge_injected` / `manual_compress_injected` carry
  * their payloads).
  *
  * The adapter delivers into a private copy, so the input conversation is

@@ -43,6 +43,7 @@ import {
   type ReleaseResult,
   reclaimedTokens,
 } from "./release.js";
+import { contentFingerprint } from "./spanhash.js";
 import { type Mark, markKey, type SessionState } from "./state.js";
 
 // ---------------------------------------------------------------------------
@@ -75,6 +76,10 @@ function bashCall(
 /**
  * Seed a lens mark for the region the given side occupies: tool-input at
  * `2*partIndex`, tool-output at `2*partIndex+1`.
+ *
+ * `content` is the mark's content snapshot and defaults to the fixture's
+ * long tool output, so it matches the region it addresses.  The
+ * fingerprint is the full-text one `addPendingMark` stores.
  */
 function seedLensMark(
   state: SessionState,
@@ -83,12 +88,14 @@ function seedLensMark(
   side: "output" | "input",
   tokens: number,
   effective: boolean,
+  content = LONG_OUTPUT,
 ): void {
   const regionIndex = side === "input" ? 2 * partIndex : 2 * partIndex + 1;
   state.marks.set(markKey(messageIndex, regionIndex), {
     anchorOrdinal: messageIndex,
     regionIndex,
-    content: "content snapshot",
+    content,
+    contentHash: contentFingerprint(content),
     contentTokens: tokens,
     effective,
     markedAt: 1,
@@ -102,11 +109,13 @@ function rawSeed(
   regionIndex: number,
   tokens: number,
   effective: boolean,
+  content = LONG_OUTPUT,
 ): void {
   state.marks.set(markKey(ordinal, regionIndex), {
     anchorOrdinal: ordinal,
     regionIndex,
-    content: "content snapshot",
+    content,
+    contentHash: contentFingerprint(content),
     contentTokens: tokens,
     effective,
     markedAt: 1,
@@ -317,7 +326,7 @@ describe("release decisions (lens)", () => {
   it("effective error-input marks write the error-input placeholder text", () => {
     const lens = [lensMsg([bashCall("ls", "boom", "error")])];
     const state = makeState();
-    seedLensMark(state, 0, 0, "input", 100, true);
+    seedLensMark(state, 0, 0, "input", 100, true, "ls");
     releasePhase(state, lens, {
       promptTokens: 100_000,
       releasedPercent: 5,
@@ -747,7 +756,7 @@ describe("protection", () => {
       makeToolMsg("bash", '{"cmd":"pwd"}', LONG_OUTPUT),
     ];
     rawSeed(state, 0, 1, 100, true);
-    rawSeed(state, 0, 0, 100, false);
+    rawSeed(state, 0, 0, 100, false, '{"cmd":"ls"}');
     rawSeed(state, 1, 1, 100, false);
     const protection = freezeProtectionMap({
       activeStart: lens.length,
@@ -853,7 +862,7 @@ describe("protection", () => {
     rawSeed(state, 0, 1, 100, false);
     rawSeed(state, 1, 1, 100, false);
     rawSeed(state, 2, 1, 100, true);
-    rawSeed(state, 0, 0, 100, true);
+    rawSeed(state, 0, 0, 100, true, '{"cmd":"ls"}');
     const options: ReleaseOptions = {
       promptTokens: 100_000,
       releasedPercent: 0,

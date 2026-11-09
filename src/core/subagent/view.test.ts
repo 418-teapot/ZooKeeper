@@ -15,10 +15,9 @@ import { homedir } from "node:os";
 import { afterEach, describe, it } from "node:test";
 import { SPINNER_FRAMES, TREE_BRANCH, TREE_LAST } from "../display.js";
 import {
-  finishRun,
+  createRunRegistry,
+  type RunRegistry,
   type RunSnapshot,
-  resetRegistry,
-  startRun,
 } from "./registry.js";
 import { createRunLog, type RunLog } from "./run-log.js";
 import type { CardLine, CardMeta, CardOptions } from "./view.js";
@@ -1539,7 +1538,11 @@ describe("projectCard (terminal) — children", () => {
 // ---------------------------------------------------------------------------
 
 describe("projectCard — recursive subagent tree", () => {
-  afterEach(() => resetRegistry());
+  let runs: RunRegistry = createRunRegistry();
+
+  afterEach(() => {
+    runs = createRunRegistry();
+  });
 
   it("renders every generation below a child from the explicit map", () => {
     // Four levels: root → child → grandchild → great-grandchild.  Only the
@@ -1589,14 +1592,14 @@ describe("projectCard — recursive subagent tree", () => {
   it("takes the whole tree from the map alone, never from the registry", () => {
     // A registered grandchild that the map omits must not render: the card
     // consumes exactly the explicit data the caller hands it.
-    startRun({
+    runs.start({
       id: "tree-reg-child",
       agent: "lynx",
       parentSession: "child-reg",
       childSession: "child-reg-2",
       startedAt: 10,
     });
-    startRun({
+    runs.start({
       id: "tree-reg-grand",
       agent: "spider",
       parentSession: "child-reg-2",
@@ -1626,20 +1629,20 @@ describe("projectCard — recursive subagent tree", () => {
   });
 
   it("indents grandchildren and closes every level with └─", () => {
-    startRun({
+    runs.start({
       id: "tree-c1",
       agent: "lynx",
       parentSession: "child-1",
       childSession: "child-2",
       startedAt: 10,
     });
-    startRun({
+    runs.start({
       id: "tree-g1",
       agent: "spider",
       parentSession: "child-2",
       startedAt: 20,
     });
-    finishRun("tree-g1", { status: "done" });
+    runs.finish("tree-g1", { status: "done" });
     const children = [
       fleetRun("tree-c1", {
         agent: "lynx",
@@ -1909,7 +1912,11 @@ describe("projectCard — inner delegation dedup", () => {
 });
 
 describe("projectCard — descendant failure badge", () => {
-  afterEach(() => resetRegistry());
+  let runs: RunRegistry = createRunRegistry();
+
+  afterEach(() => {
+    runs = createRunRegistry();
+  });
 
   it("badges a successful title when a descendant failed", () => {
     const log = createRunLog();
@@ -1935,20 +1942,20 @@ describe("projectCard — descendant failure badge", () => {
   });
 
   it("counts failures at any depth from the explicit map", () => {
-    startRun({
+    runs.start({
       id: "badge-g1",
       agent: "lynx",
       parentSession: "child-sess",
       startedAt: 20,
     });
-    finishRun("badge-g1", { status: "error" });
-    startRun({
+    runs.finish("badge-g1", { status: "error" });
+    runs.start({
       id: "badge-gg1",
       agent: "spider",
       parentSession: "grand-sess",
       startedAt: 30,
     });
-    finishRun("badge-gg1", { status: "error" });
+    runs.finish("badge-gg1", { status: "error" });
     const lines = projectCard(
       createRunLog(),
       terminalMeta(),
@@ -1982,13 +1989,13 @@ describe("projectCard — descendant failure badge", () => {
   });
 
   it("ignores a registered failure the map does not report", () => {
-    startRun({
+    runs.start({
       id: "badge-hidden",
       agent: "lynx",
       parentSession: "child-sess",
       startedAt: 20,
     });
-    finishRun("badge-hidden", { status: "error" });
+    runs.finish("badge-hidden", { status: "error" });
     const lines = projectCard(
       createRunLog(),
       terminalMeta(),

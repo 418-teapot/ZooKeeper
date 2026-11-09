@@ -27,13 +27,8 @@ import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, it } from "node:test";
 import {
-  childrenOf,
-  finishRun,
-  getRun,
-  resetRegistry,
-  startRun,
-  subscribeRunChange,
-  topLevelRuns,
+  createRunRegistry,
+  type RunRegistry,
 } from "../../core/subagent/registry.js";
 import { makeTmpDir } from "../../testkits/tmp.js";
 import {
@@ -58,16 +53,17 @@ function makeFixtureDir(): string {
 
 let _loggerDir: string;
 
+let runs: RunRegistry = createRunRegistry();
+
 beforeEach(() => {
   _resetForTesting();
-  resetRegistry();
+  runs = createRunRegistry();
   _loggerDir = makeFixtureDir();
   initLogger("pi", { logDir: _loggerDir });
 });
 
 afterEach(() => {
   _resetForTesting();
-  resetRegistry();
   for (const dir of _tmpDirs.splice(0)) {
     try {
       rmSync(dir, { recursive: true, force: true });
@@ -472,24 +468,26 @@ describe("rebuildSubagentRuns — write scanned runs into the registry", () => {
         }),
       ],
       "sess-1",
+      runs,
     );
 
-    const runs = topLevelRuns("sess-1");
+    const seen = runs.topLevel("sess-1");
     assert.deepEqual(
-      runs.map((r) => r.id),
+      seen.map((r) => r.id),
       ["r1", "r2"],
     );
-    assert.equal(runs[0]?.status, "done");
-    assert.equal(runs[1]?.status, "error");
-    assert.equal(runs[1]?.error, "boom");
+    assert.equal(seen[0]?.status, "done");
+    assert.equal(seen[1]?.status, "error");
+    assert.equal(seen[1]?.error, "boom");
   });
 
   it("writes interrupted runs as aborted with endedAt set", () => {
     rebuildSubagentRuns(
       [assistantEntry([toolCall("r1", "subagent", { agent: "lynx" })], 100)],
       "sess-1",
+      runs,
     );
-    const run = getRun("r1");
+    const run = runs.get("r1");
     assert.equal(run?.status, "aborted");
     assert.equal(run?.endedAt, 100);
   });
@@ -497,17 +495,17 @@ describe("rebuildSubagentRuns — write scanned runs into the registry", () => {
   it("does not clobber an existing terminal entry on re-scan (idempotent)", () => {
     // A live run that finished in this process holds a terminal entry; a
     // later re-scan of the same history must leave it untouched.
-    startRun({
+    runs.start({
       id: "r1",
       agent: "beaver",
       parentSession: "sess-1",
       startedAt: 10,
     });
-    finishRun("r1", {
+    runs.finish("r1", {
       status: "done",
       sessionPath: "/home/u/.pi/agent/sessions/x/s.jsonl",
     });
-    const frozen = getRun("r1");
+    const frozen = runs.get("r1");
 
     rebuildSubagentRuns(
       [
@@ -516,6 +514,7 @@ describe("rebuildSubagentRuns — write scanned runs into the registry", () => {
         // A second scan of the same history must not duplicate entries.
       ],
       "sess-1",
+      runs,
     );
     rebuildSubagentRuns(
       [
@@ -523,12 +522,13 @@ describe("rebuildSubagentRuns — write scanned runs into the registry", () => {
         toolResultEntry("r1", "subagent", [{ type: "text", text: "ok" }]),
       ],
       "sess-1",
+      runs,
     );
 
-    const run = getRun("r1");
+    const run = runs.get("r1");
     assert.equal(run?.status, "done");
     assert.equal(run?.sessionPath, "/home/u/.pi/agent/sessions/x/s.jsonl");
-    assert.equal(topLevelRuns("sess-1").length, 1, "no duplicate entries");
+    assert.equal(runs.topLevel("sess-1").length, 1, "no duplicate entries");
     assert.equal(run?.endedAt, frozen?.endedAt, "terminal fields stay frozen");
   });
 
@@ -546,10 +546,10 @@ describe("rebuildSubagentRuns — write scanned runs into the registry", () => {
       parentSession: string;
       status?: string;
     }> = [];
-    const off = subscribeRunChange((change) => {
-      changes.push({ ...change, status: getRun(change.runId)?.status });
+    const off = runs.subscribe((change) => {
+      changes.push({ ...change, status: runs.get(change.runId)?.status });
     });
-    rebuildSubagentRuns(history, "sess-1");
+    rebuildSubagentRuns(history, "sess-1", runs);
     off();
 
     assert.deepEqual(
@@ -562,10 +562,10 @@ describe("rebuildSubagentRuns — write scanned runs into the registry", () => {
     );
 
     let rescanned = 0;
-    const offRescan = subscribeRunChange(() => {
+    const offRescan = runs.subscribe(() => {
       rescanned += 1;
     });
-    rebuildSubagentRuns(history, "sess-1");
+    rebuildSubagentRuns(history, "sess-1", runs);
     offRescan();
     assert.equal(rescanned, 0, "a re-scan publishes nothing");
   });
@@ -574,7 +574,7 @@ describe("rebuildSubagentRuns — write scanned runs into the registry", () => {
     // A run still live in this process must not be flipped to aborted by a
     // scan of stale history (the registry's terminal-immutability rule
     // silently ignores the finish).
-    startRun({
+    runs.start({
       id: "r1",
       agent: "lynx",
       parentSession: "sess-1",
@@ -583,8 +583,9 @@ describe("rebuildSubagentRuns — write scanned runs into the registry", () => {
     rebuildSubagentRuns(
       [assistantEntry([toolCall("r1", "subagent", { agent: "lynx" })], 10)],
       "sess-1",
+      runs,
     );
-    assert.equal(getRun("r1")?.status, "running", "live run stays running");
+    assert.equal(runs.get("r1")?.status, "running", "live run stays running");
   });
 });
 
@@ -618,10 +619,11 @@ describe("rebuildSubagentRuns — recursive nested delegation rebuild", () => {
         }),
       ],
       "main",
+      runs,
       { sessionsRoot: join(root, "sessions") },
     );
 
-    const parent = getRun("p1");
+    const parent = runs.get("p1");
     assert.equal(parent?.status, "done");
     assert.equal(
       parent?.childSession,
@@ -631,17 +633,17 @@ describe("rebuildSubagentRuns — recursive nested delegation rebuild", () => {
     assert.equal(parent?.sessionPath, lynxPath);
 
     // The nested lynx run must be attached under the parent's child session.
-    const child = getRun("n1");
+    const child = runs.get("n1");
     assert.equal(child?.status, "done");
     assert.equal(child?.agent, "lynx");
     assert.equal(child?.parentSession, "child-ses-1");
     assert.deepEqual(
-      childrenOf("p1").map((c) => c.id),
+      runs.childrenOf("p1").map((c) => c.id),
       ["n1"],
     );
     // The nested run must NOT show up as a top-level run of the main session.
     assert.deepEqual(
-      topLevelRuns("main").map((r) => r.id),
+      runs.topLevel("main").map((r) => r.id),
       ["p1"],
     );
   });
@@ -675,19 +677,19 @@ describe("rebuildSubagentRuns — recursive nested delegation rebuild", () => {
 
     // The run finishes in this process, pi exits (the process-level registry
     // is wiped), and the resume rebuild reconstructs the tree from disk.
-    rebuildSubagentRuns(history, "main", { sessionsRoot });
-    resetRegistry();
-    assert.equal(getRun("p1"), undefined, "the wipe emptied the registry");
-    rebuildSubagentRuns(history, "main", { sessionsRoot });
+    rebuildSubagentRuns(history, "main", runs, { sessionsRoot });
+    runs = createRunRegistry();
+    assert.equal(runs.get("p1"), undefined, "the wipe emptied the registry");
+    rebuildSubagentRuns(history, "main", runs, { sessionsRoot });
 
-    assert.equal(getRun("p1")?.childSession, "child-ses-1");
+    assert.equal(runs.get("p1")?.childSession, "child-ses-1");
     assert.deepEqual(
-      childrenOf("p1").map((c) => c.id),
+      runs.childrenOf("p1").map((c) => c.id),
       ["n1"],
       "the nested child re-attaches to its parent after the rescan",
     );
     assert.deepEqual(
-      topLevelRuns("main").map((r) => r.id),
+      runs.topLevel("main").map((r) => r.id),
       ["p1"],
       "the nested child is not promoted to a top-level run",
     );
@@ -717,16 +719,17 @@ describe("rebuildSubagentRuns — recursive nested delegation rebuild", () => {
         }),
       ],
       "main",
+      runs,
       { sessionsRoot },
     );
 
-    const parent = getRun("p1");
+    const parent = runs.get("p1");
     assert.equal(parent?.childSession, "child-ses-1");
     assert.equal(parent?.sessionPath, undefined);
-    assert.equal(getRun("n1")?.status, "done");
-    assert.equal(getRun("n1")?.parentSession, "child-ses-1");
+    assert.equal(runs.get("n1")?.status, "done");
+    assert.equal(runs.get("n1")?.parentSession, "child-ses-1");
     assert.deepEqual(
-      childrenOf("p1").map((c) => c.id),
+      runs.childrenOf("p1").map((c) => c.id),
       ["n1"],
     );
   });
@@ -761,13 +764,14 @@ describe("rebuildSubagentRuns — recursive nested delegation rebuild", () => {
         }),
       ],
       "main",
+      runs,
       { sessionsRoot },
     );
 
-    assert.equal(getRun("p1")?.childSession, "persisted-child-1");
-    assert.equal(getRun("n1")?.parentSession, "persisted-child-1");
+    assert.equal(runs.get("p1")?.childSession, "persisted-child-1");
+    assert.equal(runs.get("n1")?.parentSession, "persisted-child-1");
     assert.deepEqual(
-      childrenOf("p1").map((c) => c.id),
+      runs.childrenOf("p1").map((c) => c.id),
       ["n1"],
     );
   });
@@ -834,13 +838,13 @@ describe("rebuildSubagentRuns — recursive nested delegation rebuild", () => {
         details: legacyDetailsPayload({ childSession: id }),
       }),
     ]);
-    rebuildSubagentRuns(history, "main", { sessionsRoot, indexIO });
+    rebuildSubagentRuns(history, "main", runs, { sessionsRoot, indexIO });
 
     // All three nested branches rebuilt (behavior unchanged).
     for (const id of childIds) {
-      assert.equal(getRun(`r-${id}`)?.status, "done", `${id} rebuilt`);
+      assert.equal(runs.get(`r-${id}`)?.status, "done", `${id} rebuilt`);
       assert.deepEqual(
-        childrenOf(`p${childIds.indexOf(id)}`).map((c) => c.id),
+        runs.childrenOf(`p${childIds.indexOf(id)}`).map((c) => c.id),
         [`r-${id}`],
       );
     }
@@ -893,26 +897,27 @@ describe("rebuildSubagentRuns — recursive nested delegation rebuild", () => {
         }),
       ],
       "main",
+      runs,
       { sessionsRoot },
     );
 
-    assert.equal(getRun("p1")?.childSession, "child-ses-1");
-    const middle = getRun("n1");
+    assert.equal(runs.get("p1")?.childSession, "child-ses-1");
+    const middle = runs.get("n1");
     assert.equal(middle?.status, "done");
     assert.equal(middle?.agent, "lynx");
     assert.equal(middle?.childSession, "child-ses-2");
     assert.equal(middle?.parentSession, "child-ses-1");
-    const leaf = getRun("g2");
+    const leaf = runs.get("g2");
     assert.equal(leaf?.status, "done");
     assert.equal(leaf?.agent, "spider");
     assert.equal(leaf?.parentSession, "child-ses-2");
 
     assert.deepEqual(
-      childrenOf("p1").map((c) => c.id),
+      runs.childrenOf("p1").map((c) => c.id),
       ["n1"],
     );
     assert.deepEqual(
-      childrenOf("n1").map((c) => c.id),
+      runs.childrenOf("n1").map((c) => c.id),
       ["g2"],
     );
   });
@@ -929,14 +934,15 @@ describe("rebuildSubagentRuns — recursive nested delegation rebuild", () => {
         }),
       ],
       "main",
+      runs,
       { sessionsRoot: join(makeFixtureDir(), "sessions") },
     );
 
-    const run = getRun("p1");
+    const run = runs.get("p1");
     assert.equal(run?.status, "done");
     assert.equal(run?.childSession, undefined);
     assert.equal(run?.sessionPath, undefined);
-    assert.equal(childrenOf("p1").length, 0);
+    assert.equal(runs.childrenOf("p1").length, 0);
   });
 
   it("tolerates a missing / unreadable sub-session file (warn, skip branch)", () => {
@@ -952,17 +958,18 @@ describe("rebuildSubagentRuns — recursive nested delegation rebuild", () => {
         }),
       ],
       "main",
+      runs,
       { sessionsRoot },
     );
 
     // The parent run is still rebuilt; no nested runs were found.
-    assert.equal(getRun("p1")?.status, "done");
+    assert.equal(runs.get("p1")?.status, "done");
     assert.equal(
-      getRun("p1")?.childSession,
+      runs.get("p1")?.childSession,
       undefined,
       "an unreadable file yields no child-session id",
     );
-    assert.equal(childrenOf("p1").length, 0);
+    assert.equal(runs.childrenOf("p1").length, 0);
 
     // A warn entry must be logged for the skipped branch.
     const warns = scanWarns().filter(
@@ -1004,20 +1011,21 @@ describe("rebuildSubagentRuns — recursive nested delegation rebuild", () => {
         }),
       ],
       "main",
+      runs,
       { sessionsRoot },
     );
 
     // The first visit to each file still rebuilt its runs, attached under
     // the header-derived child sessions.
-    assert.equal(getRun("p1")?.status, "done");
-    assert.equal(getRun("ra")?.status, "done");
-    assert.equal(getRun("rb")?.status, "done", "level-2 run rebuilt");
+    assert.equal(runs.get("p1")?.status, "done");
+    assert.equal(runs.get("ra")?.status, "done");
+    assert.equal(runs.get("rb")?.status, "done", "level-2 run rebuilt");
     assert.deepEqual(
-      childrenOf("p1").map((c) => c.id),
+      runs.childrenOf("p1").map((c) => c.id),
       ["ra"],
     );
     assert.deepEqual(
-      childrenOf("ra").map((c) => c.id),
+      runs.childrenOf("ra").map((c) => c.id),
       ["rb"],
     );
 
@@ -1054,13 +1062,14 @@ describe("rebuildSubagentRuns — recursive nested delegation rebuild", () => {
         }),
       ],
       "main",
+      runs,
       { sessionsRoot },
     );
 
-    assert.equal(getRun("p1")?.status, "done");
+    assert.equal(runs.get("p1")?.status, "done");
     // The repeated main-session branch is skipped — only the top-level
     // run exists.
-    assert.equal(getRun("rm"), undefined);
+    assert.equal(runs.get("rm"), undefined);
     const cycleWarns = scanWarns().filter(
       (e) => e.event === "nested_session_cycle",
     );
@@ -1104,32 +1113,33 @@ describe("rebuildSubagentRuns — recursive nested delegation rebuild", () => {
         }),
       ],
       "main",
+      runs,
       { sessionsRoot },
     );
 
-    assert.equal(getRun("p1")?.status, "done");
+    assert.equal(runs.get("p1")?.status, "done");
     // Every level of the chain must be rebuilt and attached to its parent —
     // no depth cap, and no orphaned nested run.
     let parent = "p1";
     for (let i = 0; i < CHAIN_DEPTH; i++) {
       assert.equal(
-        getRun(`r${i}`)?.status,
+        runs.get(`r${i}`)?.status,
         "done",
         `chain level ${i} run rebuilt (no depth cap)`,
       );
       assert.equal(
-        getRun(`r${i}`)?.parentSession,
+        runs.get(`r${i}`)?.parentSession,
         `lvl${i}`,
         `chain level ${i} scoped to its parent's child session`,
       );
       assert.deepEqual(
-        childrenOf(parent).map((c) => c.id),
+        runs.childrenOf(parent).map((c) => c.id),
         [`r${i}`],
         `chain level ${i} attaches to its parent`,
       );
       parent = `r${i}`;
     }
-    assert.equal(childrenOf(parent).length, 0, "the leaf has no children");
+    assert.equal(runs.childrenOf(parent).length, 0, "the leaf has no children");
     // No cycle warns — the chain is acyclic.
     const cycleWarns = scanWarns().filter(
       (e) => e.event === "nested_session_cycle",
@@ -1160,16 +1170,16 @@ describe("rebuildSubagentRuns — recursive nested delegation rebuild", () => {
       }),
     ];
 
-    rebuildSubagentRuns(history, "main", { sessionsRoot });
-    const frozenParent = getRun("p1");
-    const frozenChild = getRun("n1");
-    rebuildSubagentRuns(history, "main", { sessionsRoot });
-    rebuildSubagentRuns(history, "main", { sessionsRoot });
+    rebuildSubagentRuns(history, "main", runs, { sessionsRoot });
+    const frozenParent = runs.get("p1");
+    const frozenChild = runs.get("n1");
+    rebuildSubagentRuns(history, "main", runs, { sessionsRoot });
+    rebuildSubagentRuns(history, "main", runs, { sessionsRoot });
 
-    assert.equal(topLevelRuns("main").length, 1, "no duplicate top runs");
-    assert.equal(childrenOf("p1").length, 1, "no duplicate nested runs");
-    assert.equal(getRun("p1")?.endedAt, frozenParent?.endedAt);
-    assert.equal(getRun("n1")?.endedAt, frozenChild?.endedAt);
+    assert.equal(runs.topLevel("main").length, 1, "no duplicate top runs");
+    assert.equal(runs.childrenOf("p1").length, 1, "no duplicate nested runs");
+    assert.equal(runs.get("p1")?.endedAt, frozenParent?.endedAt);
+    assert.equal(runs.get("n1")?.endedAt, frozenChild?.endedAt);
   });
 });
 
@@ -1200,14 +1210,18 @@ describe("terminal status recovery — persisted outcome / child stopReason", ()
       ),
     ];
 
-    const runs = extractSubagentRuns(history, "sess-1");
-    assert.equal(runs.length, 1);
-    assert.equal(runs[0]?.status, "aborted");
-    assert.equal(runs[0]?.error, undefined, "an aborted run carries no error");
+    const scanned = extractSubagentRuns(history, "sess-1");
+    assert.equal(scanned.length, 1);
+    assert.equal(scanned[0]?.status, "aborted");
+    assert.equal(
+      scanned[0]?.error,
+      undefined,
+      "an aborted run carries no error",
+    );
 
     // The registry rebuild writes the same status.
-    rebuildSubagentRuns(history, "sess-rebuild");
-    assert.equal(getRun("call-abort")?.status, "aborted");
+    rebuildSubagentRuns(history, "sess-rebuild", runs);
+    assert.equal(runs.get("call-abort")?.status, "aborted");
   });
 
   it("trusts the persisted details.outcome without reading the sub-session file", () => {

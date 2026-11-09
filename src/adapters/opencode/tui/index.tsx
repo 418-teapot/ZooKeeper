@@ -11,12 +11,9 @@ import {
   progressBar,
 } from "../../../core/context/context-report.js";
 import type { TokenBreakdownResult } from "../../../core/context/lens-stats.js";
-import {
-  type RunSnapshot,
-  subscribeRunChange,
-  topLevelRuns,
-} from "../../../core/subagent/registry.js";
-import { initLogger, log } from "../../../utils/logger.js";
+import type { RunSnapshot } from "../../../core/subagent/registry.js";
+import { ensureLogger, log } from "../../../utils/logger.js";
+import { openCodeProcessState } from "../process.js";
 import { createSubagentSource } from "../subagent-source.js";
 import { createContextController } from "./controller.js";
 import type { CategoryInfo } from "./subagent.js";
@@ -49,17 +46,20 @@ import { formatDuration } from "./subagent.js";
 const plugin: TuiPluginModule = {
   id: "zookeeper-tui",
   tui: async (api) => {
-    // One-shot process init for the TUI process (part of the OpenCode
-    // host): entries carry their own session id per call, so the flush
-    // timer is the only process-level requirement here.
-    initLogger("opencode");
+    // Initialise this process's logger for the host only when this module has
+    // not done so yet.  The server entry and this panel can share the module:
+    // the server configures the logger from config.toml, and a bare init here
+    // would discard that configuration.  A panel that runs in its own process
+    // establishes the default logger (no rotation, no old-log cleanup), so the
+    // two processes never rotate the same shard.
+    const zooConfig = (config as { zoo?: unknown }).zoo ?? {};
+    ensureLogger("opencode");
 
     // The sidebar overlays the pruned regions the release phase actually
     // writes, so it needs the same protection inputs.  Parse the `zoo`
     // section of this repository's config.toml through the strict parser
     // the server entry uses; an absent or invalid section yields no
     // protection map and the controller then overlays no mark.
-    const zooConfig = (config as { zoo?: unknown }).zoo ?? {};
     const contextConfig = parseContextConfig(zooConfig);
 
     // ── Shared panel signals (tui() scope) ──────────────────────────
@@ -261,15 +261,20 @@ const plugin: TuiPluginModule = {
         // The panel owns no subagent state machine: the translator writes
         // host facts into the core run registry, and the rendered rows are
         // a projection of that registry, refreshed on every run change.
-        // Created and disposed with the panel.
+        // Created and disposed with the panel.  The rows come from this
+        // module instance's registry, which the server plugin fills when
+        // both entries load into one module; a panel that runs in its own
+        // process rebuilds them from the host events it receives.
+        const { runs } = openCodeProcessState();
         const source = createSubagentSource({
+          runs,
           client: api.client,
           state: api.state,
           parentSessionId: props.sessionId,
           fetchSessionMessages: controller.fetchSessionMessages,
         });
 
-        const refreshSubRuns = () => setSubRuns(topLevelRuns(props.sessionId));
+        const refreshSubRuns = () => setSubRuns(runs.topLevel(props.sessionId));
         refreshSubRuns();
 
         const unsub4 = api.event.on(
@@ -281,7 +286,7 @@ const plugin: TuiPluginModule = {
         // One subscription covers every run change of this session: the
         // event names the run's parent session, so another session's runs
         // never repaint this panel.
-        const unsub7 = subscribeRunChange((change) => {
+        const unsub7 = runs.subscribe((change) => {
           if (change.parentSession !== props.sessionId) return;
           refreshSubRuns();
         });

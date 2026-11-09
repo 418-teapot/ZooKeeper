@@ -44,6 +44,11 @@ export interface PiToolHostContext {
   /** Session manager (read-only). */
   sessionManager?: {
     getSessionId(): string;
+    /**
+     * Session file header, read by the replacement claim: pi records the
+     * replaced session on the new session's header.
+     */
+    getHeader?(): { parentSession?: string } | null;
     /** Read by the pi entry point's run-registry rescan, not by the host. */
     buildContextEntries?(): unknown[];
     /** Raw entries of the active branch (incl. pre-compaction), read by the

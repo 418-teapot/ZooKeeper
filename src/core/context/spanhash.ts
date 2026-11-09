@@ -52,6 +52,20 @@ export function fnv1a(text: string): number {
 }
 
 /**
+ * Fingerprint a text snapshot for content self-validation.
+ *
+ * The same FNV-1a function and hex encoding as `computeSpanHash`, over a
+ * whole text instead of a span: the fingerprint matches only when every
+ * character of the text is unchanged.
+ *
+ * @param text - The text to fingerprint.
+ * @returns The fixed-length 8-character lowercase hex fingerprint.
+ */
+export function contentFingerprint(text: string): string {
+  return fnv1a(text).toString(16).padStart(8, "0");
+}
+
+/**
  * Roll one message's hash into the running span state.
  *
  * The message hash is written as a fixed-width 4-byte frame,

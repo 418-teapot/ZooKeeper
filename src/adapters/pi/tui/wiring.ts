@@ -21,7 +21,10 @@
  * @module
  */
 
-import type { RunSnapshot } from "../../../core/subagent/registry.js";
+import type {
+  RunRegistry,
+  RunSnapshot,
+} from "../../../core/subagent/registry.js";
 import type { RunLog } from "../../../core/subagent/run-log.js";
 import type { TodoStateStore } from "../../../core/todo/store.js";
 import type { TodoPhase } from "../../../core/todo/types.js";
@@ -46,6 +49,8 @@ import { createFleetWidget, type FleetWidget } from "./widget.js";
  * so the widget and its overlay always see the current pi surfaces.
  */
 export interface FleetWiringDeps {
+  /** The run records of this process. */
+  runs: RunRegistry;
   /** The active primary agent name, or undefined when none. */
   getPrimary(): string | undefined;
   /** Colorize an agent name per its configured `[agent.<name>].color`. */
@@ -107,6 +112,7 @@ export function createFleetWiring(deps: FleetWiringDeps): FleetWiring {
   const deferredOverlayOpens = new Set<string>();
 
   const fleetWidget = createFleetWidget({
+    runs: deps.runs,
     getPrimary: () => deps.getPrimary(),
     colorizeAgent: deps.colorizeAgent,
     getSessionId: deps.getSessionId,
@@ -148,7 +154,7 @@ export function createFleetWiring(deps: FleetWiringDeps): FleetWiring {
           ...(emptyNotice === undefined ? {} : { emptyNotice }),
           openOverlay,
         });
-      // HYDRATION GATE.  `finishRun` releases a finished run's in-memory log
+      // HYDRATION GATE.  `runs.finish` releases a finished run's in-memory log
       // (resident memory tracks active work only), and the post-restart
       // history scanner rebuilds runs from persisted sessions with lifecycle
       // metadata only — so in both cases a terminal run's registry log is

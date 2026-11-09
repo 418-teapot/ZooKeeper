@@ -109,6 +109,9 @@ export function probe(pi: ExtensionAPI): void {
     rec("session_start", {
       sessionID,
       reason: event.reason,
+      // The replaced session pi recorded on the new session's header: the
+      // evidence a scheduled session replacement is claimed by.
+      parentSession: ctx.sessionManager?.getHeader?.()?.parentSession ?? null,
       toolCount: tools.length,
       trackedTools: tools.filter((name) =>
         (REQUIRED_TOOLS as readonly string[]).includes(name),

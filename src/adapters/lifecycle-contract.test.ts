@@ -19,7 +19,8 @@
  */
 import assert from "node:assert/strict";
 import { rmSync } from "node:fs";
-import { afterEach, describe, it } from "node:test";
+import { afterEach, beforeEach, describe, it } from "node:test";
+import { createConfigScope } from "../core/config-snapshot.js";
 import { project } from "../core/context/lens.js";
 import {
   type ContextRuntime,
@@ -32,24 +33,23 @@ import {
   defineExtensionService,
   defineSessionService,
 } from "../core/lifecycle/index.js";
-import {
-  sessionAgentRegistry,
-  sessionAgentResource,
-} from "../core/session/agent.js";
+import { createSessionAgentResource } from "../core/session/agent.js";
 import {
   contextSessionResources,
   createSessionResourceCatalog,
   type SessionResourceCatalog,
 } from "../core/session/resources.js";
 import { permitFor } from "../testkits/context-runtime.js";
+import { piScope } from "../testkits/pi-wiring.js";
 import { makeTmpDir } from "../testkits/tmp.js";
 import { createOpenCodeLifecycleMapping } from "./opencode/lifecycle.js";
 import { createOpenCodeLifecycleWiring } from "./opencode/lifecycle-wiring.js";
 import { createOpenCodeHostServices } from "./opencode/services.js";
 import { createPiLifecycleMapping } from "./pi/lifecycle.js";
 import { createPiLifecycleWiring } from "./pi/lifecycle-wiring.js";
+import { createPiProcessState, type PiProcessState } from "./pi/process.js";
 import { createPiHostServices, type PiServiceHost } from "./pi/services.js";
-import { buildPiContributions } from "./pi/wire.js";
+import { buildPiCapabilities } from "./pi/wire.js";
 
 /**
  * Build a kernel that records every creation, start and disposal call.
@@ -305,12 +305,18 @@ const AGENT = "dolphin";
 /** Scratch store directories the current test created. */
 const recordDirs: string[] = [];
 
+/** The process state every instance under test runs over (one per test). */
+let piProcess: PiProcessState;
+
 /** The plugin instance under test. */
 let runtime: ContextRuntime;
 let sessionCatalog: SessionResourceCatalog;
 
+beforeEach(() => {
+  piProcess = createPiProcessState();
+});
+
 afterEach(() => {
-  sessionAgentRegistry.clear();
   for (const dir of recordDirs.splice(0)) {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -328,7 +334,7 @@ function sandboxStore(): StateStore {
   runtime = createContextRuntime(store);
   sessionCatalog = createSessionResourceCatalog([
     ...contextSessionResources(runtime),
-    sessionAgentResource,
+    createSessionAgentResource(piProcess.sessionAgents),
   ]);
   return store;
 }
@@ -354,7 +360,7 @@ async function stageRecords(sessionID: string): Promise<void> {
     });
     state.pendingViewChange = true;
   });
-  sessionAgentRegistry.bind(sessionID, AGENT);
+  piProcess.sessionAgents.bind(sessionID, AGENT);
   runtime.setModelLimit(permit, 1000, "model");
   runtime.publishRoundView(sessionID, {
     projection: project([], []),
@@ -375,7 +381,7 @@ function assertReleased(store: StateStore, sessionID: string): void {
     "a runtime release keeps the persisted context",
   );
   assert.equal(
-    sessionAgentRegistry.resolve(sessionID),
+    piProcess.sessionAgents.resolve(sessionID),
     AGENT,
     "a runtime release keeps the agent binding",
   );
@@ -396,7 +402,7 @@ function assertReleased(store: StateStore, sessionID: string): void {
  */
 function assertDeleted(store: StateStore, sessionID: string): void {
   assert.equal(store.load(sessionID).blocks.size, 0);
-  assert.equal(sessionAgentRegistry.resolve(sessionID), undefined);
+  assert.equal(piProcess.sessionAgents.resolve(sessionID), undefined);
   assert.equal(runtime.modelLimit(sessionID), undefined);
   assert.equal(runtime.roundView(sessionID), undefined);
   assert.equal(
@@ -408,7 +414,10 @@ function assertDeleted(store: StateStore, sessionID: string): void {
 
 /** The host inputs pi's declarations need; no pi API means inert surfaces. */
 function piHost(): PiServiceHost {
+  const scope = piScope({});
   return {
+    scope,
+    process: piProcess,
     piApi: undefined,
     appendEntry: undefined,
     colorizeAgent: (name) => name,
@@ -418,7 +427,7 @@ function piHost(): PiServiceHost {
     sessionCatalog,
     // A null profile composes no settle strategy, so this wiring declares
     // an engine-less loop session.
-    composeProfile: () => buildPiContributions({}),
+    capabilities: () => buildPiCapabilities(scope, piProcess),
   };
 }
 
@@ -435,7 +444,11 @@ function buildPiWiring() {
 /** Wiring over OpenCode's real declarations. */
 function buildOpenCodeWiring() {
   const declarations = createOpenCodeHostServices({
-    onSettled: [],
+    scope: createConfigScope({}, {}),
+    client: {},
+    directory: "",
+    process: piProcess,
+    contextRuntime: runtime,
     sessionCatalog,
   });
   return createOpenCodeLifecycleWiring({
@@ -494,18 +507,150 @@ describe("host session record contract", () => {
     runtime = createContextRuntime(store);
     sessionCatalog = createSessionResourceCatalog([
       ...contextSessionResources(runtime),
-      sessionAgentResource,
+      createSessionAgentResource(piProcess.sessionAgents),
     ]);
     const wiring = buildOpenCodeWiring();
 
     await wiring.handleEvent(openCodeDeleted("ghost"));
 
     assert.equal(store.load("ghost").blocks.size, 0);
-    assert.equal(sessionAgentRegistry.resolve("ghost"), undefined);
+    assert.equal(piProcess.sessionAgents.resolve("ghost"), undefined);
     assert.equal(
       store.load("ghost").blocks.size,
       0,
       "the deletion must not build a scope that writes the state back",
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Run ownership across a runtime stop
+// ---------------------------------------------------------------------------
+
+/**
+ * Describe a run the way a producer writes it: one delegation of a session.
+ *
+ * @param id - The run id.
+ * @param startedAt - The literal start time of the run.
+ * @returns The `start` input.
+ */
+function runStart(id: string, startedAt: number) {
+  return { id, agent: "lynx", parentSession: "s1", label: id, startedAt };
+}
+
+describe("host run scope contract", () => {
+  it("ends only the pi runtime's own running runs on a shutdown", async () => {
+    const wiring = buildPiWiring();
+    const { services } = await wiring.activateExtension();
+    services.runScope.start(runStart("call-live", 100));
+    services.runScope.start(runStart("call-done", 200));
+    services.runScope.finish("call-done", { status: "done", endedAt: 250 });
+    services.runScope.restore({
+      id: "call-history",
+      agent: "beaver",
+      parentSession: "s1",
+      status: "error",
+      startedAt: 50,
+      endedAt: 60,
+      error: "boom",
+    });
+
+    const report = await wiring.stopExtension({
+      type: "session_shutdown",
+      reason: "quit",
+    });
+
+    assert.deepEqual(report.errors, []);
+    const live = piProcess.runs.get("call-live");
+    assert.equal(live?.status, "aborted");
+    assert.equal(typeof live?.endedAt, "number");
+    assert.equal(live?.label, "call-live", "the abort keeps the metadata");
+    assert.equal(piProcess.runs.get("call-done")?.status, "done");
+    assert.equal(piProcess.runs.get("call-done")?.endedAt, 250);
+    assert.equal(piProcess.runs.get("call-history")?.status, "error");
+    assert.equal(piProcess.runs.get("call-history")?.error, "boom");
+    assert.equal(
+      piProcess.runs.topLevel("s1").length,
+      3,
+      "the process table keeps every record",
+    );
+  });
+
+  it("keeps another pi runtime's runs running", async () => {
+    const stopping = buildPiWiring();
+    const staying = buildPiWiring();
+    const stoppingScope = (await stopping.activateExtension()).services
+      .runScope;
+    const stayingScope = (await staying.activateExtension()).services.runScope;
+    stoppingScope.start(runStart("call-a", 100));
+    stayingScope.start(runStart("call-b", 200));
+
+    await stopping.stopExtension({
+      type: "session_shutdown",
+      reason: "quit",
+    });
+
+    assert.equal(piProcess.runs.get("call-a")?.status, "aborted");
+    assert.equal(piProcess.runs.get("call-b")?.status, "running");
+  });
+
+  it("shows a stopped runtime's runs as history after a reload", async () => {
+    const first = buildPiWiring();
+    (await first.activateExtension()).services.runScope.start(
+      runStart("call-live", 100),
+    );
+    await first.stopExtension({ type: "session_shutdown", reason: "reload" });
+
+    const reloaded = buildPiWiring();
+    const scope = (await reloaded.activateExtension()).services.runScope;
+
+    assert.deepEqual(
+      scope.topLevel("s1").map((run) => run.id),
+      ["call-live"],
+      "the reloaded runtime reads the previous generation's run",
+    );
+    assert.equal(scope.get("call-live")?.status, "aborted");
+    assert.deepEqual(
+      scope.summary("s1"),
+      { running: 0, done: 0, failed: 0, aborted: 1 },
+      "the reloaded runtime shows no phantom running run",
+    );
+  });
+
+  it("ends the OpenCode runtime's own running runs on a dispose", async () => {
+    const wiring = buildOpenCodeWiring();
+    const { services } = await wiring.activateExtension();
+    services.runScope.start(runStart("call-live", 100));
+    services.runScope.start(runStart("call-done", 200));
+    services.runScope.finish("call-done", { status: "done", endedAt: 250 });
+
+    const report = await wiring.dispose();
+
+    assert.deepEqual(report.errors, []);
+    assert.equal(piProcess.runs.get("call-live")?.status, "aborted");
+    assert.equal(piProcess.runs.get("call-done")?.status, "done");
+    assert.equal(piProcess.runs.topLevel("s1").length, 2);
+  });
+
+  it("reports a failing run-change subscriber and still ends every run", async () => {
+    const wiring = buildPiWiring();
+    const { services } = await wiring.activateExtension();
+    services.runScope.start(runStart("call-1", 100));
+    services.runScope.start(runStart("call-2", 200));
+    const off = piProcess.runs.subscribe((change) => {
+      if (change.runId === "call-1") throw new Error("repaint failed");
+    });
+
+    const report = await wiring.stopExtension({
+      type: "session_shutdown",
+      reason: "quit",
+    });
+    off();
+
+    assert.equal(report.errors.length, 1);
+    assert.equal(report.errors[0]?.service, "runScope");
+    assert.match(String(report.errors[0]?.error), /repaint failed/);
+    assert.equal(piProcess.runs.get("call-1")?.status, "aborted");
+    assert.equal(piProcess.runs.get("call-2")?.status, "aborted");
   });
 });

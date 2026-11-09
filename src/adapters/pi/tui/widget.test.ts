@@ -9,7 +9,7 @@
  * Test strategy: the widget is pure component logic with injectable timers
  * and a fake clock, so every timer behaviour (start / advance / clear on
  * dispose / no dangling handles) is asserted deterministically without real
- * wall-clock waits.  The registry is process-global and reset between tests.
+ * wall-clock waits.  Each test writes its runs into its own registry.
  *
  * Coverage:
  *   - collapsed line's three forms (no activity / running / counts).
@@ -21,21 +21,22 @@
  *     collapsed, disposed without a dangling handle).
  */
 import assert from "node:assert/strict";
-import { afterEach, describe, it } from "node:test";
+import { beforeEach, describe, it } from "node:test";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import { SPINNER_FRAMES } from "../../../core/display.js";
 import {
-  finishRun,
+  createRunRegistry,
+  type RunRegistry,
   type RunSnapshot,
-  resetRegistry,
-  startRun,
 } from "../../../core/subagent/registry.js";
 import type { TodoPhase } from "../../../core/todo/types.js";
 import { colorTag, makeTheme, stubTui } from "../../../testkits/theme.js";
 import { createFleetWidget, FLEET_MAX_LINES } from "./widget.js";
 
-afterEach(() => {
-  resetRegistry();
+let runs: RunRegistry = createRunRegistry();
+
+beforeEach(() => {
+  runs = createRunRegistry();
 });
 
 /**
@@ -106,7 +107,7 @@ function tuiOf(overrides: { focused?: unknown } = {}): {
 
 /** Register a top-level run under the current session (with a session path). */
 function seedRun(id: string, startedAt: number, agent = "lynx"): void {
-  startRun({
+  runs.start({
     id,
     agent,
     parentSession: "main",
@@ -129,6 +130,7 @@ function depsOf(
   const t = overrides.t ?? fakeTimer();
   return {
     deps: {
+      runs,
       getPrimary: overrides.getPrimary ?? (() => "dolphin"),
       colorizeAgent: (name: string) => `<c>${name}</c>`,
       getSessionId: overrides.getSessionId ?? (() => "main"),
@@ -195,7 +197,7 @@ describe("fleet widget — collapsed line", () => {
     seedRun("r0", 0, "beaver");
     seedRun("r1", 49000, "lynx");
     seedRun("r2", 49000, "spider");
-    finishRun("r2", { status: "done" });
+    runs.finish("r2", { status: "done" });
     const w = createFleetWidget(deps);
     w.attach(tuiOf().tui, THEME);
     t.advance(83000);
@@ -253,8 +255,8 @@ describe("fleet widget — collapsed line", () => {
     // top-level runners.
     const { deps, t } = depsOf();
     seedRun("parent", 0, "beaver");
-    finishRun("parent", { status: "done", childSession: "child-ses-1" });
-    startRun({
+    runs.finish("parent", { status: "done", childSession: "child-ses-1" });
+    runs.start({
       id: "nested",
       agent: "lynx",
       parentSession: "child-ses-1",
@@ -279,15 +281,15 @@ describe("fleet widget — collapsed line", () => {
     // drive the collapsed spinner segment and its count.
     const { deps, t } = depsOf();
     seedRun("parent", 0, "beaver");
-    finishRun("parent", { status: "done", childSession: "child-a" });
-    startRun({
+    runs.finish("parent", { status: "done", childSession: "child-a" });
+    runs.start({
       id: "mid",
       agent: "mola",
       parentSession: "child-a",
       startedAt: 1000,
     });
-    finishRun("mid", { status: "done", childSession: "child-b" });
-    startRun({
+    runs.finish("mid", { status: "done", childSession: "child-b" });
+    runs.start({
       id: "deep",
       agent: "lynx",
       parentSession: "child-b",
@@ -309,8 +311,8 @@ describe("fleet widget — collapsed line", () => {
     seedRun("r0", 0);
     seedRun("r1", 1000);
     seedRun("r2", 2000);
-    finishRun("r0", { status: "done" });
-    finishRun("r1", { status: "error", error: "boom" });
+    runs.finish("r0", { status: "done" });
+    runs.finish("r1", { status: "error", error: "boom" });
     const w = createFleetWidget(deps);
     w.attach(tuiOf().tui, THEME);
     t.advance(3000);
@@ -351,8 +353,8 @@ describe("fleet widget — collapsed line", () => {
       `\u001b[38;2;255;0;0m${name}\u001b[39m`;
     seedRun("r0", 0);
     seedRun("r1", 1000);
-    finishRun("r0", { status: "done" });
-    finishRun("r1", { status: "error", error: "boom" });
+    runs.finish("r0", { status: "done" });
+    runs.finish("r1", { status: "error", error: "boom" });
     const w = createFleetWidget(deps);
     w.attach(tuiOf().tui, spyTheme);
     t.advance(1000);
@@ -430,8 +432,8 @@ describe("fleet widget — expanded agent colorization", () => {
   it("colorizes a nested child row's agent name", () => {
     const { deps, t } = depsOf();
     seedRun("parent", 0, "beaver");
-    finishRun("parent", { status: "done", childSession: "child-ses-1" });
-    startRun({
+    runs.finish("parent", { status: "done", childSession: "child-ses-1" });
+    runs.start({
       id: "nested",
       agent: "lynx",
       parentSession: "child-ses-1",
@@ -481,8 +483,8 @@ describe("fleet widget — corrupted run graph", () => {
    */
   function seedSelfLoop(): void {
     seedRun("top", 0, "beaver");
-    finishRun("top", { status: "done", childSession: "ses-top" });
-    startRun({
+    runs.finish("top", { status: "done", childSession: "ses-top" });
+    runs.start({
       id: "self",
       agent: "lynx",
       parentSession: "ses-top",
@@ -497,15 +499,15 @@ describe("fleet widget — corrupted run graph", () => {
    */
   function seedTwoRunCycle(): void {
     seedRun("top", 0, "beaver");
-    finishRun("top", { status: "done", childSession: "ses-top" });
-    startRun({
+    runs.finish("top", { status: "done", childSession: "ses-top" });
+    runs.start({
       id: "a",
       agent: "mola",
       parentSession: "ses-top",
       startedAt: 1000,
       childSession: "ses-a",
     });
-    startRun({
+    runs.start({
       id: "b",
       agent: "lynx",
       parentSession: "ses-a",
@@ -740,7 +742,7 @@ describe("fleet widget — keyboard state machine", () => {
     const w = createFleetWidget(deps);
     w.attach(tuiOf().tui, THEME);
     // A run recorded WITHOUT a sessionPath (locateSessionFile miss).
-    startRun({ id: "no-path", agent: "lynx", parentSession: "main" });
+    runs.start({ id: "no-path", agent: "lynx", parentSession: "main" });
     w.handleKey("\u001b[B"); // expand, selects no-path
     const result = w.handleKey("\r");
     assert.equal(
@@ -862,15 +864,15 @@ describe("fleet widget — window following", () => {
   it("moves the selection into a grandchild row across every generation", () => {
     const { deps } = depsOf();
     seedRun("r0", 0, "beaver");
-    finishRun("r0", { status: "done", childSession: "child-a" });
-    startRun({
+    runs.finish("r0", { status: "done", childSession: "child-a" });
+    runs.start({
       id: "c0",
       agent: "mola",
       parentSession: "child-a",
       startedAt: 1000,
     });
-    finishRun("c0", { status: "done", childSession: "child-b" });
-    startRun({
+    runs.finish("c0", { status: "done", childSession: "child-b" });
+    runs.start({
       id: "g0",
       agent: "lynx",
       parentSession: "child-b",
@@ -899,13 +901,13 @@ describe("fleet widget — window following", () => {
     // survive.
     for (let i = 0; i < 10; i++) seedRun(`r${i}`, i * 1000);
     for (const parent of ["r2", "r5", "r8"]) {
-      startRun({
+      runs.start({
         id: `c-${parent}`,
         agent: "lynx",
         parentSession: `child-${parent}`,
         startedAt: 1000,
       });
-      finishRun(parent, { status: "done", childSession: `child-${parent}` });
+      runs.finish(parent, { status: "done", childSession: `child-${parent}` });
     }
     w.handleKey("\u001b[B"); // expand, selects r0
     w.handleKey("j"); // r1
@@ -979,8 +981,8 @@ describe("fleet widget — timer lifecycle", () => {
     assert.equal(t.activeCount(), 1, "timer runs while a run is active");
     // A `refresh()` after both finish must detect the idle fleet and stop the
     // spinner/clock — the finished widget must not keep animating.
-    finishRun("r0", { status: "done" });
-    finishRun("r1", { status: "error", error: "boom" });
+    runs.finish("r0", { status: "done" });
+    runs.finish("r1", { status: "error", error: "boom" });
     w.refresh();
     assert.equal(t.activeCount(), 0, "timer must clear once the fleet is idle");
     w.dispose();
@@ -1751,13 +1753,13 @@ describe("fleet widget — dual-column layout", () => {
     w.attach(tuiOf().tui, THEME);
     for (let i = 0; i < 10; i++) seedRun(`r${i}`, i * 1000);
     for (const parent of ["r2", "r5", "r8"]) {
-      startRun({
+      runs.start({
         id: `c-${parent}`,
         agent: "lynx",
         parentSession: `child-${parent}`,
         startedAt: 1000,
       });
-      finishRun(parent, { status: "done", childSession: `child-${parent}` });
+      runs.finish(parent, { status: "done", childSession: `child-${parent}` });
     }
     w.handleKey("\u001b[B"); // expand, selects r0
     w.handleKey("j"); // r1

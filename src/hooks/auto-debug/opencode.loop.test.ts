@@ -24,7 +24,7 @@
  */
 import assert from "node:assert/strict";
 import { afterEach, beforeEach, describe, it } from "node:test";
-import { sessionAgentRegistry } from "../../core/session/agent.js";
+import { _resetOpenCodeProcessStateForTesting } from "../../adapters/opencode/process.js";
 import { buildPlugin } from "../../opencode.js";
 import {
   type CaseFixture,
@@ -197,7 +197,7 @@ async function idle(
 
 afterEach(() => {
   _resetForTesting();
-  sessionAgentRegistry.clear();
+  _resetOpenCodeProcessStateForTesting();
 });
 
 // ---------------------------------------------------------------------------

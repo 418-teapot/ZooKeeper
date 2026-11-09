@@ -24,6 +24,7 @@ import {
   type PiFleetSession,
   type PiFleetUi,
 } from "./fleet-session.js";
+import { createPiProcessState } from "./process.js";
 import type { FleetWidget } from "./tui/widget.js";
 
 /** A fleet widget stand-in recording the calls the resources make. */
@@ -368,6 +369,7 @@ function fleetHarness(sessionID: string, task: string) {
   };
   const session = createPiFleetSession({
     sessionID,
+    runs: createPiProcessState().runs,
     getPrimary: () => "dolphin",
     colorizeAgent: (name: string) => name,
     getUi: () => ui,

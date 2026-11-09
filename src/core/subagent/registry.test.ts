@@ -1,57 +1,49 @@
 /**
- * Tests for the process-level subagent run registry (`registry.ts`).
+ * Tests for the subagent run registry (`registry.ts`).
  *
- * The registry is the single source of truth for subagent run state across
- * every session in the pi process.  It owns the run lifecycle
- * (`startRun` → `updateRun` → `finishRun`), the terminal-immutability rule
- * (a finished run is never overwritten), the parent/child association via
- * session ids, the per-main-session queries (`topLevelRuns` / `childrenOf`
- * / `summary`), and the stateless scrolling-window slice (`windowRuns`)
- * that feeds the expanded fleet widget.
+ * A registry instance is the single source of truth for subagent run state
+ * across every session of one process.  It owns the run lifecycle
+ * (`start` → `update` → `finish`), the terminal-immutability rule (a
+ * finished run is never overwritten), the parent/child association via
+ * session ids, the per-main-session queries (`topLevel` / `childrenOf` /
+ * `summary`), and the stateless scrolling-window slice (`windowRuns`) that
+ * feeds the expanded fleet widget.
  *
- * This suite locks those behaviours with independent literal expectations.
+ * This suite locks those behaviours with independent literal expectations,
+ * each test starting from its own registry instance.
  */
 import assert from "node:assert/strict";
-import { afterEach, describe, it } from "node:test";
+import { beforeEach, describe, it } from "node:test";
 import {
-  childrenIndex,
-  childrenOf,
-  findByChildSession,
-  finishRun,
-  getRun,
+  createRunRegistry,
+  type RunRegistry,
   type RunSnapshot,
   type RunStatus,
-  resetRegistry,
-  restoreRun,
-  startRun,
-  subscribeRunChange,
-  summary,
-  topLevelRuns,
-  updateRun,
   windowRuns,
 } from "./registry.js";
 import { createRunLog } from "./run-log.js";
 
-// bun shares one isolate across every test file, so the module-level
-// registry state is process-global — reset it between tests to keep every
-// assertion deterministic.
-afterEach(() => {
-  resetRegistry();
+// Every test owns its registry instance, so no test depends on what an
+// earlier one wrote.
+let runs: RunRegistry = createRunRegistry();
+
+beforeEach(() => {
+  runs = createRunRegistry();
 });
 
 // ---------------------------------------------------------------------------
-// startRun / updateRun / finishRun basics
+// start / update / finish basics
 // ---------------------------------------------------------------------------
 
 describe("registry — run lifecycle", () => {
-  it("startRun creates a running entry scoped to its parent session", () => {
-    startRun({
+  it("start creates a running entry scoped to its parent session", () => {
+    runs.start({
       id: "r1",
       agent: "lynx",
       parentSession: "main",
       startedAt: 100,
     });
-    const run = getRun("r1");
+    const run = runs.get("r1");
     assert.ok(run, "expected the run to exist");
     assert.equal(run?.status, "running");
     assert.equal(run?.parentSession, "main");
@@ -60,69 +52,69 @@ describe("registry — run lifecycle", () => {
     assert.equal(run?.endedAt, undefined);
   });
 
-  it("updateRun patches the progress fields of a running run", () => {
-    startRun({
+  it("update patches the progress fields of a running run", () => {
+    runs.start({
       id: "r1",
       agent: "lynx",
       parentSession: "main",
       startedAt: 100,
     });
-    updateRun("r1", {
+    runs.update("r1", {
       currentTool: "bash",
       tokens: 1200,
       model: "dummy-small",
     });
-    const run = getRun("r1");
+    const run = runs.get("r1");
     assert.equal(run?.currentTool, "bash");
     assert.equal(run?.tokens, 1200);
     assert.equal(run?.model, "dummy-small");
   });
 
-  it("updateRun clears the current tool on an explicit null patch", () => {
-    startRun({
+  it("update clears the current tool on an explicit null patch", () => {
+    runs.start({
       id: "r1",
       agent: "lynx",
       parentSession: "main",
       startedAt: 100,
     });
-    updateRun("r1", { currentTool: "bash" });
-    assert.equal(getRun("r1")?.currentTool, "bash");
+    runs.update("r1", { currentTool: "bash" });
+    assert.equal(runs.get("r1")?.currentTool, "bash");
     // An absent field means "unchanged" — it must never clear the tool.
-    updateRun("r1", { tokens: 10 });
-    assert.equal(getRun("r1")?.currentTool, "bash");
+    runs.update("r1", { tokens: 10 });
+    assert.equal(runs.get("r1")?.currentTool, "bash");
     // Null is the explicit clear, distinguishable from the absent field.
-    updateRun("r1", { currentTool: null });
-    assert.equal(getRun("r1")?.currentTool, undefined);
+    runs.update("r1", { currentTool: null });
+    assert.equal(runs.get("r1")?.currentTool, undefined);
     assert.equal(
-      "currentTool" in (getRun("r1") as object),
+      "currentTool" in (runs.get("r1") as object),
       false,
       "a cleared tool must leave no stale key on the run",
     );
     // The other fields of the same patch still apply.
-    assert.equal(getRun("r1")?.tokens, 10);
+    assert.equal(runs.get("r1")?.tokens, 10);
   });
 
-  it("updateRun rewrites the label of a running run (later title evidence wins)", () => {
-    startRun({
+  it("update rewrites the label of a running run (later title evidence wins)", () => {
+    runs.start({
       id: "r1",
       agent: "lynx",
       parentSession: "main",
       startedAt: 100,
       label: "a1b2c3d4",
     });
-    updateRun("r1", { label: "迁移 tracker" });
-    assert.equal(getRun("r1")?.label, "迁移 tracker");
+    runs.update("r1", { label: "迁移 tracker" });
+    assert.equal(runs.get("r1")?.label, "迁移 tracker");
   });
 
-  it("updateRun records the session path on a running run (enter-inspect while running)", () => {
-    startRun({
+  it("update records the session path on a running run (enter-inspect while running)", () => {
+    runs.start({
       id: "r1",
       agent: "lynx",
       parentSession: "main",
       startedAt: 100,
     });
-    updateRun("r1", { sessionPath: "/tmp/child-ses-1.jsonl" });
-    const run = getRun("r1");
+    runs.update("r1", { sessionPath: "/tmp/child-ses-1.jsonl" });
+    const run = runs.get("r1");
     assert.equal(run?.status, "running", "the run must stay non-terminal");
     assert.equal(
       run?.sessionPath,
@@ -131,18 +123,18 @@ describe("registry — run lifecycle", () => {
     );
   });
 
-  it("finishRun marks the run done with endedAt and the session path", () => {
-    startRun({
+  it("finish marks the run done with endedAt and the session path", () => {
+    runs.start({
       id: "r1",
       agent: "lynx",
       parentSession: "main",
       startedAt: 100,
     });
-    finishRun("r1", {
+    runs.finish("r1", {
       status: "done",
       sessionPath: "/tmp/s.jsonl",
     });
-    const run = getRun("r1");
+    const run = runs.get("r1");
     assert.equal(run?.status, "done");
     assert.equal(run?.sessionPath, "/tmp/s.jsonl");
     assert.ok(
@@ -151,22 +143,22 @@ describe("registry — run lifecycle", () => {
     );
   });
 
-  it("finishRun records the error message on an error outcome", () => {
-    startRun({
+  it("finish records the error message on an error outcome", () => {
+    runs.start({
       id: "r1",
       agent: "spider",
       parentSession: "main",
       startedAt: 100,
     });
-    finishRun("r1", { status: "error", error: "exit 1" });
-    const run = getRun("r1");
+    runs.finish("r1", { status: "error", error: "exit 1" });
+    const run = runs.get("r1");
     assert.equal(run?.status, "error");
     assert.equal(run?.error, "exit 1");
     assert.ok(run?.endedAt !== undefined);
   });
 
-  it("startRun records childSession and sessionPath pointers", () => {
-    startRun({
+  it("start records childSession and sessionPath pointers", () => {
+    runs.start({
       id: "r1",
       agent: "lynx",
       parentSession: "main",
@@ -174,30 +166,30 @@ describe("registry — run lifecycle", () => {
       childSession: "child-ses-1",
       sessionPath: "/tmp/child-ses-1.jsonl",
     });
-    const run = getRun("r1");
+    const run = runs.get("r1");
     assert.equal(run?.childSession, "child-ses-1");
     assert.equal(run?.sessionPath, "/tmp/child-ses-1.jsonl");
   });
 
-  it("finishRun records childSession and sessionPath pointers", () => {
-    startRun({
+  it("finish records childSession and sessionPath pointers", () => {
+    runs.start({
       id: "r1",
       agent: "lynx",
       parentSession: "main",
       startedAt: 100,
     });
-    finishRun("r1", {
+    runs.finish("r1", {
       status: "done",
       childSession: "child-ses-1",
       sessionPath: "/tmp/child-ses-1.jsonl",
     });
-    const run = getRun("r1");
+    const run = runs.get("r1");
     assert.equal(run?.childSession, "child-ses-1");
     assert.equal(run?.sessionPath, "/tmp/child-ses-1.jsonl");
   });
 
-  it("finishRun releases the run's fact log; the terminal run keeps metadata only", () => {
-    const run = startRun({
+  it("finish releases the run's fact log; the terminal run keeps metadata only", () => {
+    const run = runs.start({
       id: "r1",
       agent: "lynx",
       parentSession: "main",
@@ -209,7 +201,7 @@ describe("registry — run lifecycle", () => {
       undefined,
       102,
     );
-    updateRun("r1", {
+    runs.update("r1", {
       tokens: 4200,
       model: "dummy-small",
       childSession: "child-ses-9",
@@ -217,8 +209,8 @@ describe("registry — run lifecycle", () => {
     });
     const liveLog = run.log;
     assert.equal(liveLog.size, 2, "precondition: the live log holds the facts");
-    finishRun("r1", { status: "done", endedAt: 300 });
-    const finished = getRun("r1");
+    runs.finish("r1", { status: "done", endedAt: 300 });
+    const finished = runs.get("r1");
     assert.ok(finished);
     assert.equal(
       finished.log.size,
@@ -252,24 +244,24 @@ describe("registry — run lifecycle", () => {
     assert.equal(finished.sessionPath, "/tmp/child-ses-9.jsonl");
   });
 
-  it("finishRun cannot change childSession/sessionPath of a finished run", () => {
-    startRun({
+  it("finish cannot change childSession/sessionPath of a finished run", () => {
+    runs.start({
       id: "r1",
       agent: "lynx",
       parentSession: "main",
       startedAt: 100,
     });
-    finishRun("r1", {
+    runs.finish("r1", {
       status: "done",
       childSession: "child-a",
       sessionPath: "/tmp/a.jsonl",
     });
-    finishRun("r1", {
+    runs.finish("r1", {
       status: "done",
       childSession: "child-b",
       sessionPath: "/tmp/b.jsonl",
     });
-    const run = getRun("r1");
+    const run = runs.get("r1");
     assert.equal(run?.childSession, "child-a", "childSession must be frozen");
     assert.equal(
       run?.sessionPath,
@@ -278,21 +270,21 @@ describe("registry — run lifecycle", () => {
     );
   });
 
-  it("startRun never clobbers an existing entry (ids are unique)", () => {
-    startRun({
+  it("start never clobbers an existing entry (ids are unique)", () => {
+    runs.start({
       id: "r1",
       agent: "lynx",
       parentSession: "main",
       startedAt: 100,
     });
-    startRun({
+    runs.start({
       id: "r1",
       agent: "spider",
       parentSession: "other",
       startedAt: 900,
     });
-    const run = getRun("r1");
-    assert.equal(run?.agent, "lynx", "the first startRun must win");
+    const run = runs.get("r1");
+    assert.equal(run?.agent, "lynx", "the first start must win");
     assert.equal(run?.parentSession, "main");
   });
 });
@@ -302,16 +294,16 @@ describe("registry — run lifecycle", () => {
 // ---------------------------------------------------------------------------
 
 describe("registry — terminal immutability", () => {
-  it("updateRun is ignored after the run finishes", () => {
-    startRun({
+  it("update is ignored after the run finishes", () => {
+    runs.start({
       id: "r1",
       agent: "lynx",
       parentSession: "main",
       startedAt: 100,
     });
-    finishRun("r1", { status: "done" });
-    updateRun("r1", { currentTool: "bash", tokens: 999 });
-    const run = getRun("r1");
+    runs.finish("r1", { status: "done" });
+    runs.update("r1", { currentTool: "bash", tokens: 999 });
+    const run = runs.get("r1");
     assert.equal(run?.status, "done");
     assert.equal(
       run?.currentTool,
@@ -321,94 +313,94 @@ describe("registry — terminal immutability", () => {
     assert.equal(run?.tokens, undefined, "tokens must not change post-done");
   });
 
-  it("finishRun cannot change the status, endedAt, or error of a finished run", () => {
-    startRun({
+  it("finish cannot change the status, endedAt, or error of a finished run", () => {
+    runs.start({
       id: "r1",
       agent: "lynx",
       parentSession: "main",
       startedAt: 100,
     });
-    finishRun("r1", { status: "done", sessionPath: "/tmp/a.jsonl" });
-    const firstEnd = getRun("r1")?.endedAt;
-    finishRun("r1", { status: "error", error: "overwritten?" });
-    const run = getRun("r1");
-    assert.equal(run?.status, "done", "a second finishRun must be ignored");
+    runs.finish("r1", { status: "done", sessionPath: "/tmp/a.jsonl" });
+    const firstEnd = runs.get("r1")?.endedAt;
+    runs.finish("r1", { status: "error", error: "overwritten?" });
+    const run = runs.get("r1");
+    assert.equal(run?.status, "done", "a second finish must be ignored");
     assert.equal(run?.error, undefined);
     assert.equal(run?.endedAt, firstEnd, "endedAt must be frozen");
     assert.equal(run?.sessionPath, "/tmp/a.jsonl");
   });
 
   it("a done run cannot be finished again as aborted", () => {
-    startRun({
+    runs.start({
       id: "r1",
       agent: "lynx",
       parentSession: "main",
       startedAt: 100,
     });
-    finishRun("r1", { status: "done" });
-    finishRun("r1", { status: "aborted" });
-    assert.equal(getRun("r1")?.status, "done");
+    runs.finish("r1", { status: "done" });
+    runs.finish("r1", { status: "aborted" });
+    assert.equal(runs.get("r1")?.status, "done");
   });
 
   it("an error run cannot be finished again as done", () => {
-    startRun({
+    runs.start({
       id: "r1",
       agent: "lynx",
       parentSession: "main",
       startedAt: 100,
     });
-    finishRun("r1", { status: "error", error: "boom" });
-    finishRun("r1", { status: "done" });
-    const run = getRun("r1");
+    runs.finish("r1", { status: "error", error: "boom" });
+    runs.finish("r1", { status: "done" });
+    const run = runs.get("r1");
     assert.equal(run?.status, "error");
     assert.equal(run?.error, "boom");
   });
 
   it("the label is frozen once the run finishes", () => {
-    startRun({
+    runs.start({
       id: "r1",
       agent: "lynx",
       parentSession: "main",
       startedAt: 100,
       label: "初始标题",
     });
-    finishRun("r1", { status: "done" });
-    updateRun("r1", { label: "迟到的标题" });
-    assert.equal(getRun("r1")?.label, "初始标题");
+    runs.finish("r1", { status: "done" });
+    runs.update("r1", { label: "迟到的标题" });
+    assert.equal(runs.get("r1")?.label, "初始标题");
   });
 
-  it("updateRun and finishRun on unknown ids are silent no-ops", () => {
-    updateRun("ghost", { currentTool: "bash" });
-    finishRun("ghost", { status: "done" });
-    assert.equal(getRun("ghost"), undefined);
+  it("update and finish on unknown ids are silent no-ops", () => {
+    runs.update("ghost", { currentTool: "bash" });
+    runs.finish("ghost", { status: "done" });
+    assert.equal(runs.get("ghost"), undefined);
   });
 
   it("entries are never deleted — a finished run survives later operations", () => {
-    startRun({
+    runs.start({
       id: "r1",
       agent: "lynx",
       parentSession: "main",
       startedAt: 100,
     });
-    finishRun("r1", { status: "done" });
-    startRun({
+    runs.finish("r1", { status: "done" });
+    runs.start({
       id: "r2",
       agent: "spider",
       parentSession: "main",
       startedAt: 200,
     });
-    finishRun("r2", { status: "done" });
-    assert.equal(topLevelRuns("main").length, 2);
+    runs.finish("r2", { status: "done" });
+    assert.equal(runs.topLevel("main").length, 2);
   });
 });
 
 describe("registry — restoreRun", () => {
   it("restores a terminal run in one step and publishes one event", () => {
     const seen: Array<{ runId: string; parentSession: string }> = [];
-    const off = subscribeRunChange((change) => {
+    const off = runs.subscribe((change) => {
       seen.push(change);
     });
-    const created = restoreRun({
+    const created = runs.restore({
       id: "r1",
       agent: "lynx",
       parentSession: "main",
@@ -427,7 +419,7 @@ describe("registry — restoreRun", () => {
       [{ runId: "r1", parentSession: "main" }],
       "the restore publishes exactly one change",
     );
-    const run = getRun("r1");
+    const run = runs.get("r1");
     assert.ok(run);
     assert.equal(run.status, "done");
     assert.equal(run.agent, "lynx");
@@ -440,13 +432,18 @@ describe("registry — restoreRun", () => {
   });
 
   it("keeps an existing run untouched and publishes nothing", () => {
-    startRun({ id: "r1", agent: "lynx", parentSession: "main", startedAt: 1 });
-    updateRun("r1", { tokens: 5 });
+    runs.start({
+      id: "r1",
+      agent: "lynx",
+      parentSession: "main",
+      startedAt: 1,
+    });
+    runs.update("r1", { tokens: 5 });
     let changes = 0;
-    const off = subscribeRunChange(() => {
+    const off = runs.subscribe(() => {
       changes += 1;
     });
-    const created = restoreRun({
+    const created = runs.restore({
       id: "r1",
       agent: "spider",
       parentSession: "main",
@@ -458,14 +455,14 @@ describe("registry — restoreRun", () => {
 
     assert.equal(created, false, "a duplicate restore creates nothing");
     assert.equal(changes, 0, "a duplicate restore publishes nothing");
-    assert.equal(getRun("r1")?.status, "running");
-    assert.equal(getRun("r1")?.agent, "lynx");
-    assert.equal(getRun("r1")?.tokens, 5);
+    assert.equal(runs.get("r1")?.status, "running");
+    assert.equal(runs.get("r1")?.agent, "lynx");
+    assert.equal(runs.get("r1")?.tokens, 5);
   });
 
   it("defaults the started and ended times to now", () => {
     const before = Date.now();
-    restoreRun({
+    runs.restore({
       id: "r2",
       agent: "lynx",
       parentSession: "main",
@@ -473,7 +470,7 @@ describe("registry — restoreRun", () => {
       error: "boom",
     });
     const after = Date.now();
-    const run = getRun("r2");
+    const run = runs.get("r2");
     assert.ok(run);
     assert.ok(run.startedAt >= before && run.startedAt <= after);
     assert.ok(run.endedAt !== undefined);
@@ -484,7 +481,7 @@ describe("registry — restoreRun", () => {
   });
 
   it("creates a terminal run — later writes and finishes are ignored", () => {
-    restoreRun({
+    runs.restore({
       id: "r1",
       agent: "lynx",
       parentSession: "main",
@@ -492,16 +489,16 @@ describe("registry — restoreRun", () => {
       startedAt: 1,
       endedAt: 2,
     });
-    updateRun("r1", { tokens: 9 });
-    finishRun("r1", { status: "aborted" });
-    const run = getRun("r1");
+    runs.update("r1", { tokens: 9 });
+    runs.finish("r1", { status: "aborted" });
+    const run = runs.get("r1");
     assert.equal(run?.status, "done");
     assert.equal(run?.tokens, undefined);
     assert.equal(run?.endedAt, 2);
   });
 
   it("publishes no event when a fact is appended to a restored run's log", () => {
-    restoreRun({
+    runs.restore({
       id: "r1",
       agent: "lynx",
       parentSession: "main",
@@ -510,10 +507,10 @@ describe("registry — restoreRun", () => {
       endedAt: 2,
     });
     let changes = 0;
-    const off = subscribeRunChange(() => {
+    const off = runs.subscribe(() => {
       changes += 1;
     });
-    getRun("r1")?.log.appendMessage([{ type: "text", text: "late" }]);
+    runs.get("r1")?.log.appendMessage([{ type: "text", text: "late" }]);
     off();
     assert.equal(changes, 0, "the terminal log is inert");
   });
@@ -525,80 +522,80 @@ describe("registry — restoreRun", () => {
 
 describe("registry — parent/child association", () => {
   it("childrenOf returns the runs whose parentSession is the parent's child session", () => {
-    startRun({
+    runs.start({
       id: "p1",
       agent: "beaver",
       parentSession: "main",
       startedAt: 100,
     });
-    updateRun("p1", { childSession: "child-ses-1" });
-    startRun({
+    runs.update("p1", { childSession: "child-ses-1" });
+    runs.start({
       id: "c1",
       agent: "lynx",
       parentSession: "child-ses-1",
       startedAt: 200,
     });
-    startRun({
+    runs.start({
       id: "c2",
       agent: "spider",
       parentSession: "child-ses-1",
       startedAt: 300,
     });
     // A sibling top-level run under the same main session is NOT a child.
-    startRun({
+    runs.start({
       id: "s1",
       agent: "spider",
       parentSession: "main",
       startedAt: 400,
     });
 
-    const children = childrenOf("p1");
+    const children = runs.childrenOf("p1");
     assert.deepEqual(
       children.map((c) => c.id),
       ["c1", "c2"],
       "children must be sorted by startedAt and only attach to the child session",
     );
-    assert.deepEqual(childrenOf("c1"), [], "a leaf run has no children");
+    assert.deepEqual(runs.childrenOf("c1"), [], "a leaf run has no children");
   });
 
   it("childrenOf is empty when the parent never recorded a child session", () => {
-    startRun({
+    runs.start({
       id: "p1",
       agent: "beaver",
       parentSession: "main",
       startedAt: 100,
     });
-    startRun({
+    runs.start({
       id: "c1",
       agent: "lynx",
       parentSession: "not-the-child-session",
       startedAt: 200,
     });
-    assert.deepEqual(childrenOf("p1"), []);
+    assert.deepEqual(runs.childrenOf("p1"), []);
   });
 
-  it("topLevelRuns returns only the runs whose parentSession is the main session", () => {
-    startRun({
+  it("topLevel returns only the runs whose parentSession is the main session", () => {
+    runs.start({
       id: "p1",
       agent: "beaver",
       parentSession: "main",
       startedAt: 100,
     });
-    updateRun("p1", { childSession: "child-ses-1" });
-    startRun({
+    runs.update("p1", { childSession: "child-ses-1" });
+    runs.start({
       id: "c1",
       agent: "lynx",
       parentSession: "child-ses-1",
       startedAt: 200,
     });
-    startRun({
+    runs.start({
       id: "s1",
       agent: "spider",
       parentSession: "main",
       startedAt: 300,
     });
 
-    const top = topLevelRuns("main");
+    const top = runs.topLevel("main");
     assert.deepEqual(
       top.map((r) => r.id),
       ["p1", "s1"],
@@ -606,82 +603,92 @@ describe("registry — parent/child association", () => {
     );
   });
 
-  it("topLevelRuns sorts by startedAt ascending with a deterministic tiebreak", () => {
-    startRun({ id: "z", agent: "lynx", parentSession: "main", startedAt: 300 });
-    startRun({
+  it("topLevel sorts by startedAt ascending with a deterministic tiebreak", () => {
+    runs.start({
+      id: "z",
+      agent: "lynx",
+      parentSession: "main",
+      startedAt: 300,
+    });
+    runs.start({
       id: "a",
       agent: "spider",
       parentSession: "main",
       startedAt: 100,
     });
-    startRun({ id: "m", agent: "lynx", parentSession: "main", startedAt: 200 });
+    runs.start({
+      id: "m",
+      agent: "lynx",
+      parentSession: "main",
+      startedAt: 200,
+    });
     assert.deepEqual(
-      topLevelRuns("main").map((r) => r.id),
+      runs.topLevel("main").map((r) => r.id),
       ["a", "m", "z"],
     );
   });
 
-  it("topLevelRuns is isolated per main session", () => {
-    startRun({
+  it("topLevel is isolated per main session", () => {
+    runs.start({
       id: "a1",
       agent: "lynx",
       parentSession: "main-a",
       startedAt: 100,
     });
-    startRun({
+    runs.start({
       id: "b1",
       agent: "spider",
       parentSession: "main-b",
       startedAt: 200,
     });
     assert.deepEqual(
-      topLevelRuns("main-a").map((r) => r.id),
+      runs.topLevel("main-a").map((r) => r.id),
       ["a1"],
     );
     assert.deepEqual(
-      topLevelRuns("main-b").map((r) => r.id),
+      runs.topLevel("main-b").map((r) => r.id),
       ["b1"],
     );
-    assert.deepEqual(topLevelRuns("main-c"), []);
+    assert.deepEqual(runs.topLevel("main-c"), []);
   });
 
   it("findByChildSession returns the run that delegated into a session", () => {
-    startRun({
+    runs.start({
       id: "p1",
       agent: "beaver",
       parentSession: "main",
       startedAt: 100,
     });
-    updateRun("p1", { childSession: "child-ses-1" });
-    const run = findByChildSession("child-ses-1");
+    runs.update("p1", { childSession: "child-ses-1" });
+    const run = runs.findByChildSession("child-ses-1");
     assert.ok(run, "expected the delegation run to be found");
     assert.equal(run.id, "p1");
     assert.equal(run.agent, "beaver");
   });
 
   it("findByChildSession is undefined for a session no run delegated into", () => {
-    startRun({
+    runs.start({
       id: "p1",
       agent: "beaver",
       parentSession: "main",
       startedAt: 100,
     });
-    updateRun("p1", { childSession: "child-ses-1" });
+    runs.update("p1", { childSession: "child-ses-1" });
     // The parent session itself is never a child session of this run.
-    assert.equal(findByChildSession("main"), undefined);
-    assert.equal(findByChildSession("never-delegated"), undefined);
+    assert.equal(runs.findByChildSession("main"), undefined);
+    assert.equal(runs.findByChildSession("never-delegated"), undefined);
   });
 
   it("findByChildSession still matches a terminal run (history survives)", () => {
-    startRun({
+    runs.start({
       id: "p1",
       agent: "lynx",
       parentSession: "main",
       startedAt: 100,
       childSession: "child-ses-9",
     });
-    finishRun("p1", { status: "done", endedAt: 200 });
-    assert.equal(findByChildSession("child-ses-9")?.agent, "lynx");
+    runs.finish("p1", { status: "done", endedAt: 200 });
+    assert.equal(runs.findByChildSession("child-ses-9")?.agent, "lynx");
   });
 });
 
@@ -700,34 +707,34 @@ function indexedChildIds(
 
 describe("registry — childrenIndex", () => {
   it("indexes the children of every generation under the given roots", () => {
-    startRun({
+    runs.start({
       id: "t1",
       agent: "beaver",
       parentSession: "main",
       startedAt: 100,
       childSession: "ses-t1",
     });
-    startRun({
+    runs.start({
       id: "t1a",
       agent: "lynx",
       parentSession: "ses-t1",
       startedAt: 200,
       childSession: "ses-t1a",
     });
-    startRun({
+    runs.start({
       id: "t1a1",
       agent: "spider",
       parentSession: "ses-t1a",
       startedAt: 300,
     });
-    startRun({
+    runs.start({
       id: "t2",
       agent: "mola",
       parentSession: "main",
       startedAt: 150,
     });
 
-    const index = childrenIndex(topLevelRuns("main"));
+    const index = runs.childrenIndex(runs.topLevel("main"));
 
     assert.deepEqual(
       [...index.keys()].sort(),
@@ -745,27 +752,27 @@ describe("registry — childrenIndex", () => {
   });
 
   it("orders each sibling group by startedAt", () => {
-    startRun({
+    runs.start({
       id: "p1",
       agent: "beaver",
       parentSession: "main",
       startedAt: 10,
       childSession: "ses-p1",
     });
-    startRun({
+    runs.start({
       id: "late",
       agent: "lynx",
       parentSession: "ses-p1",
       startedAt: 900,
     });
-    startRun({
+    runs.start({
       id: "early",
       agent: "spider",
       parentSession: "ses-p1",
       startedAt: 100,
     });
 
-    const index = childrenIndex(topLevelRuns("main"));
+    const index = runs.childrenIndex(runs.topLevel("main"));
     assert.deepEqual(
       index.get("p1")?.map((r) => r.id),
       ["early", "late"],
@@ -773,27 +780,27 @@ describe("registry — childrenIndex", () => {
   });
 
   it("omits leaf runs and returns an empty index for no roots", () => {
-    startRun({
+    runs.start({
       id: "leaf",
       agent: "lynx",
       parentSession: "main",
       startedAt: 10,
     });
-    assert.equal(childrenIndex(topLevelRuns("main")).size, 0);
-    assert.equal(childrenIndex([]).size, 0);
+    assert.equal(runs.childrenIndex(runs.topLevel("main")).size, 0);
+    assert.equal(runs.childrenIndex([]).size, 0);
   });
 
   it("drops the self edge of a run whose child session is its own parent", () => {
     // A corrupted history writes the run's own parent session as its child
     // session, so `childrenOf` matches the run itself.
-    startRun({
+    runs.start({
       id: "top",
       agent: "beaver",
       parentSession: "main",
       startedAt: 10,
       childSession: "ses-top",
     });
-    startRun({
+    runs.start({
       id: "self",
       agent: "lynx",
       parentSession: "ses-top",
@@ -801,7 +808,7 @@ describe("registry — childrenIndex", () => {
       childSession: "ses-top",
     });
 
-    const index = childrenIndex(topLevelRuns("main"));
+    const index = runs.childrenIndex(runs.topLevel("main"));
 
     assert.deepEqual(
       [...index.keys()],
@@ -816,23 +823,23 @@ describe("registry — childrenIndex", () => {
 
   it("drops the back edge of a two-run cycle", () => {
     // `a` delegates into ses-a, `b` reports ses-a as its parent and points
-    // its own child session back at the main session, so `childrenOf(b)`
+    // its own child session back at the main session, so `runs.childrenOf(b)`
     // matches `a`.  Without cycle handling the walk never terminates.
-    startRun({
+    runs.start({
       id: "top",
       agent: "beaver",
       parentSession: "main",
       startedAt: 10,
       childSession: "ses-top",
     });
-    startRun({
+    runs.start({
       id: "a",
       agent: "mola",
       parentSession: "ses-top",
       startedAt: 20,
       childSession: "ses-a",
     });
-    startRun({
+    runs.start({
       id: "b",
       agent: "lynx",
       parentSession: "ses-a",
@@ -840,7 +847,7 @@ describe("registry — childrenIndex", () => {
       childSession: "main",
     });
 
-    const index = childrenIndex(topLevelRuns("main"));
+    const index = runs.childrenIndex(runs.topLevel("main"));
 
     assert.deepEqual(
       index.get("top")?.map((r) => r.id),
@@ -859,35 +866,35 @@ describe("registry — childrenIndex", () => {
     // The history scanner can restore a loop from persisted parent/child
     // links (t → a → b → c → a) plus a second parent session that points at
     // an already indexed run.
-    startRun({
+    runs.start({
       id: "t",
       agent: "beaver",
       parentSession: "main",
       startedAt: 10,
       childSession: "ses-t",
     });
-    startRun({
+    runs.start({
       id: "a",
       agent: "mola",
       parentSession: "ses-t",
       startedAt: 20,
       childSession: "ses-a",
     });
-    startRun({
+    runs.start({
       id: "b",
       agent: "spider",
       parentSession: "ses-a",
       startedAt: 30,
       childSession: "ses-b",
     });
-    startRun({
+    runs.start({
       id: "c",
       agent: "lynx",
       parentSession: "ses-b",
       startedAt: 40,
       childSession: "ses-t",
     });
-    startRun({
+    runs.start({
       id: "t2",
       agent: "beaver",
       parentSession: "main",
@@ -895,7 +902,7 @@ describe("registry — childrenIndex", () => {
       childSession: "ses-a",
     });
 
-    const index = childrenIndex(topLevelRuns("main"));
+    const index = runs.childrenIndex(runs.topLevel("main"));
 
     assert.deepEqual(
       [...index.keys()],
@@ -930,35 +937,35 @@ describe("registry — childrenIndex", () => {
 
 describe("registry — summary counts", () => {
   it("counts running / done / failed / aborted, keeping aborted separate", () => {
-    startRun({
+    runs.start({
       id: "r1",
       agent: "lynx",
       parentSession: "main",
       startedAt: 100,
     });
-    finishRun("r1", { status: "done" });
-    startRun({
+    runs.finish("r1", { status: "done" });
+    runs.start({
       id: "r2",
       agent: "spider",
       parentSession: "main",
       startedAt: 200,
     });
-    finishRun("r2", { status: "error", error: "boom" });
-    startRun({
+    runs.finish("r2", { status: "error", error: "boom" });
+    runs.start({
       id: "r3",
       agent: "spider",
       parentSession: "main",
       startedAt: 300,
     });
-    finishRun("r3", { status: "aborted" });
-    startRun({
+    runs.finish("r3", { status: "aborted" });
+    runs.start({
       id: "r4",
       agent: "lynx",
       parentSession: "main",
       startedAt: 400,
     });
 
-    assert.deepEqual(summary("main"), {
+    assert.deepEqual(runs.summary("main"), {
       running: 1,
       done: 1,
       failed: 1,
@@ -967,7 +974,7 @@ describe("registry — summary counts", () => {
   });
 
   it("summaries with no activity are all zero", () => {
-    assert.deepEqual(summary("main"), {
+    assert.deepEqual(runs.summary("main"), {
       running: 0,
       done: 0,
       failed: 0,
@@ -976,26 +983,26 @@ describe("registry — summary counts", () => {
   });
 
   it("summary counts are isolated per main session", () => {
-    startRun({
+    runs.start({
       id: "a1",
       agent: "lynx",
       parentSession: "main-a",
       startedAt: 100,
     });
-    finishRun("a1", { status: "error", error: "x" });
-    startRun({
+    runs.finish("a1", { status: "error", error: "x" });
+    runs.start({
       id: "b1",
       agent: "spider",
       parentSession: "main-b",
       startedAt: 200,
     });
-    assert.deepEqual(summary("main-a"), {
+    assert.deepEqual(runs.summary("main-a"), {
       running: 0,
       done: 0,
       failed: 1,
       aborted: 0,
     });
-    assert.deepEqual(summary("main-b"), {
+    assert.deepEqual(runs.summary("main-b"), {
       running: 1,
       done: 0,
       failed: 0,
@@ -1005,47 +1012,47 @@ describe("registry — summary counts", () => {
 
   it("counts nested runs across the whole session tree", () => {
     // main → p (done) → { n1 (error) → g (running), n2 (done) }.
-    startRun({
+    runs.start({
       id: "p",
       agent: "beaver",
       parentSession: "main",
       startedAt: 0,
     });
-    finishRun("p", { status: "done", childSession: "child-p" });
-    startRun({
+    runs.finish("p", { status: "done", childSession: "child-p" });
+    runs.start({
       id: "n1",
       agent: "lynx",
       parentSession: "child-p",
       startedAt: 1,
     });
-    finishRun("n1", {
+    runs.finish("n1", {
       status: "error",
       error: "boom",
       childSession: "child-n1",
     });
-    startRun({
+    runs.start({
       id: "n2",
       agent: "spider",
       parentSession: "child-p",
       startedAt: 2,
     });
-    finishRun("n2", { status: "done" });
-    startRun({
+    runs.finish("n2", { status: "done" });
+    runs.start({
       id: "g",
       agent: "mola",
       parentSession: "child-n1",
       startedAt: 3,
     });
     // A run under another main session must stay out of the tally.
-    startRun({
+    runs.start({
       id: "other",
       agent: "lynx",
       parentSession: "main-other",
       startedAt: 4,
     });
-    finishRun("other", { status: "done" });
+    runs.finish("other", { status: "done" });
 
-    assert.deepEqual(summary("main"), {
+    assert.deepEqual(runs.summary("main"), {
       running: 1,
       done: 2,
       failed: 1,
@@ -1217,12 +1224,17 @@ describe("registry — windowRuns", () => {
 describe("registry — run-change notification", () => {
   it("carries the run id and parent session on every change", () => {
     const seen: Array<{ runId: string; parentSession: string }> = [];
-    const off = subscribeRunChange((change) => {
+    const off = runs.subscribe((change) => {
       seen.push(change);
     });
-    startRun({ id: "r1", agent: "lynx", parentSession: "main", startedAt: 1 });
-    updateRun("r1", { tokens: 10 });
-    finishRun("r1", { status: "done", endedAt: 2 });
+    runs.start({
+      id: "r1",
+      agent: "lynx",
+      parentSession: "main",
+      startedAt: 1,
+    });
+    runs.update("r1", { tokens: 10 });
+    runs.finish("r1", { status: "done", endedAt: 2 });
     off();
     assert.deepEqual(seen, [
       { runId: "r1", parentSession: "main" },
@@ -1233,54 +1245,64 @@ describe("registry — run-change notification", () => {
 
   it("never publishes a write that changes nothing", () => {
     let changes = 0;
-    const off = subscribeRunChange(() => {
+    const off = runs.subscribe(() => {
       changes += 1;
     });
-    startRun({ id: "r1", agent: "lynx", parentSession: "main", startedAt: 1 });
+    runs.start({
+      id: "r1",
+      agent: "lynx",
+      parentSession: "main",
+      startedAt: 1,
+    });
     assert.equal(changes, 1, "registration is a change");
 
-    startRun({ id: "r1", agent: "lynx", parentSession: "main", startedAt: 1 });
+    runs.start({
+      id: "r1",
+      agent: "lynx",
+      parentSession: "main",
+      startedAt: 1,
+    });
     assert.equal(changes, 1, "a duplicate start reports nothing");
 
-    updateRun("r1", {});
-    updateRun("r1", { tokens: undefined });
+    runs.update("r1", {});
+    runs.update("r1", { tokens: undefined });
     assert.equal(changes, 1, "an empty update reports nothing");
 
-    updateRun("r1", { tokens: 7, model: "dummy-small" });
+    runs.update("r1", { tokens: 7, model: "dummy-small" });
     assert.equal(changes, 2, "a real update reports once");
-    updateRun("r1", { tokens: 7, model: "dummy-small" });
+    runs.update("r1", { tokens: 7, model: "dummy-small" });
     assert.equal(changes, 2, "an unchanged update reports nothing");
 
-    updateRun("r1", { currentTool: "bash" });
+    runs.update("r1", { currentTool: "bash" });
     assert.equal(changes, 3);
-    updateRun("r1", { currentTool: "bash" });
+    runs.update("r1", { currentTool: "bash" });
     assert.equal(changes, 3, "re-setting the same tool reports nothing");
-    updateRun("r1", { currentTool: null });
+    runs.update("r1", { currentTool: null });
     assert.equal(changes, 4, "clearing the tool reports once");
-    updateRun("r1", { currentTool: null });
+    runs.update("r1", { currentTool: null });
     assert.equal(changes, 4, "clearing an already absent tool reports nothing");
 
-    finishRun("r1", { status: "done", endedAt: 2 });
+    runs.finish("r1", { status: "done", endedAt: 2 });
     assert.equal(changes, 5);
-    finishRun("r1", { status: "done", endedAt: 2 });
-    updateRun("r1", { tokens: 9 });
+    runs.finish("r1", { status: "done", endedAt: 2 });
+    runs.update("r1", { tokens: 9 });
     assert.equal(changes, 5, "a terminal run never reports again");
     off();
   });
 
   it("finishes atomically: the last progress fields land with one event", () => {
     const seen: string[] = [];
-    const off = subscribeRunChange((change) => {
+    const off = runs.subscribe((change) => {
       seen.push(change.runId);
     });
-    const started = startRun({
+    const started = runs.start({
       id: "r1",
       agent: "lynx",
       parentSession: "main",
       startedAt: 1,
     });
     const liveLog = started.log;
-    finishRun("r1", {
+    runs.finish("r1", {
       status: "done",
       endedAt: 9,
       label: "final label",
@@ -1293,7 +1315,7 @@ describe("registry — run-change notification", () => {
     off();
 
     assert.deepEqual(seen, ["r1", "r1"], "start + finish is two events");
-    const run = getRun("r1");
+    const run = runs.get("r1");
     assert.ok(run);
     assert.equal(run.status, "done");
     assert.equal(run.endedAt, 9);
@@ -1312,10 +1334,10 @@ describe("registry — run-change notification", () => {
     // path must not reach it: a token-by-token partial would repaint the
     // whole widget list per delta.
     let changes = 0;
-    const off = subscribeRunChange(() => {
+    const off = runs.subscribe(() => {
       changes += 1;
     });
-    const run = startRun({ id: "r1", agent: "lynx", parentSession: "main" });
+    const run = runs.start({ id: "r1", agent: "lynx", parentSession: "main" });
     const afterStart = changes;
     assert.ok(afterStart > 0, "registration itself is a change");
     run.log.setPartial([{ type: "text", text: "streaming text" }]);
@@ -1343,13 +1365,13 @@ describe("registry — run-change notification", () => {
 
 describe("registry — read-only run snapshots", () => {
   it("freezes the snapshot every query hands out", () => {
-    startRun({
+    runs.start({
       id: "r1",
       agent: "lynx",
       parentSession: "main",
       startedAt: 100,
     });
-    const snap = getRun("r1");
+    const snap = runs.get("r1");
     assert.ok(snap);
     assert.equal(Object.isFrozen(snap), true, "a snapshot is frozen");
     assert.throws(
@@ -1360,26 +1382,26 @@ describe("registry — read-only run snapshots", () => {
       TypeError,
       "writing a snapshot throws",
     );
-    assert.equal(getRun("r1")?.status, "running", "the entry is unchanged");
+    assert.equal(runs.get("r1")?.status, "running", "the entry is unchanged");
   });
 
   it("isolates an old snapshot from later update and finish", () => {
-    startRun({
+    runs.start({
       id: "r1",
       agent: "lynx",
       parentSession: "main",
       startedAt: 100,
     });
-    const before = getRun("r1");
+    const before = runs.get("r1");
     assert.ok(before);
-    updateRun("r1", { tokens: 10, currentTool: "bash" });
-    finishRun("r1", { status: "done", endedAt: 300, label: "settled" });
+    runs.update("r1", { tokens: 10, currentTool: "bash" });
+    runs.finish("r1", { status: "done", endedAt: 300, label: "settled" });
     assert.equal(before.status, "running", "the old snapshot keeps running");
     assert.equal(before.tokens, undefined, "no later token total leaks in");
     assert.equal(before.currentTool, undefined, "no later tool leaks in");
     assert.equal(before.endedAt, undefined, "no terminal time leaks in");
     assert.equal(before.label, undefined, "no terminal label leaks in");
-    const after = getRun("r1");
+    const after = runs.get("r1");
     assert.ok(after);
     assert.equal(after.status, "done");
     assert.equal(after.tokens, 10);
@@ -1387,47 +1409,47 @@ describe("registry — read-only run snapshots", () => {
   });
 
   it("returns independent snapshots from the list queries", () => {
-    startRun({
+    runs.start({
       id: "p1",
       agent: "beaver",
       parentSession: "main",
       startedAt: 1,
       childSession: "child-ses-1",
     });
-    startRun({
+    runs.start({
       id: "c1",
       agent: "lynx",
       parentSession: "child-ses-1",
       startedAt: 2,
     });
-    const tops = topLevelRuns("main");
+    const tops = runs.topLevel("main");
     assert.equal(tops.length, 1, "precondition: one top-level run");
-    const kids = childrenOf("p1");
+    const kids = runs.childrenOf("p1");
     assert.equal(kids.length, 1, "precondition: one child run");
-    const found = findByChildSession("child-ses-1");
+    const found = runs.findByChildSession("child-ses-1");
     assert.ok(found);
     for (const snap of [tops[0], kids[0], found]) {
       assert.equal(Object.isFrozen(snap), true, "every snapshot is frozen");
     }
-    const direct = getRun("p1");
+    const direct = runs.get("p1");
     assert.ok(direct);
     assert.ok(tops[0] !== direct, "each query builds its own snapshot");
     assert.ok(found !== direct, "each query builds its own snapshot");
     assert.ok(tops[0] !== kids[0], "siblings are separate snapshots");
-    updateRun("p1", { tokens: 7 });
+    runs.update("p1", { tokens: 7 });
     assert.equal(tops[0].tokens, undefined, "the array snapshot is isolated");
     assert.equal(kids[0].parentSession, "child-ses-1");
-    assert.equal(getRun("p1")?.tokens, 7);
+    assert.equal(runs.get("p1")?.tokens, 7);
   });
 
   it("omits every unset optional field from the snapshot", () => {
-    startRun({
+    runs.start({
       id: "r1",
       agent: "lynx",
       parentSession: "main",
       startedAt: 100,
     });
-    const snap = getRun("r1");
+    const snap = runs.get("r1");
     assert.ok(snap);
     assert.deepEqual(Object.keys(snap).sort(), [
       "agent",
@@ -1442,7 +1464,7 @@ describe("registry — read-only run snapshots", () => {
 
 describe("registry — active run handle", () => {
   it("hands out the run id and its live log only", () => {
-    const handle = startRun({
+    const handle = runs.start({
       id: "r1",
       agent: "lynx",
       parentSession: "main",
@@ -1451,21 +1473,21 @@ describe("registry — active run handle", () => {
     });
     assert.deepEqual(Object.keys(handle).sort(), ["id", "log"]);
     assert.equal(handle.id, "r1");
-    const snap = getRun("r1");
+    const snap = runs.get("r1");
     assert.ok(snap);
     assert.equal(handle.log, snap.log, "the handle log is the run's log");
     handle.log.appendMessage([{ type: "text", text: "hi" }], undefined, 101);
-    assert.equal(getRun("r1")?.log.size, 1, "the handle log is live");
+    assert.equal(runs.get("r1")?.log.size, 1, "the handle log is live");
   });
 
   it("gives a duplicate start the first run's handle", () => {
-    const first = startRun({
+    const first = runs.start({
       id: "r1",
       agent: "lynx",
       parentSession: "main",
       startedAt: 100,
     });
-    const second = startRun({
+    const second = runs.start({
       id: "r1",
       agent: "spider",
       parentSession: "other",
@@ -1473,12 +1495,12 @@ describe("registry — active run handle", () => {
     });
     assert.equal(second.id, "r1");
     assert.equal(second.log, first.log, "the duplicate shares the live log");
-    assert.equal(getRun("r1")?.agent, "lynx", "the first start still wins");
-    assert.equal(getRun("r1")?.startedAt, 100);
+    assert.equal(runs.get("r1")?.agent, "lynx", "the first start still wins");
+    assert.equal(runs.get("r1")?.startedAt, 100);
   });
 
   it("keeps the released log readable and reports a fresh terminal log", () => {
-    const handle = startRun({
+    const handle = runs.start({
       id: "r1",
       agent: "lynx",
       parentSession: "main",
@@ -1486,14 +1508,14 @@ describe("registry — active run handle", () => {
     });
     const liveLog = handle.log;
     liveLog.appendMessage([{ type: "text", text: "final" }], undefined, 101);
-    finishRun("r1", { status: "done", endedAt: 300 });
+    runs.finish("r1", { status: "done", endedAt: 300 });
     assert.equal(liveLog.size, 1, "the released log stays readable");
     assert.deepEqual(
       liveLog.facts().map((fact) => fact.type),
       ["message_end"],
       "the released log keeps its facts",
     );
-    const terminal = getRun("r1");
+    const terminal = runs.get("r1");
     assert.ok(terminal);
     assert.ok(terminal.log !== liveLog, "a later query reports a new log");
     assert.equal(terminal.log.size, 0, "the terminal log starts empty");

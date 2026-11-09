@@ -340,8 +340,7 @@ function logSelection(selection: Selection): void {
  * A `null` profile (absent or invalid) selects and instantiates nothing —
  * no defaults, no fallback to a full load.  Otherwise the planner matches
  * every profile-enabled unit against the host's availability keys, the
- * binder turns the selection into the complete capability record (a
- * declared key that cannot be bound throws before any factory runs), and
+ * binder turns the selection into the complete capability record, and
  * the build stage instantiates exactly the selected units in registry
  * order.
  *
@@ -368,7 +367,7 @@ export function assemble(input: AssembleInput): Assembly {
   logSelection(selection);
   const composed =
     selection.status === "ready"
-      ? buildComposition(selection, input.bindings.bind(selection))
+      ? buildComposition(selection, input.bindings.bind())
       : emptyComposition(selection.report);
   return { selection, composed };
 }

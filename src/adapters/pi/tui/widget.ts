@@ -78,12 +78,9 @@ import {
   matchesKey,
   truncateToWidth,
 } from "@earendil-works/pi-tui";
-import {
-  childrenIndex,
-  getRun,
-  type RunSnapshot,
-  summary,
-  topLevelRuns,
+import type {
+  RunRegistry,
+  RunSnapshot,
 } from "../../../core/subagent/registry.js";
 import {
   type CardLine,
@@ -156,6 +153,8 @@ type FocusColumn = "fleet" | "todo";
  * functions and `now` are injectable for deterministic tests.
  */
 export interface FleetWidgetDeps {
+  /** The run records of this process. */
+  runs: RunRegistry;
   /** The active primary agent name, or undefined when none. */
   getPrimary(): string | undefined;
   /** Colorize an agent name per its configured `[agent.<name>].color`. */
@@ -273,8 +272,8 @@ export function createFleetWidget(deps: FleetWidgetDeps): FleetWidget {
   const rosterIds = (): string[] => {
     const sessionId = sessionIdOf();
     if (sessionId === undefined) return [];
-    const tops = topLevelRuns(sessionId);
-    const childrenByParent = childrenIndex(tops);
+    const tops = deps.runs.topLevel(sessionId);
+    const childrenByParent = deps.runs.childrenIndex(tops);
     const ids: string[] = [];
     const walk = (runId: string): void => {
       ids.push(runId);
@@ -346,7 +345,7 @@ export function createFleetWidget(deps: FleetWidgetDeps): FleetWidget {
   /** The session's top-level runs (empty when no session is available). */
   const currentTops = (): RunSnapshot[] => {
     const sessionId = sessionIdOf();
-    return sessionId !== undefined ? topLevelRuns(sessionId) : [];
+    return sessionId !== undefined ? deps.runs.topLevel(sessionId) : [];
   };
 
   /** Build the fleet column options for one render pass. */
@@ -354,6 +353,7 @@ export function createFleetWidget(deps: FleetWidgetDeps): FleetWidget {
     windowRows: number,
     maxLines: number,
   ): FleetColumnOptions => ({
+    runs: deps.runs,
     windowRows,
     maxLines,
     selectedId,
@@ -465,8 +465,8 @@ export function createFleetWidget(deps: FleetWidgetDeps): FleetWidget {
     sessionId: string | undefined,
   ): FleetRunningSummary[] | undefined => {
     if (sessionId === undefined) return undefined;
-    const tops = topLevelRuns(sessionId);
-    const childrenByParent = childrenIndex(tops);
+    const tops = deps.runs.topLevel(sessionId);
+    const childrenByParent = deps.runs.childrenIndex(tops);
     const running: FleetRunningSummary[] = [];
     const collect = (run: RunSnapshot): void => {
       if (run.status === "running") {
@@ -493,7 +493,7 @@ export function createFleetWidget(deps: FleetWidgetDeps): FleetWidget {
     const sum =
       sessionId !== undefined
         ? {
-            ...summary(sessionId),
+            ...deps.runs.summary(sessionId),
             running: currentRunning?.length ?? 0,
           }
         : { running: 0, done: 0, failed: 0, aborted: 0 };
@@ -674,7 +674,7 @@ export function createFleetWidget(deps: FleetWidgetDeps): FleetWidget {
         return { consume: true };
       }
       if (matchesKey(data, "enter")) {
-        const run = getRun(selectedId ?? "");
+        const run = deps.runs.get(selectedId ?? "");
         // Enter is only consumed when an overlay was actually opened: an
         // absent `enterRun` action (no overlay surface wired), an empty
         // selection, or a callback reporting no overlay (no `ui.custom`

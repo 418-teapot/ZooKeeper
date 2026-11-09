@@ -233,10 +233,11 @@ export type SelectionStatus = "disabled" | "ready" | "invalid";
  * The selection facts a unit factory may project through its `uses` list.
  *
  * Only facts with a consumer exist here: the selected agents (prompt
- * adaptation), the derived primaries (the switch commands), the selected
- * tools (the pruning/`/dcp` compress gate) and the resolved orchestrator
- * (the role-gated infrastructure hooks).  A category without a consumer
- * gets no global view — a unit that needs one adds it then.
+ * adaptation, and the delegation target guards of the subagent tool and
+ * the delegation gate), the derived primaries (the switch commands), the
+ * selected tools (the pruning/`/dcp` compress gate) and the resolved
+ * orchestrator (the role-gated infrastructure hooks).  A category without
+ * a consumer gets no global view — a unit that needs one adds it then.
  *
  * Every list holds the selected names in profile declaration order (first
  * occurrence wins), so a consumer that cares about order — the primary
@@ -539,7 +540,10 @@ function unansweredFact(
  * load.  Otherwise each unit in the array is checked against the profile
  * category that gates its kind: a unit with any unavailable `needs` key is
  * recorded as skipped (its factory never runs), a satisfiable one is
- * selected.  Profile names with no matching unit are recorded as unknown.
+ * selected.  Profile names the registry does not declare in that very
+ * category are recorded as unknown — a name declared under another
+ * category does not resolve, so a misplaced entry stays visible instead
+ * of silently enabling nothing.
  *
  * A host may declare the orchestrator role it requires.  The role is
  * satisfied only by one of the selected primaries, so a role that is
@@ -582,10 +586,17 @@ export function planSelection(input: SelectionInput): Selection {
     selected.push(unit.name);
   }
 
-  const known = new Set(units.map((unit) => unit.name));
+  const knownByCategory = new Map<SelectionCategory, Set<string>>(
+    SELECTION_CATEGORIES.map((category) => [category, new Set<string>()]),
+  );
+  for (const unit of units) {
+    knownByCategory.get(PROFILE_CATEGORY[unit.kind])?.add(unit.name);
+  }
   for (const category of SELECTION_CATEGORIES) {
     for (const name of profile[category]) {
-      if (!known.has(name)) unknown.push({ category, name });
+      if (!knownByCategory.get(category)?.has(name)) {
+        unknown.push({ category, name });
+      }
     }
   }
 
