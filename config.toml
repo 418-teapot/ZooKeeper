@@ -45,18 +45,18 @@ cache_write = 0
 context = 1000000
 output  = 256000
 
-[provider.Aliyun.models."kimi-k3"]
-name      = "aliyun/kimi-k3"
-id        = "aliyun/kimi-k3"
+[provider.Aliyun.models."kimi-k3.1-pro"]
+name      = "aliyun/kimi-k3.1-pro"
+id        = "aliyun/kimi-k3.1-pro"
 reasoning = true
 
-[provider.Aliyun.models."kimi-k3".cost]
-input       = 19
-output      = 95
-cache_read  = 1.9
+[provider.Aliyun.models."kimi-k3.1-pro".cost]
+input       = 12.35
+output      = 64.6
+cache_read  = 1.235
 cache_write = 0
 
-[provider.Aliyun.models."kimi-k3".limit]
+[provider.Aliyun.models."kimi-k3.1-pro".limit]
 context = 1000000
 output  = 256000
 
@@ -207,20 +207,20 @@ cache_write = 0.017
 context = 1000000
 output  = 256000
 
-[provider.Volces.models."kimi-k3"]
-name      = "volces/kimi-k3"
-id        = "volces/kimi-k3"
+[provider.Volces.models."kimi-k3.1-pro"]
+name      = "volces/kimi-k3.1-pro"
+id        = "volces/kimi-k3.1-pro"
 reasoning = true
 
-[provider.Volces.models."kimi-k3".cost]
-input       = 19
-output      = 95
-cache_read  = 1.9
+[provider.Volces.models."kimi-k3.1-pro".cost]
+input       = 12.35
+output      = 64.6
+cache_read  = 1.235
 cache_write = 0.017
 
-[provider.Volces.models."kimi-k3".limit]
+[provider.Volces.models."kimi-k3.1-pro".limit]
 context = 1000000
-output  = 128000
+output  = 256000
 
 [provider.Volces.models."doubao-seed-2.0-code"]
 name      = "volces/doubao-seed-2.0-code"
