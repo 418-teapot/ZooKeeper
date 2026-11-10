@@ -48,7 +48,6 @@
  * @module
  */
 
-import { readHostMaterialisation } from "../../compose-opencode.js";
 import { configCapabilities } from "../../core/capabilities.js";
 import {
   defineCompositionService,
@@ -76,6 +75,7 @@ import {
 import type { RunScope } from "../../core/subagent/registry.js";
 import { REGISTRY } from "../../registry.js";
 import { createV1Adapter } from "./adapter.js";
+import { readHostMaterialisation } from "./config.js";
 import { createOpenCodeHandoffTarget } from "./handoff-target.js";
 import { createOpenCodeMessageInjector } from "./message-injector.js";
 import { todoSourceFromClient } from "./todo-source.js";

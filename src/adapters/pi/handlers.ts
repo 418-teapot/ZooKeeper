@@ -1,5 +1,5 @@
 /**
- * Pi event handler factory.
+ * Pi event handlers.
  *
  * Builds the fourteen handlers the pi host registers, each closing over the
  * explicit {@link PiEventHandlerDeps} the wiring layer supplies.  Every
@@ -48,15 +48,16 @@
  * run's messages) lives in this factory's closure, keyed by session id, so
  * two sessions settling at once never read each other's entry.
  *
+ * The three event primitives the factory closes over
+ * (`buildPiToolResultHandler`, `buildPiContextHandler`,
+ * `buildPiMessageEndHandler`) are exported on their own: the pipeline host
+ * seam drives the production `context` entry directly.
+ *
  * @module
  */
 
-import {
-  buildPiContextHandler,
-  buildPiMessageEndHandler,
-  buildPiToolResultHandler,
-} from "../../compose-pi.js";
 import type { ComposedResult } from "../../core/compose.js";
+import { runIsolated, runIsolatedSync } from "../../core/compose.js";
 import type { ContextRuntime } from "../../core/context/runtime.js";
 import type { CleanupReport, WorkPermit } from "../../core/lifecycle/index.js";
 import type { LoopEngine, StopCause } from "../../core/loop/index.js";
@@ -64,8 +65,17 @@ import type { SkillPermissionMap } from "../../core/permissions/skill-permission
 import { filterAllowedSkills } from "../../core/permissions/skill-permissions.js";
 import { applyModelVariant } from "../../core/prompt-variant.js";
 import type { RunRegistry } from "../../core/subagent/registry.js";
+import type {
+  AfterExecInput,
+  AfterExecOutput,
+  TextCompleteContribution,
+  TextCompleteInput,
+  TextCompleteOutput,
+  TransformOutput,
+} from "../../core/unit.js";
 import { flushLogs, log } from "../../utils/logger.js";
 import type { PiLifecycleOutcome } from "./lifecycle.js";
+import { projectMessageText } from "./run-facts.js";
 import type { PiSessionContexts } from "./session-contexts.js";
 import {
   boundaryEntries,
@@ -77,7 +87,305 @@ import {
 import { type PiHistoryEntry, rebuildSubagentRuns } from "./subagent-scan.js";
 import type { PiSessionStartFacts } from "./switch-host.js";
 import type { PiToolHostContext } from "./tool-host.js";
-import type { PiBoundaryResult, PiEventHandlers } from "./types.js";
+import type {
+  PiAgentMessage,
+  PiBoundaryResult,
+  PiContextEvent,
+  PiContextHandlerContext,
+  PiContextResult,
+  PiEventHandlers,
+  PiImagePart,
+  PiMessageEndContext,
+  PiMessageEndEvent,
+  PiMessageEndResult,
+  PiToolResultContext,
+  PiToolResultEvent,
+  PiToolResultResult,
+} from "./types.js";
+
+// ---------------------------------------------------------------------------
+// Model limit capture
+// ---------------------------------------------------------------------------
+
+/**
+ * Capture the active model's context window when pi exposes one.
+ *
+ * pi's `ExtensionContext.model.contextWindow` is the host-native source of
+ * the context limit.  The value is captured through the plugin instance's
+ * runtime so the pruning nudge phase can resolve percentage thresholds
+ * against the real window.  Missing or non-finite values are ignored, and
+ * so is a call without a permit: the capture never outlives the session
+ * admission.
+ *
+ * @param runtime - The plugin instance's context records.
+ * @param permit - The permit the context event was admitted under.
+ * @param model - Duck-typed pi model object from the handler context.
+ */
+function capturePiModelLimit(
+  runtime: ContextRuntime,
+  permit: WorkPermit | undefined,
+  model: unknown,
+): void {
+  if (permit === undefined) return;
+  if (!model || typeof model !== "object") return;
+  const ctxModel = model as { id?: unknown; contextWindow?: unknown };
+  const contextWindow = ctxModel.contextWindow;
+  if (typeof contextWindow !== "number" || !Number.isFinite(contextWindow)) {
+    return;
+  }
+  const modelId = typeof ctxModel.id === "string" ? ctxModel.id : "unknown";
+  runtime.setModelLimit(permit, contextWindow, modelId);
+}
+
+// ---------------------------------------------------------------------------
+// Delta computation
+// ---------------------------------------------------------------------------
+
+/**
+ * Mode describing how the final text relates to the seed text.
+ *
+ * - `append` — the final text extends the seed; `text` is the trailing
+ *   portion to place after the original parts.
+ * - `rewrite` — the text was rewritten entirely (including a prefix
+ *   insertion); `text` is the full replacement for the original text
+ *   parts (image parts are kept).
+ */
+type DeltaMode = "append" | "rewrite";
+
+/** Text placement result computed by `computeDelta`. */
+interface DeltaResult {
+  mode: DeltaMode;
+  text: string;
+}
+
+/**
+ * Compute how the final text relates to the seed text.
+ *
+ * The result carries the trailing portion when the final text extends
+ * the original seed (`append`), or the full final text when the
+ * contributions rewrote it entirely (`rewrite`).  The caller appends
+ * `text` next to the original parts for `append`, and replaces the
+ * original text parts with `text` for `rewrite`.
+ *
+ * @param finalText - The output text after all contributions ran.
+ * @param originalText - The seed text extracted from the event.
+ * @returns The placement result for the final text.
+ */
+function computeDelta(finalText: string, originalText: string): DeltaResult {
+  if (
+    finalText.length > originalText.length &&
+    finalText.startsWith(originalText)
+  ) {
+    return { mode: "append", text: finalText.slice(originalText.length) };
+  }
+  return { mode: "rewrite", text: finalText };
+}
+
+// ---------------------------------------------------------------------------
+// Handler factories
+// ---------------------------------------------------------------------------
+
+/**
+ * Build the pi `tool_result` handler from the composed after-exec
+ * contributions.
+ *
+ * The event's text content seeds a shared `AfterExecOutput` object; each
+ * contribution runs in order against the same object with per-handler
+ * error isolation (a crash is logged as `handler_crashed` and never
+ * blocks the next).  When the final text extends the seed, the delta
+ * is returned as one appended text part next to the original parts;
+ * when it was rewritten entirely (including a prefix insertion), the
+ * original text parts are replaced by the full final text and image
+ * parts are kept.  When the final text equals the seed, `undefined`
+ * is returned and the event is untouched.
+ *
+ * @param afterExec - The composed `tool.execute.after` contributions.
+ * @returns The `tool_result` event handler.
+ */
+export function buildPiToolResultHandler(
+  afterExec: ComposedResult["afterExec"],
+): (
+  event: PiToolResultEvent,
+  ctx: PiToolResultContext,
+) => Promise<PiToolResultResult | undefined> {
+  return async (event, ctx) => {
+    // `content` is required by the pi contract; the fallback only
+    // guards against structurally older events at runtime.
+    const originalParts = event.content ?? [];
+    const originalText = projectMessageText(originalParts);
+    const sessionID = ctx?.sessionManager?.getSessionId() ?? "";
+
+    const input: AfterExecInput = {
+      tool: event.toolName,
+      sessionID,
+      callID: event.toolCallId,
+      // Pass the tool arguments through so after-exec contributions
+      // can inspect what the tool was invoked with.
+      args: event.input,
+    };
+    const output: AfterExecOutput = { output: originalText };
+
+    await runIsolated(
+      afterExec,
+      (contribution) => contribution.handle(input, output),
+      { sessionID, callId: input.callID },
+    );
+
+    const finalText = output.output;
+    if (finalText === undefined || finalText === originalText) {
+      return undefined;
+    }
+    const delta = computeDelta(finalText, originalText);
+    if (delta.mode === "rewrite") {
+      // The text was rewritten entirely (including a prefix insertion):
+      // replace the original text parts with the full final text and
+      // keep the image parts.
+      return {
+        content: [
+          { type: "text", text: delta.text },
+          ...originalParts.filter(
+            (part): part is PiImagePart => part.type === "image",
+          ),
+        ],
+      };
+    }
+    // The final text extends the seed: append the trailing delta next
+    // to the original parts (pi treats the returned content as a full
+    // replacement, so the original parts are preserved).
+    return {
+      content: [...originalParts, { type: "text", text: delta.text }],
+    };
+  };
+}
+
+/**
+ * Build the pi `context` handler from the composed transform
+ * contributions.
+ *
+ * The native pi `AgentMessage` array is placed directly into the
+ * transform output; the pi host adapter and the core pruning pipeline
+ * operate on it natively.  Transform contributions run in order with
+ * per-handler error isolation.  The handler captures the active model's
+ * context window from `ctx.model` so percentage thresholds resolve against
+ * the real limit, then returns the modified message list as pi's
+ * `ContextEventResult` so pi replaces the turn's LLM context.
+ *
+ * The session id and permit are the caller's: the entry paths admit the
+ * event first and pass the permit's session id and the permit itself, so
+ * the transform addresses that session's context instead of inferring one
+ * from the event context, and never writes a record outside the admission.
+ * A caller that supplies no id (pure tests) falls back to the event
+ * context's own id.
+ *
+ * @param transform - The composed messages-transform contributions.
+ * @param runtime - The plugin instance's context records.
+ * @returns The `context` event handler.
+ */
+export function buildPiContextHandler(
+  transform: ComposedResult["transform"],
+  runtime: ContextRuntime,
+): (
+  event: PiContextEvent,
+  ctx: PiContextHandlerContext,
+  sessionID?: string,
+  permit?: WorkPermit,
+) => Promise<PiContextResult | undefined> {
+  return async (event, ctx, explicitSessionID, permit) => {
+    const sessionID =
+      explicitSessionID ?? ctx?.sessionManager?.getSessionId() ?? "";
+    const model =
+      ctx && typeof ctx === "object"
+        ? (ctx as Record<string, unknown>).model
+        : undefined;
+    capturePiModelLimit(runtime, permit, model);
+
+    const output: TransformOutput = {
+      messages: event.messages,
+    };
+
+    await runIsolated(
+      transform,
+      (contribution) => contribution.handle(output, sessionID, permit),
+      { sessionID },
+    );
+
+    // Return the transformed messages so pi uses the pruned view for this
+    // turn.  The transform output is typed as `unknown`; it is the same
+    // pi-shaped array that was supplied in the event.
+    return {
+      messages: output.messages as PiAgentMessage[],
+    };
+  };
+}
+
+/**
+ * Build the pi `message_end` handler from the composed text-finalization
+ * contributions.
+ *
+ * pi fires `message_end` after a message is finalized; the handler
+ * inspects assistant messages and runs every text-finalization
+ * contribution (in registration order) over each text part, mirroring
+ * how the OpenCode adapter consumes the same slot.  Contributions mutate
+ * the `output.text` in place (e.g. stripping model-imitated `[mN] `
+ * echoes).  Thinking and tool-call parts are left untouched.  When no
+ * text part changes, `undefined` is returned so pi keeps the original
+ * message; otherwise a shallow copy with the rewritten text parts is
+ * returned.  The input message is never mutated.
+ *
+ * @param textComplete - The composed text-finalization contributions.
+ * @returns The `message_end` event handler.
+ */
+export function buildPiMessageEndHandler(
+  textComplete: TextCompleteContribution[],
+): (
+  event: PiMessageEndEvent,
+  ctx: PiMessageEndContext,
+) => PiMessageEndResult | undefined {
+  return (event, ctx) => {
+    const message = event.message;
+    if (message.role !== "assistant") {
+      return undefined;
+    }
+
+    const sessionID = ctx?.sessionManager?.getSessionId() ?? "";
+
+    let changed = false;
+    const newContent = message.content.map((part, index) => {
+      if (part.type !== "text") {
+        return part;
+      }
+
+      const input: TextCompleteInput = {
+        sessionID,
+        messageID: "",
+        partID: String(index),
+      };
+      const output: TextCompleteOutput = { text: part.text };
+      runIsolatedSync(
+        textComplete,
+        (contribution) => contribution.handle(input, output),
+        { sessionID, callId: String(index) },
+      );
+
+      if (output.text !== part.text) {
+        changed = true;
+        return { ...part, text: output.text };
+      }
+      return part;
+    });
+
+    if (!changed) {
+      return undefined;
+    }
+
+    return {
+      message: {
+        ...message,
+        content: newContent,
+      },
+    };
+  };
+}
 
 /**
  * The wiring surfaces the event handlers close over.

@@ -10,8 +10,8 @@
  * @module
  */
 
+import { assembleProfileHooks } from "../adapters/opencode/profile-hooks.js";
 import { createV1ToolHost } from "../adapters/opencode/tool-host.js";
-import { assembleOpenCodeHooks } from "../compose-opencode.js";
 import type {
   ContextPruningConfig,
   ModeProfile,
@@ -105,10 +105,45 @@ export function makePlugin(client: unknown = {}): Promise<Record<string, any>> {
 }
 
 /**
+ * Build the assembly inputs of a tool-only profile.
+ *
+ * @param client - The host client backing the tool host.
+ * @param contextConfig - The parsed context-pruning config.
+ * @param tools - The profile's tool names.
+ * @returns The profile and the deps matching `buildPlugin`'s construction.
+ */
+function toolAssembly(
+  client: any,
+  contextConfig: ContextPruningConfig,
+  tools: string[],
+): { profile: ModeProfile; deps: Partial<Capabilities> } {
+  const resolveAgent = (): string | undefined => undefined;
+  return {
+    profile: {
+      name: "test",
+      agents: [],
+      skills: [],
+      hooks: [],
+      tools,
+      commands: [],
+    },
+    deps: {
+      limits: {},
+      contextConfig,
+      directory: "",
+      resolveAgent,
+      // The tool units read the instance's context records too.
+      contextRuntime: createContextRuntime(),
+      toolHost: createV1ToolHost(client, resolveAgent),
+    },
+  };
+}
+
+/**
  * Assemble the OpenCode `tool` surface for a tool-only profile.
  *
  * Drives the production path — the assembly pipeline over the real
- * registry, then `assembleOpenCodeHooks` — with deps matching `buildPlugin`'s
+ * registry, then `assembleProfileHooks` — with deps matching `buildPlugin`'s
  * construction (the tool units read only `contextConfig` and `toolHost`).
  * Returns `undefined` when the profile enables no tool, matching the
  * plugin's absent `tool` key.
@@ -123,24 +158,30 @@ export function composeToolHooks(
   contextConfig: ContextPruningConfig,
   tools: string[],
 ): Record<string, ToolContribution> | undefined {
-  const resolveAgent = (): string | undefined => undefined;
-  const deps: Partial<Capabilities> = {
-    limits: {},
-    contextConfig,
-    directory: "",
-    resolveAgent,
-    // The tool units read the instance's context records too.
-    contextRuntime: createContextRuntime(),
-    toolHost: createV1ToolHost(client, resolveAgent),
-  };
-  const profile: ModeProfile = {
-    name: "test",
-    agents: [],
-    skills: [],
-    hooks: [],
-    tools,
-    commands: [],
-  };
+  const { profile, deps } = toolAssembly(client, contextConfig, tools);
   const { composed, selection } = assembleForTest(profile, REGISTRY, deps);
-  return assembleOpenCodeHooks(composed, deps, selection, []).tool;
+  return assembleProfileHooks(composed, deps, selection, []).tool;
+}
+
+/**
+ * Run the OpenCode `config` hook of a tool-only profile.
+ *
+ * Drives the production path with the same assembly inputs as
+ * {@link composeToolHooks}, so a caller asserts what the plugin writes into
+ * the host config for a given profile tools list.
+ *
+ * @param config - The host config the hook mutates in place.
+ * @param tools - The profile's tool names.
+ */
+export async function applyToolConfigHook(
+  config: Record<string, any>,
+  tools: string[],
+): Promise<void> {
+  const { profile, deps } = toolAssembly(
+    {},
+    { dedup: {}, purgeErrors: {} },
+    tools,
+  );
+  const { composed, selection } = assembleForTest(profile, REGISTRY, deps);
+  await assembleProfileHooks(composed, deps, selection, []).config(config);
 }

@@ -17,7 +17,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, it } from "node:test";
 import { initTheme } from "@earendil-works/pi-coding-agent";
-import { buildPiCommandRegistrationPlan } from "../../compose-pi.js";
 import { ASK_TOOL_NAME, type QuestionChannel } from "../../core/ask.js";
 import { project } from "../../core/context/lens.js";
 import { createContextRuntime } from "../../core/context/runtime.js";
@@ -30,7 +29,9 @@ import type { SubagentDriver } from "../../core/subagent/driver.js";
 import type { RunRegistry } from "../../core/subagent/registry.js";
 import { createTodoStore } from "../../core/todo/store.js";
 import type { ToolCallContext, ToolContribution } from "../../core/unit.js";
+import { enhanceSubagentDefinition } from "../../hooks/subagent-prompt/index.js";
 import { formHarness } from "../../testkits/ask-form.js";
+import { callFor, permitFor } from "../../testkits/context-runtime.js";
 import {
   COLORS_RAW,
   composePi,
@@ -64,9 +65,17 @@ import { beginHydration, resetHydration, waitForHydration } from "./hydrate.js";
 import type { PiSessionWorkRunner } from "./lifecycle-wiring.js";
 import { createPiProcessState, type PiProcessState } from "./process.js";
 import { buildPiSubagentExtension } from "./publisher.js";
+import {
+  applyToolDefinitionContributions,
+  buildPiCommandRegistrationPlan,
+} from "./registration.js";
 import { createPiHandoffIdentity } from "./switch-host.js";
 import { TRANSCRIPT_UNAVAILABLE_NOTICE } from "./tui/transcript.js";
-import { buildPiResolveAgent, buildPiToolExecute } from "./wire.js";
+import {
+  buildPiResolveAgent,
+  buildPiToolExecute,
+  loadPiHtmlConverter,
+} from "./wire.js";
 
 /**
  * The pi process this test file drives: one owner per test, exactly as one
@@ -296,7 +305,96 @@ describe("composePi — profile-driven selection", () => {
       todoStore: createTodoStore(async () => []),
     });
     assert.ok(composed.tools.todo, "todo must register on the pi host");
+    assert.equal(composed.tools.todo.name, "todo");
     assert.equal(typeof composed.tools.todo.execute, "function");
+    // The sibling tools are unaffected by the host-port gate.
+    assert.deepEqual(Object.keys(composed.tools).sort(), [
+      "compress",
+      "decompress",
+      "todo",
+    ]);
+    // Every profile name matched a registry unit — no unknown_unit warning.
+    assert.deepEqual(
+      _getBufferForTesting().filter((e) => e.event === "unknown_unit"),
+      [],
+    );
+  });
+
+  it("the composed todo tool serves state through the host's store instance", async () => {
+    const zoo = {
+      ...POLY_ZOO,
+      mode: {
+        poly: { ...POLY_PROFILE, tools: [...POLY_PROFILE.tools, "todo"] },
+      },
+    };
+    const store = createTodoStore(async () => []);
+    const { composed } = await compose(piScope(zoo, MODES_RAW), {
+      toolHost: fakePiToolHost(),
+      todoStore: store,
+    });
+    // Mutating through the composed tool must land in the very store the
+    // host injected (no hidden re-creation), so the host's own invalidation
+    // and the tool always share one cache.
+    await composed.tools.todo?.execute(
+      { op: "init", tasks: ["Injected"] },
+      callFor("sess-compose", { permit: permitFor("sess-compose") }),
+    );
+    const phases = await store.get("sess-compose");
+    assert.equal(phases[0]?.tasks[0]?.content, "Injected");
+  });
+
+  it("contributes no todo tool when the host supplies no todoStore", async () => {
+    const zoo = {
+      ...POLY_ZOO,
+      mode: {
+        poly: { ...POLY_PROFILE, tools: [...POLY_PROFILE.tools, "todo"] },
+      },
+    };
+    const { composed } = await compose(piScope(zoo, MODES_RAW), {
+      toolHost: fakePiToolHost(),
+    });
+    assert.equal(
+      composed.tools.todo,
+      undefined,
+      "no todo store → the todo unit must fail closed",
+    );
+  });
+
+  it("registers the todo tool from its store alone, without tool services", async () => {
+    const zoo = {
+      ...POLY_ZOO,
+      mode: {
+        poly: { ...POLY_PROFILE, tools: [...POLY_PROFILE.tools, "todo"] },
+      },
+    };
+    const { composed } = await compose(piScope(zoo, MODES_RAW), {
+      todoStore: createTodoStore(async () => []),
+    });
+    assert.ok(composed.tools.todo, "the todo unit needs only its store");
+    // compress and decompress still need the tool host: absent it, they
+    // stay unregistered.
+    assert.deepEqual(Object.keys(composed.tools), ["todo"]);
+  });
+
+  it("the pi definition boundary passes the composed todo tool through untouched", async () => {
+    const zoo = {
+      ...POLY_ZOO,
+      mode: {
+        poly: { ...POLY_PROFILE, tools: [...POLY_PROFILE.tools, "todo"] },
+      },
+    };
+    const { composed } = await compose(piScope(zoo, MODES_RAW), {
+      toolHost: fakePiToolHost(),
+      todoStore: createTodoStore(async () => []),
+    });
+    const todo = composed.tools.todo;
+    assert.ok(todo);
+
+    // Definition enhancers only target the subagent tool.
+    const enhanced = await applyToolDefinitionContributions(composed.tools, [
+      { name: "enhanceSubagentDefinition", handle: enhanceSubagentDefinition },
+    ]);
+    assert.equal(enhanced.todo, todo, "no enhancer may rewrite the todo tool");
   });
 
   it("the same todo-listing profile with no host ports → no todo tool", async () => {
@@ -557,6 +655,21 @@ describe("composePi — fetch converter availability", () => {
     outputLines: 1,
   });
 
+  /**
+   * Read the levels of the buffered `converter_unavailable` warnings.
+   *
+   * @returns One level per emitted warning, in emission order.
+   */
+  function converterWarnings(): unknown[] {
+    return _getBufferForTesting()
+      .filter(
+        (entry) =>
+          entry.hook === "fetch-tool" &&
+          entry.event === "converter_unavailable",
+      )
+      .map((entry) => entry.level);
+  }
+
   it("selects fetch when the converter probe succeeds", async () => {
     const { composed } = await compose(piScope(FETCH_ZOO, MODES_RAW), {
       loadHtmlConverter: () => converter,
@@ -603,6 +716,40 @@ describe("composePi — fetch converter availability", () => {
       truncateHead: truncate,
     });
 
+    assert.deepEqual(composed.tools, {});
+    assert.deepEqual(
+      composed.report.skipped.filter((skip) => skip.name === "fetch"),
+      [{ name: "fetch", missing: ["htmlConverter"] }],
+    );
+  });
+
+  it("returns the loader's converter unchanged without warning", () => {
+    assert.equal(
+      loadPiHtmlConverter(() => converter),
+      converter,
+    );
+    assert.equal(
+      _getBufferForTesting().filter((entry) => entry.hook === "fetch-tool")
+        .length,
+      0,
+      "a usable converter must not warn",
+    );
+  });
+
+  it("warns converter_unavailable once per probe and declares no converter", async () => {
+    // `loadPiHtmlConverter` is the wrapper the pi entry point binds: the
+    // loader's `null` is the addon's absence, and the wrapper is
+    // fail-closed (one warn per probe, no capability).
+    const probe = () => loadPiHtmlConverter(() => null);
+    assert.equal(probe(), null);
+    assert.deepEqual(converterWarnings(), ["warn"]);
+
+    const { composed } = await compose(piScope(FETCH_ZOO, MODES_RAW), {
+      loadHtmlConverter: probe,
+      truncateHead: truncate,
+    });
+    // The assembly probes exactly once more, and binds no converter.
+    assert.deepEqual(converterWarnings(), ["warn", "warn"]);
     assert.deepEqual(composed.tools, {});
     assert.deepEqual(
       composed.report.skipped.filter((skip) => skip.name === "fetch"),

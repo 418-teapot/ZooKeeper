@@ -27,12 +27,12 @@
  * @module
  */
 
-import { registerPiHandlers } from "../../compose-pi.js";
 import type { CleanupReport } from "../../core/lifecycle/index.js";
 import type { RuntimeOrigin, RuntimeOwner } from "../../core/runtime.js";
 import { startRuntime } from "../../core/runtime.js";
 import type { PiProcessScope } from "./config.js";
 import type { PiProcessState } from "./process.js";
+import { registerPiHandlers } from "./registration.js";
 import type { ExtensionAPI } from "./types.js";
 import {
   createPiRuntimeInstance,

@@ -20,7 +20,7 @@
  * subagent-prompt format hint (when the subagent-prompt hook unit is enabled) is
  * appended to the `prompt` argument's description by the composed
  * `tool.definition` contributions at each host's definition boundary
- * (compose-opencode's `tool.definition` event / compose-pi's
+ * (the OpenCode adapter's `tool.definition` event / pi's
  * `applyToolDefinitionContributions`) — none of it ever reaches this
  * file, so the tool definition here is the plain, policy-free shape.
  *

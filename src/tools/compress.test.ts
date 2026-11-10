@@ -19,7 +19,6 @@ import assert from "node:assert/strict";
 import { mkdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { after, afterEach, beforeEach, describe, it } from "node:test";
-import { registerProfileToolsInConfig } from "../compose-opencode.js";
 import { parseContextConfig } from "../core/config-parse.js";
 import type { ModeProfile } from "../core/config-types.js";
 import { fold } from "../core/context/fold.js";
@@ -38,6 +37,7 @@ import type { ToolHost } from "../core/ports/tool-host.js";
 import type { ToolCallContext } from "../core/unit.js";
 import { composeForTest } from "../testkits/compose.js";
 import {
+  applyToolConfigHook,
   composeToolHooks,
   makePlugin,
   POLY_ZOO,
@@ -1044,15 +1044,15 @@ describe("compress tool registration gate", () => {
     assert.equal(hooks.compress, undefined);
   });
 
-  it("compress absent from the profile tools list → primary_tools untouched", () => {
+  it("compress absent from the profile tools list → primary_tools untouched", async () => {
     const config = { experimental: { primary_tools: ["bash"] } };
-    registerProfileToolsInConfig(config, []);
+    await applyToolConfigHook(config, []);
     assert.deepEqual(config.experimental.primary_tools, ["bash"]);
   });
 
-  it("decompress only in the list → primary_tools gets no compress", () => {
+  it("decompress only in the list → primary_tools gets no compress", async () => {
     const config = { experimental: { primary_tools: ["bash"] } };
-    registerProfileToolsInConfig(config, ["decompress"]);
+    await applyToolConfigHook(config, ["decompress"]);
     assert.deepEqual(config.experimental.primary_tools, ["bash", "decompress"]);
   });
 

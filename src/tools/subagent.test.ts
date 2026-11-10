@@ -14,8 +14,9 @@
  *
  * The tool contains no delegation policy and no prompt-formatting policy —
  * the composed delegation gate and the subagent-prompt format hint are both
- * enforced at the host registration boundary (see `src/compose-pi.test.ts`
- * and the compose-opencode `tool.definition` tests), so no gate or hint
+ * enforced at the host registration boundary (see
+ * `src/adapters/pi/registration.test.ts`
+ * and the OpenCode adapter's `tool.definition` tests), so no gate or hint
  * cases appear here.
  */
 import assert from "node:assert/strict";

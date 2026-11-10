@@ -14,12 +14,8 @@ import {
   _resetOpenCodeProcessStateForTesting,
   openCodeProcessState,
 } from "./adapters/opencode/process.js";
+import { COMMAND_HANDLED } from "./adapters/opencode/profile-hooks.js";
 import { DELEGATION_LEAF_AGENTS_HEADER } from "./agents/parts.js";
-import {
-  COMMAND_HANDLED,
-  normalizeToolName,
-  registerProfileToolsInConfig,
-} from "./compose-opencode.js";
 import type { AgentUnitDescriptor } from "./core/unit.js";
 import { DIRECT_WORK_NUDGE } from "./hooks/direct-work-nudge";
 import { JSON_ERROR_REMINDER } from "./hooks/json-error-nudge";
@@ -27,7 +23,7 @@ import { VERIFY_REMINDER } from "./hooks/post-subagent-nudge";
 import { SUBAGENT_PROMPT_HINT } from "./hooks/subagent-prompt";
 import { buildPlugin, zookeeper } from "./opencode.js";
 import { REGISTRY } from "./registry.js";
-import { composeToolHooks } from "./testkits/config.js";
+import { applyToolConfigHook, composeToolHooks } from "./testkits/config.js";
 import { withModeFile } from "./testkits/mode-file.js";
 import { _getBufferForTesting, _resetForTesting } from "./utils/logger.js";
 
@@ -276,14 +272,15 @@ describe("poly full profile — registration parity", () => {
     ]);
   });
 
-  it("registerProfileToolsInConfig never appends a tool name beyond compress/decompress", () => {
-    // The config assembly is a fixed two-name append: a profile listing
-    // `todo` (and unknown names) leaves `primary_tools` free of them while
-    // preserving the host's pre-existing entries.
+  it("the config hook never appends a tool name beyond compress/decompress", async () => {
+    // The registry drops unknown tool names before the composed tool map
+    // exists, so the config hook only ever appends its own two names: a
+    // listing with `todo` and `future-tool` leaves `primary_tools` free of
+    // them while preserving the host's pre-existing entries.
     const config: Record<string, any> = {
       experimental: { primary_tools: ["bash"] },
     };
-    registerProfileToolsInConfig(config, [
+    await applyToolConfigHook(config, [
       "todo",
       "ask",
       "subagent",
@@ -407,7 +404,7 @@ describe("poly full profile — registration parity", () => {
   });
 
   it("tool.definition runs enhanceSubagentDefinition via the task→subagent mapping", async () => {
-    // OpenCode names the delegation tool "task"; the compose-opencode
+    // OpenCode names the delegation tool "task"; the adapter's event-key
     // boundary maps it to the canonical "subagent" before handlers run,
     // so a raw "task" toolID must still reach the definition enhancer.
     const plugin = await makePlugin();
@@ -425,12 +422,6 @@ describe("poly full profile — registration parity", () => {
       output.parameters.properties.prompt.description,
       `The subagent prompt\n\n${SUBAGENT_PROMPT_HINT}`,
     );
-  });
-
-  it("normalizeToolName maps the OpenCode dialect to the canonical name", () => {
-    assert.equal(normalizeToolName("task"), "subagent");
-    assert.equal(normalizeToolName("edit"), "edit");
-    assert.equal(normalizeToolName("subagent"), "subagent");
   });
 
   it("tool.execute.after runs nudgeSubagentOutput then nudgePostSubagent in order", async () => {

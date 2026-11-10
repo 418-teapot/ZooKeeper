@@ -32,12 +32,12 @@
  */
 
 import { createPiAdapter } from "../../../../src/adapters/pi/adapter.js";
+import { buildPiContextHandler } from "../../../../src/adapters/pi/handlers.js";
 import { history } from "../../../../src/adapters/pi/history.js";
 import type { PiSessionContexts } from "../../../../src/adapters/pi/session-contexts.js";
 import { createPiSessionContexts } from "../../../../src/adapters/pi/session-contexts.js";
 import { createPiToolHost } from "../../../../src/adapters/pi/tool-host.js";
 import type { PiAgentMessage } from "../../../../src/adapters/pi/types.js";
-import { buildPiContextHandler } from "../../../../src/compose-pi.js";
 import type {
   ContextPruningConfig,
   ModeProfile,
@@ -279,7 +279,7 @@ async function runTool(
 /**
  * The /dcp command seam — this host does not wire it.
  *
- * Pi itself registers /dcp (compose-pi `registerCommand`), but the
+ * Pi itself registers /dcp (pi `registration` `registerCommand`), but the
  * harness has no command surface.  Throws so the runner captures
  * a clear `toolError` naming the gap instead of silently no-op'ing.
  */

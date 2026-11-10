@@ -12,8 +12,9 @@
  * tools, and slash commands load, the assembly in `src/core/compose.ts`
  * plans the selection from the registry (`src/registry.ts`), binds this
  * host's capabilities and builds the contributions, and the OpenCode
- * adapter (`src/compose-opencode.ts`) turns the host-agnostic result into
- * hook registrations.  The selection decides what the adapter registers:
+ * adapter (`src/adapters/opencode/profile-hooks.ts`) turns the
+ * host-agnostic result into hook registrations.  The selection decides what
+ * the adapter registers:
  * `disabled` (no profile) and `invalid` (a profile this host cannot
  * realise) skip every profile-driven registration — no defaults, no
  * fallback to a full load — while the infrastructure hooks

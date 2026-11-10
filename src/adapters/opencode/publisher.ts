@@ -32,7 +32,6 @@
 
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { assembleOpenCodeHooks } from "../../compose-opencode.js";
 import type {
   ConfigSnapshot,
   ProcessScope,
@@ -57,6 +56,7 @@ import {
   type OpenCodeLifecycleWiring,
   withSessionWork,
 } from "./lifecycle-wiring.js";
+import { assembleProfileHooks } from "./profile-hooks.js";
 import { createOpenCodeHostServices, sessionScopeState } from "./services.js";
 
 /** The absolute path of the repository's skills directory. */
@@ -247,7 +247,7 @@ async function prepareOpenCodeStart(
   // itself.  A directory the scan cannot read is logged and skipped.
   const skillPaths = scanSkills(composed.skills.map((skill) => skill.name));
 
-  const selectionHooks = assembleOpenCodeHooks(
+  const selectionHooks = assembleProfileHooks(
     composed,
     values,
     selection,

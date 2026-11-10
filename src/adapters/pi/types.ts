@@ -316,7 +316,7 @@ export type PiBoundaryResult = BoundaryResult;
 /**
  * The event handlers this extension registers with pi.
  *
- * Built by `createPiEventHandlers` in `handlers.ts`; the `compose-pi`
+ * Built by `createPiEventHandlers` in `handlers.ts`; the `registration`
  * layer maps each member onto its pi event key (`registerPiHandlers`).
  * `hasSettledHandlers` does not map to an event: it gates whether the
  * settle keys are registered at all.

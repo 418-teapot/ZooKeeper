@@ -41,12 +41,6 @@ import { realpathSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { truncateHead } from "@earendil-works/pi-coding-agent";
-import {
-  applyToolDefinitionContributions,
-  buildPiCommandRegistrationPlan,
-  type HtmlConverterLoader,
-  loadPiHtmlConverter,
-} from "../../compose-pi.js";
 import { ASK_TOOL_NAME } from "../../core/ask.js";
 import { configCapabilities } from "../../core/capabilities.js";
 import type { HostAdapter } from "../../core/context/lens.js";
@@ -77,6 +71,8 @@ import type {
 } from "../../core/subagent/registry.js";
 import { todoSourceFromStore } from "../../core/todo/source.js";
 import type { ToolCallContext, ToolContribution } from "../../core/unit.js";
+import { loadHtmlConverter } from "../../core/webfetch/native.js";
+import type { HtmlConverter } from "../../core/webfetch/pipeline.js";
 import { log } from "../../utils/logger.js";
 import { createPiAdapter } from "./adapter.js";
 import { createPiQuestionChannel } from "./ask-form.js";
@@ -92,6 +88,10 @@ import {
 } from "./lifecycle-wiring.js";
 import { createPiMessageInjector } from "./message-injector.js";
 import type { PiProcessState } from "./process.js";
+import {
+  applyToolDefinitionContributions,
+  buildPiCommandRegistrationPlan,
+} from "./registration.js";
 import { createPiHostServices, type PiCapabilities } from "./services.js";
 import { createPiSubagentDriver } from "./subagent.js";
 import { createPiHandoffIdentity } from "./switch-host.js";
@@ -194,6 +194,45 @@ export function buildPiResolveAgent(
     sessionAgents.bind(sessionID, orchestrator);
     return orchestrator;
   };
+}
+
+// ---------------------------------------------------------------------------
+// Native fetch converter
+// ---------------------------------------------------------------------------
+
+/**
+ * Loader for the native HTML→Markdown converter.
+ *
+ * The pi entry point supplies one; the assembly probes it once, before
+ * the selection pass, and binds the loaded converter as a value.
+ */
+type HtmlConverterLoader = () => HtmlConverter | null;
+
+/**
+ * Probe the native HTML→Markdown converter for the fetch tool.
+ *
+ * Fail-closed in the pi host adapter: when the addon is unavailable
+ * (wrong platform, ABI mismatch, not built) the core loader returns
+ * `null`, a single warn is logged (`converter_unavailable`), and the host
+ * declares no `htmlConverter` capability — so the fetch tool unit's needs
+ * are unmet and the planner skips it (matching the null-profile
+ * principle: a capability that cannot run contributes nothing).  The
+ * probe answers a static availability question; a failing fetch at
+ * runtime is never treated as unavailability.
+ *
+ * @param loadConverter - Loader for the native converter. Defaults to
+ *   {@link loadHtmlConverter}; tests inject a stub.
+ * @returns The converter, or `null` when unavailable.
+ */
+export function loadPiHtmlConverter(
+  loadConverter: HtmlConverterLoader = loadHtmlConverter,
+): HtmlConverter | null {
+  const converter = loadConverter();
+  if (converter === null) {
+    log.warn({ hook: "fetch-tool", event: "converter_unavailable" });
+    return null;
+  }
+  return converter;
 }
 
 /**

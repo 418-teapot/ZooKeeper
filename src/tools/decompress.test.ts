@@ -17,7 +17,6 @@ import assert from "node:assert/strict";
 import { mkdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { after, afterEach, beforeEach, describe, it } from "node:test";
-import { registerProfileToolsInConfig } from "../compose-opencode.js";
 import { parseContextConfig } from "../core/config-parse.js";
 import type {
   ContextPruningConfig,
@@ -39,6 +38,7 @@ import type { ToolHost } from "../core/ports/tool-host.js";
 import type { ToolCallContext } from "../core/unit.js";
 import { composeForTest } from "../testkits/compose.js";
 import {
+  applyToolConfigHook,
   composeToolHooks,
   makePlugin,
   POLY_ZOO,
@@ -725,21 +725,21 @@ describe("decompress tool registration gate", () => {
 // ---------------------------------------------------------------------------
 
 describe("config hook — primary_tools", () => {
-  it("decompress absent from the profile tools list → primary_tools untouched", () => {
+  it("decompress absent from the profile tools list → primary_tools untouched", async () => {
     const config = { experimental: { primary_tools: ["bash"] } };
-    registerProfileToolsInConfig(config, []);
+    await applyToolConfigHook(config, []);
     assert.deepEqual(config.experimental.primary_tools, ["bash"]);
   });
 
-  it("compress only in the list → primary_tools gets no decompress", () => {
+  it("compress only in the list → primary_tools gets no decompress", async () => {
     const config = { experimental: { primary_tools: ["bash"] } };
-    registerProfileToolsInConfig(config, ["compress"]);
+    await applyToolConfigHook(config, ["compress"]);
     assert.deepEqual(config.experimental.primary_tools, ["bash", "compress"]);
   });
 
-  it("decompress in the list → appends decompress preserving pre-existing entries", () => {
+  it("decompress in the list → appends decompress preserving pre-existing entries", async () => {
     const config = { experimental: { primary_tools: ["bash", "compress"] } };
-    registerProfileToolsInConfig(config, ["compress", "decompress"]);
+    await applyToolConfigHook(config, ["compress", "decompress"]);
     assert.deepEqual(config.experimental.primary_tools, [
       "bash",
       "compress",
@@ -747,9 +747,9 @@ describe("config hook — primary_tools", () => {
     ]);
   });
 
-  it("is idempotent — never duplicates decompress", () => {
+  it("is idempotent — never duplicates decompress", async () => {
     const config = { experimental: { primary_tools: ["decompress"] } };
-    registerProfileToolsInConfig(config, ["decompress"]);
+    await applyToolConfigHook(config, ["decompress"]);
     assert.deepEqual(config.experimental.primary_tools, ["decompress"]);
   });
 

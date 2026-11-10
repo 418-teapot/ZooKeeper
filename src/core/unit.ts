@@ -98,11 +98,12 @@ export interface ToolArgDefinition {
  *
  * Both hosts translate their native definition onto this shape before the
  * contribution chain runs — OpenCode maps its `tool.definition` hook
- * output (`parameters.properties`) in `compose-opencode.ts`; pi maps
+ * output (`parameters.properties`) in
+ * `adapters/opencode/profile-hooks.ts`; pi maps
  * `ToolContribution.args` at its registration boundary in
- * `compose-pi.ts`.  Contributors read the canonical tool `name` and mutate
- * per-argument `description` fields; the host writes the changes back into
- * its native definition.
+ * `adapters/pi/registration.ts`.  Contributors read the canonical tool
+ * `name` and mutate per-argument `description` fields; the host writes the
+ * changes back into its native definition.
  */
 export interface ToolDefinitionView {
   /** Canonical tool name (OpenCode's native `task` maps to `subagent`). */
