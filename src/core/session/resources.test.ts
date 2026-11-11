@@ -344,44 +344,59 @@ describe("state write failure", () => {
 // ---------------------------------------------------------------------------
 
 describe("session resources service", () => {
-  it("applies the mode the kernel records", async () => {
+  it("releases the records of a stopping scope", async () => {
     const { runtime, store, catalog } = sandboxRuntime();
     const kernel = createLifecycleKernel({
       extension: [],
       session: [defineSessionResourcesService(catalog)],
     });
 
-    for (const [sessionID, mode] of [
-      ["released", "release-runtime"],
-      ["deleted", "delete-session"],
-    ] as const) {
-      await kernel.ensureSession(sessionID);
-      await stageSession(runtime, sessionID);
+    await kernel.ensureSession("released");
+    await stageSession(runtime, "released");
 
-      const report = await kernel.stopSession(sessionID, mode, mode);
+    const report = await kernel.stopSession(
+      "released",
+      "dispose",
+      "release-runtime",
+    );
 
-      assert.deepEqual(report.errors, []);
-      assert.equal(
-        store.load(sessionID).blocks.size,
-        mode === "delete-session" ? 0 : 1,
-      );
-      assert.equal(
-        sessionAgents.resolve(sessionID),
-        mode === "delete-session" ? undefined : "dolphin",
-      );
-      assert.equal(runtime.modelLimit(sessionID), undefined);
-    }
+    assert.deepEqual(report.errors, []);
+    assert.equal(
+      store.load("released").blocks.size,
+      1,
+      "a runtime release keeps the persisted context",
+    );
+    assert.equal(sessionAgents.resolve("released"), "dolphin");
+    assert.equal(runtime.modelLimit("released"), undefined);
+  });
+
+  it("leaves the records of a deletion to the coordinator", async () => {
+    const { runtime, store, catalog } = sandboxRuntime();
+    const kernel = createLifecycleKernel({
+      extension: [],
+      session: [defineSessionResourcesService(catalog)],
+    });
+
+    await kernel.ensureSession("deleted");
+    await stageSession(runtime, "deleted");
+
+    const report = await kernel.stopSession(
+      "deleted",
+      "session.deleted",
+      "delete-session",
+    );
+
+    assert.deepEqual(report.errors, []);
+    assert.equal(
+      store.load("deleted").blocks.size,
+      1,
+      "the deletion applies the records after the scope stopped",
+    );
+    assert.equal(sessionAgents.resolve("deleted"), "dolphin");
   });
 
   it("reports a failing record through the kernel", async () => {
     const broken: SessionResourceCatalog = createSessionResourceCatalog([
-      {
-        name: "brokenDelete",
-        runtime: "retain",
-        delete: () => {
-          throw new Error("boom");
-        },
-      },
       {
         name: "brokenRelease",
         runtime: "release",
@@ -397,26 +412,15 @@ describe("session resources service", () => {
       session: [defineSessionResourcesService(broken)],
     });
     await kernel.ensureSession("s1");
-    await kernel.ensureSession("s2");
 
-    const deleted = await kernel.stopSession(
-      "s1",
-      "session.deleted",
-      "delete-session",
-    );
     const released = await kernel.stopSession(
-      "s2",
+      "s1",
       "dispose",
       "release-runtime",
     );
 
-    assert.equal(deleted.errors.length, 1);
-    assert.equal(deleted.errors[0]?.service, "sessionResources");
-    assert.match(
-      String(deleted.errors[0]?.error),
-      /failed to delete session records: brokenDelete \(Error: boom\)/,
-    );
     assert.equal(released.errors.length, 1);
+    assert.equal(released.errors[0]?.service, "sessionResources");
     assert.match(
       String(released.errors[0]?.error),
       /failed to release session records: brokenRelease \(Error: bang\)/,

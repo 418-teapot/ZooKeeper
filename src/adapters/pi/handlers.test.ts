@@ -24,6 +24,7 @@ import {
   JSON_ERROR_REMINDER_MARKER,
   VERIFY_REMINDER,
 } from "../../core/prompts.js";
+import { createSessionResourceCatalog } from "../../core/session/resources.js";
 import {
   composePi,
   joinedText,
@@ -42,6 +43,7 @@ import { _getBufferForTesting, _resetForTesting } from "../../utils/logger.js";
 import { createPiEventHandlers, type PiEventHandlerDeps } from "./handlers.js";
 import { createPiLifecycleWiring } from "./lifecycle-wiring.js";
 import { createPiProcessState, type PiProcessState } from "./process.js";
+import { piSettleStateService } from "./services.js";
 import {
   createPiSessionContexts,
   type PiSessionContexts,
@@ -1753,6 +1755,16 @@ describe("startPi — event admission", () => {
     const wiring = createPiLifecycleWiring({
       extensionServices: [],
       sessionServices: [
+        // The handlers' settle bookkeeping: each session's prompt depth and
+        // last run's messages.
+        piSettleStateService,
+        // These handlers compose no settle strategy, so the session serves
+        // no loop handle.
+        defineSessionService({
+          name: "loopSession",
+          deps: [],
+          create: () => undefined,
+        }),
         defineSessionService({
           name: "worker",
           deps: [],
@@ -1762,6 +1774,7 @@ describe("startPi — event admission", () => {
           },
         }),
       ],
+      sessionCatalog: createSessionResourceCatalog([]),
       getSessionID: (ctx) => idOf(ctx),
     });
     const sessionContexts: PiSessionContexts = createPiSessionContexts();
@@ -1776,7 +1789,7 @@ describe("startPi — event admission", () => {
       sessionContexts,
       contextRuntime: createContextRuntime(),
       composed: options.composed ?? EMPTY_COMPOSED,
-      engine: undefined,
+      hasSettledHandlers: false,
       skillPermissions: {},
       getProfileSkills: () => [],
       collectSkillPaths: () => [],
@@ -1797,9 +1810,12 @@ describe("startPi — event admission", () => {
       runSession: (ctx, work, signal) =>
         wiring.runSession(
           ctx,
-          (permit) => {
+          (permit, services) => {
             permits.push(permit);
-            return work(permit);
+            return work(permit, {
+              settle: services.settleState,
+              loop: services.loopSession,
+            });
           },
           signal,
         ),

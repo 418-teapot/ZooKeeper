@@ -30,6 +30,7 @@ import { createPiProcessState, type PiProcessState } from "./process.js";
 import {
   createPiHostServices,
   createPiProfileCatalog,
+  createPiSettleState,
   createPiToolBaselines,
   type PiServiceHost,
 } from "./services.js";
@@ -64,6 +65,7 @@ function fakeApi(tools: string[]) {
 
 /** The context records of the instance under test. */
 const CONTEXT = createContextRuntime();
+
 /** The session records of the instance under test. */
 const SESSION_CATALOG = createSessionResourceCatalog([
   ...contextSessionResources(CONTEXT),
@@ -76,6 +78,23 @@ const HOST_HELPERS = {
   titleForRun: (run: RunSnapshot) => run.agent,
   borderColorizeForRun: () => undefined,
 };
+
+/** A profile enabling only the todo-continuation settle strategy. */
+const SETTLE_ZOO = {
+  mode: {
+    poly: {
+      agents: ["dolphin"],
+      skills: [],
+      hooks: ["todo-continuation"],
+      tools: [],
+      commands: [],
+    },
+  },
+  continuation: { max_wakes: 3 },
+};
+
+/** The agent table marking that profile's agent primary. */
+const SETTLE_RAW = { agent: { dolphin: { mode: "primary" } } };
 
 /** A one-phase todo state. */
 function phase(contents: string[]): TodoPhase[] {
@@ -265,10 +284,64 @@ describe("pi profile catalog", () => {
   });
 });
 
+describe("pi settle state", () => {
+  it("counts the open blocking prompts and never goes below zero", () => {
+    const state = createPiSettleState();
+    assert.equal(state.awaitingInput(), false, "no prompt is open yet");
+
+    state.enterPrompt();
+    assert.equal(state.awaitingInput(), true);
+    state.enterPrompt();
+    state.leavePrompt();
+    assert.equal(state.awaitingInput(), true, "one prompt is still open");
+    state.leavePrompt();
+    state.leavePrompt();
+    assert.equal(state.awaitingInput(), false, "the count stops at zero");
+  });
+
+  it("replaces the recorded run and drops a stale prompt count", () => {
+    const state = createPiSettleState();
+
+    state.recordRun([{ role: "user" }]);
+    state.recordRun([{ role: "assistant" }]);
+    assert.deepEqual(state.lastRun(), [{ role: "assistant" }]);
+
+    state.enterPrompt();
+    state.resetPrompt();
+    assert.equal(state.awaitingInput(), false);
+    // A start notice is not a stop: the recorded run stays.
+    assert.deepEqual(state.lastRun(), [{ role: "assistant" }]);
+  });
+
+  it("serves nothing once it is released", () => {
+    const state = createPiSettleState();
+    state.recordRun([{ role: "assistant" }]);
+    state.enterPrompt();
+
+    state.release();
+    state.recordRun([{ role: "user" }]);
+    state.enterPrompt();
+
+    assert.deepEqual(state.lastRun(), []);
+    assert.equal(state.awaitingInput(), false);
+  });
+});
+
 describe("pi host services — declarations", () => {
-  /** Build the declarations over a pi API stand-in and a null profile. */
-  function buildHost(piApi?: ExtensionAPI): PiServiceHost {
-    const scope = piScope({});
+  /**
+   * Build the declarations over a pi API stand-in and a profile.
+   *
+   * @param piApi - The pi API stand-in.
+   * @param zoo - The `zoo` section; empty for a null profile.
+   * @param raw - The whole config root (the agent tables).
+   * @returns The host inputs the declarations close over.
+   */
+  function buildHost(
+    piApi?: ExtensionAPI,
+    zoo: any = {},
+    raw: any = {},
+  ): PiServiceHost {
+    const scope = piScope(zoo, raw);
     return {
       scope,
       process: piProcess,
@@ -287,6 +360,7 @@ describe("pi host services — declarations", () => {
     const wiring = createPiLifecycleWiring({
       extensionServices: declarations.extension,
       sessionServices: declarations.session,
+      sessionCatalog: SESSION_CATALOG,
       getSessionID: (ctx) => (ctx as { id?: string } | undefined)?.id,
     });
 
@@ -312,6 +386,7 @@ describe("pi host services — declarations", () => {
     const wiring = createPiLifecycleWiring({
       extensionServices: declarations.extension,
       sessionServices: declarations.session,
+      sessionCatalog: SESSION_CATALOG,
       getSessionID: (ctx) => (ctx as { id?: string } | undefined)?.id,
     });
     const { services } = await wiring.activateExtension();
@@ -335,6 +410,7 @@ describe("pi host services — declarations", () => {
     const wiring = createPiLifecycleWiring({
       extensionServices: declarations.extension,
       sessionServices: declarations.session,
+      sessionCatalog: SESSION_CATALOG,
       getSessionID: (ctx) => (ctx as { id?: string } | undefined)?.id,
     });
     const { services } = await wiring.activateExtension();
@@ -370,6 +446,7 @@ describe("pi host services — declarations", () => {
     const wiring = createPiLifecycleWiring({
       extensionServices: declarations.extension,
       sessionServices: declarations.session,
+      sessionCatalog: SESSION_CATALOG,
       getSessionID: (ctx) => (ctx as { id?: string } | undefined)?.id,
     });
     const { services } = await wiring.activateExtension();
@@ -417,6 +494,7 @@ describe("pi host services — declarations", () => {
     const wiring = createPiLifecycleWiring({
       extensionServices: declarations.extension,
       sessionServices: declarations.session,
+      sessionCatalog: SESSION_CATALOG,
       getSessionID: (ctx) => (ctx as { id?: string } | undefined)?.id,
     });
     const { services } = await wiring.activateExtension();
@@ -444,6 +522,7 @@ describe("pi host services — declarations", () => {
     const wiring = createPiLifecycleWiring({
       extensionServices: declarations.extension,
       sessionServices: declarations.session,
+      sessionCatalog: SESSION_CATALOG,
     });
     const { services } = await wiring.activateExtension();
     const toasts: string[] = [];
@@ -465,6 +544,7 @@ describe("pi host services — declarations", () => {
     const wiring = createPiLifecycleWiring({
       extensionServices: declarations.extension,
       sessionServices: declarations.session,
+      sessionCatalog: SESSION_CATALOG,
     });
 
     const { services } = await wiring.activateExtension();
@@ -486,6 +566,7 @@ describe("pi host services — declarations", () => {
     const wiring = createPiLifecycleWiring({
       extensionServices: declarations.extension,
       sessionServices: declarations.session,
+      sessionCatalog: SESSION_CATALOG,
       getSessionID: (ctx) => (ctx as { id?: string } | undefined)?.id,
     });
     const { services } = await wiring.activateExtension();
@@ -512,6 +593,7 @@ describe("pi host services — declarations", () => {
     const wiring = createPiLifecycleWiring({
       extensionServices: declarations.extension,
       sessionServices: declarations.session,
+      sessionCatalog: SESSION_CATALOG,
       getSessionID: (ctx) => (ctx as { id?: string } | undefined)?.id,
     });
     const { services } = await wiring.activateExtension();
@@ -745,6 +827,123 @@ describe("pi host services — declarations", () => {
     }
   });
 
+  it("keeps each session's settle state in its own scope", async () => {
+    const { api } = fakeApi(["edit"]);
+    const declarations = createPiHostServices(buildHost(api));
+    const wiring = createPiLifecycleWiring({
+      extensionServices: declarations.extension,
+      sessionServices: declarations.session,
+      sessionCatalog: SESSION_CATALOG,
+      getSessionID: (ctx) => (ctx as { id?: string } | undefined)?.id,
+    });
+    const stateOf = (id: string) =>
+      wiring.runSession({ id }, (_permit, services) => services.settleState);
+
+    const first = await stateOf("s1");
+    const second = await stateOf("s2");
+    assert.ok(first !== undefined && second !== undefined);
+    assert.notEqual(first, second, "each session owns its own state");
+
+    first.recordRun([{ role: "assistant" }]);
+    first.enterPrompt();
+    assert.deepEqual(second.lastRun(), []);
+    assert.equal(second.awaitingInput(), false);
+
+    // A later call for the same session reads the state it already wrote.
+    const again = await stateOf("s1");
+    assert.equal(again, first);
+    assert.deepEqual(first.lastRun(), [{ role: "assistant" }]);
+    assert.equal(first.awaitingInput(), true);
+  });
+
+  it("releases a session's settle state with its scope", async () => {
+    const { api } = fakeApi(["edit"]);
+    const declarations = createPiHostServices(buildHost(api));
+    const kernel = createLifecycleKernel({
+      extension: declarations.extension,
+      session: declarations.session,
+    });
+    const scope = await kernel.ensureSession("s1");
+    assert.ok(scope !== null);
+    const state = scope.services.settleState;
+    state.recordRun([{ role: "assistant" }]);
+    state.enterPrompt();
+
+    await kernel.stopSession("s1", "quit", "release-runtime");
+
+    // The state went away with the scope: a retained reference serves
+    // nothing, so no later read sees the stopped session's run.
+    assert.deepEqual(state.lastRun(), []);
+    assert.equal(state.awaitingInput(), false);
+  });
+
+  it("gives each session scope its own loop handle", async () => {
+    const { api } = fakeApi(["edit"]);
+    const declarations = createPiHostServices(
+      buildHost(api, SETTLE_ZOO, SETTLE_RAW),
+    );
+    const wiring = createPiLifecycleWiring({
+      extensionServices: declarations.extension,
+      sessionServices: declarations.session,
+      sessionCatalog: SESSION_CATALOG,
+      getSessionID: (ctx) => (ctx as { id?: string } | undefined)?.id,
+    });
+    const loopOf = (id: string) =>
+      wiring.runSession({ id }, (_permit, services) => services.loopSession);
+
+    const first = await loopOf("s1");
+    const second = await loopOf("s2");
+    assert.ok(first !== undefined && second !== undefined);
+    assert.notEqual(first, second, "each session owns its own loop handle");
+
+    first.record("strategy");
+    assert.equal(first.used("strategy"), 1);
+    assert.equal(second.used("strategy"), 0, "a sibling is untouched");
+
+    // A later call for the same session reads the handle it already wrote.
+    assert.equal(await loopOf("s1"), first);
+  });
+
+  it("serves no loop handle when the profile composes no strategy", async () => {
+    const declarations = createPiHostServices(buildHost(undefined));
+    const wiring = createPiLifecycleWiring({
+      extensionServices: declarations.extension,
+      sessionServices: declarations.session,
+      sessionCatalog: SESSION_CATALOG,
+      getSessionID: (ctx) => (ctx as { id?: string } | undefined)?.id,
+    });
+
+    const loop = await wiring.runSession(
+      { id: "s1" },
+      (_permit, services) => services.loopSession,
+    );
+
+    assert.equal(loop, undefined);
+  });
+
+  it("drops a session's loop state with its scope", async () => {
+    const { api } = fakeApi(["edit"]);
+    const declarations = createPiHostServices(
+      buildHost(api, SETTLE_ZOO, SETTLE_RAW),
+    );
+    const kernel = createLifecycleKernel({
+      extension: declarations.extension,
+      session: declarations.session,
+    });
+    const first = (await kernel.ensureSession("s1"))?.services.loopSession;
+    const second = (await kernel.ensureSession("s2"))?.services.loopSession;
+    assert.ok(first !== undefined && second !== undefined);
+    first.record("strategy");
+    second.record("strategy");
+
+    await kernel.stopSession("s1", "quit", "release-runtime");
+
+    // The scope owned the handle, so the stopped session's budget is
+    // unreachable and no sibling is affected.
+    assert.equal(await kernel.ensureSession("s1"), null);
+    assert.equal(second.used("strategy"), 1);
+  });
+
   it("declares no session-scoped service as an extension service", () => {
     const declarations = createPiHostServices(buildHost(undefined));
     const extensionNames: string[] = declarations.extension.map(
@@ -779,6 +978,7 @@ describe("pi host services — declarations", () => {
         "todoStore",
         "fleetSession",
         "loopSession",
+        "settleState",
         "sessionResources",
       ],
     );
@@ -805,6 +1005,7 @@ describe("pi host services — declarations", () => {
     const wiring = createPiLifecycleWiring({
       extensionServices: [live, adapter],
       sessionServices: [],
+      sessionCatalog: SESSION_CATALOG,
     });
 
     await wiring.activateExtension();

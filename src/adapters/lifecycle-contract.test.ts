@@ -34,6 +34,7 @@ import {
   defineSessionService,
 } from "../core/lifecycle/index.js";
 import { createSessionAgentResource } from "../core/session/agent.js";
+import { createSessionLifecycle } from "../core/session/lifecycle.js";
 import {
   contextSessionResources,
   createSessionResourceCatalog,
@@ -87,6 +88,14 @@ function buildKernel(log: string[], failSessionDispose = false) {
   return createLifecycleKernel({ extension: [extension], session: [session] });
 }
 
+/** Session operations over a recording kernel, shared by both hosts. */
+function operations(log: string[], failSessionDispose = false) {
+  return createSessionLifecycle(
+    buildKernel(log, failSessionDispose),
+    createSessionResourceCatalog([]),
+  );
+}
+
 /**
  * Creation and disposal steps of a log, without the host-specific reasons.
  *
@@ -120,7 +129,7 @@ function openCodeDeleted(sessionID: string) {
 describe("host lifecycle mapping contract", () => {
   it("maps one start and one stop to the same resource traversal", async () => {
     const piLog: string[] = [];
-    const pi = createPiLifecycleMapping(buildKernel(piLog));
+    const pi = createPiLifecycleMapping(operations(piLog));
     await pi.handleEvent(
       { type: "session_start", reason: "startup" },
       piContext("session-1"),
@@ -128,7 +137,7 @@ describe("host lifecycle mapping contract", () => {
     await pi.handleEvent({ type: "session_shutdown", reason: "reload" });
 
     const openCodeLog: string[] = [];
-    const openCode = createOpenCodeLifecycleMapping(buildKernel(openCodeLog));
+    const openCode = createOpenCodeLifecycleMapping(operations(openCodeLog));
     await openCode.handleEvent(openCodeCreated("session-1"));
     await openCode.handleEvent(openCodeDeleted("session-1"));
     await openCode.dispose();
@@ -161,14 +170,14 @@ describe("host lifecycle mapping contract", () => {
 
   it("creates nothing for a start without a usable session id", async () => {
     const piLog: string[] = [];
-    const pi = createPiLifecycleMapping(buildKernel(piLog));
+    const pi = createPiLifecycleMapping(operations(piLog));
     const piOutcome = await pi.handleEvent(
       { type: "session_start", reason: "startup" },
       {},
     );
 
     const openCodeLog: string[] = [];
-    const openCode = createOpenCodeLifecycleMapping(buildKernel(openCodeLog));
+    const openCode = createOpenCodeLifecycleMapping(operations(openCodeLog));
     const openCodeOutcome = await openCode.handleEvent({
       type: "session.created",
       properties: {},
@@ -186,14 +195,14 @@ describe("host lifecycle mapping contract", () => {
 
   it("treats unrelated events as no-ops", async () => {
     const piLog: string[] = [];
-    const pi = createPiLifecycleMapping(buildKernel(piLog));
+    const pi = createPiLifecycleMapping(operations(piLog));
     const piOutcomes = [
       await pi.handleEvent({ type: "agent_end" }),
       await pi.handleEvent(null),
     ];
 
     const openCodeLog: string[] = [];
-    const openCode = createOpenCodeLifecycleMapping(buildKernel(openCodeLog));
+    const openCode = createOpenCodeLifecycleMapping(operations(openCodeLog));
     const openCodeOutcomes = [
       await openCode.handleEvent({ type: "session.idle" }),
       await openCode.handleEvent(null),
@@ -209,7 +218,7 @@ describe("host lifecycle mapping contract", () => {
     // pi replaces its extension runtime, so the nested session stops too.
     // A pi stop never deletes a session: both disposals release the runtime.
     const piLog: string[] = [];
-    const pi = createPiLifecycleMapping(buildKernel(piLog));
+    const pi = createPiLifecycleMapping(operations(piLog));
     await pi.handleEvent(
       { type: "session_start", reason: "startup" },
       piContext("outer"),
@@ -229,7 +238,7 @@ describe("host lifecycle mapping contract", () => {
     // OpenCode sessions are independent: deleting one leaves the other, and
     // a deletion is the only stop that carries the `delete-session` mode.
     const openCodeLog: string[] = [];
-    const openCode = createOpenCodeLifecycleMapping(buildKernel(openCodeLog));
+    const openCode = createOpenCodeLifecycleMapping(operations(openCodeLog));
     await openCode.handleEvent(openCodeCreated("outer"));
     await openCode.handleEvent(openCodeCreated("nested"));
     const deleted = await openCode.handleEvent(openCodeDeleted("outer"));
@@ -252,7 +261,7 @@ describe("host lifecycle mapping contract", () => {
 
   it("reports cleanup failures on both hosts instead of throwing", async () => {
     const piLog: string[] = [];
-    const pi = createPiLifecycleMapping(buildKernel(piLog, true));
+    const pi = createPiLifecycleMapping(operations(piLog, true));
     await pi.handleEvent(
       { type: "session_start", reason: "startup" },
       piContext("session-1"),
@@ -264,7 +273,7 @@ describe("host lifecycle mapping contract", () => {
 
     const openCodeLog: string[] = [];
     const openCode = createOpenCodeLifecycleMapping(
-      buildKernel(openCodeLog, true),
+      operations(openCodeLog, true),
     );
     await openCode.handleEvent(openCodeCreated("session-1"));
     const openCodeReport = await openCode.dispose();
@@ -437,6 +446,7 @@ function buildPiWiring() {
   return createPiLifecycleWiring({
     extensionServices: declarations.extension,
     sessionServices: declarations.session,
+    sessionCatalog,
     getSessionID: (ctx) => (ctx as { id?: string } | undefined)?.id,
   });
 }

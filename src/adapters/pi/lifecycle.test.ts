@@ -18,16 +18,19 @@ import {
   defineExtensionService,
   defineSessionService,
 } from "../../core/lifecycle/index.js";
+import { createSessionLifecycle } from "../../core/session/lifecycle.js";
+import { createSessionResourceCatalog } from "../../core/session/resources.js";
 import { createPiLifecycleMapping } from "./lifecycle.js";
 
 /**
- * Build a kernel that records every creation, start and disposal call.
+ * Build the operations the mapping drives, over a kernel that records
+ * every creation, start and disposal call.
  *
- * The mapping runs against the real kernel, so the assertions read the
- * resource effects a pi event produces rather than the calls the mapping
- * makes.
+ * The mapping runs against the real coordinator, so the assertions read
+ * the resource effects an event produces rather than the calls the
+ * mapping makes.
  */
-function buildKernel(log: string[], failSessionDispose = false) {
+function buildLifecycle(log: string[], failSessionDispose = false) {
   const extension = defineExtensionService({
     name: "ext",
     deps: [],
@@ -54,7 +57,10 @@ function buildKernel(log: string[], failSessionDispose = false) {
       if (failSessionDispose) throw new Error("boom");
     },
   });
-  return createLifecycleKernel({ extension: [extension], session: [session] });
+  return createSessionLifecycle(
+    createLifecycleKernel({ extension: [extension], session: [session] }),
+    createSessionResourceCatalog([]),
+  );
 }
 
 /** pi keeps the session id on the event context, never on the event. */
@@ -65,7 +71,7 @@ function context(sessionID: string | undefined) {
 describe("pi lifecycle mapping", () => {
   it("starts the context's session with the host reason", async () => {
     const log: string[] = [];
-    const mapping = createPiLifecycleMapping(buildKernel(log));
+    const mapping = createPiLifecycleMapping(buildLifecycle(log));
 
     const outcome = await mapping.handleEvent(
       { type: "session_start", reason: "resume" },
@@ -83,7 +89,7 @@ describe("pi lifecycle mapping", () => {
   it("forwards every pi start reason unchanged", async () => {
     for (const reason of ["startup", "reload", "new", "resume", "fork"]) {
       const log: string[] = [];
-      const mapping = createPiLifecycleMapping(buildKernel(log));
+      const mapping = createPiLifecycleMapping(buildLifecycle(log));
 
       await mapping.handleEvent(
         { type: "session_start", reason },
@@ -96,7 +102,7 @@ describe("pi lifecycle mapping", () => {
 
   it("stops the extension with the shutdown reason", async () => {
     const log: string[] = [];
-    const mapping = createPiLifecycleMapping(buildKernel(log));
+    const mapping = createPiLifecycleMapping(buildLifecycle(log));
     await mapping.handleEvent(
       { type: "session_start", reason: "startup" },
       context("session-1"),
@@ -120,7 +126,7 @@ describe("pi lifecycle mapping", () => {
   it("creates nothing when no usable session id is available", async () => {
     for (const ctx of [undefined, {}, context(undefined), context("")]) {
       const log: string[] = [];
-      const mapping = createPiLifecycleMapping(buildKernel(log));
+      const mapping = createPiLifecycleMapping(buildLifecycle(log));
 
       const outcome = await mapping.handleEvent(
         { type: "session_start", reason: "startup" },
@@ -134,7 +140,7 @@ describe("pi lifecycle mapping", () => {
 
   it("does nothing for events it does not map", async () => {
     const log: string[] = [];
-    const mapping = createPiLifecycleMapping(buildKernel(log));
+    const mapping = createPiLifecycleMapping(buildLifecycle(log));
 
     const outcomes = [
       await mapping.handleEvent({ type: "session_tree" }),
@@ -152,7 +158,7 @@ describe("pi lifecycle mapping", () => {
 
   it("reports cleanup failures instead of swallowing them", async () => {
     const log: string[] = [];
-    const mapping = createPiLifecycleMapping(buildKernel(log, true));
+    const mapping = createPiLifecycleMapping(buildLifecycle(log, true));
     await mapping.handleEvent(
       { type: "session_start", reason: "startup" },
       context("session-1"),

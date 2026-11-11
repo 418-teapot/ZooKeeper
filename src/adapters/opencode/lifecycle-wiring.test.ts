@@ -10,11 +10,13 @@
  * bookkeeping.
  *
  * Two boundaries get their own assertions: a deletion drops a session
- * exactly once whichever path created the scope (so the disposer and the
- * unknown-session fallback never both run), and a dispose keeps the
+ * exactly once whether or not a scope existed, and a dispose keeps the
  * persisted context of the sessions it stops because those sessions still
  * exist on the host side.  The two stops also differ by mode: the deletion
- * stops with `delete-session`, the dispose with `release-runtime`.
+ * stops with `delete-session`, the dispose with `release-runtime`.  A
+ * deletion that overlaps a running dispose still deletes the session, a
+ * repeated deletion stays idempotent, and one failing record leaves the
+ * other records applied and the failure reported.
  *
  * `withSessionWork` gets the same kind of assertions: every hook, tool and
  * per-session event enters through its session's permit, a call without a
@@ -291,7 +293,7 @@ describe("OpenCode lifecycle wiring — host session events", () => {
     assert.deepEqual(log, [], "a deletion never builds a scope");
   });
 
-  it("deletes the process-level records of an owned deleted session", async () => {
+  it("deletes the process-level records of a deleted session", async () => {
     const wiring = buildWiring();
     await wiring.ensureSession("s1");
     process.sessionAgents.bind("s1", "dolphin");
@@ -303,7 +305,7 @@ describe("OpenCode lifecycle wiring — host session events", () => {
     assert.equal(runtime.modelLimit("s1"), undefined);
   });
 
-  it("keeps the fallback cleanup for a deleted session it never owned", async () => {
+  it("deletes the records of a session this instance never ensured", async () => {
     const wiring = buildWiring();
     // The host wrote process-level records for a session whose events
     // predate this plugin instance: no scope exists, the records do.
@@ -338,11 +340,7 @@ describe("OpenCode lifecycle wiring — deletion boundary", () => {
     process.sessionAgents.bind("s1", "dolphin");
     await wiring.handleEvent(sessionEvent("session.deleted", "s1"));
 
-    assert.deepEqual(
-      deletes,
-      ["s1"],
-      "the scope disposer must not be followed by the unknown fallback",
-    );
+    assert.deepEqual(deletes, ["s1"], "the stop and the record step run once");
     assert.equal(
       process.sessionAgents.resolve("s1"),
       undefined,
@@ -362,7 +360,7 @@ describe("OpenCode lifecycle wiring — deletion boundary", () => {
     assert.equal(process.sessionAgents.resolve("s1"), undefined);
   });
 
-  it("keeps the unknown-session fallback for a deleted ghost", async () => {
+  it("deletes the records of a deleted ghost", async () => {
     const { deletes } = sandboxStore();
     const wiring = buildWiring();
     process.sessionAgents.bind("ghost", "dolphin");
@@ -373,7 +371,7 @@ describe("OpenCode lifecycle wiring — deletion boundary", () => {
     assert.equal(process.sessionAgents.resolve("ghost"), undefined);
   });
 
-  it("returns the fallback failures to the caller and logs them once", async () => {
+  it("returns the record failures to the caller and logs them once", async () => {
     const { store } = sandboxStore();
     const wiring = buildWiring();
     process.sessionAgents.bind("ghost", "dolphin");
@@ -431,6 +429,133 @@ describe("OpenCode lifecycle wiring — deletion boundary", () => {
 
     assert.deepEqual(deletes, ["s1"]);
     assert.equal(store.load("s1").blocks.size, 0);
+  });
+
+  it("deletes the session a running dispose is releasing", async () => {
+    const { store, deletes } = sandboxStore();
+    const wiring = buildWiring();
+    await wiring.ensureSession("s1");
+    await stageBlock("s1");
+    process.sessionAgents.bind("s1", "dolphin");
+
+    // Hold one admitted hook so the dispose cannot finish its release.
+    const blocker = gate();
+    let holding = false;
+    const hooks = withSessionWork(
+      {
+        "command.execute.before": async (_input: { sessionID: string }) => {
+          holding = true;
+          await blocker.waited;
+        },
+      },
+      wiring,
+    );
+    const running = hooks["command.execute.before"]({ sessionID: "s1" });
+    await waitFor(() => holding);
+
+    const disposing = wiring.dispose();
+    assert.equal(
+      await wiring.ensureSession("s1"),
+      null,
+      "the dispose has begun",
+    );
+    const deleting = wiring.handleEvent(sessionEvent("session.deleted", "s1"));
+
+    blocker.open();
+    await running;
+    const [disposedReport, outcome] = await Promise.all([disposing, deleting]);
+
+    assert.deepEqual(disposedReport.errors, []);
+    assert.equal(outcome.action, "stop-session");
+    // The host deleted the session, so nothing may stay behind even
+    // though the release ran first.
+    assert.equal(store.load("s1").blocks.size, 0);
+    assert.equal(process.sessionAgents.resolve("s1"), undefined);
+    assert.deepEqual([...new Set(deletes)], ["s1"]);
+  });
+
+  it("deletes the session a dispose joins while the deletion runs", async () => {
+    const { store, deletes } = sandboxStore();
+    const wiring = buildWiring();
+    await wiring.ensureSession("s1");
+    await stageBlock("s1");
+    process.sessionAgents.bind("s1", "dolphin");
+
+    const blocker = gate();
+    let holding = false;
+    const hooks = withSessionWork(
+      {
+        "command.execute.before": async (_input: { sessionID: string }) => {
+          holding = true;
+          await blocker.waited;
+        },
+      },
+      wiring,
+    );
+    const running = hooks["command.execute.before"]({ sessionID: "s1" });
+    await waitFor(() => holding);
+
+    const deleting = wiring.handleEvent(sessionEvent("session.deleted", "s1"));
+    const disposing = wiring.dispose();
+
+    blocker.open();
+    await running;
+    const [outcome, disposedReport] = await Promise.all([deleting, disposing]);
+
+    assert.deepEqual(disposedReport.errors, []);
+    assert.equal(outcome.action, "stop-session");
+    assert.deepEqual([...new Set(deletes)], ["s1"]);
+    assert.equal(store.load("s1").blocks.size, 0);
+    assert.equal(process.sessionAgents.resolve("s1"), undefined);
+  });
+
+  it("keeps a repeated deletion idempotent", async () => {
+    const { store, deletes } = sandboxStore();
+    const wiring = buildWiring();
+    await wiring.ensureSession("s1");
+    await stageBlock("s1");
+    process.sessionAgents.bind("s1", "dolphin");
+
+    const first = await wiring.handleEvent(
+      sessionEvent("session.deleted", "s1"),
+    );
+    const second = await wiring.handleEvent(
+      sessionEvent("session.deleted", "s1"),
+    );
+
+    const reports = [first, second].map((outcome) =>
+      outcome.action === "stop-session" ? outcome.report : null,
+    );
+    assert.deepEqual(reports, [{ errors: [] }, { errors: [] }]);
+    assert.deepEqual([...new Set(deletes)], ["s1"]);
+    assert.equal(store.load("s1").blocks.size, 0);
+    assert.equal(process.sessionAgents.resolve("s1"), undefined);
+  });
+
+  it("deletes the other records when one deletion step fails", async () => {
+    const { store } = sandboxStore();
+    const wiring = buildWiring();
+    await wiring.ensureSession("s1");
+    await stageBlock("s1");
+    process.sessionAgents.bind("s1", "dolphin");
+    store.delete = () => {
+      throw new Error("boom");
+    };
+
+    const outcome = await wiring.handleEvent(
+      sessionEvent("session.deleted", "s1"),
+    );
+
+    assert.equal(outcome.action, "stop-session");
+    const report = outcome.action === "stop-session" ? outcome.report : null;
+    assert.equal(report?.errors.length, 1);
+    assert.equal(report?.errors[0]?.service, "sessionStateFile");
+    assert.match(String(report?.errors[0]?.error), /boom/);
+    assert.equal(
+      process.sessionAgents.resolve("s1"),
+      undefined,
+      "the failing record did not stop the others",
+    );
   });
 });
 

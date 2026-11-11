@@ -8,7 +8,7 @@
  * `experimental.chat.system.transform` captures the live model's context
  * limit and swaps the model-conditional prompt wording.
  *
- * The mutable state lives with its owner: the loop engine and every
+ * The mutable state lives with its owner: a session's loop handle and every
  * session's abort flag and pending wake echo are lifecycle services (see
  * `services.ts`), reached only through the session the current event
  * names.  No collection here is keyed by session, so one session's abort
@@ -146,8 +146,8 @@ export function buildInfraHooks(deps: InfraHookDeps) {
         if (info?.agent) {
           sessionAgents.bind(session.sessionID, info.agent);
         }
-        // Budget bookkeeping: only a real user message resets the
-        // per-session reminder counter.  This host's own wake
+        // Budget bookkeeping: only a real user message starts a fresh
+        // budget for this session.  This host's own wake
         // also arrives as a user message, carrying the id recorded on the
         // session; it is swallowed only when the ids match, so a real user
         // message in the delivery window is never mistaken for the echo.
@@ -156,7 +156,7 @@ export function buildInfraHooks(deps: InfraHookDeps) {
         } else if (info?.role === "user") {
           const isEcho = session.takeEcho(info.id);
           if (!isEcho && info.synthetic !== true) {
-            session.engine?.reset(session.sessionID);
+            session.loop?.reset();
           }
         }
         return;
@@ -193,14 +193,13 @@ export function buildInfraHooks(deps: InfraHookDeps) {
         // The gates above read host facts only; the session's own state is
         // read below, so the scope is ensured here.
         const session = await sessions.sessionState(sessionID);
-        const engine = session?.engine;
-        if (session === null || engine === undefined) return;
+        const loop = session?.loop;
+        if (session === null || loop === undefined) return;
 
         const outcome = await classifyStopCause(client, session, sessionID);
         if (outcome === null) return;
 
-        const decision = await engine.run({
-          sessionID,
+        const decision = await loop.run({
           cause: outcome.cause,
           hadActivity: outcome.hadActivity,
         });
@@ -216,7 +215,7 @@ export function buildInfraHooks(deps: InfraHookDeps) {
         }
         // Count the reminder before dispatch so a delivery failure
         // cannot become an unbounded retry loop.
-        engine.record(sessionID, decision.name);
+        loop.record(decision.name);
         // Tag the injected message so its echo is recognizable by
         // `info.id` when the corresponding `message.updated` arrives.
         const messageID = newInjectedMessageID();
@@ -235,7 +234,7 @@ export function buildInfraHooks(deps: InfraHookDeps) {
             event: "wake_injected",
             sessionId: sessionID,
             handler: decision.name,
-            used: engine.used(sessionID, decision.name),
+            used: loop.used(decision.name),
             cause: outcome.cause,
             hadActivity: outcome.hadActivity,
           });

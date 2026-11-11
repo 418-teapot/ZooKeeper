@@ -3,14 +3,17 @@
  *
  * The session-scoped runtime owns the state the always-on event hook used
  * to keep in extension-level collections: whether a turn was observed
- * aborting, and the id of the wake this host injected whose echo must not
- * reset the reminder budget.  The expectations below are the observable
+ * aborting, the id of the wake this host injected whose echo must not
+ * reset the reminder budget, and this session's loop handle (its reminder
+ * budget and awaiting lock).  The expectations below are the observable
  * answers of one session's runtime, so an implementation that shares
  * state between sessions fails here.
  *
- * The release expectations are split by stop mode: only a `delete-session`
- * stop ends a session's persisted context, while a `release-runtime` stop (a
- * plugin dispose) must leave it restorable.
+ * The release expectations are split by stop mode: only a deletion ends a
+ * session's persisted context, while a `release-runtime` stop (a plugin
+ * dispose) must leave it restorable.  A deletion runs through the session
+ * lifecycle coordinator, which stops the scope and then applies the
+ * session records.
  */
 import assert from "node:assert/strict";
 import { rmSync } from "node:fs";
@@ -25,6 +28,7 @@ import { createLifecycleKernel } from "../../core/lifecycle/index.js";
 import type { ProcessState } from "../../core/process-state.js";
 import { createProcessState } from "../../core/process-state.js";
 import { createSessionAgentResource } from "../../core/session/agent.js";
+import { createSessionLifecycle } from "../../core/session/lifecycle.js";
 import {
   contextSessionResources,
   createSessionResourceCatalog,
@@ -112,7 +116,8 @@ const SETTLE_RAW = { agent: { dolphin: { mode: "primary" } } };
  *
  * @param withSettle - Whether the profile contributes a settle strategy
  *   (and thus builds a loop engine).
- * @returns The kernel plus the declarations it was built from.
+ * @returns The kernel, its coordinator and the declarations it was built
+ *   from.
  */
 function buildKernel(withSettle = false) {
   const declarations = createOpenCodeHostServices({
@@ -129,7 +134,8 @@ function buildKernel(withSettle = false) {
     sessionCatalog,
   });
   const kernel = createLifecycleKernel(declarations);
-  return { kernel, declarations };
+  const lifecycle = createSessionLifecycle(kernel, sessionCatalog);
+  return { kernel, lifecycle, declarations };
 }
 
 describe("OpenCode session runtime — aborted state", () => {
@@ -241,14 +247,14 @@ describe("OpenCode session runtime — release mode", () => {
     );
   });
 
-  it("decides deletion from the mode, not the reason", async () => {
+  it("decides deletion from the operation, not the reason", async () => {
     const dir = sandboxWithCachedBlock("s1");
-    const { kernel } = buildKernel();
-    await kernel.ensureSession("s1");
+    const { lifecycle } = buildKernel();
+    await lifecycle.ensureSession("s1");
     process.sessionAgents.bind("s1", "dolphin");
 
-    // The reason is diagnostic only: the mode alone selects the cleanup.
-    await kernel.stopSession("s1", "extension.reload", "delete-session");
+    // The reason is diagnostic only: the deletion alone selects the cleanup.
+    await lifecycle.deleteSession("s1", "extension.reload");
 
     assert.equal(createStateStore(dir).load("s1").blocks.size, 0);
     assert.equal(process.sessionAgents.resolve("s1"), undefined);
@@ -256,11 +262,11 @@ describe("OpenCode session runtime — release mode", () => {
 
   it("deletes the persisted context and the binding on a session deletion", async () => {
     const dir = sandboxWithCachedBlock("s1");
-    const { kernel } = buildKernel();
-    await kernel.ensureSession("s1");
+    const { lifecycle } = buildKernel();
+    await lifecycle.ensureSession("s1");
     process.sessionAgents.bind("s1", "dolphin");
 
-    await kernel.stopSession("s1", "session.deleted", "delete-session");
+    await lifecycle.deleteSession("s1", "session.deleted");
 
     assert.equal(
       createStateStore(dir).load("s1").blocks.size,
@@ -306,59 +312,90 @@ describe("OpenCode host services — declarations", () => {
     ]);
   });
 
-  it("builds no loop engine when the profile contributed no strategy", async () => {
+  it("builds no session loop handle without a composed strategy", async () => {
     const { kernel } = buildKernel();
 
     const session = (await kernel.ensureSession("s1"))?.services.sessionRuntime;
 
     assert.ok(session);
-    assert.equal(session.engine, undefined);
+    assert.equal(session.loop, undefined);
   });
 });
 
-describe("OpenCode session runtime — release", () => {
-  it("resets the deleted session's loop state only", async () => {
-    const { kernel } = buildKernel(true);
+describe("OpenCode session runtime — loop state", () => {
+  it("gives each session scope its own loop handle", async () => {
+    const { lifecycle } = buildKernel(true);
 
-    const first = (await kernel.ensureSession("s1"))?.services.sessionRuntime;
-    const second = (await kernel.ensureSession("s2"))?.services.sessionRuntime;
-    assert.ok(first?.engine);
-    assert.equal(first.engine, second?.engine, "one engine per instance");
-    first.engine.record("s1", "strategy");
-    first.engine.record("s2", "strategy");
+    const first = (await lifecycle.ensureSession("s1"))?.services
+      .sessionRuntime;
+    const second = (await lifecycle.ensureSession("s2"))?.services
+      .sessionRuntime;
+    assert.ok(first?.loop);
+    assert.ok(second?.loop);
+    assert.notEqual(first.loop, second.loop, "one handle per session scope");
 
-    await kernel.stopSession("s1", "session.deleted", "delete-session");
+    first.loop.record("strategy");
 
-    assert.equal(first.engine.used("s1", "strategy"), 0);
-    assert.equal(second?.engine?.used("s2", "strategy"), 1);
+    assert.equal(first.loop.used("strategy"), 1);
+    assert.equal(
+      second.loop.used("strategy"),
+      0,
+      "a sibling session's budget is untouched",
+    );
   });
 
-  it("resets the released session's loop state on a runtime release", async () => {
+  it("drops the deleted session's loop state with its scope", async () => {
+    const { lifecycle } = buildKernel(true);
+
+    const first = (await lifecycle.ensureSession("s1"))?.services
+      .sessionRuntime;
+    const second = (await lifecycle.ensureSession("s2"))?.services
+      .sessionRuntime;
+    assert.ok(first?.loop);
+    assert.ok(second?.loop);
+    first.loop.record("strategy");
+    second.loop.record("strategy");
+
+    await lifecycle.deleteSession("s1", "session.deleted");
+
+    assert.equal(
+      await lifecycle.ensureSession("s1"),
+      null,
+      "the deleted session's state is unreachable",
+    );
+    assert.equal(second.loop.used("strategy"), 1);
+  });
+
+  it("drops a released session's loop state with its scope", async () => {
     const { kernel } = buildKernel(true);
 
     const session = (await kernel.ensureSession("s1"))?.services.sessionRuntime;
-    assert.ok(session?.engine);
-    session.engine.record("s1", "strategy");
+    const sibling = (await kernel.ensureSession("s2"))?.services.sessionRuntime;
+    assert.ok(session?.loop);
+    assert.ok(sibling?.loop);
+    session.loop.record("strategy");
+    sibling.loop.record("strategy");
 
     await kernel.stopSession("s1", "dispose", "release-runtime");
 
     assert.equal(
-      session.engine.used("s1", "strategy"),
-      0,
-      "a plugin dispose must drop the session's reminder budget",
+      await kernel.ensureSession("s1"),
+      null,
+      "a plugin dispose leaves no scope to read the budget from",
     );
+    assert.equal(sibling.loop.used("strategy"), 1);
   });
 
   it("drops the stopped session's process-level records only", async () => {
-    const { kernel } = buildKernel(true);
-    await kernel.ensureSession("s1");
-    await kernel.ensureSession("s2");
+    const { lifecycle } = buildKernel(true);
+    await lifecycle.ensureSession("s1");
+    await lifecycle.ensureSession("s2");
     for (const sessionID of ["s1", "s2"]) {
       process.sessionAgents.bind(sessionID, "dolphin");
       runtime.setModelLimit(permitFor(sessionID), 1000, "model");
     }
 
-    await kernel.stopSession("s1", "session.deleted", "delete-session");
+    await lifecycle.deleteSession("s1", "session.deleted");
 
     assert.equal(process.sessionAgents.resolve("s1"), undefined);
     assert.equal(runtime.modelLimit("s1"), undefined);

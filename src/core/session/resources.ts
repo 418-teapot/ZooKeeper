@@ -8,7 +8,7 @@
  * declarations once per stop:
  *
  *  - a `release` record drops its runtime part on a `release-runtime` stop
- *    and is deleted by a `delete-session` stop;
+ *    and is deleted by a deletion;
  *  - a `retain` record survives a runtime release, and only a deletion
  *    drops it.
  *
@@ -19,12 +19,11 @@
  *
  * {@link contextSessionResources} lists the context records of one runtime.
  * Each host composition root builds its instance catalog from that list plus
- * the explicit session records (the agent binding) and puts it on the
- * session scope's stop path through {@link defineSessionResourcesService}.
- * A `release-runtime` stop (a plugin dispose, a pi `session_shutdown`)
- * releases the runtime records and keeps the persisted state plus the agent
- * binding; a `delete-session` stop (an OpenCode `session.deleted`) deletes
- * every record.
+ * the explicit session records (the agent binding) and gives it to the
+ * session lifecycle coordinator.  The coordinator applies a release through
+ * the session scope's stop (`defineSessionResourcesService`) and applies a
+ * deletion itself, after the scope stopped: a release keeps the persisted
+ * state plus the agent binding, a deletion drops every record.
  *
  * @module
  */
@@ -40,7 +39,7 @@ import {
 interface SessionResourceBase {
   /** Record name, reported as the failure's service name. */
   readonly name: string;
-  /** Delete the record; only a `delete-session` stop runs it. */
+  /** Delete the record; a session deletion runs it. */
   delete(sessionID: string): void | Promise<void>;
 }
 
@@ -163,12 +162,14 @@ export function contextSessionResources(
 }
 
 /**
- * Declare the session service that applies the catalog to a stopping scope.
+ * Declare the session service that releases the catalog on a stopping scope.
  *
  * The service carries no state: the records keep their own storage, so the
- * service exists only to hand the stop mode to the catalog.  A record
- * failure is rethrown as one aggregate error so the kernel still reports
- * it; every other record has already been applied by then.
+ * service exists only to hand the stop mode to the catalog.  Only a runtime
+ * release reaches it — a deletion applies the catalog itself, after the
+ * scope stopped, so a session without a scope follows the same protocol.
+ * A record failure is rethrown as one aggregate error so the kernel still
+ * reports it; every other record has already been applied by then.
  *
  * @param catalog - The declarations of this plugin instance.
  * @returns The session service the host declares.
@@ -179,14 +180,11 @@ export function defineSessionResourcesService(catalog: SessionResourceCatalog) {
     deps: [],
     create: ({ sessionID }) => ({ sessionID }),
     dispose: async ({ sessionID }, { mode }) => {
-      const report =
-        mode === "delete-session"
-          ? await catalog.delete(sessionID)
-          : await catalog.release(sessionID);
+      if (mode !== "release-runtime") return;
+      const report = await catalog.release(sessionID);
       if (report.errors.length === 0) return;
-      const action = mode === "delete-session" ? "delete" : "release";
       throw new Error(
-        `failed to ${action} session records: ${report.errors
+        `failed to release session records: ${report.errors
           .map((failure) => `${failure.service} (${String(failure.error)})`)
           .join(", ")}`,
       );

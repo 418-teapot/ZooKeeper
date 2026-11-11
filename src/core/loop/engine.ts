@@ -1,5 +1,5 @@
 /**
- * Loop engine: safety interlock, strategy fan-out, and per-strategy budget.
+ * Loop engine: safety interlock, strategy fan-out, and per-session budget.
  *
  * The engine is the executor half of the outer loop.  Before consulting
  * any strategy it enforces the interlock that does not depend on a
@@ -10,23 +10,26 @@
  * (per-handler crash isolation; a crash is silence, never a wake), and
  * hands the winning verdict back to the host, which delivers the text.
  *
- * The engine owns the per-(session, strategy) reminder counter — hosts no
- * longer keep a parallel map.  The host records a delivered wake through
- * {@link LoopEngine.record} immediately before dispatch, and resets a
- * session's budgets through {@link LoopEngine.reset} on a real user turn
- * (and, on hosts that emit it, session deletion or restart).  Because the
- * counter lives here, the budget interlock cannot be bypassed by a
+ * The engine holds the strategies only.  A session scope owns one
+ * {@link LoopSession} handle, created by {@link LoopEngine.createSession},
+ * and that handle keeps the session's reminder counters and awaiting
+ * locks: the engine never keys state by session, so it caches no handle
+ * and needs no session cap.  The handle goes away with its scope, and a
+ * new scope of the same session starts empty.
+ *
+ * The host records a delivered wake through {@link LoopSession.record}
+ * immediately before dispatch, and resets the session's budgets through
+ * {@link LoopSession.reset} on a real user turn.  Because the counter
+ * lives in the handle, the budget interlock cannot be bypassed by a
  * strategy that forgets to check it.
  *
- * The engine also holds the per-(session, strategy) awaiting-progress
- * lock.  A delivered wake locks that strategy for its session; a later
+ * A delivered wake also locks that strategy in the handle.  A later
  * settle with no tool activity skips only the locked strategies — no
  * consultation, no budget spent, the lock kept — while unlocked
- * strategies are still consulted, so a text-only reply to one
- * strategy's wake cannot silence another's.  Any tool activity releases
- * every lock the session holds: one active turn answers all pending
- * wakes.  The lock shares the budget's lifecycle:
- * {@link LoopEngine.reset} and the session cap's eviction clear both.
+ * strategies are still consulted, so a text-only reply to one strategy's
+ * wake cannot silence another's.  Any tool activity releases every lock
+ * the handle holds: one active turn answers all pending wakes.  The lock
+ * shares the budget's lifecycle: {@link LoopSession.reset} clears both.
  *
  * @module
  */
@@ -63,43 +66,19 @@ export interface Wake {
 }
 
 /**
- * The backing budget store: session → strategy name → wakes recorded.
+ * One session's loop state: its reminder counters and awaiting locks.
  *
- * A Map iterates in insertion order, so the session level doubles as the
- * eviction order for the optional session cap.
+ * A session scope owns one handle.  The handle closes over its own
+ * session, so no call names a session and no two sessions share state.
  */
-export type BudgetStore = Map<string, Map<string, number>>;
-
-/** Options for {@link createLoopEngine}. */
-export interface LoopEngineOptions {
+export interface LoopSession {
   /**
-   * Optional upper bound on tracked sessions.  When set, recording a
-   * wake evicts the oldest-inserted session (and all of its strategy
-   * counts and awaiting locks) once the bound is exceeded.  A Map
-   * iterates in insertion order, so this is a cheap LRU bound for hosts
-   * that fire no session-deletion event.
-   */
-  cap?: number;
-  /** Test seam: the backing counter store to observe and seed. */
-  store?: BudgetStore;
-}
-
-/**
- * The loop engine: interlock, strategy fan-out, and budget bookkeeping.
- *
- * The host translates its stop event into a {@link SettleRequest}, calls
- * {@link LoopEngine.run}, records a delivered wake with
- * {@link LoopEngine.record}, and resets budgets with
- * {@link LoopEngine.reset}.
- */
-export interface LoopEngine {
-  /**
-   * Judge a stopped turn and return the first wake verdict.
+   * Judge a stopped turn of this session and return the first wake.
    *
    * Enforces the cause interlock first: a turn that did not settle logs
    * `not-settled` and returns `null` without consulting any strategy.
    * Then the awaiting-progress lock: any tool activity releases every
-   * lock the session holds and evaluation continues; a settle without
+   * lock this session holds and evaluation continues; a settle without
    * activity skips the locked strategies — each logged
    * `awaiting-activity` with its name, unconsulted and spending no
    * budget — while unlocked strategies still run.  Strategies run in
@@ -110,39 +89,56 @@ export interface LoopEngine {
    * the first `wake` wins and every strategy silence is logged.  `null`
    * means silence — the host must not invent a wake.
    *
-   * @param request - The stopped turn's facts (session, cause, activity).
+   * @param request - The stopped turn's facts (cause and activity).
    * @returns The first wake verdict, or `null` when nothing wakes.
    */
   run(request: SettleRequest): Promise<Wake | null>;
   /**
-   * Count one delivered wake for a session's strategy and lock it.
+   * Count one delivered wake for a strategy and lock it.
    *
    * The host calls this immediately before dispatching the wake text, so
    * a delivery failure cannot become an unbounded retry loop.  The
    * strategy's lock holds until a later settle shows any tool activity
-   * (see {@link LoopEngine.run}).
+   * (see {@link LoopSession.run}).
    *
-   * @param sessionID - The session the wake was delivered to.
    * @param name - The winning strategy's name.
    */
-  record(sessionID: string, name: string): void;
+  record(name: string): void;
   /**
-   * Start fresh budgets for a session and clear all its awaiting locks.
+   * Start fresh budgets for this session and clear all its locks.
    *
-   * Called on a real user turn (and on session restart / deletion) so the
-   * next settle begins with every strategy's full allowance and no lock.
-   *
-   * @param sessionID - The session whose budgets reset.
+   * Called on a real user turn so the next settle begins with every
+   * strategy's full allowance and no lock.
    */
-  reset(sessionID: string): void;
+  reset(): void;
   /**
-   * Observe the wakes already recorded for a session's strategy.
+   * Observe the wakes already recorded for a strategy.
    *
-   * @param sessionID - The session to read.
    * @param name - The strategy to read.
    * @returns The number of wakes recorded (zero when none).
    */
-  used(sessionID: string, name: string): number;
+  used(name: string): number;
+}
+
+/**
+ * The loop engine: interlock, strategy fan-out, and session handles.
+ *
+ * The host translates its stop event into a {@link SettleRequest}, calls
+ * {@link LoopSession.run} on the session's handle, records a delivered
+ * wake with {@link LoopSession.record}, and resets budgets with
+ * {@link LoopSession.reset}.
+ */
+export interface LoopEngine {
+  /**
+   * Build the loop state of one session.
+   *
+   * The caller is the session scope owning the handle: the engine keeps
+   * no reference to it, so its state ends when the scope releases it.
+   *
+   * @param sessionID - The session the handle serves.
+   * @returns The session's loop handle.
+   */
+  createSession(sessionID: string): LoopSession;
 }
 
 /**
@@ -150,12 +146,10 @@ export interface LoopEngine {
  *
  * @param contributions - The composed settle contributions, in registry
  *   order; each carries its own wake allowance.
- * @param options - Optional session cap and the test-seam backing store.
  * @returns The engine.
  */
 export function createLoopEngine(
   contributions: SettledContribution[],
-  options: LoopEngineOptions = {},
 ): LoopEngine {
   // Strategy names are the budget account keys: a collision would let
   // one strategy's wakes drain another's allowance.
@@ -166,108 +160,100 @@ export function createLoopEngine(
     }
     seen.add(name);
   }
-  const store = options.store ?? new Map<string, Map<string, number>>();
-  const cap = options.cap;
-  // The awaiting-progress lock: session → strategies whose delivered
-  // wake no tool-active settle has answered yet.  Scoped per strategy so
-  // a text-only reply to one strategy's wake cannot silence another's;
-  // any activity releases all of a session's locks, like oh-my-pi's loop
-  // lock.  Cleared with the budget on reset and cap eviction.
-  const awaiting = new Map<string, Set<string>>();
 
   return {
-    async run(request: SettleRequest): Promise<Wake | null> {
-      const { sessionID, cause, hadActivity } = request;
-      if (cause !== "settled") {
-        log.debug({
-          hook: "loop",
-          event: "settle_interlock",
-          sessionId: sessionID,
-          reason: "not-settled",
-        });
-        return null;
-      }
-      if (hadActivity) {
-        // Any tool activity is progress on some wake: one active turn
-        // answers every pending lock of the session.
-        awaiting.delete(sessionID);
-      }
+    createSession(sessionID: string): LoopSession {
+      // Per-strategy counters: the handle's whole budget.
+      const counts = new Map<string, number>();
+      // Strategies whose delivered wake no tool-active settle answered
+      // yet.  Scoped per strategy so a text-only reply to one strategy's
+      // wake cannot silence another's; any activity releases all of them,
+      // like oh-my-pi's loop lock.  Cleared with the counters on reset.
+      const awaiting = new Set<string>();
 
-      const input: SettledInput = { sessionID, hadActivity };
-      const counts = store.get(sessionID);
-      const locked = awaiting.get(sessionID);
-      for (const { name, maxWakes, handle } of contributions) {
-        if (locked?.has(name)) {
-          // A text-only reply to this strategy's wake is not progress:
-          // skip the strategy, spend no budget, keep the lock.  The
-          // other strategies are still consulted.
-          log.debug({
-            hook: "loop",
-            event: "settle_interlock",
-            sessionId: sessionID,
-            reason: "awaiting-activity",
-            handler: name,
-          });
-          continue;
-        }
-        if ((counts?.get(name) ?? 0) >= maxWakes) {
-          log.debug({
-            hook: "loop",
-            event: "settle_interlock",
-            sessionId: sessionID,
-            reason: "budget-exhausted",
-            handler: name,
-          });
-          continue;
-        }
-        try {
-          const decision = await handle(input);
-          if (decision.kind === "wake") return { name, text: decision.text };
-          // A silence is otherwise invisible to field diagnosis: record
-          // the contributing unit and the gate that suppressed the wake.
-          log.debug({
-            hook: "loop",
-            event: "settle_silent",
-            sessionId: sessionID,
-            handler: name,
-            reason: decision.reason,
-          });
-        } catch (err) {
-          log.error({
-            hook: "plugin",
-            event: "handler_crashed",
-            sessionId: sessionID,
-            handler: name,
-            error: String(err),
-          });
-        }
-      }
-      return null;
-    },
+      return {
+        async run(request: SettleRequest): Promise<Wake | null> {
+          const { cause, hadActivity } = request;
+          if (cause !== "settled") {
+            log.debug({
+              hook: "loop",
+              event: "settle_interlock",
+              sessionId: sessionID,
+              reason: "not-settled",
+            });
+            return null;
+          }
+          if (hadActivity) {
+            // Any tool activity is progress on some wake: one active turn
+            // answers every pending lock of the session.
+            awaiting.clear();
+          }
 
-    record(sessionID: string, name: string): void {
-      const locked = awaiting.get(sessionID) ?? new Set<string>();
-      locked.add(name);
-      awaiting.set(sessionID, locked);
-      const counts = store.get(sessionID) ?? new Map<string, number>();
-      counts.set(name, (counts.get(name) ?? 0) + 1);
-      store.set(sessionID, counts);
-      if (cap === undefined) return;
-      while (store.size > cap) {
-        const oldest = store.keys().next().value;
-        if (oldest === undefined) break;
-        store.delete(oldest);
-        awaiting.delete(oldest);
-      }
-    },
+          const input: SettledInput = { sessionID, hadActivity };
+          for (const { name, maxWakes, handle } of contributions) {
+            if (awaiting.has(name)) {
+              // A text-only reply to this strategy's wake is not progress:
+              // skip the strategy, spend no budget, keep the lock.  The
+              // other strategies are still consulted.
+              log.debug({
+                hook: "loop",
+                event: "settle_interlock",
+                sessionId: sessionID,
+                reason: "awaiting-activity",
+                handler: name,
+              });
+              continue;
+            }
+            if ((counts.get(name) ?? 0) >= maxWakes) {
+              log.debug({
+                hook: "loop",
+                event: "settle_interlock",
+                sessionId: sessionID,
+                reason: "budget-exhausted",
+                handler: name,
+              });
+              continue;
+            }
+            try {
+              const decision = await handle(input);
+              if (decision.kind === "wake")
+                return { name, text: decision.text };
+              // A silence is otherwise invisible to field diagnosis: record
+              // the contributing unit and the gate that suppressed the wake.
+              log.debug({
+                hook: "loop",
+                event: "settle_silent",
+                sessionId: sessionID,
+                handler: name,
+                reason: decision.reason,
+              });
+            } catch (err) {
+              log.error({
+                hook: "plugin",
+                event: "handler_crashed",
+                sessionId: sessionID,
+                handler: name,
+                error: String(err),
+              });
+            }
+          }
+          return null;
+        },
 
-    reset(sessionID: string): void {
-      store.delete(sessionID);
-      awaiting.delete(sessionID);
-    },
+        record(name: string): void {
+          awaiting.add(name);
+          counts.set(name, (counts.get(name) ?? 0) + 1);
+        },
 
-    used(sessionID: string, name: string): number {
-      return store.get(sessionID)?.get(name) ?? 0;
+        reset(): void {
+          counts.clear();
+          awaiting.clear();
+        },
+
+        used(name: string): number {
+          return counts.get(name) ?? 0;
+        },
+      };
     },
   };
 }

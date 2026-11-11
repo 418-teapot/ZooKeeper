@@ -694,11 +694,6 @@ export interface PiStartOptions {
   /** Subagent driver used in place of the real pi SDK driver. */
   subagentDriver?: SubagentDriver;
   /**
-   * Test seam: the per-(session, strategy) reminder-budget store to
-   * observe and seed.  Defaults to a fresh store when omitted.
-   */
-  remindersUsed?: Map<string, Map<string, number>>;
-  /**
    * Test seam: workspace root the auto-debug strategy scans for Cases.
    * Defaults to the process working directory.
    */
@@ -742,6 +737,9 @@ type PiExtensionDeclarations = ReturnType<
   typeof createPiHostServices
 >["extension"];
 
+/** The session-scope declarations of one pi runtime instance. */
+type PiSessionDeclarations = ReturnType<typeof createPiHostServices>["session"];
+
 /**
  * The resources one pi runtime owns before its first fallible step.
  *
@@ -755,7 +753,10 @@ export interface PiRuntimeInstance {
   /** The question-channel provider this instance resolved. */
   readonly askQuestionChannel: QuestionChannelProvider;
   /** The lifecycle wiring of this instance. */
-  readonly lifecycle: PiLifecycleWiring<PiExtensionDeclarations>;
+  readonly lifecycle: PiLifecycleWiring<
+    PiExtensionDeclarations,
+    PiSessionDeclarations
+  >;
   /**
    * Stop this instance's extension scope.  pi never sends
    * `session_shutdown` for an SDK-created session, so a host that owns the
@@ -865,8 +866,10 @@ export function createPiRuntimeInstance(
   // The context records of this extension instance: one runtime per
   // instance, so two instances in one process never share session state, a
   // captured model limit, a published round view, or a
-  // pending-view-change flag.  The catalog puts the context records and the
-  // explicit session records on the session scope's stop path.
+  // pending-view-change flag.  The catalog declares the context records and
+  // the explicit session records: the session resources service releases
+  // them when the scope stops, and the session lifecycle coordinator
+  // deletes them when the host deletes the session.
   const contextRuntime = overrides?.contextRuntime ?? createContextRuntime();
   const sessionCatalog = createSessionResourceCatalog([
     ...contextSessionResources(contextRuntime),
@@ -986,10 +989,6 @@ export function createPiRuntimeInstance(
         // on OpenCode.
         askQuestionChannel,
       }),
-    // Test seam: the budget store the loop engine records into.
-    ...(overrides?.remindersUsed === undefined
-      ? {}
-      : { loopStore: overrides.remindersUsed }),
   });
 
   // The session id one event context names.  Each call resolves its own
@@ -1005,6 +1004,7 @@ export function createPiRuntimeInstance(
   const lifecycle = createPiLifecycleWiring({
     extensionServices: declarations.extension,
     sessionServices: declarations.session,
+    sessionCatalog,
     // pi keeps the live session id on the event context's session manager.
     getSessionID: resolveSessionID,
   });
@@ -1099,9 +1099,10 @@ export async function preparePiStart(
   // declares its own wake allowance (`maxWakes`) and reads its own config,
   // so the engine needs no configuration of its own.  This host classifies
   // the stop cause at pi's pre-settle boundary and returns a wake as an
-  // injected custom message.  A session's reminder budget and awaiting lock
-  // are released by that session's scope.
-  const engine = loop.engine;
+  // injected custom message.  The engine holds the strategies only: each
+  // session scope owns the handle that keeps its reminder budget and
+  // awaiting lock, so the handle ends with the scope.
+  const hasSettledHandlers = loop.engine !== undefined;
 
   // Whether this host registered the ask tool.  The tool registers inactive
   // (`defaultActive: false`), so the visibility rule — not the registration
@@ -1340,7 +1341,7 @@ export async function preparePiStart(
     sessionContexts,
     contextRuntime,
     composed,
-    engine,
+    hasSettledHandlers,
     skillPermissions,
     getProfileSkills: () => profileCatalog.get(),
     collectSkillPaths,
@@ -1372,7 +1373,16 @@ export async function preparePiStart(
     resolveAgent,
     resolveCallerAgent,
     ...(fixedAgent === undefined ? {} : { fixedAgent }),
-    runSession: (ctx, work, signal) => lifecycle.runSession(ctx, work, signal),
+    runSession: (ctx, work, signal) =>
+      lifecycle.runSession(
+        ctx,
+        (permit, services) =>
+          work(permit, {
+            settle: services.settleState,
+            loop: services.loopSession,
+          }),
+        signal,
+      ),
     startSession: (event, ctx) => lifecycle.startSession(event, ctx),
     stopExtension: (event) => lifecycle.stopExtension(event),
   });

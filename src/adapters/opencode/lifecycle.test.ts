@@ -16,16 +16,19 @@ import {
   defineExtensionService,
   defineSessionService,
 } from "../../core/lifecycle/index.js";
+import { createSessionLifecycle } from "../../core/session/lifecycle.js";
+import { createSessionResourceCatalog } from "../../core/session/resources.js";
 import { createOpenCodeLifecycleMapping } from "./lifecycle.js";
 
 /**
- * Build a kernel that records every creation, start and disposal call.
+ * Build the operations the mapping drives, over a kernel that records
+ * every creation, start and disposal call.
  *
- * The mapping runs against the real kernel, so the assertions read the
- * resource effects an OpenCode event produces rather than the calls the
- * mapping makes.
+ * The mapping runs against the real coordinator, so the assertions read
+ * the resource effects an OpenCode event produces rather than the calls
+ * the mapping makes.
  */
-function buildKernel(log: string[], failSessionDispose = false) {
+function buildLifecycle(log: string[], failSessionDispose = false) {
   const extension = defineExtensionService({
     name: "ext",
     deps: [],
@@ -52,7 +55,11 @@ function buildKernel(log: string[], failSessionDispose = false) {
       if (failSessionDispose) throw new Error("boom");
     },
   });
-  return createLifecycleKernel({ extension: [extension], session: [session] });
+  const kernel = createLifecycleKernel({
+    extension: [extension],
+    session: [session],
+  });
+  return createSessionLifecycle(kernel, createSessionResourceCatalog([]));
 }
 
 /** An OpenCode session event as the `event` hook receives it. */
@@ -63,7 +70,7 @@ function sessionEvent(type: string, id?: string) {
 describe("OpenCode lifecycle mapping", () => {
   it("starts the created session with the host event as the reason", async () => {
     const log: string[] = [];
-    const mapping = createOpenCodeLifecycleMapping(buildKernel(log));
+    const mapping = createOpenCodeLifecycleMapping(buildLifecycle(log));
 
     const outcome = await mapping.handleEvent(
       sessionEvent("session.created", "session-1"),
@@ -79,7 +86,7 @@ describe("OpenCode lifecycle mapping", () => {
 
   it("stops only the deleted session", async () => {
     const log: string[] = [];
-    const mapping = createOpenCodeLifecycleMapping(buildKernel(log));
+    const mapping = createOpenCodeLifecycleMapping(buildLifecycle(log));
     await mapping.handleEvent(sessionEvent("session.created", "session-1"));
     await mapping.handleEvent(sessionEvent("session.created", "session-2"));
 
@@ -113,7 +120,7 @@ describe("OpenCode lifecycle mapping", () => {
       { type: "session.created", properties: { info: { id: "" } } },
     ]) {
       const log: string[] = [];
-      const mapping = createOpenCodeLifecycleMapping(buildKernel(log));
+      const mapping = createOpenCodeLifecycleMapping(buildLifecycle(log));
 
       const outcome = await mapping.handleEvent(event);
 
@@ -124,7 +131,7 @@ describe("OpenCode lifecycle mapping", () => {
 
   it("does nothing for events it does not map", async () => {
     const log: string[] = [];
-    const mapping = createOpenCodeLifecycleMapping(buildKernel(log));
+    const mapping = createOpenCodeLifecycleMapping(buildLifecycle(log));
 
     const outcomes = [
       await mapping.handleEvent(sessionEvent("session.updated", "session-1")),
@@ -142,7 +149,7 @@ describe("OpenCode lifecycle mapping", () => {
 
   it("reports dispose cleanup failures instead of swallowing them", async () => {
     const log: string[] = [];
-    const mapping = createOpenCodeLifecycleMapping(buildKernel(log, true));
+    const mapping = createOpenCodeLifecycleMapping(buildLifecycle(log, true));
     await mapping.handleEvent(sessionEvent("session.created", "session-1"));
 
     const report = await mapping.dispose();

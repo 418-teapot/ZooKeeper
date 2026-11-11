@@ -4284,7 +4284,8 @@ describe("buildPiToolExecute — tool admission", () => {
     const run: PiSessionWorkRunner = {
       runSession: async (callCtx, work) => {
         admitted.push(callCtx);
-        return work(permit);
+        // The tool bridge reads no session service.
+        return work(permit, {});
       },
     };
     const partials: unknown[] = [];
@@ -4329,7 +4330,7 @@ describe("buildPiToolExecute — tool admission", () => {
   it("survives a throwing repaint callback", async () => {
     const calls = { call: [] as ToolCallContext[], args: [] as unknown[] };
     const run: PiSessionWorkRunner = {
-      runSession: async (_ctx, work) => work(fakePermit()),
+      runSession: async (_ctx, work) => work(fakePermit(), {}),
     };
     const result = await buildPiToolExecute(
       {
@@ -4365,7 +4366,7 @@ describe("buildPiToolExecute — tool admission", () => {
   it("builds the question channel from pi's own execution context", async () => {
     const calls = { call: [] as ToolCallContext[], args: [] as unknown[] };
     const run: PiSessionWorkRunner = {
-      runSession: async (_ctx, work) => work(fakePermit()),
+      runSession: async (_ctx, work) => work(fakePermit(), {}),
     };
     const form = formHarness();
     const result = await buildPiToolExecute(
@@ -4397,7 +4398,7 @@ describe("buildPiToolExecute — tool admission", () => {
 
   it("merges the tool's structured data into the terminal details", async () => {
     const run: PiSessionWorkRunner = {
-      runSession: async (_ctx, work) => work(fakePermit()),
+      runSession: async (_ctx, work) => work(fakePermit(), {}),
     };
     piProcess.runs.start({
       id: "call-data",

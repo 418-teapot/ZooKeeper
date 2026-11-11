@@ -15,6 +15,7 @@ import {
   defineExtensionService,
   defineSessionService,
 } from "../../core/lifecycle/index.js";
+import { createSessionResourceCatalog } from "../../core/session/resources.js";
 import { _resetForTesting } from "../../utils/logger.js";
 import {
   createPiLifecycleWiring,
@@ -58,6 +59,7 @@ function buildWiring(
   return createPiLifecycleWiring({
     extensionServices: options.extensionServices ?? [],
     sessionServices: [worker],
+    sessionCatalog: createSessionResourceCatalog([]),
     getSessionID: (ctx) => (ctx as { id?: string } | undefined)?.id,
   });
 }
@@ -84,6 +86,7 @@ describe("pi lifecycle wiring", () => {
     const wiring = createPiLifecycleWiring({
       extensionServices: [live],
       sessionServices: [worker],
+      sessionCatalog: createSessionResourceCatalog([]),
       getSessionID: (ctx) => (ctx as { id?: string } | undefined)?.id,
     });
 

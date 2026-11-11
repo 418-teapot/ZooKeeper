@@ -601,6 +601,41 @@ describe("lifecycle kernel", () => {
     ]);
   });
 
+  it("keeps the mode of an in-flight deletion when the extension stops", async () => {
+    const events: string[] = [];
+    const entered = deferred<void>();
+    const gate = deferred<void>();
+
+    const session = defineSessionService({
+      name: "session",
+      deps: [],
+      create: () => ({}),
+      dispose: async (_service, { reason, mode }) => {
+        events.push(`dispose:${reason}:${mode}`);
+        entered.resolve();
+        await gate.promise;
+      },
+    });
+    const kernel = createLifecycleKernel({ extension: [], session: [session] });
+
+    await kernel.ensureSession("s1");
+    const deleting = kernel.stopSession(
+      "s1",
+      "session.deleted",
+      "delete-session",
+    );
+    await entered.promise;
+
+    // The plugin dispose joins the deletion it must not downgrade.
+    const disposing = kernel.stopExtension("dispose");
+    gate.resolve();
+
+    const [deleted, disposed] = await Promise.all([deleting, disposing]);
+
+    assert.deepEqual(events, ["dispose:session.deleted:delete-session"]);
+    assert.deepEqual([deleted.errors, disposed.errors], [[], []]);
+  });
+
   it("attempts every cleanup and reports each failure", async () => {
     const disposed: string[] = [];
 

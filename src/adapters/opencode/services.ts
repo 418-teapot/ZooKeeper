@@ -23,27 +23,28 @@
  *    that provision (see `core/composition.ts`).
  *  - the `loop` extension service owns the loop engine, built once per
  *    plugin instance when the active profile contributed a settle
- *    strategy.
+ *    strategy.  The engine holds the strategies only.
  *  - the `sessionRuntime` session service is the session's whole state: the
- *    consume-once abort flag, the pending wake echo and the instance's
- *    engine.  The engine's per-session reminder budgets and
- *    awaiting-progress locks belong to this scope, so every stop of a
- *    session resets that session's loop state.
+ *    consume-once abort flag, the pending wake echo and the loop handle of
+ *    this session.  The handle's reminder budgets and awaiting-progress
+ *    locks belong to this scope, so they end with it and no sibling
+ *    session can observe them.
  *
  * The context pipeline's per-session records (the persisted state, the model
  * limit, the round view, the pending view-change flag, the session's entry in
  * the agent registry) belong to the plugin instance: the hook, the tools and
  * the `/dcp` command share one `ContextRuntime` per instance, so no session
  * scope may own them.  They are declared by
- * `contextSessionResources(runtime)` in `core/session/resources.ts` and
- * released through the `sessionResources` session service: the session scope
- * is their stop boundary, and the stop mode decides what it does to them.
+ * `contextSessionResources(runtime)` in `core/session/resources.ts` and are
+ * applied by the session lifecycle coordinator: the `sessionResources`
+ * service releases them when the scope stops, and a session deletion drops
+ * them after the scope stopped.
  *
- * Only a `delete-session` stop ends a session, so only that mode deletes the
- * persisted context and the agent binding.  A `release-runtime` stop (the
- * plugin dispose) stops the scope while the session lives on: the runtime
- * records are released and the persisted context survives for the next
- * instance.  The reason is diagnostic and never selects the cleanup step.
+ * A `release-runtime` stop (the plugin dispose) stops the scope while the
+ * session lives on: the runtime records are released and the persisted
+ * context and the agent binding survive for the next instance.  A deletion
+ * ends the session and drops every record.  The reason is diagnostic and
+ * never selects the cleanup step.
  *
  * @module
  */
@@ -64,7 +65,7 @@ import {
   type ServiceMap,
   type SessionScope,
 } from "../../core/lifecycle/index.js";
-import { createLoopEngine, type LoopEngine } from "../../core/loop/index.js";
+import { createLoopEngine, type LoopSession } from "../../core/loop/index.js";
 import { ORCHESTRATOR_AGENT_NAME } from "../../core/orchestrator.js";
 import type { Capabilities } from "../../core/ports/index.js";
 import type { ProcessState } from "../../core/process-state.js";
@@ -128,20 +129,19 @@ export interface OpenCodeCapabilities extends HostCapabilities {
  * The per-session state the always-on hooks drive: the `sessionRuntime`
  * service value.
  *
- * The abort flag and the pending echo belong to one session: a reader goes
- * through the session it addresses, so neither crosses a session boundary.
- * The engine is the plugin instance's shared object, so its budget
- * bookkeeping stays readable for every session of the instance.
+ * The abort flag, the pending echo and the loop handle belong to one
+ * session: a reader goes through the session it addresses, so neither the
+ * flag nor a reminder budget crosses a session boundary.
  */
 export interface OpenCodeSessionState {
   /** The session this state belongs to. */
   readonly sessionID: string;
   /**
-   * The loop engine shared by the plugin instance, or `undefined` when the
-   * profile contributed no settle strategy (fail-closed: no settle judge,
-   * no wake).
+   * This session's loop handle, or `undefined` when the profile
+   * contributed no settle strategy (fail-closed: no settle judge, no
+   * wake).
    */
-  readonly engine: LoopEngine | undefined;
+  readonly loop: LoopSession | undefined;
   /** Record an observed abort (`session.error`) for this session. */
   markAborted(): void;
   /** Claim the recorded abort; consume-once, so it cannot linger. */
@@ -163,19 +163,20 @@ export interface OpenCodeSessionState {
  * Build the session runtime of one session scope.
  *
  * @param sessionID - The owning session.
- * @param engine - The instance's loop engine, if the profile built one.
- * @returns The session runtime; its disposer drops it.
+ * @param loop - This session's loop handle, if the profile built an
+ *   engine.
+ * @returns The session runtime; it ends with its scope.
  */
 function createSessionRuntime(
   sessionID: string,
-  engine: LoopEngine | undefined,
+  loop: LoopSession | undefined,
 ): OpenCodeSessionState {
   let aborted = false;
   let echoMessageID: string | undefined;
 
   return {
     sessionID,
-    engine,
+    loop,
     markAborted() {
       aborted = true;
     },
@@ -306,14 +307,17 @@ export function createOpenCodeHostServices(host: OpenCodeServiceHost) {
     },
   });
 
-  // The engine's per-session budget and awaiting lock are the session's own
-  // resources: every stop of the session resets them, in both stop modes.
+  // The engine holds the strategies; the session scope owns the handle that
+  // keeps this session's reminder budget and awaiting lock.  Both end with
+  // the scope, so the engine keeps no state of its own.
   const sessionRuntime = defineSessionService({
     name: "sessionRuntime",
     deps: [loop],
     create: ({ deps, sessionID }) =>
-      createSessionRuntime(sessionID, deps.loop.engine),
-    dispose: (session) => session.engine?.reset(session.sessionID),
+      createSessionRuntime(
+        sessionID,
+        deps.loop.engine?.createSession(sessionID),
+      ),
   });
 
   return {

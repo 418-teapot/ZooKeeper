@@ -55,11 +55,10 @@ export interface SettledInput {
  * The host's report of a stopped turn, before the engine's interlocks.
  *
  * Carries the stop cause the engine needs to decide whether any strategy
- * may be consulted; the engine reads its own budget state.
+ * may be consulted; the session the turn belongs to is the loop handle's
+ * own, and the handle reads its own budget state.
  */
 export interface SettleRequest {
-  /** Session whose turn stopped. */
-  sessionID: string;
   /** Why the agent's turn ended. */
   cause: StopCause;
   /** Whether the settled turn made any tool call. */

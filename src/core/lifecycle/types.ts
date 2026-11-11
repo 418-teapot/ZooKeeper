@@ -51,11 +51,14 @@ export type DependencyServices<Deps extends readonly AnyServiceDefinition[]> = {
 };
 
 /**
- * What a session stop does with the session's own resources.
+ * What a session stop declares about the session's own resources.
  *
  * `release-runtime` keeps whatever outlives the scope (a session the host
- * still owns); `delete-session` also drops what belongs to the session
- * itself.  The mode is explicit: no caller infers it from the reason.
+ * still owns); `delete-session` tells the session disposers that the
+ * session ends.  The mode is explicit: no caller infers it from the
+ * reason.  It reaches the disposers only: the instance's session records
+ * are deleted by the session lifecycle coordinator after the scope
+ * stopped, so a stop through the kernel alone keeps them.
  */
 export type SessionStopMode = "release-runtime" | "delete-session";
 
@@ -336,10 +339,13 @@ export interface LifecycleKernel<
    *
    * `reason` and `mode` are both required and reach every session disposer
    * through {@link SessionDisposeContext}: the reason records why the stop
-   * ran, the mode decides what it does.  Safe to repeat and safe to race
-   * with `ensureSession`; a stopped ID is tombstoned so a late event cannot
-   * recreate it.  Never rejects for cleanup failures — inspect
-   * {@link CleanupReport.errors}.
+   * ran, the mode tells the disposers which resource step applies.  The
+   * stop covers the scope only: the instance's session records are deleted
+   * by the session lifecycle coordinator after this call returns, so a
+   * `delete-session` stop through the kernel alone keeps them.  Safe to
+   * repeat and safe to race with `ensureSession`; a stopped ID is
+   * tombstoned so a late event cannot recreate it.  Never rejects for
+   * cleanup failures — inspect {@link CleanupReport.errors}.
    */
   stopSession(
     sessionID: string | null | undefined,

@@ -18,8 +18,9 @@
  * Real session starts are a separate entry point
  * ({@link LifecycleKernel.notifySessionStart}) so a first-use ensure can
  * never fabricate a start reason.  A session stop carries its reason for
- * diagnostics and an explicit mode that decides whether it also deletes
- * what belongs to the session.
+ * diagnostics and an explicit mode that reaches the session disposers;
+ * the instance's session records are deleted outside the kernel, by the
+ * session lifecycle coordinator, once the scope stopped.
  *
  * `runSession` admits one unit of call-scoped work.  It lazily creates
  * the session, issues one `WorkPermit`, and releases it when the work

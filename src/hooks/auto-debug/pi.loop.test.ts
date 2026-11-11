@@ -29,11 +29,10 @@
  * budget stops further wakes, and an aborted run is interdicted before
  * the strategy is consulted.
  *
- * Also covers the budget-map lifecycle: a `session_start` keeps the
- * session's entry (a start notice is not a stop), a `session_shutdown`
- * drops every started session's entry through its session scope, the size
- * cap evicts the oldest-inserted sessions, and a profile without the
- * feature performs no bookkeeping writes at all.
+ * Also covers the loop state's ownership: a `session_start` keeps the
+ * session's spent budget (a start notice is not a stop), a sibling session
+ * never spends another's allowance, a released scope stops judging, and a
+ * profile without the feature performs no bookkeeping at all.
  */
 import assert from "node:assert/strict";
 import { afterEach, beforeEach, describe, it } from "node:test";
@@ -151,6 +150,26 @@ function interlockReason(): unknown {
     (entry) => entry.event === "settle_interlock",
   );
   return interlocked.at(-1)?.reason;
+}
+
+/**
+ * The entries a settle judge writes.
+ *
+ * A loop the profile left disabled runs no judge, so it writes none of
+ * them.
+ *
+ * @returns Every judge entry's event name, in log order.
+ */
+function judgedEvents(): string[] {
+  const judgeEvents = new Set<string>([
+    "settle_received",
+    "settle_interlock",
+    "settle_silent",
+    "wake_injected",
+  ]);
+  return _getBufferForTesting()
+    .filter((entry) => judgeEvents.has(String(entry.event)))
+    .map((entry) => String(entry.event));
 }
 
 /** An assistant message carrying the given content parts. */
@@ -474,6 +493,25 @@ describe("startPi — loop settle", () => {
     assert.equal(wakes(promptingResult).length, 0, "A is awaiting input");
   });
 
+  it("resets a stale prompt depth on a real session start", async () => {
+    const api = mockApi();
+    const handlers = await startPi(piScope(ZOO, RAW_AGENTS), api as any);
+    const c = settleCtx("sess-depth-reset", ACTIVE_BRANCH);
+
+    // A dropped `ui_prompt_end` (extension reload mid-prompt, host-side
+    // cancellation) leaves a positive count behind: every later settle of
+    // the session would look like it waits on the user.
+    await handlers.uiPromptStart({ type: "ui_prompt_start" }, c);
+    const stale = await settle(handlers, RUN_ENDED, c);
+    assert.equal(wakes(stale).length, 0, "the stale count silences the settle");
+
+    // A real start re-binds the session with a clean count.
+    await handlers.sessionStart({ type: "session_start" }, c);
+    const bound = await settle(handlers, RUN_ENDED, c);
+
+    assert.equal(wakes(bound).length, 1, "the reset count wakes again");
+  });
+
   it("stays silent when the reminder budget is exhausted", async () => {
     const api = mockApi();
     const handlers = await startPi(
@@ -591,23 +629,18 @@ describe("startPi — loop settle", () => {
 
   it("keeps a session's budget across a session_start", async () => {
     const api = mockApi();
-    const reminders = new Map<string, Map<string, number>>();
     const handlers = await startPi(
       piScope(ZOO_LIMIT_1, RAW_AGENTS),
       api as any,
-      {
-        remindersUsed: reminders,
-      },
     );
     const c = settleCtx("sess-resume", ACTIVE_BRANCH);
 
-    await settle(handlers, RUN_ENDED, c);
-    assert.equal(reminders.get("sess-resume")?.get("todoContinuation"), 1);
+    const first = await settle(handlers, RUN_ENDED, c);
+    assert.equal(wakes(first).length, 1, "the first settle wakes");
 
     // A start notice is not a stop: the session's loop state keeps its
     // spent budget and is released only when the scope stops.
     await handlers.sessionStart({ type: "session_start" }, c);
-    assert.equal(reminders.get("sess-resume")?.get("todoContinuation"), 1);
 
     const resumed = await settle(handlers, RUN_ENDED, c);
     assert.equal(
@@ -617,107 +650,100 @@ describe("startPi — loop settle", () => {
     );
   });
 
-  it("drops the started sessions' budgets on a shutdown", async () => {
+  it("stops judging a session once its scope is released", async () => {
     const api = mockApi();
-    const reminders = new Map<string, Map<string, number>>();
-    const handlers = await startPi(piScope(ZOO, RAW_AGENTS), api as any, {
-      remindersUsed: reminders,
-    });
+    const handlers = await startPi(piScope(ZOO, RAW_AGENTS), api as any);
     const c = settleCtx("sess-shutdown", ACTIVE_BRANCH);
 
-    // The start notice gives the session a scope, so the stop path owns the
-    // budget entry from here on.
-    await handlers.sessionStart({ type: "session_start" }, c);
-    await settle(handlers, RUN_ENDED, c);
-    assert.equal(reminders.has("sess-shutdown"), true);
+    const first = await settle(handlers, RUN_ENDED, c);
+    assert.equal(wakes(first).length, 1, "a live session is judged");
 
     await handlers.sessionShutdown({
       type: "session_shutdown",
       reason: "quit",
     });
 
-    assert.equal(
-      reminders.has("sess-shutdown"),
-      false,
-      "the session scope releases its loop state on a shutdown",
+    // The scope owned the loop handle and the settle bookkeeping, so the
+    // stopped runtime judges nothing: no wake and no failure.
+    const after = await settle(handlers, RUN_ENDED, c);
+    assert.deepEqual(after, {});
+    assert.equal(wakes(after).length, 0);
+    assert.deepEqual(
+      _getBufferForTesting().filter((entry) => entry.event === "settle_failed"),
+      [],
     );
   });
 
-  it("caps the budget store, evicting the oldest-inserted sessions", async () => {
+  it("does not let a sibling session spend another's budget", async () => {
+    // Each session scope owns its own handle, so one session's reminder
+    // never exhausts another's allowance.
     const api = mockApi();
-    const reminders = new Map<string, Map<string, number>>();
-    for (let i = 0; i < 100; i += 1) {
-      reminders.set(`s${i}`, new Map([["todoContinuation", 1]]));
-    }
-    const handlers = await startPi(piScope(ZOO, RAW_AGENTS), api as any, {
-      remindersUsed: reminders,
-    });
-
-    await settle(handlers, RUN_ENDED, settleCtx("s100", ACTIVE_BRANCH));
-
-    assert.equal(reminders.size, 100);
-    assert.equal(reminders.has("s0"), false, "oldest entry evicted");
-    assert.equal(
-      reminders.get("s100")?.get("todoContinuation"),
-      1,
-      "new entry retained",
+    const handlers = await startPi(
+      piScope(ZOO_LIMIT_1, RAW_AGENTS),
+      api as any,
     );
+
+    const spent = await settle(
+      handlers,
+      RUN_ENDED,
+      settleCtx("sess-a", ACTIVE_BRANCH),
+    );
+    assert.equal(wakes(spent).length, 1);
+    const exhausted = await settle(
+      handlers,
+      RUN_ENDED,
+      settleCtx("sess-a", ACTIVE_BRANCH),
+    );
+    assert.equal(wakes(exhausted).length, 0, "sess-a spent its allowance");
+
+    const sibling = await settle(
+      handlers,
+      RUN_ENDED,
+      settleCtx("sess-b", ACTIVE_BRANCH),
+    );
+    assert.equal(wakes(sibling).length, 1, "sess-b keeps its own allowance");
   });
 
-  it("performs no continuation bookkeeping when the feature is disabled", async () => {
+  it("performs no loop bookkeeping when the feature is disabled", async () => {
     const api = mockApi();
-    const reminders = new Map<string, Map<string, number>>([
-      ["sess-keep", new Map([["todoContinuation", 1]])],
-    ]);
     const handlers = await startPi(
       piScope(ZOO_NO_SETTLE, RAW_AGENTS),
       api as any,
-      {
-        remindersUsed: reminders,
-      },
     );
     assert.equal(handlers.hasSettledHandlers, false);
 
-    // Neither lifecycle hook touches the map: no reset, no eviction, no
-    // insertion.
+    const c = settleCtx("sess-keep", ACTIVE_BRANCH);
+    // Neither lifecycle hook nor the settle boundary reaches the loop: no
+    // budget write, no interlock, no judge.
     await handlers.beforeAgentStart(
       { messageType: "user", systemPrompt: "base" },
-      settleCtx("sess-keep", ACTIVE_BRANCH),
+      c,
     );
-    await handlers.sessionStart(
-      { type: "session_start" },
-      settleCtx("sess-keep", ACTIVE_BRANCH),
-    );
+    await handlers.sessionStart({ type: "session_start" }, c);
+    const result = await settle(handlers, RUN_ENDED, c);
 
-    assert.equal(reminders.get("sess-keep")?.get("todoContinuation"), 1);
-    assert.equal(reminders.size, 1);
+    assert.equal(wakes(result).length, 0);
+    assert.deepEqual(judgedEvents(), [], "no settle judge ran");
   });
 
-  it("performs no bookkeeping when max_wakes is absent", async () => {
+  it("performs no loop bookkeeping when max_wakes is absent", async () => {
     const api = mockApi();
-    const reminders = new Map<string, Map<string, number>>([
-      ["sess-keep", new Map([["todoContinuation", 1]])],
-    ]);
     const handlers = await startPi(
       piScope(ZOO_NO_CONTINUATION, RAW_AGENTS),
       api as any,
-      {
-        remindersUsed: reminders,
-      },
     );
     assert.equal(handlers.hasSettledHandlers, false);
 
+    const c = settleCtx("sess-keep", ACTIVE_BRANCH);
     await handlers.beforeAgentStart(
       { messageType: "user", systemPrompt: "base" },
-      settleCtx("sess-keep", ACTIVE_BRANCH),
+      c,
     );
-    await handlers.sessionStart(
-      { type: "session_start" },
-      settleCtx("sess-keep", ACTIVE_BRANCH),
-    );
+    await handlers.sessionStart({ type: "session_start" }, c);
+    const result = await settle(handlers, RUN_ENDED, c);
 
-    assert.equal(reminders.get("sess-keep")?.get("todoContinuation"), 1);
-    assert.equal(reminders.size, 1);
+    assert.equal(wakes(result).length, 0);
+    assert.deepEqual(judgedEvents(), [], "no settle judge ran");
   });
 
   it("skips the judge in a sub-session runtime", async () => {
@@ -725,10 +751,7 @@ describe("startPi — loop settle", () => {
     // agent.  That runtime never wakes its own run: the main runtime is the
     // one that continues the work, so the child returns no entry and the
     // engine records nothing.
-    const mainReminders = new Map<string, Map<string, number>>();
-    const main = await startPi(piScope(ZOO, RAW_AGENTS), mockApi() as any, {
-      remindersUsed: mainReminders,
-    });
+    const main = await startPi(piScope(ZOO, RAW_AGENTS), mockApi() as any);
     const mainResult = await settle(
       main,
       RUN_ENDED,
@@ -736,12 +759,11 @@ describe("startPi — loop settle", () => {
     );
     assert.equal(wakes(mainResult).length, 1, "the main runtime wakes");
 
-    const childReminders = new Map<string, Map<string, number>>();
     const child = (
       await startPiRuntime(
         piScope(ZOO, RAW_AGENTS),
         mockApi() as any,
-        { remindersUsed: childReminders },
+        undefined,
         createPiProcessState(),
         { kind: "subagent", agent: "lynx" },
       )
@@ -758,7 +780,6 @@ describe("startPi — loop settle", () => {
 
     assert.deepEqual(childResult, {});
     assert.equal(wakes(childResult).length, 0);
-    assert.equal(childReminders.size, 0, "the engine records no wake");
   });
 });
 

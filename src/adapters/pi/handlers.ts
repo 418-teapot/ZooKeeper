@@ -44,9 +44,11 @@
  *    `agent_settled` flushes the log.  These are inert unless the profile
  *    composes a settle contribution (see `hasSettledHandlers`).
  *
- * The mutable loop state (each session's open UI prompt depth and its last
- * run's messages) lives in this factory's closure, keyed by session id, so
- * two sessions settling at once never read each other's entry.
+ * The settle bookkeeping (each session's open UI prompt depth and its last
+ * run's messages) is the session scope's own state, so a handler reads it
+ * from the services of the session it was admitted for: two sessions
+ * settling at once never read each other's entry, and the state goes away
+ * with the session.
  *
  * The three event primitives the factory closes over
  * (`buildPiToolResultHandler`, `buildPiContextHandler`,
@@ -60,7 +62,7 @@ import type { ComposedResult } from "../../core/compose.js";
 import { runIsolated, runIsolatedSync } from "../../core/compose.js";
 import type { ContextRuntime } from "../../core/context/runtime.js";
 import type { CleanupReport, WorkPermit } from "../../core/lifecycle/index.js";
-import type { LoopEngine, StopCause } from "../../core/loop/index.js";
+import type { StopCause } from "../../core/loop/index.js";
 import type { SkillPermissionMap } from "../../core/permissions/skill-permissions.js";
 import { filterAllowedSkills } from "../../core/permissions/skill-permissions.js";
 import { applyModelVariant } from "../../core/prompt-variant.js";
@@ -76,6 +78,7 @@ import type {
 import { flushLogs, log } from "../../utils/logger.js";
 import type { PiLifecycleOutcome } from "./lifecycle.js";
 import { projectMessageText } from "./run-facts.js";
+import type { PiSessionServices } from "./services.js";
 import type { PiSessionContexts } from "./session-contexts.js";
 import {
   boundaryEntries,
@@ -391,10 +394,11 @@ export function buildPiMessageEndHandler(
  * The wiring surfaces the event handlers close over.
  *
  * Everything the handlers cannot derive from the composed result is
- * injected here: the extension-scope session contexts, the loop engine and
- * the wiring-layer callbacks (`applyActiveTools`, the widget and todo
+ * injected here: the extension-scope session contexts and the
+ * wiring-layer callbacks (`applyActiveTools`, the widget and todo
  * refresh hooks, the switch drain, the todo cache invalidator, and the
- * lifecycle operations).
+ * lifecycle operations).  The loop state is not injected: each admitted
+ * call receives the services of the session it runs for.
  */
 export interface PiEventHandlerDeps {
   /**
@@ -407,8 +411,13 @@ export interface PiEventHandlerDeps {
   composed: ComposedResult;
   /** The context records of this extension instance. */
   contextRuntime: ContextRuntime;
-  /** The loop engine, or undefined when the profile composes no settle hook. */
-  engine: LoopEngine | undefined;
+  /**
+   * Whether the profile composes a settle strategy.
+   *
+   * A profile without one leaves the loop inert: no settle judge, no wake.
+   * The per-session loop handle answers the same question for one session.
+   */
+  hasSettledHandlers: boolean;
   /** Per-agent skill permission rules (`[agent.<name>].permission.skill`). */
   skillPermissions: SkillPermissionMap;
   /**
@@ -465,11 +474,12 @@ export interface PiEventHandlerDeps {
    * The session id always comes from this call's own context, never from
    * the context another event bound.  A context with no usable id, a
    * stopped session, and a stopped extension all run nothing and return
-   * `undefined`.
+   * `undefined`.  The work receives that session's services: its settle
+   * bookkeeping and its loop handle.
    */
   runSession<T>(
     ctx: unknown,
-    work: (permit: WorkPermit) => T | Promise<T>,
+    work: (permit: WorkPermit, session: PiSessionServices) => T | Promise<T>,
     signal?: AbortSignal,
   ): Promise<T | undefined>;
   /**
@@ -541,14 +551,6 @@ export function createPiEventHandlers(
   deps: PiEventHandlerDeps,
 ): PiEventHandlers {
   const { sessionContexts } = deps;
-  // Open blocking UI prompt count per session: a run that ends while this
-  // is > 0 was waiting for the user, not genuinely finished.
-  const uiPromptDepths = new Map<string, number>();
-  // Each session's most recent finished run's terminal messages, recorded
-  // by `agent_end`.  pi's pre-settle boundary event carries no transcript,
-  // so the judge derives the run's activity and handback facts from this
-  // slice; the two events fire back to back in the same run lifecycle.
-  const lastRunMessages = new Map<string, readonly unknown[]>();
 
   const toolResultHandler = buildPiToolResultHandler(deps.composed.afterExec);
   const contextHandler = buildPiContextHandler(
@@ -561,7 +563,7 @@ export function createPiEventHandlers(
 
   return {
     async beforeAgentStart(evt, ctx?) {
-      return deps.runSession(ctx, (permit) => {
+      return deps.runSession(ctx, (permit, session) => {
         sessionContexts.bind(permit.sessionID, ctx);
         // Reset the session's reminder budget when a real user message
         // starts a turn.  pi fires `before_agent_start` for a submitted
@@ -571,9 +573,7 @@ export function createPiEventHandlers(
         // continued at the pre-settle boundary resumes through
         // `agent.continue()` and never emits this event, so the injected
         // wake keeps its spent budget either way.
-        if (evt.messageType === "user" && deps.engine !== undefined) {
-          deps.engine.reset(permit.sessionID);
-        }
+        if (evt.messageType === "user") session.loop?.reset();
         // Drain any pending post-replacement switch operations.  This
         // handler runs in the NEW session's closure (the factory re-ran on
         // `newSession`), so the pi API in scope here is the fresh,
@@ -626,7 +626,7 @@ export function createPiEventHandlers(
       // unmodified.  It is a lifecycle control entry, so it runs whether or
       // not the session business below is admitted.
       await deps.startSession(evt, ctx);
-      await deps.runSession(ctx, (permit) => {
+      await deps.runSession(ctx, (permit, session) => {
         sessionContexts.bind(permit.sessionID, ctx);
         // Claim the pending switch replacement when this start is its own
         // new session, so its bind-time work below (and the
@@ -656,7 +656,7 @@ export function createPiEventHandlers(
         // mid-prompt, host-side cancellation), a stale positive count would
         // misclassify every later settle as `awaiting-input` and silently
         // disable the loop for the rest of the process.
-        if (deps.engine !== undefined) uiPromptDepths.delete(permit.sessionID);
+        if (session.loop !== undefined) session.settle.resetPrompt();
         // Rebuild the process's run registry from the session's persisted
         // message history.  The registry belongs to the process, so a pi exit
         // wipes it; on restore / resume this rescans the session's
@@ -815,7 +815,7 @@ export function createPiEventHandlers(
         deps.applyActiveTools(permit.sessionID, ctx);
       });
     },
-    hasSettledHandlers: deps.engine !== undefined,
+    hasSettledHandlers: deps.hasSettledHandlers,
     hasGateHandlers: deps.composed.gate !== null,
     async sessionShutdown(evt?, _ctx?) {
       // pi replaces its extension runtime (quit / reload / new / resume /
@@ -842,21 +842,20 @@ export function createPiEventHandlers(
       // Passive record only: the judge runs at the pre-settle boundary.  The
       // loop is inert without a settle strategy (the settle events are never
       // registered), and this guard keeps a direct call (tests) inert too.
-      if (deps.engine === undefined) return;
-      await deps.runSession(ctx, (permit) => {
+      if (!deps.hasSettledHandlers) return;
+      await deps.runSession(ctx, (permit, session) => {
         sessionContexts.bind(permit.sessionID, ctx);
         // The run's terminal messages feed the boundary judge.  An
         // unreadable payload records an empty run, which yields no activity
         // and no handback fact (silence is the todo list's call, not the
         // transcript's).
         const raw = (evt as { messages?: unknown } | undefined)?.messages;
-        lastRunMessages.set(permit.sessionID, Array.isArray(raw) ? raw : []);
+        session.settle.recordRun(Array.isArray(raw) ? raw : []);
       });
     },
     async beforeSettle(evt?, ctx?) {
       // Same registration gate as `agent_end`: no strategy, no judge.
-      if (deps.engine === undefined) return {};
-      const engine = deps.engine;
+      if (!deps.hasSettledHandlers) return {};
       // A loop judge must never break the host session, and a stale
       // extension context (pi invalidates one on session replacement /
       // reload) can make even reading `sessionManager` throw.  Isolate the
@@ -865,7 +864,9 @@ export function createPiEventHandlers(
       try {
         const result = await deps.runSession<PiBoundaryResult>(
           ctx,
-          async (permit) => {
+          async (permit, session) => {
+            const loop = session.loop;
+            if (loop === undefined) return {};
             sessionID = permit.sessionID;
             sessionContexts.bind(permit.sessionID, ctx);
             // pi computes the outcome from the run's terminal stop reason, so
@@ -884,16 +885,14 @@ export function createPiEventHandlers(
             // only while the session's awaiting-progress lock is held.  A
             // fresh settle with no prior wake is judged against the list
             // regardless of activity.
-            const turn = settledTurnMessages(
-              lastRunMessages.get(permit.sessionID) ?? [],
-            );
+            const turn = settledTurnMessages(session.settle.lastRun());
             const hadActivity = countTurnToolCalls(turn) > 0;
             // A run that ends behind an open blocking prompt is waiting on
             // the user, not finished: no wake may continue it.
             const cause: StopCause =
               outcome !== "completed"
                 ? "aborted"
-                : (uiPromptDepths.get(permit.sessionID) ?? 0) > 0
+                : session.settle.awaitingInput()
                   ? "awaiting-input"
                   : "settled";
             log.debug({
@@ -920,8 +919,7 @@ export function createPiEventHandlers(
             // `hadActivity` is derived above from the settled turn's tool
             // calls; the engine's interlocks and the todo strategy's gates
             // decide the rest.
-            const decision = await engine.run({
-              sessionID: permit.sessionID,
+            const decision = await loop.run({
               cause,
               hadActivity,
             });
@@ -933,13 +931,13 @@ export function createPiEventHandlers(
             // entry and runs the continuation within this run, so the verdict
             // and its effect cannot diverge and no queued reminder outlives
             // the run that produced it.
-            engine.record(permit.sessionID, decision.name);
+            loop.record(decision.name);
             log.info({
               hook: "loop",
               event: "wake_injected",
               sessionId: permit.sessionID,
               handler: decision.name,
-              used: engine.used(permit.sessionID, decision.name),
+              used: loop.used(decision.name),
             });
             return {
               entries: [
@@ -986,19 +984,15 @@ export function createPiEventHandlers(
       });
     },
     async uiPromptStart(_evt?, ctx?) {
-      await deps.runSession(ctx, (permit) => {
+      await deps.runSession(ctx, (permit, session) => {
         sessionContexts.bind(permit.sessionID, ctx);
-        uiPromptDepths.set(
-          permit.sessionID,
-          (uiPromptDepths.get(permit.sessionID) ?? 0) + 1,
-        );
+        session.settle.enterPrompt();
       });
     },
     async uiPromptEnd(_evt?, ctx?) {
-      await deps.runSession(ctx, (permit) => {
+      await deps.runSession(ctx, (permit, session) => {
         sessionContexts.bind(permit.sessionID, ctx);
-        const depth = uiPromptDepths.get(permit.sessionID) ?? 0;
-        if (depth > 0) uiPromptDepths.set(permit.sessionID, depth - 1);
+        session.settle.leavePrompt();
       });
     },
   };

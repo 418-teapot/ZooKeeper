@@ -1,5 +1,6 @@
 /**
- * pi lifecycle wiring — the kernel instance behind pi's entry point.
+ * pi lifecycle wiring — the session lifecycle coordinator behind pi's entry
+ * point.
  *
  * The entry point declares its extension- and session-scoped services here
  * and drives them through the same operations this module exposes:
@@ -14,17 +15,24 @@
  *    current event carries.  The start entry uses it to prepare a scope;
  *    business work goes through `runSession` instead.
  *  - `runSession` admits one unit of call-scoped work under a `WorkPermit`
- *    for the session the event of that call names.  The permit's signal
- *    follows the session, the extension, and the caller's own
- *    cancellation, and a stop waits for admitted work before disposing.
- *  - `runControl` admits a control operation the same way, but no stop
- *    waits for it: it is the call that replaces the session it belongs
- *    to, so waiting would deadlock the stop it performs.
+ *    for the session the event of that call names, and hands the work that
+ *    session's own services.  The permit's signal follows the session, the
+ *    released runtimes, and the caller's own cancellation, and a release
+ *    waits for admitted work before disposing.
+ *  - `runControl` admits a control operation the same way, but a release
+ *    does not wait for it: it is the call that replaces the session it
+ *    belongs to, so waiting would deadlock the stop it performs.
  *  - `startSession` forwards a real `session_start` to the mapping, which
- *    notifies the kernel with pi's own reason string unmodified.
+ *    notifies the coordinator with pi's own reason string unmodified.
  *  - `stopExtension` maps `session_shutdown` through the same mapping and
- *    reports the cleanup outcome; the extension scope is terminal, so a
- *    later ensure cannot recreate anything.
+ *    releases the runtimes through the coordinator; the extension scope is
+ *    terminal, so a later ensure cannot recreate anything.
+ *
+ * The coordinator owns the stop vocabulary: this wiring never names a stop
+ * mode and never holds a session scope to pass one.  pi emits no deletion
+ * event, but the wiring still hands the coordinator this instance's session
+ * records: a coordinator always carries the deletion protocol, so no later
+ * call can drop a session's records silently.
  *
  * pi runs one wiring instance per extension runtime, and a sub-session loads
  * its own.  The runtime owner therefore hands that runtime's close handle to
@@ -44,10 +52,14 @@ import {
   type CleanupReport,
   createLifecycleKernel,
   type ExtensionScope,
-  type LifecycleKernel,
   type ServiceMap,
   type WorkPermit,
 } from "../../core/lifecycle/index.js";
+import {
+  createSessionLifecycle,
+  type SessionLifecycle,
+} from "../../core/session/lifecycle.js";
+import type { SessionResourceCatalog } from "../../core/session/resources.js";
 import {
   createPiLifecycleMapping,
   type PiLifecycleOutcome,
@@ -84,6 +96,14 @@ export interface PiLifecycleWiringOptions<
   /** The session-scoped service declarations of this host. */
   readonly sessionServices: Session;
   /**
+   * The session records of this pi extension instance.
+   *
+   * pi deletes no session, so a stop only reaches them through their own
+   * release declaration.  The coordinator still receives the catalog: its
+   * deletion protocol stays complete for every host.
+   */
+  readonly sessionCatalog: SessionResourceCatalog;
+  /**
    * Resolve the session id from an event context.  Undefined (or a blank
    * id) means "no session": nothing is created.
    */
@@ -109,9 +129,13 @@ export class PiLifecycleStoppedError extends Error {
  * One session's admission surface.
  *
  * A call is admitted only for a live session; the work runs under the
- * issued permit, and its result reaches the caller unchanged.
+ * issued permit with that session's own services, and its result reaches
+ * the caller unchanged.
  */
-export interface PiSessionWorkRunner {
+export interface PiSessionWorkRunner<
+  Session extends
+    readonly AnySessionServiceDefinition[] = readonly AnySessionServiceDefinition[],
+> {
   /**
    * Admit one unit of work for the session `ctx` names.
    *
@@ -119,13 +143,14 @@ export interface PiSessionWorkRunner {
    * context another event published.
    *
    * @param ctx - The event context of this call.
-   * @param work - The admitted work, receiving its permit.
+   * @param work - The admitted work, receiving its permit and the services
+   *   of the session it runs for.
    * @param signal - The caller's own cancellation, if any.
    * @returns The work's value, or `undefined` when the call is refused.
    */
   runSession<T>(
     ctx: unknown,
-    work: (permit: WorkPermit) => T | Promise<T>,
+    work: (permit: WorkPermit, services: ServiceMap<Session>) => T | Promise<T>,
     signal?: AbortSignal,
   ): Promise<T | undefined>;
 }
@@ -134,15 +159,17 @@ export interface PiSessionWorkRunner {
  * The host-facing lifecycle operations of one pi extension instance.
  *
  * The extension parameter makes {@link PiLifecycleWiring.activateExtension}
- * return the declared services by name.  Session services stay reachable
- * only through their own session scope and explicit session id: the wiring
+ * return the declared services by name.  Session services are reachable
+ * only inside work admitted for the session that call names: the wiring
  * offers no session accessor, so a caller can never hold another session's
  * store.
  */
 export interface PiLifecycleWiring<
   Extension extends
     readonly AnyExtensionServiceDefinition[] = readonly AnyExtensionServiceDefinition[],
-> extends PiSessionWorkRunner {
+  Session extends
+    readonly AnySessionServiceDefinition[] = readonly AnySessionServiceDefinition[],
+> extends PiSessionWorkRunner<Session> {
   /**
    * Admit one control operation for the session `ctx` names.
    *
@@ -187,7 +214,7 @@ export interface PiLifecycleWiring<
    */
   startSession(event: unknown, ctx?: unknown): Promise<PiLifecycleOutcome>;
   /**
-   * Handle `session_shutdown`: stop the extension (nested sessions first)
+   * Handle `session_shutdown`: release the runtimes (nested sessions first)
    * and report every cleanup failure.
    */
   stopExtension(event: unknown): Promise<CleanupReport>;
@@ -197,7 +224,7 @@ export interface PiLifecycleWiring<
  * Create the lifecycle wiring of one pi extension instance.
  *
  * @param options - The extension and session declarations plus the session
- *   id resolver.
+ *   id resolver and the session records.
  * @returns The lifecycle operations the entry point drives.
  */
 export function createPiLifecycleWiring<
@@ -205,15 +232,19 @@ export function createPiLifecycleWiring<
   const Session extends readonly AnySessionServiceDefinition[],
 >(
   options: PiLifecycleWiringOptions<Extension, Session>,
-): PiLifecycleWiring<Extension> {
+): PiLifecycleWiring<Extension, Session> {
   // The resident wiring (loop engine, handoff store) keeps its current
   // lifetime; the caller declares which services belong to the extension
   // scope and which nest per session.
-  const kernel: LifecycleKernel<Extension, Session> = createLifecycleKernel({
+  const kernel = createLifecycleKernel({
     extension: options.extensionServices,
     session: options.sessionServices,
   });
-  const mapping = createPiLifecycleMapping(kernel);
+  const lifecycle: SessionLifecycle<Session> = createSessionLifecycle(
+    kernel,
+    options.sessionCatalog,
+  );
+  const mapping = createPiLifecycleMapping(lifecycle);
 
   /**
    * Read the session id one event carries.
@@ -242,35 +273,27 @@ export function createPiLifecycleWiring<
   async function ensureSession(ctx?: unknown): Promise<boolean> {
     const sessionID = readSessionID(ctx);
     if (sessionID === undefined) return false;
-    return (await kernel.ensureSession(sessionID)) !== null;
+    return (await lifecycle.ensureSession(sessionID)) !== null;
   }
 
   async function runSession<T>(
     ctx: unknown,
-    work: (permit: WorkPermit) => T | Promise<T>,
+    work: (permit: WorkPermit, services: ServiceMap<Session>) => T | Promise<T>,
     signal?: AbortSignal,
   ): Promise<T | undefined> {
     const sessionID = readSessionID(ctx);
     if (sessionID === undefined) return undefined;
-    return kernel.runSession<T>(
-      sessionID,
-      (_scope, permit) => work(permit),
-      signal,
-    );
+    return lifecycle.runSession<T>(sessionID, work, signal);
   }
 
   async function runControl<T>(
     ctx: unknown,
-    work: (permit: WorkPermit) => T | Promise<T>,
+    work: (permit: WorkPermit, services: ServiceMap<Session>) => T | Promise<T>,
     signal?: AbortSignal,
   ): Promise<T | undefined> {
     const sessionID = readSessionID(ctx);
     if (sessionID === undefined) return undefined;
-    return kernel.runControl<T>(
-      sessionID,
-      (_scope, permit) => work(permit),
-      signal,
-    );
+    return lifecycle.runControl<T>(sessionID, work, signal);
   }
 
   async function startSession(
@@ -301,8 +324,8 @@ export function createPiLifecycleWiring<
         ? (await mapping.sessionShutdown(payload as SessionShutdownEvent))
             .report
         : // A payload pi cannot attribute still must not leak resources, so
-          // the stop runs with the host-level reason instead of skipping.
-          await kernel.stopExtension(PI_SHUTDOWN_REASON);
+          // the release runs with the host-level reason instead of skipping.
+          await lifecycle.releaseRuntime(PI_SHUTDOWN_REASON);
     return report;
   }
 

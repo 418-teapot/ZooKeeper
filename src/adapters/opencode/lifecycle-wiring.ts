@@ -1,5 +1,6 @@
 /**
- * OpenCode lifecycle wiring — the kernel instance behind the plugin hooks.
+ * OpenCode lifecycle wiring — the session lifecycle coordinator behind the
+ * plugin hooks.
  *
  * The entry point declares this host's services (see `services.ts`) and
  * drives them through the operations below:
@@ -17,30 +18,27 @@
  *    scope; a missing id creates nothing.
  *  - `runSession` admits one unit of call-scoped work under a `WorkPermit`
  *    (a hook call, a tool call).  The permit's signal follows the session,
- *    the extension, and the caller's own cancellation, and a stop waits for
- *    admitted work before disposing the scope.
+ *    the released runtimes, and the caller's own cancellation, and a
+ *    release waits for admitted work before disposing the scope.
  *  - `handleEvent` maps the host's own session events (`session.created`
- *    is a real start notice, `session.deleted` stops exactly that session)
- *    through the shared mapping.  A deletion never creates a scope: the
- *    kernel tombstones the id, so a late event cannot rebuild what the
- *    host dropped.
- *  - `dispose` is the plugin's teardown hook: it stops every remaining
- *    session and then the extension, and reports the cleanup outcome.
- *    A dispose is not a deletion — the sessions still exist on the host
- *    side — so those scopes stop with the `release-runtime` mode and their
- *    persisted context survives for the next instance.
+ *    is a real start notice, `session.deleted` deletes exactly that
+ *    session) through the shared mapping.  A deletion never creates a
+ *    scope: the kernel tombstones the id, so a late event cannot rebuild
+ *    what the host dropped.
+ *  - `dispose` is the plugin's teardown hook: it releases the runtime of
+ *    every remaining session, then the extension, and reports the cleanup
+ *    outcome.  A dispose is not a deletion — the sessions still exist on
+ *    the host side — so their persisted context survives for the next
+ *    instance.
  *
  * Cleanup failures are never swallowed: the wiring logs each of them and
- * still returns the report.  A `session.deleted` naming a session this
- * instance never created a scope for still deletes that session's
- * instance records (the context runtime and the agent registry outlive a
- * scope — see `services.ts`): the catalog applies the same declarations a
- * scope's disposer applies, without creating a scope.  A session a scope
- * owned is
- * deleted by that scope's own disposer, and its failures join the returned
- * report.  Ownership therefore covers both ways a scope is created: the
- * first-use `ensureSession`, the `session.created` notice, and any admitted
- * work, so a created-then-deleted session never runs both deletions.
+ * still returns the report.  A deletion is one coordinator operation: it
+ * stops the scope and then applies the session records, so a session this
+ * instance never created a scope for (the context runtime and the agent
+ * registry outlive a scope — see `services.ts`) is deleted by the same
+ * call, and a deletion that races a dispose still deletes what the release
+ * kept.  The wiring holds no ownership set: it reports what the coordinator
+ * returns.
  *
  * `withSessionWork` is the shape the plugin entry point registers: every
  * session hook becomes call-scoped work, the `tool` registry becomes
@@ -62,13 +60,16 @@ import {
   type WorkPermit,
 } from "../../core/lifecycle/index.js";
 import { isRecord } from "../../core/records.js";
+import {
+  createSessionLifecycle,
+  type SessionLifecycle,
+} from "../../core/session/lifecycle.js";
 import type { SessionResourceCatalog } from "../../core/session/resources.js";
 import type { ToolCallContext, ToolResult } from "../../core/unit.js";
 import { log } from "../../utils/logger.js";
 import {
   createOpenCodeLifecycleMapping,
   type OpenCodeLifecycleOutcome,
-  openCodeEventSessionID,
 } from "./lifecycle.js";
 
 /** Options for {@link createOpenCodeLifecycleWiring}. */
@@ -83,8 +84,8 @@ export interface OpenCodeLifecycleWiringOptions<
   /**
    * The session records of this plugin instance.
    *
-   * A deletion naming a session this instance never created a scope for
-   * still applies these declarations, without creating a scope.
+   * The coordinator applies them on a deletion, including one that names a
+   * session this instance never created a scope for.
    */
   readonly sessionCatalog: SessionResourceCatalog;
 }
@@ -169,7 +170,7 @@ export interface OpenCodeLifecycleWiring<
     sessionID: string | null | undefined,
   ): Promise<SessionScope<ServiceMap<Session>> | null>;
   /**
-   * Map one received host event onto the kernel.
+   * Map one received host event onto the coordinator.
    *
    * @param event - The host event as the `event` hook received it.
    * @returns What the event did; `none` for anything unmapped.
@@ -478,11 +479,11 @@ export function createOpenCodeLifecycleWiring<
     extension: options.extensionServices,
     session: options.sessionServices,
   });
-  const mapping = createOpenCodeLifecycleMapping(kernel);
-  // Sessions this instance created a scope for and has not stopped.  The
-  // kernel tombstones a stopped id without exposing that fact, and a
-  // deletion of an unknown session still needs the process-level release.
-  const owned = new Set<string>();
+  const lifecycle: SessionLifecycle<Session> = createSessionLifecycle(
+    kernel,
+    options.sessionCatalog,
+  );
+  const mapping = createOpenCodeLifecycleMapping(lifecycle);
 
   async function activateExtension(): Promise<
     ExtensionScope<ServiceMap<Extension>>
@@ -492,72 +493,29 @@ export function createOpenCodeLifecycleWiring<
     return scope as ExtensionScope<ServiceMap<Extension>>;
   }
 
-  async function ensureSession(
-    rawSessionID: string | null | undefined,
-  ): Promise<SessionScope<ServiceMap<Session>> | null> {
-    const sessionID = normalizeSessionID(rawSessionID);
-    if (sessionID === null) return null;
-    const scope = await kernel.ensureSession(sessionID);
-    if (scope === null) return null;
-    owned.add(sessionID);
-    return scope as SessionScope<ServiceMap<Session>>;
-  }
-
-  async function runSession<T>(
-    rawSessionID: string | null | undefined,
-    work: (permit: WorkPermit) => T | Promise<T>,
-    signal?: AbortSignal,
-  ): Promise<T | undefined> {
-    const sessionID = normalizeSessionID(rawSessionID);
-    if (sessionID === null) return undefined;
-    return kernel.runSession<T>(
-      sessionID,
-      (_scope, permit) => {
-        // Admission itself registers ownership, so a later deletion uses
-        // the scope's disposer instead of the unknown-session fallback.
-        owned.add(sessionID);
-        return work(permit);
-      },
-      signal,
-    );
-  }
-
   async function handleEvent(
     event: unknown,
   ): Promise<OpenCodeLifecycleOutcome> {
     const outcome = await mapping.handleEvent(event);
-    if (outcome.action === "start") {
-      // A real start notice creates the scope itself (the mapping goes
-      // through the kernel's notify path, not this wiring's ensure), so the
-      // session is registered as owned here.  `started === false` means no
-      // scope exists — a deletion of that id still needs the fallback.
-      if (outcome.started) {
-        const started = normalizeSessionID(openCodeEventSessionID(event));
-        if (started !== null) owned.add(started);
-      }
-      return outcome;
-    }
-    if (outcome.action !== "stop-session") return outcome;
-
-    const sessionID = normalizeSessionID(outcome.sessionID);
-    let report = outcome.report;
-    // A session whose scope this instance owned was deleted by that scope's
-    // disposer; one it never created still gets the deletion, so nothing is
-    // left behind and its failures reach the caller as well.
-    if (sessionID !== null && !owned.delete(sessionID)) {
-      const fallback = await options.sessionCatalog.delete(sessionID);
-      report = { errors: [...fallback.errors, ...report.errors] };
-    }
-    logCleanupFailures(report);
-    return report === outcome.report ? outcome : { ...outcome, report };
+    if (outcome.action === "stop-session") logCleanupFailures(outcome.report);
+    return outcome;
   }
 
   async function dispose(): Promise<CleanupReport> {
     const report = await mapping.dispose();
-    owned.clear();
     logCleanupFailures(report);
     return report;
   }
 
-  return { activateExtension, ensureSession, runSession, handleEvent, dispose };
+  return {
+    activateExtension,
+    ensureSession: (sessionID) => lifecycle.ensureSession(sessionID),
+    runSession: <T>(
+      sessionID: string | null | undefined,
+      work: (permit: WorkPermit) => T | Promise<T>,
+      signal?: AbortSignal,
+    ) => lifecycle.runSession<T>(sessionID, work, signal),
+    handleEvent,
+    dispose,
+  };
 }

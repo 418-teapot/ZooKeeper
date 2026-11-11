@@ -22,8 +22,9 @@
  *  - session-scope services are created lazily, once per session, and
  *    release their own resources: the session's entry in the session
  *    contexts, its todo store, its own fleet (widget, todo column, host
- *    writes), and its loop state (the engine's reminder budget and
- *    awaiting lock).
+ *    writes), its loop handle (the session's reminder budget and awaiting
+ *    lock), and its settle bookkeeping (the open blocking prompt count and
+ *    the last finished run's messages).
  *    The `sessionResources` service carries no state of its own: it applies
  *    this instance's record declarations (`core/session/resources.ts`,
  *    built from the instance's `ContextRuntime`) to the stopping scope, so a
@@ -55,9 +56,9 @@ import {
   defineSessionService,
 } from "../../core/lifecycle/index.js";
 import {
-  type BudgetStore,
   createLoopEngine,
   type LoopEngine,
+  type LoopSession,
 } from "../../core/loop/index.js";
 import { ORCHESTRATOR_AGENT_NAME } from "../../core/orchestrator.js";
 import type { SwitchHost } from "../../core/ports/switch.js";
@@ -216,6 +217,100 @@ export function createPiProfileCatalog(): PiProfileCatalog {
 }
 
 /**
+ * One session's settle bookkeeping.
+ *
+ * The loop settle reads two facts about the run it judges: whether a
+ * blocking UI prompt is open (a run behind one waits on the user, so it is
+ * not finished) and the terminal messages of the run that just ended (pi's
+ * pre-settle boundary carries no transcript).  Both belong to one session,
+ * so two sessions settling at once never read each other's entry.
+ *
+ * A stopped scope serves nothing: the fields go with the scope, and a
+ * retained reference cannot revive them.
+ */
+export interface PiSettleState {
+  /** Count one open blocking UI prompt. */
+  enterPrompt(): void;
+  /** Count one closed blocking UI prompt (the count never goes below zero). */
+  leavePrompt(): void;
+  /** Drop the count (a real session start re-bound the session). */
+  resetPrompt(): void;
+  /** Whether a blocking UI prompt is open. */
+  awaitingInput(): boolean;
+  /** Record the finished run's terminal messages. */
+  recordRun(messages: readonly unknown[]): void;
+  /** The last finished run's terminal messages (empty before one). */
+  lastRun(): readonly unknown[];
+  /** Drop the bookkeeping (the session scope is stopping). */
+  release(): void;
+}
+
+/**
+ * Create one session's settle bookkeeping.
+ *
+ * @returns The state the settle handlers of that session read and write.
+ */
+export function createPiSettleState(): PiSettleState {
+  let promptDepth = 0;
+  let lastRun: readonly unknown[] = [];
+  let released = false;
+
+  return {
+    enterPrompt() {
+      if (released) return;
+      promptDepth += 1;
+    },
+    leavePrompt() {
+      if (released) return;
+      if (promptDepth > 0) promptDepth -= 1;
+    },
+    resetPrompt() {
+      if (released) return;
+      promptDepth = 0;
+    },
+    awaitingInput() {
+      return promptDepth > 0;
+    },
+    recordRun(messages) {
+      if (released) return;
+      lastRun = messages;
+    },
+    lastRun() {
+      return lastRun;
+    },
+    release() {
+      released = true;
+      promptDepth = 0;
+      lastRun = [];
+    },
+  };
+}
+
+/** The declaration of one session's settle bookkeeping. */
+export const piSettleStateService = defineSessionService({
+  name: "settleState",
+  deps: [],
+  create: () => createPiSettleState(),
+  dispose: (state) => state.release(),
+});
+
+/**
+ * One session's loop-facing services, as an event handler receives them.
+ *
+ * The projection carries the services of the session the admitted work
+ * runs for, so a handler never holds another session's state.
+ */
+export interface PiSessionServices {
+  /** The session's settle bookkeeping. */
+  readonly settle: PiSettleState;
+  /**
+   * The session's loop handle, or `undefined` when the profile composed no
+   * settle strategy (fail-closed: no settle judge, no wake).
+   */
+  readonly loop: LoopSession | undefined;
+}
+
+/**
  * The `zoo` fleet nudges of one extension instance.
  *
  * The fleet itself is per session (see `fleet-session.ts`): each session
@@ -305,11 +400,6 @@ export interface PiServiceHost {
   readonly contextRuntime: ContextRuntime;
   /** The session records of this extension instance. */
   readonly sessionCatalog: SessionResourceCatalog;
-  /**
-   * Test seam: the per-(session, strategy) reminder-budget store to
-   * observe and seed.  Defaults to a fresh store when omitted.
-   */
-  readonly loopStore?: BudgetStore;
   /** Colorize an agent name per its configured `[agent.<name>].color`. */
   colorizeAgent(name: string): string;
   /** The overlay title for a run. */
@@ -597,24 +687,16 @@ export function createPiHostServices(host: PiServiceHost) {
   // The loop engine over the composed settle strategies.  A profile that
   // contributes none gets no engine (fail-closed: no settle judge, no wake).
   //
-  // The session cap bounds the tracked sessions: pi fires no session-deletion
-  // event, so a long-lived process would otherwise retain one budget entry
-  // per session ever opened.  The engine evicts the oldest-inserted sessions
-  // once the bound is exceeded (the budget is only ever a soft reminder
-  // ceiling).
-  const LOOP_SESSION_CAP = 100;
+  // The engine holds the strategies only: each session scope owns the
+  // handle that keeps its reminder budget and awaiting lock, so the engine
+  // retains no per-session entry and needs no session cap.
   const loop = defineExtensionService({
     name: "loop",
     deps: [composition],
     create: ({ deps }): { engine: LoopEngine | undefined } => {
       const strategies = deps.composition.composed.onSettled;
       if (strategies.length === 0) return { engine: undefined };
-      return {
-        engine: createLoopEngine([...strategies], {
-          cap: LOOP_SESSION_CAP,
-          ...(host.loopStore === undefined ? {} : { store: host.loopStore }),
-        }),
-      };
+      return { engine: createLoopEngine([...strategies]) };
     },
   });
 
@@ -686,14 +768,13 @@ export function createPiHostServices(host: PiServiceHost) {
     dispose: (service) => service.dispose(),
   });
 
-  // The engine's per-session reminder budget and awaiting lock are the
-  // session's own resources: every stop of the session resets them, in both
-  // stop modes (a shutdown releases the runtime state, a deletion drops it).
+  // The session's loop handle: its reminder budget and awaiting lock.  The
+  // handle belongs to this scope, so its state ends with the scope and no
+  // disposer has to reset a shared store.
   const loopSession = defineSessionService({
     name: "loopSession",
     deps: [loop],
-    create: ({ deps, sessionID }) => ({ sessionID, engine: deps.loop.engine }),
-    dispose: (session) => session.engine?.reset(session.sessionID),
+    create: ({ deps, sessionID }) => deps.loop.engine?.createSession(sessionID),
   });
 
   return {
@@ -716,6 +797,7 @@ export function createPiHostServices(host: PiServiceHost) {
       todoStore,
       fleetSession,
       loopSession,
+      piSettleStateService,
       defineSessionResourcesService(host.sessionCatalog),
     ] as const,
   };

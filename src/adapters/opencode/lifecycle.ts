@@ -7,44 +7,27 @@
  * sibling or subagent session keeps its resources until its own event.
  *
  * Neither session event carries a start or stop reason, so the host event
- * name is what the kernel records — an attributable string rather than a
- * fabricated semantic.  The reason stays diagnostic; the stop mode decides
- * deletion.  A `session.deleted` event stops the session with
- * `delete-session`, while the plugin's own dispose releases the runtime of
- * every remaining session and keeps their persisted context.  A missing or
- * blank session id is handed to the kernel, which declines without
- * creating anything.
+ * name is what the coordinator records — an attributable string rather than
+ * a fabricated semantic.  The reason stays diagnostic; the deletion itself
+ * is a separate operation.  A `session.deleted` event deletes the session,
+ * while the plugin's own dispose releases the runtime of every remaining
+ * session and keeps their persisted context.  A missing or blank session id
+ * is handed over unchanged, so a call that names no session does nothing.
  *
- * This module is the OpenCode side of the adapter/kernel boundary: cleanup
+ * This module is the OpenCode side of the adapter boundary: cleanup
  * failures come back in the returned report, and nothing is caught and
  * dropped here.  It registers no hooks of its own.
  *
  * @module
  */
 
-import type {
-  AnyExtensionServiceDefinition,
-  AnySessionServiceDefinition,
-  CleanupReport,
-  LifecycleKernel,
-} from "../../core/lifecycle/index.js";
+import type { CleanupReport } from "../../core/lifecycle/index.js";
+import type { SessionLifecycle } from "../../core/session/lifecycle.js";
 
-/**
- * The kernel handle any declaration set satisfies.
- *
- * The mapping never names the declared services, so it accepts a kernel
- * built from any declarations; the type parameters do not reach the
- * methods it calls.
- */
-type Kernel = LifecycleKernel<
-  readonly AnyExtensionServiceDefinition[],
-  readonly AnySessionServiceDefinition[]
->;
-
-/** The kernel operations this mapping drives. */
-export type OpenCodeLifecycleKernel = Pick<
-  Kernel,
-  "notifySessionStart" | "stopSession" | "stopExtension"
+/** The session lifecycle operations this mapping drives. */
+export type OpenCodeLifecycleOperations = Pick<
+  SessionLifecycle,
+  "startSession" | "deleteSession" | "releaseRuntime"
 >;
 
 /**
@@ -82,8 +65,8 @@ const START_REASON = "session.created";
 /**
  * Stop reason recorded for a deleted session.
  *
- * Diagnostic only: the deletion is the `delete-session` stop mode the
- * mapping passes, never this string.
+ * Diagnostic only: whether the session's resources are deleted is decided
+ * by the deletion operation the mapping calls, never by this string.
  */
 export const SESSION_DELETED_REASON = "session.deleted";
 
@@ -107,16 +90,16 @@ export function openCodeEventSessionID(event: unknown): string | null {
 }
 
 /**
- * Build the OpenCode lifecycle mapping over a kernel.
+ * Build the OpenCode lifecycle mapping over a coordinator.
  *
- * @param kernel - The lifecycle kernel to drive.
+ * @param lifecycle - The session lifecycle operations to drive.
  * @returns `handleEvent` for the plugin's `event` hook (pass the inner
  *   `input.event`) and `dispose` for its teardown hook.
  */
 export function createOpenCodeLifecycleMapping(
-  kernel: OpenCodeLifecycleKernel,
+  lifecycle: OpenCodeLifecycleOperations,
 ) {
-  /** Map one received host event onto the kernel. */
+  /** Map one received host event onto the coordinator. */
   async function handleEvent(
     event: unknown,
   ): Promise<OpenCodeLifecycleOutcome> {
@@ -126,7 +109,7 @@ export function createOpenCodeLifecycleMapping(
     const payload = event as OpenCodeLifecycleEvent;
 
     if (payload.type === "session.created") {
-      const started = await kernel.notifySessionStart(
+      const started = await lifecycle.startSession(
         openCodeEventSessionID(payload),
         START_REASON,
       );
@@ -134,19 +117,18 @@ export function createOpenCodeLifecycleMapping(
     }
     if (payload.type === "session.deleted") {
       const sessionID = openCodeEventSessionID(payload);
-      const report = await kernel.stopSession(
+      const report = await lifecycle.deleteSession(
         sessionID,
         SESSION_DELETED_REASON,
-        "delete-session",
       );
       return { action: "stop-session", sessionID, report };
     }
     return { action: "none" };
   }
 
-  /** Stop the extension when the host disposes the plugin. */
+  /** Release every runtime when the host disposes the plugin. */
   async function dispose(): Promise<CleanupReport> {
-    return kernel.stopExtension(DISPOSE_REASON);
+    return lifecycle.releaseRuntime(DISPOSE_REASON);
   }
 
   return { handleEvent, dispose };

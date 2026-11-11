@@ -9,10 +9,13 @@
  * delivered wake skips that strategy's later no-activity settles
  * without spending budget while other strategies are still consulted;
  * any tool activity releases every lock of the session), the
- * first-wake selection, per-handler crash
- * isolation, the fail-closed `null` for an all-silent or empty strategy
- * list, and the per-(session, strategy) bookkeeping (`record` / `reset`
- * / `used`) including the optional session cap.
+ * first-wake selection, per-handler crash isolation, the fail-closed
+ * `null` for an all-silent or empty strategy list, and the per-session
+ * bookkeeping (`record` / `reset` / `used`) of the session handles.
+ *
+ * The engine holds the strategies only: a session handle owns its
+ * session's counters and lock, so two handles never observe each other's
+ * state and a dropped handle takes its state with it.
  */
 import assert from "node:assert/strict";
 import { afterEach, beforeEach, describe, it } from "node:test";
@@ -35,7 +38,6 @@ afterEach(() => {
 
 /** A settled request whose turn made a tool call. */
 const REQUEST: SettleRequest = {
-  sessionID: "s1",
   cause: "settled",
   hadActivity: true,
 };
@@ -66,9 +68,10 @@ describe("createLoopEngine — cause interlock", () => {
         return { kind: "wake", text: "go" };
       }),
     ]);
+    const session = engine.createSession("s1");
 
     for (const cause of ["awaiting-input", "aborted"] as const) {
-      assert.equal(await engine.run({ ...REQUEST, cause }), null);
+      assert.equal(await session.run({ ...REQUEST, cause }), null);
     }
     assert.equal(consulted, false);
     assert.equal(interlockReason(), "not-settled");
@@ -91,21 +94,21 @@ describe("createLoopEngine — construction", () => {
 describe("createLoopEngine — budget interlock", () => {
   it("skips a strategy whose budget is exhausted and logs its name", async () => {
     let consulted = false;
-    const engine = createLoopEngine(
-      [
-        handler(
-          "spent",
-          async () => {
-            consulted = true;
-            return { kind: "wake", text: "go" };
-          },
-          2,
-        ),
-      ],
-      { store: new Map([["s1", new Map([["spent", 2]])]]) },
-    );
+    const engine = createLoopEngine([
+      handler(
+        "spent",
+        async () => {
+          consulted = true;
+          return { kind: "wake", text: "go" };
+        },
+        2,
+      ),
+    ]);
+    const session = engine.createSession("s1");
+    session.record("spent");
+    session.record("spent");
 
-    assert.equal(await engine.run(REQUEST), null);
+    assert.equal(await session.run(REQUEST), null);
     assert.equal(consulted, false);
     assert.equal(interlockReason(), "budget-exhausted");
     const entry = _getBufferForTesting().find(
@@ -117,65 +120,55 @@ describe("createLoopEngine — budget interlock", () => {
   it("reports budget-exhausted before the strategy handler runs", async () => {
     // The budget interlock runs before the strategy, so an exhausted
     // budget is the logged reason even when the strategy would silence
-    // with its own gate reason.
+    // with its own gate reason.  The activity releases the lock, so the
+    // budget is the only gate left.
     let consulted = false;
-    const engine = createLoopEngine(
-      [
-        handler(
-          "strategy",
-          async () => {
-            consulted = true;
-            return { kind: "silence", reason: "no-active" };
-          },
-          1,
-        ),
-      ],
-      { store: new Map([["s1", new Map([["strategy", 1]])]]) },
-    );
+    const engine = createLoopEngine([
+      handler(
+        "strategy",
+        async () => {
+          consulted = true;
+          return { kind: "silence", reason: "no-active" };
+        },
+        1,
+      ),
+    ]);
+    const session = engine.createSession("s1");
+    session.record("strategy");
 
-    assert.equal(await engine.run({ ...REQUEST, hadActivity: false }), null);
+    assert.equal(await session.run(REQUEST), null);
     assert.equal(consulted, false);
     assert.equal(interlockReason(), "budget-exhausted");
   });
 
   it("wakes at the budget boundary used == maxWakes - 1", async () => {
-    const engine = createLoopEngine(
-      [handler("waker", async () => ({ kind: "wake", text: "go" }), 2)],
-      { store: new Map([["s1", new Map([["waker", 1]])]]) },
-    );
+    const engine = createLoopEngine([
+      handler("waker", async () => ({ kind: "wake", text: "go" }), 2),
+    ]);
+    const session = engine.createSession("s1");
+    session.record("waker");
 
-    assert.deepEqual(await engine.run(REQUEST), { name: "waker", text: "go" });
+    assert.deepEqual(await session.run(REQUEST), { name: "waker", text: "go" });
   });
 
   it("cards each strategy's budget separately", async () => {
     // `spent` is out of budget; `fresh` still has an allowance and wins.
     let spentConsulted = false;
-    const engine = createLoopEngine(
-      [
-        handler(
-          "spent",
-          async () => {
-            spentConsulted = true;
-            return { kind: "wake", text: "spent" };
-          },
-          1,
-        ),
-        handler("fresh", async () => ({ kind: "wake", text: "fresh" })),
-      ],
-      {
-        store: new Map([
-          [
-            "s1",
-            new Map([
-              ["spent", 1],
-              ["fresh", 0],
-            ]),
-          ],
-        ]),
-      },
-    );
+    const engine = createLoopEngine([
+      handler(
+        "spent",
+        async () => {
+          spentConsulted = true;
+          return { kind: "wake", text: "spent" };
+        },
+        1,
+      ),
+      handler("fresh", async () => ({ kind: "wake", text: "fresh" })),
+    ]);
+    const session = engine.createSession("s1");
+    session.record("spent");
 
-    assert.deepEqual(await engine.run(REQUEST), {
+    assert.deepEqual(await session.run(REQUEST), {
       name: "fresh",
       text: "fresh",
     });
@@ -201,7 +194,10 @@ describe("createLoopEngine — convergence", () => {
       }),
     ]);
 
-    assert.deepEqual(await engine.run(REQUEST), { name: "waker", text: "go" });
+    assert.deepEqual(await engine.createSession("s1").run(REQUEST), {
+      name: "waker",
+      text: "go",
+    });
     assert.deepEqual(calls, ["silent", "waker"]);
   });
 
@@ -211,7 +207,7 @@ describe("createLoopEngine — convergence", () => {
       handler("b", async () => ({ kind: "silence", reason: "no-active" })),
     ]);
 
-    assert.equal(await engine.run(REQUEST), null);
+    assert.equal(await engine.createSession("s1").run(REQUEST), null);
     const silent = _getBufferForTesting().filter(
       (entry) => entry.event === "settle_silent",
     );
@@ -226,7 +222,7 @@ describe("createLoopEngine — convergence", () => {
 
   it("returns null for an empty strategy list", async () => {
     const engine = createLoopEngine([]);
-    assert.equal(await engine.run(REQUEST), null);
+    assert.equal(await engine.createSession("s1").run(REQUEST), null);
   });
 
   it("isolates a throwing strategy and continues", async () => {
@@ -237,7 +233,7 @@ describe("createLoopEngine — convergence", () => {
       handler("ok", async () => ({ kind: "wake", text: "after crash" })),
     ]);
 
-    assert.deepEqual(await engine.run(REQUEST), {
+    assert.deepEqual(await engine.createSession("s1").run(REQUEST), {
       name: "ok",
       text: "after crash",
     });
@@ -257,11 +253,7 @@ describe("createLoopEngine — convergence", () => {
       }),
     ]);
 
-    await engine.run({
-      sessionID: "s9",
-      cause: "settled",
-      hadActivity: false,
-    });
+    await engine.createSession("s9").run({ ...REQUEST, hadActivity: false });
     assert.deepEqual(seen, { sessionID: "s9", hadActivity: false });
   });
 });
@@ -269,7 +261,7 @@ describe("createLoopEngine — convergence", () => {
 describe("createLoopEngine — awaiting-progress lock", () => {
   /** A waker engine with a consultation counter that can be re-zeroed. */
   function wakerEngine(): {
-    engine: ReturnType<typeof createLoopEngine>;
+    session: ReturnType<ReturnType<typeof createLoopEngine>["createSession"]>;
     consulted: () => number;
     zero: () => void;
   } {
@@ -281,7 +273,7 @@ describe("createLoopEngine — awaiting-progress lock", () => {
       }),
     ]);
     return {
-      engine,
+      session: engine.createSession("s1"),
       consulted: () => consulted,
       zero: () => {
         consulted = 0;
@@ -290,25 +282,25 @@ describe("createLoopEngine — awaiting-progress lock", () => {
   }
 
   it("silences a delivered wake's follow-up no-activity settle without spending budget", async () => {
-    const { engine, consulted, zero } = wakerEngine();
-    assert.deepEqual(await engine.run(REQUEST), { name: "waker", text: "go" });
-    engine.record("s1", "waker");
+    const { session, consulted, zero } = wakerEngine();
+    assert.deepEqual(await session.run(REQUEST), { name: "waker", text: "go" });
+    session.record("waker");
     zero();
 
     assert.equal(
-      await engine.run({ ...REQUEST, hadActivity: false }),
+      await session.run({ ...REQUEST, hadActivity: false }),
       null,
       "the locked strategy is skipped",
     );
     assert.equal(consulted(), 0, "the locked strategy is not consulted");
     assert.equal(interlockReason(), "awaiting-activity");
     assert.equal(
-      engine.used("s1", "waker"),
+      session.used("waker"),
       1,
       "the locked settle spends no budget",
     );
 
-    assert.equal(await engine.run({ ...REQUEST, hadActivity: false }), null);
+    assert.equal(await session.run({ ...REQUEST, hadActivity: false }), null);
     assert.equal(consulted(), 0, "the lock survives another idle settle");
   });
 
@@ -326,10 +318,11 @@ describe("createLoopEngine — awaiting-progress lock", () => {
         return { kind: "wake", text: "b" };
       }),
     ]);
-    engine.record("s1", "locked-a");
+    const session = engine.createSession("s1");
+    session.record("locked-a");
 
     assert.deepEqual(
-      await engine.run({ ...REQUEST, hadActivity: false }),
+      await session.run({ ...REQUEST, hadActivity: false }),
       { name: "fresh-b", text: "b" },
       "the unlocked strategy still wins",
     );
@@ -340,19 +333,19 @@ describe("createLoopEngine — awaiting-progress lock", () => {
     assert.equal(entry?.reason, "awaiting-activity");
     assert.equal(entry?.handler, "locked-a");
     assert.equal(
-      engine.used("s1", "locked-a"),
+      session.used("locked-a"),
       1,
       "the skip spends no budget and keeps the lock",
     );
 
     consulted.length = 0;
     assert.deepEqual(
-      await engine.run({ ...REQUEST, hadActivity: false }),
+      await session.run({ ...REQUEST, hadActivity: false }),
       { name: "fresh-b", text: "b" },
       "A stays locked across another idle settle",
     );
     assert.deepEqual(consulted, ["fresh-b"]);
-    assert.equal(engine.used("s1", "locked-a"), 1);
+    assert.equal(session.used("locked-a"), 1);
   });
 
   it("releases every locked strategy of the session on any activity", async () => {
@@ -367,17 +360,18 @@ describe("createLoopEngine — awaiting-progress lock", () => {
         return { kind: "silence", reason: "no-active" };
       }),
     ]);
-    engine.record("s1", "a");
-    engine.record("s1", "b");
+    const session = engine.createSession("s1");
+    session.record("a");
+    session.record("b");
 
     assert.equal(
-      await engine.run({ ...REQUEST, hadActivity: false }),
+      await session.run({ ...REQUEST, hadActivity: false }),
       null,
       "both strategies locked: every one skipped, nothing wakes",
     );
     assert.deepEqual(consulted, []);
 
-    assert.equal(await engine.run(REQUEST), null);
+    assert.equal(await session.run(REQUEST), null);
     assert.deepEqual(
       consulted,
       ["a", "b"],
@@ -386,13 +380,13 @@ describe("createLoopEngine — awaiting-progress lock", () => {
   });
 
   it("releases the lock on any tool activity and evaluates normally", async () => {
-    const { engine, consulted, zero } = wakerEngine();
-    await engine.run(REQUEST);
-    engine.record("s1", "waker");
+    const { session, consulted, zero } = wakerEngine();
+    await session.run(REQUEST);
+    session.record("waker");
     zero();
 
     assert.deepEqual(
-      await engine.run({ ...REQUEST, hadActivity: true }),
+      await session.run({ ...REQUEST, hadActivity: true }),
       { name: "waker", text: "go" },
       "a read-only turn still counts as activity and releases the lock",
     );
@@ -400,12 +394,12 @@ describe("createLoopEngine — awaiting-progress lock", () => {
   });
 
   it("does not lock on a wake that was never recorded as delivered", async () => {
-    const { engine, consulted, zero } = wakerEngine();
-    await engine.run(REQUEST);
+    const { session, consulted, zero } = wakerEngine();
+    await session.run(REQUEST);
     zero();
 
     assert.deepEqual(
-      await engine.run({ ...REQUEST, hadActivity: false }),
+      await session.run({ ...REQUEST, hadActivity: false }),
       { name: "waker", text: "go" },
       "no record() means no lock",
     );
@@ -413,84 +407,98 @@ describe("createLoopEngine — awaiting-progress lock", () => {
   });
 
   it("clears the lock together with the budget on reset", async () => {
-    const { engine, consulted, zero } = wakerEngine();
-    await engine.run(REQUEST);
-    engine.record("s1", "waker");
-    engine.reset("s1");
+    const { session, consulted, zero } = wakerEngine();
+    await session.run(REQUEST);
+    session.record("waker");
+    session.reset();
     zero();
 
     assert.deepEqual(
-      await engine.run({ ...REQUEST, hadActivity: false }),
+      await session.run({ ...REQUEST, hadActivity: false }),
       { name: "waker", text: "go" },
       "a real user turn clears the lock",
     );
     assert.equal(consulted(), 1);
-    assert.equal(engine.used("s1", "waker"), 0);
+    assert.equal(session.used("waker"), 0);
+  });
+});
+
+describe("createLoopEngine — session isolation", () => {
+  it("keeps one session's budget away from its sibling", () => {
+    const engine = createLoopEngine([]);
+    const first = engine.createSession("s1");
+    const second = engine.createSession("s2");
+
+    first.record("a");
+    first.record("a");
+
+    assert.equal(first.used("a"), 2);
+    assert.equal(second.used("a"), 0);
   });
 
-  it("evicts a locked session's lock with its budget past the cap", async () => {
-    let consulted = 0;
-    const capped = createLoopEngine(
-      [
-        handler("waker", async () => {
-          consulted += 1;
-          return { kind: "wake", text: "go" };
-        }),
-      ],
-      { cap: 1 },
-    );
-    capped.record("s1", "waker");
-    // A second recorded session pushes the cap-1 store past its bound,
-    // evicting s1's budget account and its lock.
-    capped.record("s2", "waker");
-
-    assert.deepEqual(
-      await capped.run({
-        sessionID: "s1",
-        cause: "settled",
-        hadActivity: false,
+  it("keeps one session's awaiting lock away from its sibling", async () => {
+    const consulted: string[] = [];
+    const engine = createLoopEngine([
+      handler("waker", async () => {
+        consulted.push("waker");
+        return { kind: "wake", text: "go" };
       }),
-      { name: "waker", text: "go" },
-      "the evicted session is no longer locked",
+    ]);
+    const locked = engine.createSession("s1");
+    const sibling = engine.createSession("s2");
+    locked.record("waker");
+
+    assert.equal(
+      await locked.run({ ...REQUEST, hadActivity: false }),
+      null,
+      "the locked session stays silent",
     );
-    assert.equal(consulted, 1);
-    assert.equal(capped.used("s1", "waker"), 0, "budget evicted with the lock");
+    assert.deepEqual(
+      await sibling.run({ ...REQUEST, hadActivity: false }),
+      { name: "waker", text: "go" },
+      "the sibling session is not locked",
+    );
+    assert.deepEqual(consulted, ["waker"]);
+  });
+
+  it("starts a fresh handle empty, so a dropped handle takes its state", () => {
+    const engine = createLoopEngine([]);
+    const released = engine.createSession("s1");
+    released.record("a");
+    released.record("a");
+    assert.equal(released.used("a"), 2);
+
+    // A new session scope of the same id builds a new handle: the released
+    // scope's counters are unreachable, so no cap or disposer has to clear
+    // them.
+    const reopened = engine.createSession("s1");
+    assert.equal(reopened.used("a"), 0);
+    assert.equal(released.used("a"), 2, "the dropped handle stays inert");
   });
 });
 
 describe("createLoopEngine — budget bookkeeping", () => {
   it("records, observes, and resets the per-strategy count", () => {
     const engine = createLoopEngine([]);
+    const session = engine.createSession("s1");
 
-    assert.equal(engine.used("s1", "a"), 0);
-    engine.record("s1", "a");
-    engine.record("s1", "a");
-    assert.equal(engine.used("s1", "a"), 2);
-    engine.reset("s1");
-    assert.equal(engine.used("s1", "a"), 0);
+    assert.equal(session.used("a"), 0);
+    session.record("a");
+    session.record("a");
+    assert.equal(session.used("a"), 2);
+    session.reset();
+    assert.equal(session.used("a"), 0);
   });
 
   it("keeps separate accounts per strategy", () => {
     const engine = createLoopEngine([]);
+    const session = engine.createSession("s1");
 
-    engine.record("s1", "a");
-    engine.record("s1", "a");
-    engine.record("s1", "b");
+    session.record("a");
+    session.record("a");
+    session.record("b");
 
-    assert.equal(engine.used("s1", "a"), 2);
-    assert.equal(engine.used("s1", "b"), 1);
-    assert.equal(engine.used("s2", "a"), 0);
-  });
-
-  it("evicts the oldest-inserted sessions past the cap", () => {
-    const store = new Map<string, Map<string, number>>();
-    for (let i = 0; i < 100; i += 1) store.set(`s${i}`, new Map([["a", 1]]));
-    const engine = createLoopEngine([], { cap: 100, store });
-
-    engine.record("s100", "a");
-
-    assert.equal(store.size, 100);
-    assert.equal(store.has("s0"), false, "oldest entry evicted");
-    assert.equal(engine.used("s100", "a"), 1, "new entry retained");
+    assert.equal(session.used("a"), 2);
+    assert.equal(session.used("b"), 1);
   });
 });

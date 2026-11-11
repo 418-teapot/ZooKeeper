@@ -121,6 +121,7 @@ async function piServices(
   const wiring = createPiLifecycleWiring({
     extensionServices: declarations.extension,
     sessionServices: declarations.session,
+    sessionCatalog: SESSION_CATALOG,
   });
   const { services } = await wiring.activateExtension();
   return services;

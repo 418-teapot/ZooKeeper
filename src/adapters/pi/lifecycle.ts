@@ -8,13 +8,14 @@
  * it.  Any other event the caller forwards is reported as `none`.
  * `session_start` carries no session identifier, so the mapping reads
  * it off the event context's session manager; an absent or blank id is
- * handed to the kernel unchanged, which declines without creating
+ * handed to the coordinator unchanged, which declines without creating
  * anything rather than having this layer guess.
  *
- * This module is the pi side of the adapter/kernel boundary: pi's reason
- * strings cross to the kernel unmodified, cleanup failures come back in
- * the stop report, and nothing is caught and dropped here.  It registers
- * no handlers of its own — the entry point decides when to call it.
+ * This module is the pi side of the adapter boundary: pi's reason
+ * strings cross to the coordinator unmodified, cleanup failures come back
+ * in the stop report, and nothing is caught and dropped here.  It
+ * registers no handlers of its own — the entry point decides when to call
+ * it.
  *
  * @module
  */
@@ -23,29 +24,13 @@ import type {
   SessionShutdownEvent,
   SessionStartEvent,
 } from "@earendil-works/pi-coding-agent";
-import type {
-  AnyExtensionServiceDefinition,
-  AnySessionServiceDefinition,
-  CleanupReport,
-  LifecycleKernel,
-} from "../../core/lifecycle/index.js";
+import type { CleanupReport } from "../../core/lifecycle/index.js";
+import type { SessionLifecycle } from "../../core/session/lifecycle.js";
 
-/**
- * The kernel handle any declaration set satisfies.
- *
- * The mapping never names the declared services, so it accepts a kernel
- * built from any declarations; the type parameters do not reach the
- * methods it calls.
- */
-type Kernel = LifecycleKernel<
-  readonly AnyExtensionServiceDefinition[],
-  readonly AnySessionServiceDefinition[]
->;
-
-/** The kernel operations this mapping drives. */
-export type PiLifecycleKernel = Pick<
-  Kernel,
-  "notifySessionStart" | "stopExtension"
+/** The session lifecycle operations this mapping drives. */
+export type PiLifecycleOperations = Pick<
+  SessionLifecycle,
+  "startSession" | "releaseRuntime"
 >;
 
 /**
@@ -73,16 +58,16 @@ export type PiLifecycleOutcome =
   | { readonly action: "stop-extension"; readonly report: CleanupReport };
 
 /**
- * Build the pi lifecycle mapping over a kernel.
+ * Build the pi lifecycle mapping over the session lifecycle coordinator.
  *
  * `sessionStart` / `sessionShutdown` are the per-event entry points (pi
  * registers handlers per event key); `handleEvent` dispatches an already
  * received event and reports every other event as `none`.
  *
- * @param kernel - The lifecycle kernel to drive.
+ * @param lifecycle - The session lifecycle operations to drive.
  * @returns The mapping functions.
  */
-export function createPiLifecycleMapping(kernel: PiLifecycleKernel) {
+export function createPiLifecycleMapping(lifecycle: PiLifecycleOperations) {
   /** Read the session id pi keeps on the event context. */
   function readSessionID(ctx: PiLifecycleContext | undefined): string | null {
     return ctx?.sessionManager?.getSessionId?.() ?? null;
@@ -93,7 +78,7 @@ export function createPiLifecycleMapping(kernel: PiLifecycleKernel) {
     event: SessionStartEvent,
     ctx?: PiLifecycleContext,
   ): Promise<PiLifecycleOutcome> {
-    const started = await kernel.notifySessionStart(
+    const started = await lifecycle.startSession(
       readSessionID(ctx),
       event.reason,
     );
@@ -104,7 +89,7 @@ export function createPiLifecycleMapping(kernel: PiLifecycleKernel) {
   async function sessionShutdown(
     event: SessionShutdownEvent,
   ): Promise<Extract<PiLifecycleOutcome, { action: "stop-extension" }>> {
-    const report = await kernel.stopExtension(event.reason);
+    const report = await lifecycle.releaseRuntime(event.reason);
     return { action: "stop-extension", report };
   }
 
