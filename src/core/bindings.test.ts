@@ -76,4 +76,14 @@ describe("capabilityBindings — bind", () => {
 
     assert.deepEqual(Object.keys(bindings.bind()), ["directory"]);
   });
+
+  it("binds a partial catalog, never the complete record", () => {
+    const bindings = capabilityBindings({ values: { directory: "/tmp/zoo" } });
+
+    const bound = bindings.bind();
+    // @ts-expect-error - a declaration need not cover the whole catalog.
+    const complete: Capabilities = bound;
+
+    assert.equal(complete.directory, "/tmp/zoo");
+  });
 });

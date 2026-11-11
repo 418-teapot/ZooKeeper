@@ -812,9 +812,7 @@ describe("assemble — factory count", () => {
         return unit.create(caps, selected);
       },
     }));
-    const composed = buildComposition(selection, {
-      ...BASE_CAPS,
-    } as Capabilities);
+    const composed = buildComposition(selection, { ...BASE_CAPS });
 
     assert.equal(built, 0, "the planner never instantiates");
     assert.deepEqual(

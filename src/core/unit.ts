@@ -528,22 +528,25 @@ export type UnitDescriptor =
 /**
  * The capability slice a factory body receives.
  *
- * `needs` keys are non-optional; `wants` keys may be absent.  Every other
- * catalog key is excluded, so a factory cannot accidentally read a port it
- * did not declare.
+ * `needs` keys are required (the planner checks every need); `wants` keys
+ * may be absent.  Every other catalog key is excluded, so a factory cannot
+ * accidentally read a port it did not declare.  `Required` changes nothing
+ * while every catalog field is required; it keeps `needs` required if a
+ * field ever becomes optional.
  */
 export type UnitCaps<
   N extends readonly CapabilityKey[],
   W extends readonly CapabilityKey[],
-> = Pick<Capabilities, N[number]> & Partial<Pick<Capabilities, W[number]>>;
+> = Required<Pick<Capabilities, N[number]>> &
+  Partial<Pick<Capabilities, W[number]>>;
 
 /**
  * Assemble a descriptor from a definition.
  *
  * The factory is wrapped so the shared descriptor `create` signature
- * receives the full capability bag and the finished selection while the
- * definition body only sees the declared capability slice and the `uses`
- * projection.  The planner has already verified every `needs` key is
+ * receives the bound capability declaration and the finished selection
+ * while the definition body only sees the declared capability slice and the
+ * `uses` projection.  The planner has already verified every `needs` key is
  * available, which is what makes the slice's required keys safe to treat
  * as present.
  *

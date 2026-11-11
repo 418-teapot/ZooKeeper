@@ -7,7 +7,8 @@
  * one place is what keeps "the host can provide it" and "the host
  * provides it" from drifting apart: one value list produces both, so a
  * declared key never binds to `undefined` and `bind` never produces a key
- * the declaration omitted.
+ * the declaration omitted.  The bound record is a partial catalog: a host
+ * declares only the capabilities it provides.
  *
  * The bindings are a host-level closure, not a dependency-injection
  * container: they carry values only.
@@ -34,17 +35,17 @@ export interface CapabilityBindingsInput {
 
 /**
  * A host's capability declaration: the availability keys plus the binder
- * that materialises the complete capability record.
+ * that materialises the declared values.
  */
 export interface CapabilityBindings {
   /** The capability keys the host can provide. */
   readonly keys: ReadonlySet<CapabilityKey>;
   /**
-   * Build the complete capability record.
+   * Build the declared capability record.
    *
-   * @returns The capability record, keyed exactly as {@link keys}.
+   * @returns The capability values, keyed exactly as {@link keys}.
    */
-  bind(): Capabilities;
+  bind(): Partial<Capabilities>;
 }
 
 // ---------------------------------------------------------------------------
@@ -74,12 +75,12 @@ export function capabilityBindings(
 
   return {
     keys,
-    bind(): Capabilities {
+    bind(): Partial<Capabilities> {
       const bound: Record<string, unknown> = {};
       for (const [key, value] of boundValues) {
         bound[key] = value;
       }
-      return bound as unknown as Capabilities;
+      return bound as unknown as Partial<Capabilities>;
     },
   };
 }

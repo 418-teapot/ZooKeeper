@@ -31,10 +31,13 @@ export type TodoSource = (sessionID: string) => Promise<TodoItemView[]>;
  * and task order; the `blocker` note rides along so reminders can state
  * what a blocked task waits on.
  *
- * @param store - Todo state store backing the reads.
+ * @param store - Todo state store backing the reads; only the read
+ *   operation is required, so any store-shaped reader fits.
  * @returns A `TodoSource` bound to the store.
  */
-export function todoSourceFromStore(store: TodoStateStore): TodoSource {
+export function todoSourceFromStore(
+  store: Pick<TodoStateStore, "get">,
+): TodoSource {
   return async (sessionID) =>
     (await store.get(sessionID)).flatMap((phase) =>
       phase.tasks.map((task) =>

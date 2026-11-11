@@ -15,7 +15,7 @@
  * @module
  */
 
-import { type CommonConfig, parseCommonConfig } from "./capabilities.js";
+import { type CommonConfig, parseCommonConfig } from "./config-parse.js";
 
 /**
  * The host-independent configuration of one generation.

@@ -11,6 +11,15 @@
 import type { SubagentDriver } from "../subagent/driver.js";
 import type { RunRegistry } from "../subagent/registry.js";
 
+/**
+ * The run-record operations the subagent tool writes: start a run, patch its
+ * progress, and finish it.
+ *
+ * Scope creation, subscription, restore, queries and disposal belong to the
+ * host assembly — a consumer never reaches them.
+ */
+export type RunWrites = Pick<RunRegistry, "start" | "update" | "finish">;
+
 /** The subagent-delegation capability. */
 export interface SubagentPort {
   /**
@@ -19,10 +28,12 @@ export interface SubagentPort {
    * The tool writes each delegation through this scope (start, progress,
    * terminal finish), so the fleet surfaces of the host render from the
    * same records the tool produced and the runtime's stop ends exactly the
-   * runs it started.  It reads the run table of the host's process owner,
-   * never a second table.
+   * runs it started.  Every write enters the same run table the host's
+   * process owner keeps, never a second table.  Only the delegation writes
+   * are exposed; the registry's management surface stays with the host
+   * assembly.
    */
-  runs: RunRegistry;
+  runs: RunWrites;
   /**
    * Host subagent driver (only on hosts that can execute a delegated run).
    *
@@ -41,12 +52,13 @@ export interface SubagentPort {
    * the extension (pi forbids it then).  The thunk makes the timing
    * explicit — the unit invokes it inside `execute`, which is always
    * post-load — and lets the supplier cache the result internally.
-   * Mirrors the switch command's baseline source.  Absent (or returning
-   * `undefined`) when the host cannot supply it — the subagent tool then
-   * runs with whatever `computeCapabilitySet` yields (an empty set,
-   * fail-closed; permissions are never invented).
+   * Mirrors the switch command's baseline source.  The field describes the
+   * thunk the host binds; a host without one leaves the key unbound, so a
+   * unit wanting it runs with whatever `computeCapabilitySet` yields (an
+   * empty set, fail-closed; permissions are never invented).  A bound
+   * thunk may still return `undefined`.
    */
-  subagentBaseline?: () => string[] | undefined;
+  subagentBaseline: () => string[] | undefined;
   /**
    * Per-agent model map for subagent sessions (`~/.pi/agent/agents.json`).
    *

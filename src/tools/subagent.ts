@@ -36,10 +36,10 @@
  *    text explaining WHY (never throws, never runs the driver).
  * 3. Computes the TARGET agent's capability set as `baseline − deniedTools`
  *    via `computeCapabilitySet`, where the baseline is the host's full
- *    untrimmed tool list (`caps.subagentBaseline()`) and the denies come from
- *    the target's parsed `[agent.<name>].permission` tool-level denies.
- *    A missing baseline yields an empty set — permissions are never
- *    invented (fail-closed).
+ *    untrimmed tool list (`caps.subagentBaseline?.()`) and the denies come
+ *    from the target's parsed `[agent.<name>].permission` tool-level
+ *    denies.  A missing baseline yields an empty set — permissions are
+ *    never invented (fail-closed).
  * 4. Hands the run's append-only fact log to the driver so every observed
  *    fact is recorded there, patches the driver's progress reports' fields
  *    (current tool, context length, model, child session ids, session path)

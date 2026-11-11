@@ -6,16 +6,24 @@
  * complete contribution set.  Each case therefore asserts the
  * descriptor's `create` output — the shape the composition engine reads —
  * rather than the factory body.
+ *
+ * The `UnitCaps` and `define*` cases are compile-time contracts: their
+ * `@ts-expect-error` directives are the assertions, so `tsc --noEmit`
+ * fails when a declaration becomes more permissive than stated.
  */
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { facts } from "../testkits/compose.js";
 import type { Capabilities } from "./ports/index.js";
+import type { TodoSource } from "./todo/source.js";
 import {
   defineAgent,
+  defineCommand,
   defineHook,
   definePromptAgent,
+  defineSkill,
   defineTool,
+  type UnitCaps,
 } from "./unit.js";
 
 /** The capability bag the factories see; the units below declare none. */
@@ -26,6 +34,9 @@ const ACTIVE_SET = facts();
 
 /** A selection with one selected tool — the facts the cases below read. */
 const USES = facts({ tools: ["compress"] });
+
+/** A read-only todo source passed into the capability cases below. */
+const TODO_SOURCE: TodoSource = async () => [];
 
 describe("defineHook", () => {
   it("defaults every unnamed slot to an empty array", () => {
@@ -223,5 +234,138 @@ describe("definePromptAgent", () => {
       kind: "agent",
       agents: [{ name: "beaver", prompt: "PROMPT" }],
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Compile-time capability contracts
+// ---------------------------------------------------------------------------
+
+describe("UnitCaps", () => {
+  it("makes every needs key required", () => {
+    // The annotation is the assertion: the slice that omits the declared
+    // need must not compile, and the slice that carries it must.
+    const withoutNeed = (): UnitCaps<["directory"], []> =>
+      // @ts-expect-error - a declared need is a required property.
+      ({});
+    const withNeed = (): UnitCaps<["directory"], []> => ({
+      directory: "/tmp/zoo",
+    });
+
+    assert.equal(typeof withoutNeed, "function");
+    assert.deepEqual(withNeed(), { directory: "/tmp/zoo" });
+  });
+
+  it("leaves every wants key optional", () => {
+    const withoutWant: UnitCaps<[], ["toolHost"]> = {};
+    // A `wants` key stays absent even though the catalog requires the
+    // field.
+    const withoutWantPort: UnitCaps<[], ["todoSource"]> = {};
+
+    assert.deepEqual(withoutWant, {});
+    assert.deepEqual(withoutWantPort, {});
+  });
+
+  it("excludes a capability key the unit did not declare", () => {
+    const withUndeclaredPort = (): UnitCaps<["directory"], []> => ({
+      directory: "/tmp/zoo",
+      // @ts-expect-error - the slice carries only the declared keys.
+      toolHost: {},
+    });
+
+    assert.equal(typeof withUndeclaredPort, "function");
+  });
+});
+
+describe("define* — needs declaration", () => {
+  it("types a needed catalog key as present in the factory slice", () => {
+    const unit = defineHook({
+      name: "probe",
+      needs: ["todoSource"],
+      create: (caps) => {
+        // The assignment is the assertion: `undefined` does not fit here.
+        const source: TodoSource = caps.todoSource;
+        return {
+          afterExec: [
+            {
+              name: "probe",
+              handle: () => {
+                source("s");
+              },
+            },
+          ],
+        };
+      },
+    });
+
+    const contributions = unit.create({ todoSource: TODO_SOURCE }, ACTIVE_SET);
+
+    assert.equal(contributions.afterExec.length, 1);
+  });
+
+  it("rejects a definition that omits needs", () => {
+    // Every helper requires the list; each directive below is the assertion.
+    const definitions = [
+      () =>
+        // @ts-expect-error - needs is required.
+        defineAgent({ name: "a", create: () => ({ prompt: "p" }) }),
+      () =>
+        // @ts-expect-error - needs is required.
+        defineSkill({
+          name: "s",
+          create: () => ({ kind: "skill", skills: [] }),
+        }),
+      () =>
+        // @ts-expect-error - needs is required.
+        defineHook({ name: "h", create: () => ({}) }),
+      () =>
+        // @ts-expect-error - needs is required.
+        defineTool({
+          name: "t",
+          create: () => ({
+            description: "d",
+            execute: async () => ({ text: "ok" }),
+          }),
+        }),
+      () =>
+        // @ts-expect-error - needs is required.
+        defineCommand({
+          name: "c",
+          create: () => ({ kind: "command", commands: [] }),
+        }),
+    ];
+
+    // One thunk per helper: all five must stay covered.
+    assert.equal(definitions.length, 5);
+  });
+});
+
+describe("capability ports — consumer surface", () => {
+  it("exposes only the run operations the subagent tool writes", () => {
+    // The factory body never runs: the directives are the assertion, so a
+    // port that widened back to the whole registry fails `tsc --noEmit`.
+    const consume = (runs: Capabilities["runs"]): void => {
+      runs.start({ id: "run-1", agent: "lynx", parentSession: "s1" });
+      runs.update("run-1", { currentTool: "read" });
+      runs.finish("run-1", { status: "done" });
+      // @ts-expect-error - creating a scope is assembly work, not a
+      // consumer operation.
+      runs.createScope();
+    };
+
+    assert.equal(typeof consume, "function");
+  });
+
+  it("exposes only the todo-store operations the todo tool calls", () => {
+    const consume = (store: Capabilities["todoStore"]): void => {
+      void store.serialize(async () => {
+        const phases = await store.get("s1");
+        store.set("s1", phases);
+      });
+      // @ts-expect-error - cache invalidation belongs to the host adapter.
+      store.invalidate("s1");
+    };
+
+    assert.equal(typeof consume, "function");
   });
 });

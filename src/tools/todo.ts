@@ -47,10 +47,10 @@
  * @module
  */
 
+import type { TodoStateAccess } from "../core/ports/index.js";
 import { isRecord } from "../core/records.js";
 import { applyEntries } from "../core/todo/apply.js";
 import { serializeSnapshot } from "../core/todo/serialize.js";
-import type { TodoStateStore } from "../core/todo/store.js";
 import { formatSummary } from "../core/todo/summary.js";
 import type {
   TodoEntry,
@@ -535,7 +535,7 @@ export function parseTodoArgs(args: unknown): TodoEntry[] {
  * @param store - The host-owned todo state store (this session's cache).
  * @returns The todo tool definition.
  */
-export function createTodoTool(store: TodoStateStore): ToolDefinition {
+export function createTodoTool(store: TodoStateAccess): ToolDefinition {
   return {
     description: TODO_DESCRIPTION,
     args: {

@@ -45,22 +45,22 @@ export type { ContinuationPort } from "./continuation.js";
 export type { FetchPort } from "./fetch.js";
 export type { HandoffPort, MessageInjector } from "./handoff.js";
 export type { SessionPort } from "./session.js";
-export type { SubagentPort } from "./subagent.js";
+export type { RunWrites, SubagentPort } from "./subagent.js";
 export type { SwitchHost, SwitchNewSessionOps, SwitchPort } from "./switch.js";
-export type { TodoPort } from "./todo.js";
+export type { TodoPort, TodoStateAccess } from "./todo.js";
 export type { ToastPayload, ToolHost, ToolHostPort } from "./tool-host.js";
 export type { ValidationPort } from "./validation.js";
 
 /**
  * Every capability a unit may declare.
  *
- * Fields are required on the catalog itself, with one deliberate
- * exception: `SubagentPort.subagentBaseline` is optional because its
- * production is timing-constrained (see the port file).  The assembly
- * host declares them through `capabilityBindings` and the build stage only
- * hands a unit the keys it declared in `needs` / `wants`.  A field listed in
- * `needs` is present and non-optional inside the factory; a `wants`
- * field may be absent.
+ * Each field describes the capability's value as the host provides it: no
+ * field is optional.  Absence is a binding fact, not a type fact.  The
+ * assembly host declares the keys it can bind through `capabilityBindings`
+ * and the build stage only hands a unit the keys it declared in `needs` /
+ * `wants`, so a field listed in `needs` is present inside the factory and a
+ * `wants` field may be absent.  A value the capability itself produces
+ * (e.g. a thunk returning `undefined`) is distinct from an absent field.
  */
 export interface Capabilities
   extends ValidationPort,

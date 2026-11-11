@@ -10,7 +10,7 @@
  *     host's agent materialisation facts, and returns the immutable
  *     `Selection`.  No factory runs and nothing is probed.
  *  2. **Bind** — the host's `CapabilityBindings` turn that selection into
- *     the complete capability record; a key is unavailable exactly when
+ *     the declared capability record; a key is unavailable exactly when
  *     the host cannot bind it.
  *  3. **Build** — {@link buildComposition} instantiates each selected unit
  *     exactly once, in registry order, handing it its declared capability
@@ -187,12 +187,12 @@ function collect(
  * be absent); every other catalog key stays invisible to the factory.
  *
  * @param unit - The unit being instantiated.
- * @param capabilities - The bound capability record.
+ * @param capabilities - The bound capability declaration.
  * @returns The unit's capability slice.
  */
 function unitCapabilities(
   unit: UnitDescriptor,
-  capabilities: Capabilities,
+  capabilities: Partial<Capabilities>,
 ): Partial<Capabilities> {
   const caps: Partial<Capabilities> = {};
   // The catalog mixes port types, so a plain keyed read yields their union;
@@ -226,12 +226,13 @@ function unitCapabilities(
  * through.
  *
  * @param selection - The finished, frozen selection.
- * @param capabilities - The capability record bound for that selection.
+ * @param capabilities - The capability declaration bound for that
+ *   selection.
  * @returns The composed host-agnostic contributions.
  */
 export function buildComposition(
   selection: Selection,
-  capabilities: Capabilities,
+  capabilities: Partial<Capabilities>,
 ): ComposedResult {
   if (selection.status !== "ready") {
     return emptyComposition(selection.report);
@@ -340,7 +341,7 @@ function logSelection(selection: Selection): void {
  * A `null` profile (absent or invalid) selects and instantiates nothing —
  * no defaults, no fallback to a full load.  Otherwise the planner matches
  * every profile-enabled unit against the host's availability keys, the
- * binder turns the selection into the complete capability record, and
+ * binder turns the declaration into the bound capability record, and
  * the build stage instantiates exactly the selected units in registry
  * order.
  *

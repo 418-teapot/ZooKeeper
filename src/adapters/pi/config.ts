@@ -23,8 +23,11 @@ import { readFileSync, realpathSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parse } from "../../../vendor/smol-toml/index.js";
-import { parseCommonConfig } from "../../core/capabilities.js";
-import { parseAgentColors, parseAskConfig } from "../../core/config-parse.js";
+import {
+  parseAgentColors,
+  parseAskConfig,
+  parseCommonConfig,
+} from "../../core/config-parse.js";
 import {
   type ConfigSnapshot,
   createProcessScope,

@@ -9,13 +9,16 @@
  * exercised by the behavior tests (`collectSkillPaths` in
  * `src/pi.test.ts`, the profile scan of the OpenCode start publisher in
  * `src/adapters/opencode/publisher.test.ts`).
+ *
+ * The capability declarations of every registry unit are also checked
+ * here: each key appears at most once per list and in one list only.
  */
 import assert from "node:assert/strict";
 import { mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, it } from "node:test";
 import type { Capabilities } from "./core/ports/index.js";
-import { discoverSkillUnits } from "./registry.js";
+import { discoverSkillUnits, REGISTRY } from "./registry.js";
 import { facts } from "./testkits/compose.js";
 import { makeTmpDir } from "./testkits/tmp.js";
 
@@ -132,5 +135,38 @@ describe("discoverSkillUnits", () => {
     writeFileSync(file, "x", "utf-8");
 
     assert.deepEqual(discoverSkillUnits(file), []);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// REGISTRY
+// ---------------------------------------------------------------------------
+
+describe("REGISTRY — capability declarations", () => {
+  it("declares each key at most once per unit", () => {
+    for (const unit of REGISTRY) {
+      assert.equal(
+        new Set(unit.needs).size,
+        unit.needs.length,
+        `${unit.name} repeats a key in needs`,
+      );
+      assert.equal(
+        new Set(unit.wants).size,
+        unit.wants.length,
+        `${unit.name} repeats a key in wants`,
+      );
+    }
+  });
+
+  it("declares no key as both a need and a want", () => {
+    for (const unit of REGISTRY) {
+      const wanted = new Set(unit.wants);
+
+      assert.deepEqual(
+        unit.needs.filter((key) => wanted.has(key)),
+        [],
+        `${unit.name} declares one key in both lists`,
+      );
+    }
   });
 });
