@@ -38,7 +38,6 @@ const UNITS: UnitDescriptor[] = [
   mockUnit("dolphin", "agent"),
   mockUnit("switch", "command"),
   mockUnit("mola", "agent"),
-  mockUnit("beaver-tdd", "skill"),
 ];
 
 /** A profile listing agents in a different order than the registry. */
@@ -62,7 +61,7 @@ describe("planSelection — registry order", () => {
 
     assert.deepEqual(
       selection.chosen.map((unit) => unit.name),
-      ["pruning", "compress", "dolphin", "switch", "mola", "beaver-tdd"],
+      ["pruning", "compress", "dolphin", "switch", "mola"],
     );
     assert.deepEqual(selection.report.selected, [
       "pruning",
@@ -70,7 +69,6 @@ describe("planSelection — registry order", () => {
       "dolphin",
       "switch",
       "mola",
-      "beaver-tdd",
     ]);
     assert.deepEqual(selection.report.skipped, []);
     assert.deepEqual(selection.report.unknown, []);
@@ -265,7 +263,6 @@ describe("planSelection — unknown profile names", () => {
       mockUnit("context-pruning", "hook"),
       mockUnit("compress", "tool"),
       mockUnit("dolphin", "agent"),
-      mockUnit("beaver-tdd", "skill"),
       mockUnit("go", "command"),
     ];
     const profile: ModeProfile = {
@@ -287,7 +284,6 @@ describe("planSelection — unknown profile names", () => {
     assert.deepEqual(selection.report.selected, []);
     assert.deepEqual(selection.report.unknown, [
       { category: "agents", name: "context-pruning" },
-      { category: "skills", name: "compress" },
       { category: "hooks", name: "go" },
       { category: "tools", name: "dolphin" },
       { category: "commands", name: "beaver-tdd" },
@@ -301,7 +297,6 @@ describe("planSelection — unknown profile names", () => {
       mockUnit("context-pruning", "hook"),
       mockUnit("compress", "tool"),
       mockUnit("dolphin", "agent"),
-      mockUnit("beaver-tdd", "skill"),
       mockUnit("go", "command"),
     ];
     const profile: ModeProfile = {
@@ -324,7 +319,6 @@ describe("planSelection — unknown profile names", () => {
       "context-pruning",
       "compress",
       "dolphin",
-      "beaver-tdd",
       "go",
     ]);
     assert.deepEqual(selection.report.unknown, []);

@@ -4,8 +4,7 @@
  * Turns the `zoo` config into the pi-facing wiring: the host capability
  * provision the shared composition service consumes
  * (`buildPiCapabilities`), the session → agent resolver
- * (`buildPiResolveAgent`), the profile skill-directory lookup
- * (`collectSkillPaths`), and the preparation of a start (`preparePiStart`)
+ * (`buildPiResolveAgent`), and the preparation of a start (`preparePiStart`)
  * — the host services the lifecycle kernel creates (see `services.ts`: the
  * session contexts, the adapter, the tool host built on the contexts, the
  * todo and profile catalogs, the tool baselines, the fleet surface, the
@@ -62,7 +61,11 @@ import {
   contextSessionResources,
   createSessionResourceCatalog,
 } from "../../core/session/resources.js";
-import { scanSkillDirectories } from "../../core/skills.js";
+import type {
+  SkillEntry,
+  SkillSnapshot,
+  SkillSource,
+} from "../../core/skills.js";
 import type { SubagentDriver } from "../../core/subagent/driver.js";
 import type {
   RunRegistry,
@@ -112,6 +115,9 @@ import type {
 // computed skill paths resolve into the project directory even when the
 // extension is loaded through pi's auto-discovery symlink.
 const __dirname = dirname(realpathSync(fileURLToPath(import.meta.url)));
+
+/** The absolute path of the repository's skills directory. */
+const SKILLS_DIR = resolve(__dirname, "../../../skills");
 
 // ---------------------------------------------------------------------------
 // Profile-driven composition
@@ -497,29 +503,6 @@ export function buildPiCapabilities(
 }
 
 // ---------------------------------------------------------------------------
-// Skill discovery
-// ---------------------------------------------------------------------------
-
-/**
- * Collect the absolute paths of the profile-listed skill directories.
- *
- * pi's `loadSkillsFromDir` discovers a skill when a directory contains
- * SKILL.md.  A skill registers only when its directory name appears in
- * `profileSkills` AND the directory actually exists under skills/
- * (mirroring the OpenCode preparation's fail-closed scan).  The
- * scan itself is shared with OpenCode (`scanSkillDirectories`); this
- * wrapper only supplies the base directory resolved from pi's module
- * location.
- *
- * @param profileSkills - Skill directory names declared by the profile.
- * @returns Absolute paths of the existing, profile-listed directories.
- */
-export function collectSkillPaths(profileSkills: string[]): string[] {
-  const skillsDir = resolve(__dirname, "../../../skills");
-  return scanSkillDirectories(skillsDir, profileSkills);
-}
-
-// ---------------------------------------------------------------------------
 // Handler wiring
 // ---------------------------------------------------------------------------
 
@@ -729,7 +712,19 @@ export interface PiStartOptions {
   childRuntime?: (
     onClose: (close: () => Promise<CleanupReport>) => void,
     agent: string,
+    skills: readonly SkillEntry[],
   ) => (pi: ExtensionAPI) => Promise<void>;
+  /**
+   * The skills the outer generation already selected.  A sub-session
+   * runtime inherits them, so its own composition reads no directory.  A
+   * generation start leaves this out and reads the directory once.
+   */
+  skills?: readonly SkillEntry[];
+  /**
+   * Test seam: the skills directory read of a generation start.  Defaults to
+   * the real read of `skills/`.
+   */
+  discoverSkills?: (skillsDir: string) => SkillSnapshot;
 }
 
 /** The extension-scope declarations of one pi runtime instance. */
@@ -784,6 +779,28 @@ export interface PiRuntimeInstanceInput {
 export interface PiStartInput extends PiRuntimeInstanceInput {
   /** The resources this runtime owns. */
   readonly instance: PiRuntimeInstance;
+}
+
+/**
+ * Resolve how this runtime obtains its skills.
+ *
+ * An inherited selection delivers the given entries and reads nothing; a
+ * generation start reads the directory once through the (optionally
+ * injected) discovery.
+ *
+ * @param options - The runtime's host options.
+ * @returns The skill source of this runtime.
+ */
+function skillSource(options?: PiStartOptions): SkillSource {
+  const inherited = options?.skills;
+  if (inherited !== undefined) return { kind: "given", entries: inherited };
+  return {
+    kind: "read",
+    dir: SKILLS_DIR,
+    ...(options?.discoverSkills === undefined
+      ? {}
+      : { discover: options.discoverSkills }),
+  };
 }
 
 /**
@@ -897,6 +914,10 @@ export function createPiRuntimeInstance(
     sessionCatalog,
     piApi,
     appendEntry,
+    // The generation's skill source: a sub-session runtime inherits the
+    // entries its parent selected, so only a generation start reads the
+    // directory.
+    skills: skillSource(overrides),
     colorizeAgent,
     titleForRun: runTitle,
     borderColorizeForRun: agentBorderColorize,
@@ -930,19 +951,18 @@ export function createPiRuntimeInstance(
         // runs inside pi); test-only and driver-less compositions stay
         // closed.  A test override replaces the SDK driver with a fake so
         // bridge tests run without loading the pi SDK.  The skill seam is
-        // injected from the same config/profile sources the main session's
+        // injected from the same selection the main session's
         // `resources_discover` uses: each sub-session is seeded with the
-        // skill directories its OWN `[agent.<name>.permission.skill]` rules
-        // allow.  The profile catalog is read lazily, per run, so a
-        // delegation that starts after composition sees the published
-        // value.
+        // skills its OWN `[agent.<name>.permission.skill]` rules allow.  The
+        // profile catalog is read lazily, per run, so a delegation that
+        // starts after composition sees the published value, and no run
+        // reads the skills directory.
         subagentDriver:
           overrides?.subagentDriver ??
           (piApi
             ? createPiSubagentDriver({
                 skillPermissions,
-                getProfileSkills: () => ports.profileCatalog.get(),
-                collectSkillPaths,
+                getSelectedSkills: () => ports.profileCatalog.get(),
                 // The child loads ZooKeeper through the inline factory
                 // captured from this composition root, and its own run
                 // reports back the close handle of that runtime.
@@ -1240,10 +1260,11 @@ export async function preparePiStart(
     limits: snapshot.limits,
   });
 
-  // Publish the composed profile's skill directory names.  The subagent
-  // driver reads them per run and `resources_discover` reads them per bind,
-  // so both consume this one publication — no mutable local is handed out.
-  profileCatalog.publish(composed.skills.map((skill) => skill.name));
+  // Publish the generation's selected skills.  The subagent driver reads
+  // them per run and `resources_discover` reads them per bind, so both
+  // consume this one publication — no mutable local is handed out and
+  // neither reads the skills directory.
+  profileCatalog.publish(composed.skills);
 
   // Build the tool registrations publish writes.  The composed
   // `tool.definition` contributions (the subagent-prompt format hint, when
@@ -1343,8 +1364,7 @@ export async function preparePiStart(
     composed,
     hasSettledHandlers,
     skillPermissions,
-    getProfileSkills: () => profileCatalog.get(),
-    collectSkillPaths,
+    getSelectedSkills: () => profileCatalog.get(),
     applyActiveTools,
     registerFleetWidget,
     refreshTodoView: (sessionID) => fleet.refreshTodoView(sessionID),

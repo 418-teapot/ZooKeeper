@@ -10,6 +10,7 @@
  */
 
 import assert from "node:assert/strict";
+import { fileURLToPath } from "node:url";
 import { createPiScope, type PiProcessScope } from "../adapters/pi/config.js";
 import {
   _resetPiProcessStateForTesting,
@@ -17,7 +18,6 @@ import {
   type PiProcessState,
 } from "../adapters/pi/process.js";
 import { createPiRuntime } from "../adapters/pi/publisher.js";
-
 import type { ExtensionAPI } from "../adapters/pi/types.js";
 import {
   buildPiCapabilities,
@@ -204,6 +204,12 @@ export async function composePi(
     capabilities,
     units: REGISTRY,
     orchestrator: ORCHESTRATOR_AGENT_NAME,
+    // A generation start reads the repository's skills directory once; the
+    // production start passes the same source.
+    skills: {
+      kind: "read",
+      dir: fileURLToPath(new URL("../../skills", import.meta.url)),
+    },
   });
   const kernel = createLifecycleKernel({
     extension: [capabilities, composition],

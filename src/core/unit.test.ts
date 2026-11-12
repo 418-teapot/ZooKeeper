@@ -21,7 +21,6 @@ import {
   defineCommand,
   defineHook,
   definePromptAgent,
-  defineSkill,
   defineTool,
   type UnitCaps,
 } from "./unit.js";
@@ -311,12 +310,6 @@ describe("define* — needs declaration", () => {
         defineAgent({ name: "a", create: () => ({ prompt: "p" }) }),
       () =>
         // @ts-expect-error - needs is required.
-        defineSkill({
-          name: "s",
-          create: () => ({ kind: "skill", skills: [] }),
-        }),
-      () =>
-        // @ts-expect-error - needs is required.
         defineHook({ name: "h", create: () => ({}) }),
       () =>
         // @ts-expect-error - needs is required.
@@ -335,8 +328,8 @@ describe("define* — needs declaration", () => {
         }),
     ];
 
-    // One thunk per helper: all five must stay covered.
-    assert.equal(definitions.length, 5);
+    // One thunk per helper: all four must stay covered.
+    assert.equal(definitions.length, 4);
   });
 });
 

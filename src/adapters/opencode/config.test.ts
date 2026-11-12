@@ -50,20 +50,13 @@ function hostConfig(agent: Record<string, any>): Record<string, any> {
  *
  * @param overrides - The composition slots the hook reads.
  * @param selection - The selection the composition was built from.
- * @param skillPaths - The skill directories the preparation read.
  * @returns The hook.
  */
 function hookFor(
   overrides: Parameters<typeof composedResult>[0],
   selection: Selection = readySelection(),
-  skillPaths: readonly string[] = [],
 ): (config: any) => Promise<void> {
-  return createConfigHook(
-    composedResult(overrides),
-    DEPS,
-    selection,
-    skillPaths,
-  );
+  return createConfigHook(composedResult(overrides), DEPS, selection);
 }
 
 // ---------------------------------------------------------------------------
@@ -177,14 +170,13 @@ describe("createConfigHook — ready selection", () => {
           { name: "dolphin", prompt: "<Role>dolphin</Role>" },
           { name: "beaver", prompt: "<Role>beaver</Role>" },
         ],
-        skills: [{ name: "wiki-query" }],
+        skills: [{ name: "wiki-query", path: "/zoo/skills/wiki-query" }],
         tools: { compress: tool("compress"), decompress: tool("decompress") },
         commands: {
           go: { name: "go", description: "交接计划", handle: async () => {} },
         },
       },
       readySelection(["dolphin", "beaver"], "dolphin"),
-      ["/zoo/skills/wiki-query"],
     );
     const config = hostConfig({
       dolphin: { mode: "primary" },
@@ -239,11 +231,16 @@ describe("createConfigHook — ready selection", () => {
     assert.equal(config.agent.dolphin.prompt, undefined);
   });
 
-  it("appends the resolved skill paths after the host's own", async () => {
-    const hook = hookFor({}, readySelection(), [
-      "/zoo/skills/a",
-      "/zoo/skills/b",
-    ]);
+  it("appends the selected skill paths after the host's own", async () => {
+    const hook = hookFor(
+      {
+        skills: [
+          { name: "a", path: "/zoo/skills/a" },
+          { name: "b", path: "/zoo/skills/b" },
+        ],
+      },
+      readySelection(),
+    );
     const config = { skills: { paths: ["/host/skills"] } };
 
     await hook(config);
@@ -302,10 +299,9 @@ describe("createConfigHook — ready selection", () => {
     const hook = hookFor(
       {
         agents: [{ name: "dolphin", prompt: "<Role>dolphin</Role>" }],
-        skills: [{ name: "wiki-query" }],
+        skills: [{ name: "wiki-query", path: "/zoo/skills/wiki-query" }],
       },
       readySelection(["dolphin", "beaver"], "dolphin"),
-      ["/zoo/skills/wiki-query"],
     );
     const config = hostConfig({ dolphin: { mode: "primary" } });
     const before = JSON.stringify(config);
@@ -316,9 +312,7 @@ describe("createConfigHook — ready selection", () => {
   });
 
   it("throws when the orchestrator is a subagent in the host config", async () => {
-    const hook = hookFor({}, readySelection(["dolphin"], "dolphin"), [
-      "/zoo/skills/wiki-query",
-    ]);
+    const hook = hookFor({}, readySelection(["dolphin"], "dolphin"));
     const config = hostConfig({ dolphin: { mode: "subagent" } });
 
     await assert.rejects(hook(config), /不能作为默认 agent/);
@@ -326,9 +320,7 @@ describe("createConfigHook — ready selection", () => {
   });
 
   it("throws when the orchestrator is hidden in the host config", async () => {
-    const hook = hookFor({}, readySelection(["dolphin"], "dolphin"), [
-      "/zoo/skills/wiki-query",
-    ]);
+    const hook = hookFor({}, readySelection(["dolphin"], "dolphin"));
     const config = hostConfig({ dolphin: { mode: "primary", hidden: true } });
 
     await assert.rejects(hook(config), /不能作为默认 agent/);
@@ -352,10 +344,9 @@ describe("createConfigHook — non-ready selection", () => {
     const hook = hookFor(
       {
         agents: [{ name: "dolphin", prompt: "<Role>dolphin</Role>" }],
-        skills: [{ name: "wiki-query" }],
+        skills: [{ name: "wiki-query", path: "/zoo/skills/wiki-query" }],
       },
       selection,
-      ["/zoo/skills/wiki-query"],
     );
     const config = hostConfig({ dolphin: { mode: "primary" } });
     config.default_agent = "host-declared";
@@ -370,9 +361,10 @@ describe("createConfigHook — non-ready selection", () => {
 
   it("leaves the config untouched for a disabled selection", async () => {
     const selection: Selection = { ...readySelection(), status: "disabled" };
-    const hook = hookFor({ skills: [{ name: "wiki-query" }] }, selection, [
-      "/zoo/skills/wiki-query",
-    ]);
+    const hook = hookFor(
+      { skills: [{ name: "wiki-query", path: "/zoo/skills/wiki-query" }] },
+      selection,
+    );
     const config: Record<string, any> = {};
 
     await hook(config);

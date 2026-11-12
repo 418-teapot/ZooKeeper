@@ -30,6 +30,7 @@
 import type { CleanupReport } from "../../core/lifecycle/index.js";
 import type { RuntimeOrigin, RuntimeOwner } from "../../core/runtime.js";
 import { startRuntime } from "../../core/runtime.js";
+import type { SkillEntry, SkillSnapshot } from "../../core/skills.js";
 import type { PiProcessScope } from "./config.js";
 import type { PiProcessState } from "./process.js";
 import { registerPiHandlers } from "./registration.js";
@@ -128,10 +129,12 @@ export function createPiRuntime(
           childRuntime: (
             onClose: (close: () => Promise<CleanupReport>) => void,
             agent: string,
+            skills: readonly SkillEntry[],
           ) =>
             buildPiSubagentExtension(scope, {
               agent,
               process,
+              skills,
               ...(overrides?.entryPath !== undefined
                 ? { entryPath: overrides.entryPath }
                 : {}),
@@ -193,12 +196,34 @@ export function buildPiSubagentExtension(
     agent: string;
     /** The parent runtime's process state, inherited unchanged. */
     process: PiProcessState;
+    /**
+     * The skills the subagent this runtime serves may use.  They travel into
+     * the child composition, so the child generation inherits the parent's
+     * selection instead of reading the skills directory.
+     */
+    skills?: readonly SkillEntry[];
+    /**
+     * Test seam: the skills directory read of the child generation.  A child
+     * composes from the inherited entries, so a read here is a defect; a
+     * test injects a failing read to prove that it never happens.
+     */
+    discoverSkills?: (skillsDir: string) => SkillSnapshot;
     /** The host's extension file entry, left out of the sub-session. */
     entryPath?: string;
     /** Receives the close handle of the child start. */
     onClose?: (close: () => Promise<CleanupReport>) => void;
   },
 ): (pi: ExtensionAPI) => Promise<void> {
+  const overrides: PiStartOptions = {
+    ...(options.entryPath === undefined
+      ? {}
+      : { entryPath: options.entryPath }),
+    ...(options.skills === undefined ? {} : { skills: options.skills }),
+    ...(options.discoverSkills === undefined
+      ? {}
+      : { discoverSkills: options.discoverSkills }),
+  };
+
   return async (childPi: ExtensionAPI): Promise<void> => {
     const handle = await startRuntime({
       scope,
@@ -209,9 +234,7 @@ export function buildPiSubagentExtension(
           origin,
           process: options.process,
           pi: childPi,
-          ...(options.entryPath === undefined
-            ? {}
-            : { overrides: { entryPath: options.entryPath } }),
+          ...(Object.keys(overrides).length === 0 ? {} : { overrides }),
         }),
     });
     options.onClose?.(handle.stop);

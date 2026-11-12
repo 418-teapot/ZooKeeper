@@ -98,9 +98,11 @@ import { MAIN_ORIGIN, startRuntime } from "./core/runtime.js";
  * @throws When a program error prevents assembly (a capability that
  *   cannot be bound, an inconsistent declaration).  A profile this host
  *   cannot realise is not an error here: it is logged and registers
- *   nothing, so the infrastructure keeps running.  A skill directory the
- *   scan cannot read is logged and skipped, so the start continues with
- *   the paths it collected.
+ *   nothing, so the infrastructure keeps running.  Skills are read once
+ *   per generation into a snapshot, and the profile's names are selected
+ *   from it: a name the directory does not hold, or holds unusably, is
+ *   warned about and skipped, and an unreadable root fails closed — one
+ *   warning, no skills — so the start continues without skills.
  */
 export async function buildPlugin(
   input: any,

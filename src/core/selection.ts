@@ -40,10 +40,15 @@ import type { CapabilityKey, UnitDescriptor, UnitKind } from "./unit.js";
 // Categories
 // ---------------------------------------------------------------------------
 
-/** The five profile categories, in declaration order. */
+/**
+ * The four unit categories, in declaration order.
+ *
+ * `[zoo.mode.*]` also declares a `skills` list, but a skill is a selectable
+ * resource rather than a unit: the generation's skill catalog decides it
+ * (see `core/skills.ts`), so the planner never resolves a skill name.
+ */
 export const SELECTION_CATEGORIES = [
   "agents",
-  "skills",
   "hooks",
   "tools",
   "commands",
@@ -55,7 +60,6 @@ export type SelectionCategory = (typeof SELECTION_CATEGORIES)[number];
 /** Map a unit kind to the profile category that gates its enablement. */
 const PROFILE_CATEGORY: Record<UnitKind, SelectionCategory> = {
   agent: "agents",
-  skill: "skills",
   hook: "hooks",
   tool: "tools",
   command: "commands",

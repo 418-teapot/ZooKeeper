@@ -23,6 +23,15 @@
  * stops after planning: nothing is bound, nothing is instantiated, and
  * only the report travels on.
  *
+ * The pass also resolves the generation's skills, but only once the
+ * selection is ready: one `read` of the skills directory yields the snapshot
+ * the pass selects the profile's names from, or the pass delivers the entries
+ * an outer generation already selected (a pi sub-session runtime).  A skill
+ * is a selectable resource, not a unit, so this is the only place the catalog
+ * is read — a missing or unusable name is reported here and never re-read by
+ * a consumer.  A pass that delivers nothing reads no directory and reports no
+ * skill cause.
+ *
  * It also owns the isolated contribution runners: they are assembly-time
  * infrastructure shared by both host adapters.
  *
@@ -42,11 +51,17 @@ import type { SettledContribution } from "./loop/settle.js";
 import type { Capabilities } from "./ports/index.js";
 import type { Selection, SelectionReport } from "./selection.js";
 import { type HostMaterialisation, planSelection } from "./selection.js";
+import {
+  discoverSkills,
+  type SkillEntry,
+  type SkillSelection,
+  type SkillSource,
+  selectSkills,
+} from "./skills.js";
 import type {
   AfterExecContribution,
   AgentContribution,
   CommandContribution,
-  SkillContribution,
   TextCompleteContribution,
   ToolContribution,
   ToolDefinitionContribution,
@@ -72,8 +87,15 @@ export type CompositionReport = SelectionReport;
 export interface ComposedResult {
   /** Selected agent prompt contributions. */
   agents: AgentContribution[];
-  /** Selected skill contributions. */
-  skills: SkillContribution[];
+  /**
+   * The generation's selected skills, in the order its source resolves
+   * them: profile order for a directory read, the inherited order for a
+   * given source.  Nothing sorts them again.
+   *
+   * A skill carries its name and its absolute directory path, so a host
+   * delivers the paths without reading the skills directory again.
+   */
+  skills: SkillEntry[];
   /** Selected `tool.execute.after` handlers. */
   afterExec: AfterExecContribution[];
   /** Selected messages-transform handlers. */
@@ -155,9 +177,6 @@ function collect(
   switch (contributions.kind) {
     case "agent":
       result.agents.push(...contributions.agents);
-      break;
-    case "skill":
-      result.skills.push(...contributions.skills);
       break;
     case "hook":
       result.afterExec.push(...contributions.afterExec);
@@ -288,6 +307,13 @@ export interface AssembleInput {
    * selection invalid before the bind stage runs.
    */
   materialisation?: HostMaterialisation;
+  /**
+   * How this pass obtains the generation's skills: one directory read (a
+   * generation start) or the entries an outer pass already selected (a
+   * sub-session runtime).  Omitted means the pass selects no skill and reads
+   * no directory.
+   */
+  skills?: SkillSource;
 }
 
 /** The outcome of one assembly pass. */
@@ -296,6 +322,70 @@ export interface Assembly {
   readonly selection: Selection;
   /** The contributions the selected units produced. */
   readonly composed: ComposedResult;
+}
+
+/** The skills one pass resolved, with the cause its report carries. */
+type SkillResolution = SkillSelection & {
+  /** The root read failure, or `null` when the directory was read. */
+  readonly error: string | null;
+};
+
+/** A fresh resolution of no skills. */
+function noSkills(): SkillResolution {
+  return { selected: [], missing: [], invalid: [], error: null };
+}
+
+/**
+ * Resolve the skills one ready pass delivers.
+ *
+ * A pass without a source or without a profile reads nothing.  A `read`
+ * source reads the directory once and selects the profile's names; a `given`
+ * source delivers the entries an outer generation already selected, without
+ * a directory read and without repeating its diagnostics.
+ *
+ * @param source - How the pass obtains its skills, or `undefined`.
+ * @param profile - The declared mode profile.
+ * @returns The resolution.
+ */
+function resolveSkills(
+  source: SkillSource | undefined,
+  profile: ModeProfile | null,
+): SkillResolution {
+  if (source === undefined || profile === null) return noSkills();
+  if (source.kind === "given") {
+    return { ...noSkills(), selected: source.entries };
+  }
+  const snapshot = (source.discover ?? discoverSkills)(source.dir);
+  return { ...selectSkills(snapshot, profile.skills), error: snapshot.error };
+}
+
+/**
+ * Log the resolved skills.
+ *
+ * One warning per cause: an unreadable directory is reported once (every
+ * profile name is unreadable for that same reason), and a name the profile
+ * does not list is never reported.
+ *
+ * @param skills - The resolution of this pass.
+ */
+function logSkills(skills: SkillResolution): void {
+  if (skills.error !== null) {
+    log.warn({
+      hook: "skills",
+      event: "skills_dir_unreadable",
+      error: skills.error,
+    });
+    return;
+  }
+  for (const name of skills.missing) {
+    log.warn({ hook: "skills", event: "skill_missing", skill: name });
+  }
+  for (const name of skills.invalid) {
+    log.warn({ hook: "skills", event: "skill_invalid", skill: name });
+  }
+  for (const entry of skills.selected) {
+    log.debug({ hook: "skills", event: "skill_registered", skill: entry.name });
+  }
 }
 
 /**
@@ -353,7 +443,7 @@ function logSelection(selection: Selection): void {
  * the host never creates, or an assumption about what the host will run.
  *
  * @param input - The profile, unit array, bindings, agent modes, role,
- *   and materialisation facts.
+ *   materialisation facts and the skill source.
  * @returns The selection the pass ran from and the composed result.
  */
 export function assemble(input: AssembleInput): Assembly {
@@ -366,10 +456,17 @@ export function assemble(input: AssembleInput): Assembly {
     materialisation: input.materialisation,
   });
   logSelection(selection);
-  const composed =
-    selection.status === "ready"
-      ? buildComposition(selection, input.bindings.bind())
-      : emptyComposition(selection.report);
+  // A selection that is not ready delivers nothing, skills included: only
+  // the planner's report travels on, and no skill cause is reported.
+  if (selection.status !== "ready") {
+    return { selection, composed: emptyComposition(selection.report) };
+  }
+  const skills = resolveSkills(input.skills, input.profile);
+  logSkills(skills);
+  const composed = {
+    ...buildComposition(selection, input.bindings.bind()),
+    skills: [...skills.selected],
+  };
   return { selection, composed };
 }
 

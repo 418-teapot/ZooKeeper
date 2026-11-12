@@ -8,7 +8,10 @@
  * planner's own logic.
  */
 import assert from "node:assert/strict";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { afterEach, describe, it } from "node:test";
+import { makeTmpDir } from "../testkits/tmp.js";
 import { _getBufferForTesting, _resetForTesting } from "../utils/logger.js";
 import { capabilityBindings } from "./bindings.js";
 import {
@@ -21,6 +24,7 @@ import type { ModeProfile } from "./config-types.js";
 import type { Capabilities } from "./ports/index.js";
 import type { SelectionFacts } from "./selection.js";
 import { type HostMaterialisation, planSelection } from "./selection.js";
+import { discoverSkills, type SkillEntry, type SkillSource } from "./skills.js";
 import {
   defineAgent,
   defineHook,
@@ -86,14 +90,6 @@ function makeUnits(): UnitDescriptor[] {
     mockUnit("mola", "agent", () => ({
       kind: "agent",
       agents: [{ name: "mola", prompt: "MOLA" }],
-    })),
-    mockUnit("beaver-tdd", "skill", () => ({
-      kind: "skill",
-      skills: [{ name: "beaver-tdd" }],
-    })),
-    mockUnit("wiki-query", "skill", () => ({
-      kind: "skill",
-      skills: [{ name: "wiki-query" }],
     })),
     mockHookUnit("subagent-prompt", () => ({
       afterExec: [{ name: "nudgeSubagentOutput", handle: async () => {} }],
@@ -234,8 +230,6 @@ describe("assemble — full profile", () => {
       "dolphin",
       "beaver",
       "mola",
-      "beaver-tdd",
-      "wiki-query",
       "subagent-prompt",
       "context-pruning",
       "compress",
@@ -253,10 +247,6 @@ describe("assemble — full profile", () => {
       { name: "dolphin", prompt: "DOLPHIN" },
       { name: "beaver", prompt: "BEAVER" },
       { name: "mola", prompt: "MOLA" },
-    ]);
-    assert.deepEqual(composed.skills, [
-      { name: "beaver-tdd" },
-      { name: "wiki-query" },
     ]);
     assert.deepEqual(
       composed.afterExec.map((h) => h.name),
@@ -383,12 +373,11 @@ describe("assemble — subset profile", () => {
 // ---------------------------------------------------------------------------
 
 describe("assemble — per-kind selection", () => {
-  it("selects agent / skill / tool / command units independently", () => {
+  it("selects agent / tool / command units independently", () => {
     const { calls, composed } = run(ONE_OF_EACH_PROFILE, makeUnits());
 
-    assert.deepEqual(calls, ["beaver", "wiki-query", "compress", "dcp"]);
+    assert.deepEqual(calls, ["beaver", "compress", "dcp"]);
     assert.deepEqual(composed.agents, [{ name: "beaver", prompt: "BEAVER" }]);
-    assert.deepEqual(composed.skills, [{ name: "wiki-query" }]);
     assert.deepEqual(composed.afterExec, []);
     assert.deepEqual(composed.transform, []);
     assert.deepEqual(composed.toolDefinition, []);
@@ -407,6 +396,210 @@ describe("assemble — per-kind selection", () => {
       unmaterialised: [],
       hostFact: null,
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Generation skills
+// ---------------------------------------------------------------------------
+
+/** A profile enabling no unit and naming the given skills. */
+function skillsProfile(skills: string[]): ModeProfile {
+  return {
+    name: "skills",
+    agents: [],
+    skills,
+    hooks: [],
+    tools: [],
+    commands: [],
+  };
+}
+
+/** Log entries carrying one event name. */
+function events(name: string): Array<Record<string, unknown>> {
+  return _getBufferForTesting().filter((entry) => entry.event === name);
+}
+
+/** Assemble one pass over a skill source and no units. */
+function assembleSkills(
+  profile: ModeProfile | null,
+  skills: SkillSource,
+  orchestrator?: string,
+): ComposedResult {
+  return assemble({
+    profile,
+    units: [],
+    bindings: capabilityBindings({ values: BASE_CAPS }),
+    agentModes: {},
+    skills,
+    ...(orchestrator === undefined ? {} : { orchestrator }),
+  }).composed;
+}
+
+const skillDirs: string[] = [];
+
+/** A temporary skills directory holding the given subdirectories. */
+function skillDir(...names: string[]): string {
+  const dir = makeTmpDir("zoo-compose-skills");
+  skillDirs.push(dir);
+  for (const name of names) mkdirSync(join(dir, name));
+  return dir;
+}
+
+describe("assemble — generation skills", () => {
+  afterEach(() => {
+    for (const dir of skillDirs) rmSync(dir, { recursive: true, force: true });
+    skillDirs.length = 0;
+  });
+
+  it("delivers the selected entries in profile order", () => {
+    const dir = skillDir("alpha", "beta");
+
+    const composed = assembleSkills(skillsProfile(["beta", "alpha"]), {
+      kind: "read",
+      dir,
+    });
+
+    assert.deepEqual(composed.skills, [
+      { name: "beta", path: join(dir, "beta") },
+      { name: "alpha", path: join(dir, "alpha") },
+    ]);
+  });
+
+  it("reads the directory once per pass", () => {
+    const dir = skillDir("alpha");
+    let reads = 0;
+
+    assembleSkills(skillsProfile(["alpha"]), {
+      kind: "read",
+      dir,
+      discover: (path) => {
+        reads += 1;
+        return discoverSkills(path);
+      },
+    });
+
+    assert.equal(reads, 1);
+  });
+
+  it("skips a missing skill with one warning and keeps the others", () => {
+    const dir = skillDir("alpha");
+
+    const composed = assembleSkills(skillsProfile(["alpha", "ghost"]), {
+      kind: "read",
+      dir,
+    });
+
+    assert.deepEqual(composed.skills, [
+      { name: "alpha", path: join(dir, "alpha") },
+    ]);
+    assert.deepEqual(
+      events("skill_missing").map((entry) => entry.skill),
+      ["ghost"],
+    );
+    assert.deepEqual(events("skill_invalid"), []);
+  });
+
+  it("reports an unusable entry as invalid, not missing", () => {
+    const dir = skillDir("alpha");
+    writeFileSync(join(dir, "broken"), "x", "utf-8");
+
+    const composed = assembleSkills(skillsProfile(["alpha", "broken"]), {
+      kind: "read",
+      dir,
+    });
+
+    assert.deepEqual(composed.skills, [
+      { name: "alpha", path: join(dir, "alpha") },
+    ]);
+    assert.deepEqual(
+      events("skill_invalid").map((entry) => entry.skill),
+      ["broken"],
+    );
+    assert.deepEqual(events("skill_missing"), []);
+  });
+
+  it("stays silent about an unusable entry the profile does not list", () => {
+    const dir = skillDir("alpha");
+    writeFileSync(join(dir, "broken"), "x", "utf-8");
+
+    assembleSkills(skillsProfile(["alpha"]), { kind: "read", dir });
+
+    assert.deepEqual(events("skill_invalid"), []);
+    assert.deepEqual(events("skill_missing"), []);
+  });
+
+  it("warns once when the skills directory cannot be read", () => {
+    const dir = skillDir("alpha");
+    const file = join(dir, "not-a-dir");
+    writeFileSync(file, "x", "utf-8");
+
+    const composed = assembleSkills(skillsProfile(["alpha", "beta"]), {
+      kind: "read",
+      dir: file,
+    });
+
+    assert.deepEqual(composed.skills, []);
+    assert.equal(events("skills_dir_unreadable").length, 1);
+    assert.deepEqual(events("skill_missing"), []);
+  });
+
+  it("delivers given entries without reading a directory", () => {
+    const entries: SkillEntry[] = [
+      { name: "wiki-query", path: "/parent/skills/wiki-query" },
+    ];
+
+    const composed = assembleSkills(skillsProfile(["wiki-query"]), {
+      kind: "given",
+      entries,
+    });
+
+    assert.deepEqual(composed.skills, entries);
+    assert.deepEqual(events("skill_missing"), []);
+    assert.deepEqual(events("skill_invalid"), []);
+    assert.deepEqual(events("skills_dir_unreadable"), []);
+  });
+
+  it("delivers no skills when the selection is not ready", () => {
+    const dir = skillDir("alpha");
+    writeFileSync(join(dir, "broken"), "x", "utf-8");
+    let reads = 0;
+
+    const composed = assembleSkills(
+      skillsProfile(["alpha", "ghost", "broken"]),
+      {
+        kind: "read",
+        dir,
+        discover: (path) => {
+          reads += 1;
+          return discoverSkills(path);
+        },
+      },
+      "ghost-orchestrator",
+    );
+
+    assert.deepEqual(composed.skills, []);
+    assert.equal(reads, 0, "a pass that delivers no skill reads no directory");
+    assert.deepEqual(events("skill_registered"), []);
+    assert.deepEqual(events("skill_missing"), []);
+    assert.deepEqual(events("skill_invalid"), []);
+    assert.deepEqual(events("skills_dir_unreadable"), []);
+  });
+
+  it("reads no directory when the profile is absent", () => {
+    let reads = 0;
+
+    const composed = assembleSkills(null, {
+      kind: "read",
+      dir: "/nonexistent",
+      discover: () => {
+        reads += 1;
+        return discoverSkills("/nonexistent");
+      },
+    });
+
+    assert.deepEqual(composed.skills, []);
+    assert.equal(reads, 0);
   });
 });
 
@@ -433,7 +626,7 @@ describe("assemble — orchestrator role policy", () => {
       "mola",
     );
 
-    assert.equal(calls.length, 11);
+    assert.equal(calls.length, 9);
     assert.deepEqual(report.invalid, null);
   });
 
@@ -793,8 +986,8 @@ describe("assemble — capability matching", () => {
 describe("assemble — factory count", () => {
   it("runs every selected factory exactly once", () => {
     const { calls } = run(ALL_UNITS_PROFILE, makeUnits());
-    assert.equal(calls.length, 11);
-    assert.equal(new Set(calls).size, 11);
+    assert.equal(calls.length, 9);
+    assert.equal(new Set(calls).size, 9);
   });
 
   it("builds only from the plan's selected units", () => {
@@ -994,12 +1187,11 @@ describe("assemble — unknown profile names", () => {
     const warns = _getBufferForTesting().filter(
       (e) => e.event === "unknown_unit",
     );
-    assert.equal(warns.length, 5);
+    assert.equal(warns.length, 4);
     assert.deepEqual(
       warns.map((w) => [w.category, w.name]),
       [
         ["agents", "ghost-agent"],
-        ["skills", "ghost-skill"],
         ["hooks", "ghost-hook"],
         ["tools", "ghost-tool"],
         ["commands", "ghost-command"],
@@ -1007,13 +1199,7 @@ describe("assemble — unknown profile names", () => {
     );
 
     // Known names still instantiate and contribute.
-    assert.deepEqual(calls, [
-      "dolphin",
-      "beaver-tdd",
-      "subagent-prompt",
-      "compress",
-      "go",
-    ]);
+    assert.deepEqual(calls, ["dolphin", "subagent-prompt", "compress", "go"]);
     assert.equal(composed.agents.length, 1);
     assert.equal(Object.keys(composed.tools).length, 1);
     assert.equal(Object.keys(composed.commands).length, 1);
@@ -1023,7 +1209,6 @@ describe("assemble — unknown profile names", () => {
     const { report } = run(UNKNOWN_PROFILE, makeUnits());
     assert.deepEqual(report.unknown, [
       { category: "agents", name: "ghost-agent" },
-      { category: "skills", name: "ghost-skill" },
       { category: "hooks", name: "ghost-hook" },
       { category: "tools", name: "ghost-tool" },
       { category: "commands", name: "ghost-command" },
@@ -1056,6 +1241,6 @@ describe("assemble — selection", () => {
     assert.equal(Object.isFrozen(selection), true);
     assert.deepEqual(selection.primaries, ["dolphin"]);
     assert.deepEqual(selection.report.selected, composed.report.selected);
-    assert.equal(selection.chosen.length, 11);
+    assert.equal(selection.chosen.length, 9);
   });
 });

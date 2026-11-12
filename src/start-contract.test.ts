@@ -129,11 +129,11 @@ describe("start protocol — every real entry", () => {
 
     await assert.rejects(
       buildPlugin(input, POLY_ZOO, POLY_RAW, {
-        scanSkills(): string[] {
-          throw new Error("scan failed");
+        discoverSkills(): never {
+          throw new Error("skill read failed");
         },
       }),
-      /scan failed/,
+      /skill read failed/,
     );
   });
 });

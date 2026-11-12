@@ -34,6 +34,7 @@ import {
 } from "./lifecycle/index.js";
 import type { Capabilities } from "./ports/index.js";
 import type { HostMaterialisation, Selection } from "./selection.js";
+import type { SkillSource } from "./skills.js";
 import type { UnitDescriptor } from "./unit.js";
 
 /**
@@ -73,6 +74,12 @@ export interface CompositionInput {
    * provide makes the selection invalid.
    */
   readonly orchestrator?: string;
+  /**
+   * How this generation obtains its skills: one directory read at a
+   * generation start, or the entries the outer generation already selected
+   * (a pi sub-session runtime).  Omitted selects no skill.
+   */
+  readonly skills?: SkillSource;
 }
 
 /**
@@ -86,7 +93,8 @@ export interface CompositionInput {
  *
  * @param scope - The configuration generation of this host instance.
  * @param capabilities - The host's capability provision.
- * @param input - The unit array and the declared orchestrator role.
+ * @param input - The unit array, the declared orchestrator role and the
+ *   skill source.
  * @returns The selection the pass ran from and its contributions.
  */
 export function composeAssembly(
@@ -106,6 +114,7 @@ export function composeAssembly(
     ...(capabilities.materialisation === undefined
       ? {}
       : { materialisation: capabilities.materialisation }),
+    ...(input.skills === undefined ? {} : { skills: input.skills }),
   });
   capabilities.adopt?.(assembly.selection);
   return assembly;

@@ -24,7 +24,7 @@
  *    resolver and prepends the matching composed agent prompt to the
  *    chainable system prompt; an unresolved agent or one outside the
  *    profile leaves the prompt untouched (fail-closed).
- *  - `resources_discover` contributes the profile-listed skill
+ *  - `resources_discover` contributes the generation's selected skill
  *    directories, filtered by the active primary's
  *    `[agent.<name>].permission.skill` rules.
  *  - `tool_result` / `context` / `message_end` run the composed after-exec
@@ -64,8 +64,8 @@ import type { ContextRuntime } from "../../core/context/runtime.js";
 import type { CleanupReport, WorkPermit } from "../../core/lifecycle/index.js";
 import type { StopCause } from "../../core/loop/index.js";
 import type { SkillPermissionMap } from "../../core/permissions/skill-permissions.js";
-import { filterAllowedSkills } from "../../core/permissions/skill-permissions.js";
 import { applyModelVariant } from "../../core/prompt-variant.js";
+import { filterSkillEntries, type SkillEntry } from "../../core/skills.js";
 import type { RunRegistry } from "../../core/subagent/registry.js";
 import type {
   AfterExecInput,
@@ -426,15 +426,14 @@ export interface PiEventHandlerDeps {
    */
   runs: RunRegistry;
   /**
-   * The composed profile's skill directory names.
+   * The generation's selected skills.
    *
    * Read per bind from the published profile catalog, so a bind that
-   * happens after composition contributes the same list the subagent driver
-   * seeds its sub-sessions with.
+   * happens after composition contributes the same entries the subagent
+   * driver seeds its sub-sessions with.  The entries carry their paths, so
+   * this handler never reads the skills directory.
    */
-  getProfileSkills(): string[];
-  /** Resolve the absolute paths of the existing profile skill directories. */
-  collectSkillPaths(names: string[]): string[];
+  getSelectedSkills(): readonly SkillEntry[];
   /**
    * Apply the named session's active tool set: its primary's denies, then
    * the ask visibility rule of the event's own context.
@@ -701,7 +700,7 @@ export function createPiEventHandlers(
     async resourcesDiscover(_evt?, ctx?) {
       return deps.runSession(ctx, (permit) => {
         sessionContexts.bind(permit.sessionID, ctx);
-        // Filter the contributed skill directories by this session's
+        // Filter the generation's selected skills by this session's
         // primary `[agent.<name>].permission.skill` rules.  The filter
         // applies at session-bind time against the primary resolved AT THAT
         // MOMENT (the `session_start` before this event claimed a switch
@@ -717,20 +716,18 @@ export function createPiEventHandlers(
         const primary = deps.resolveAgent(permit.sessionID);
         const rules =
           primary === undefined ? undefined : deps.skillPermissions[primary];
-        const profileSkills = deps.getProfileSkills();
-        if (rules === undefined) {
-          return { skillPaths: deps.collectSkillPaths(profileSkills) };
+        const selected = deps.getSelectedSkills();
+        const kept = filterSkillEntries(selected, rules);
+        if (rules !== undefined) {
+          log.info({
+            hook: "resources",
+            event: "skills_filtered",
+            agent: primary,
+            kept: kept.length,
+            dropped: selected.length - kept.length,
+          });
         }
-        const kept = filterAllowedSkills(profileSkills, rules);
-        const dropped = profileSkills.length - kept.length;
-        log.info({
-          hook: "resources",
-          event: "skills_filtered",
-          agent: primary,
-          kept: kept.length,
-          dropped,
-        });
-        return { skillPaths: deps.collectSkillPaths(kept) };
+        return { skillPaths: kept.map((entry) => entry.path) };
       });
     },
     async toolResult(event, ctx) {
