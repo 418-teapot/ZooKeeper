@@ -265,7 +265,7 @@ describe("host composition — selection agreement", () => {
     // primaries, and dolphin is the product's orchestrator.
     assert.deepEqual(measured(pi.composition.selection), {
       status: "ready",
-      selected: ["todo-continuation", "go", "dolphin", "mola"],
+      selected: ["todo-continuation", "go", "dolphin", "mola", "wiki-query"],
       orchestrator: "dolphin",
       agents: ["dolphin", "mola"],
       invalid: null,
@@ -286,7 +286,7 @@ describe("host composition — selection agreement", () => {
 
     const expected = {
       status: "invalid",
-      selected: ["todo-continuation", "go", "mola"],
+      selected: ["todo-continuation", "go", "mola", "wiki-query"],
       orchestrator: undefined,
       agents: ["mola"],
       invalid: {

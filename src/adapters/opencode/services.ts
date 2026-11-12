@@ -73,7 +73,6 @@ import {
   defineSessionResourcesService,
   type SessionResourceCatalog,
 } from "../../core/session/resources.js";
-import type { SkillSource } from "../../core/skills.js";
 import type { RunScope } from "../../core/subagent/registry.js";
 import { REGISTRY } from "../../registry.js";
 import { createV1Adapter } from "./adapter.js";
@@ -103,12 +102,6 @@ export interface OpenCodeServiceHost {
   readonly sessionCatalog: SessionResourceCatalog;
   /** Test seam: the `zdebug` runner for the auto-debug strategy. */
   readonly zdebugExec?: Partial<Capabilities>["zdebugExec"];
-  /**
-   * How this generation obtains its skills.  The start preparation reads the
-   * skills directory once through the composition service, so the `config`
-   * hook writes paths that were already selected.  Absent selects no skill.
-   */
-  readonly skills?: SkillSource;
 }
 
 /**
@@ -298,7 +291,6 @@ export function createOpenCodeHostServices(host: OpenCodeServiceHost) {
     // The product's orchestrator role.  The planner decides whether the
     // enabled profile can provide it; this host holds no fallback.
     orchestrator: ORCHESTRATOR_AGENT_NAME,
-    ...(host.skills === undefined ? {} : { skills: host.skills }),
   });
 
   const loop = defineExtensionService({

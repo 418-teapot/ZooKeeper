@@ -192,15 +192,18 @@ function transformSessionID(output: TransformOutput): string {
  * @param composed - The host-agnostic composition result.
  * @param deps - Per-plugin-instance dependencies.
  * @param selection - The selection the composition was built from.
+ * @param skillPaths - Absolute paths of the profile's skill directories,
+ *   read by the start preparation.
  * @returns The hooks object fragment merged into the plugin.
  */
 export function assembleProfileHooks(
   composed: ComposedResult,
   deps: Partial<Capabilities>,
   selection: Selection,
+  skillPaths: readonly string[],
 ): Record<string, any> {
   return {
-    config: createConfigHook(composed, deps, selection),
+    config: createConfigHook(composed, deps, selection, skillPaths),
 
     ...(Object.keys(composed.tools).length > 0 ? { tool: composed.tools } : {}),
 

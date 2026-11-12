@@ -42,8 +42,10 @@
 import { realpathSync } from "node:fs";
 import { resolve } from "node:path";
 import type { CleanupReport } from "../../core/lifecycle/index.js";
-import type { SkillPermissionMap } from "../../core/permissions/skill-permissions.js";
-import { filterSkillEntries, type SkillEntry } from "../../core/skills.js";
+import {
+  filterAllowedSkills,
+  type SkillPermissionMap,
+} from "../../core/permissions/skill-permissions.js";
 import type {
   SubagentDriver,
   SubagentProgress,
@@ -612,13 +614,19 @@ export interface PiSubagentDriverOptions {
    */
   skillPermissions?: SkillPermissionMap;
   /**
-   * The generation's selected skills.  Read per run (never captured once) so
-   * the wiring can publish the selection after the driver is constructed.
-   * The entries carry their paths, so no run reads the skills directory.
-   * Skill injection is on only when this is supplied; otherwise the
-   * sub-session gets no custom resource loader (machinery off, fail-closed).
+   * The skill directory names the active profile declares.  Read per run
+   * (never captured once) so the wiring can inject the composed profile
+   * after the driver is constructed.
    */
-  getSelectedSkills?: () => readonly SkillEntry[];
+  getProfileSkills?: () => string[];
+  /**
+   * Resolve the absolute paths of the existing profile skill directories
+   * (the main session's `resources_discover` resolution).  Skill injection
+   * is on only when both this and `getProfileSkills` are supplied; either
+   * one missing leaves the sub-session without a custom resource loader
+   * (machinery off, fail-closed).
+   */
+  collectSkillPaths?: (names: string[]) => string[];
   /**
    * Build the resource loader carrying the resolved skill paths.  Defaults
    * to a pi SDK `DefaultResourceLoader` (reloaded before use) with the
@@ -637,15 +645,12 @@ export interface PiSubagentDriverOptions {
    * runtime builds its handlers it reports the close handle of that scope
    * through `onClose`.  The delegated agent is passed along, so the child
    * runtime resolves every session of its own to that agent instead of
-   * inferring one, and the skills this subagent may use travel with it, so
-   * the child generation inherits them instead of reading the directory.
-   * Absent when the host supplies no inline extension: the run then has no
-   * scope to close and stays harmless.
+   * inferring one.  Absent when the host supplies no inline extension: the
+   * run then has no scope to close and stays harmless.
    */
   createChildExtension?: (
     onClose: (close: PiSessionClose) => void,
     agent: string,
-    skills: readonly SkillEntry[],
   ) => PiExtensionFactory;
 }
 
@@ -773,20 +778,25 @@ export function createPiSubagentDriver(
   const resolveModel = options.resolveModel ?? defaultResolveModel;
   const createResourceLoader =
     options.createResourceLoader ?? defaultCreateResourceLoader;
-  const getSelectedSkills = options.getSelectedSkills;
+  const collectSkillPaths = options.collectSkillPaths;
+  const getProfileSkills = options.getProfileSkills;
   const createChildExtension = options.createChildExtension;
-  // Resolve the skills a subagent may discover: the generation's selection
-  // filtered by the SUBAGENT's own permission rules (the same evaluation
-  // `resources_discover` applies for the primary).  Empty when the wiring is
-  // off (no selection supplier) or nothing survives the filter — the caller
-  // then creates the sub-session without a custom resource loader, exactly
-  // like a host with no skill config.
-  const resolveSkills = (agent: string): readonly SkillEntry[] => {
-    if (getSelectedSkills === undefined) return [];
-    return filterSkillEntries(
-      getSelectedSkills(),
+  // Resolve the skill directories a subagent may discover: the profile
+  // skills filtered by the SUBAGENT's own permission rules (the same
+  // `filterAllowedSkills` evaluation `resources_discover` applies for the
+  // primary), then mapped to their existing absolute paths.  Empty when the
+  // wiring is off (no profile-skills supplier or path resolver) or nothing
+  // survives the filter — the caller then creates the sub-session without a
+  // custom resource loader, exactly like a host with no skill config.
+  const resolveSkillPaths = (agent: string): string[] => {
+    if (collectSkillPaths === undefined || getProfileSkills === undefined) {
+      return [];
+    }
+    const kept = filterAllowedSkills(
+      getProfileSkills(),
       options.skillPermissions?.[agent],
     );
+    return kept.length > 0 ? collectSkillPaths(kept) : [];
   };
 
   return {
@@ -820,9 +830,9 @@ export function createPiSubagentDriver(
       // the child factory this run creates.  Undefined when the host
       // supplies no inline extension or the child built no wiring.
       let closeScope: PiSessionClose | undefined;
-      // The skills this run may use: filtered once, then shared by the
-      // sub-session's resource loader and the child runtime's own
-      // generation, so neither reads the skills directory.
+      const extensionFactory = createChildExtension?.((close) => {
+        closeScope = close;
+      }, request.agent);
       let aborted = false;
       const onAbort = (): void => {
         aborted = true;
@@ -892,17 +902,6 @@ export function createPiSubagentDriver(
       };
 
       try {
-        // Resolve the skills and build the child extension first: both run
-        // inside this try, so a throwing supplier or factory becomes the
-        // same error result as any other SDK-level failure.
-        const skills = resolveSkills(request.agent);
-        const extensionFactory = createChildExtension?.(
-          (close) => {
-            closeScope = close;
-          },
-          request.agent,
-          skills,
-        );
         const cwd = process.cwd();
         const sessionManager = await createSessionManager(
           cwd,
@@ -948,7 +947,7 @@ export function createPiSubagentDriver(
         // skill directories and its inline ZooKeeper extension.  Only when the
         // run has neither does the SDK build its own default loader (the
         // machinery-off behaviour a host without skill and inline config has).
-        const skillPaths = skills.map((entry) => entry.path);
+        const skillPaths = resolveSkillPaths(request.agent);
         const resourceLoader =
           skillPaths.length > 0 || extensionFactory !== undefined
             ? await createResourceLoader({

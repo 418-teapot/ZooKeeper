@@ -47,6 +47,7 @@ function hooksFor(
     composedResult(overrides),
     DEPS,
     readySelection(),
+    [],
   );
 }
 

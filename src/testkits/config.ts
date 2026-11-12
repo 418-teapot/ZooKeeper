@@ -160,7 +160,7 @@ export function composeToolHooks(
 ): Record<string, ToolContribution> | undefined {
   const { profile, deps } = toolAssembly(client, contextConfig, tools);
   const { composed, selection } = assembleForTest(profile, REGISTRY, deps);
-  return assembleProfileHooks(composed, deps, selection).tool;
+  return assembleProfileHooks(composed, deps, selection, []).tool;
 }
 
 /**
@@ -183,5 +183,5 @@ export async function applyToolConfigHook(
     tools,
   );
   const { composed, selection } = assembleForTest(profile, REGISTRY, deps);
-  await assembleProfileHooks(composed, deps, selection).config(config);
+  await assembleProfileHooks(composed, deps, selection, []).config(config);
 }

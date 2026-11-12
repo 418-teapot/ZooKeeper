@@ -1,188 +1,104 @@
 /**
- * Tests for src/core/skills.ts — the generation skill catalog.
+ * Tests for src/core/skills.ts — the shared profile skill-directory scan.
  *
- * The boundary is the two pure steps a generation runs once: `discoverSkills`
- * reads a directory into an immutable snapshot, and `selectSkills` picks the
- * profile names out of it.  A temporary directory stands in for the real
- * `skills/` folder, so every expectation is an independent literal path.
+ * A temporary directory stands in for the real `skills/` folder, so the
+ * filtering (profile-listed and directory) and the error paths (ENOENT is
+ * silent, other errors log a warning without throwing) are exercised
+ * without touching the repository's actual skills.
  */
 import assert from "node:assert/strict";
-import { mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { afterEach, describe, it } from "node:test";
+import { afterEach, beforeEach, describe, it } from "node:test";
+import { restoreEnv, saveEnv } from "../testkits/env.js";
 import { makeTmpDir } from "../testkits/tmp.js";
-import type { SkillPermissionRule } from "./permissions/skill-permissions.js";
-import {
-  discoverSkills,
-  filterSkillEntries,
-  type SkillEntry,
-  selectSkills,
-} from "./skills.js";
+import { _getBufferForTesting, _resetForTesting } from "../utils/logger.js";
+import { scanSkillDirectories } from "./skills.js";
 
-const dirs: string[] = [];
+/** Capture debug-level entries (the `skill_registered` hit) in the buffer. */
+let origZooDebug: string | undefined;
 
-/** A temporary skills directory, removed after the test. */
-function skillsDir(): string {
-  const dir = makeTmpDir("zoo-skills-test");
-  dirs.push(dir);
-  return dir;
-}
+beforeEach(() => {
+  origZooDebug = saveEnv("ZOO_DEBUG");
+  process.env.ZOO_DEBUG = "1";
+  _resetForTesting();
+});
 
 afterEach(() => {
-  for (const dir of dirs) {
-    rmSync(dir, { recursive: true, force: true });
-  }
-  dirs.length = 0;
+  restoreEnv("ZOO_DEBUG", origZooDebug);
+  _resetForTesting();
 });
 
-describe("discoverSkills", () => {
-  it("reports every subdirectory as an entry, sorted by name", () => {
-    const dir = skillsDir();
-    // Created out of order to prove the snapshot order is deterministic.
-    mkdirSync(join(dir, "zebra"));
+/** Buffered entries matching the given event name. */
+function events(name: string): Array<Record<string, unknown>> {
+  return _getBufferForTesting().filter((entry) => entry.event === name);
+}
+
+describe("scanSkillDirectories", () => {
+  it("returns only profile-listed directories", () => {
+    const dir = makeTmpDir("zoo-skills");
     mkdirSync(join(dir, "alpha"));
-    mkdirSync(join(dir, "mike"));
+    mkdirSync(join(dir, "beta"));
+    // Not a directory — a listed file must still be skipped.
+    writeFileSync(join(dir, "gamma"), "");
 
-    assert.deepEqual(discoverSkills(dir), {
-      entries: [
-        { name: "alpha", path: join(dir, "alpha") },
-        { name: "mike", path: join(dir, "mike") },
-        { name: "zebra", path: join(dir, "zebra") },
-      ],
-      invalid: [],
-      error: null,
-    });
-  });
+    const result = scanSkillDirectories(dir, ["alpha", "beta", "gamma"]);
 
-  it("accepts a directory without SKILL.md", () => {
-    const dir = skillsDir();
-    mkdirSync(join(dir, "empty-dir"));
-
-    assert.deepEqual(discoverSkills(dir).entries, [
-      { name: "empty-dir", path: join(dir, "empty-dir") },
+    assert.deepEqual(result.slice().sort(), [
+      join(dir, "alpha"),
+      join(dir, "beta"),
     ]);
   });
 
-  it("accepts a symbolic link to a directory", () => {
-    const dir = skillsDir();
-    const target = join(skillsDir(), "target");
-    mkdirSync(target);
-    symlinkSync(target, join(dir, "linked"), "dir");
+  it("skips a directory absent from the profile list", () => {
+    const dir = makeTmpDir("zoo-skills");
+    mkdirSync(join(dir, "alpha"));
+    mkdirSync(join(dir, "beta"));
 
-    assert.deepEqual(discoverSkills(dir).entries, [
-      { name: "linked", path: join(dir, "linked") },
+    const result = scanSkillDirectories(dir, ["alpha"]);
+
+    assert.deepEqual(result, [join(dir, "alpha")]);
+  });
+
+  it("returns an empty list when the profile names no skills", () => {
+    const dir = makeTmpDir("zoo-skills");
+    mkdirSync(join(dir, "alpha"));
+
+    assert.deepEqual(scanSkillDirectories(dir, []), []);
+  });
+
+  it("logs skill_registered once per registered skill", () => {
+    const dir = makeTmpDir("zoo-skills");
+    mkdirSync(join(dir, "alpha"));
+    mkdirSync(join(dir, "beta"));
+
+    scanSkillDirectories(dir, ["alpha", "beta"]);
+
+    const hits = events("skill_registered");
+    assert.equal(hits.length, 2);
+    assert.deepEqual(hits.map((entry) => entry.skill).sort(), [
+      "alpha",
+      "beta",
     ]);
   });
 
-  it("reports plain files and broken links as invalid, keeping the rest", () => {
-    const dir = skillsDir();
-    mkdirSync(join(dir, "real-skill"));
-    writeFileSync(join(dir, "notes.txt"), "x", "utf-8");
-    symlinkSync(join(dir, "no-such-target"), join(dir, "dangling"), "dir");
+  it("returns an empty list silently when the directory is missing", () => {
+    const dir = join(makeTmpDir("zoo-skills"), "does-not-exist");
 
-    const snapshot = discoverSkills(dir);
-
-    assert.deepEqual(snapshot.entries, [
-      { name: "real-skill", path: join(dir, "real-skill") },
-    ]);
-    assert.deepEqual(snapshot.invalid, ["dangling", "notes.txt"]);
-    assert.equal(snapshot.error, null);
+    assert.deepEqual(scanSkillDirectories(dir, ["alpha"]), []);
+    assert.equal(events("skill_register_error").length, 0);
   });
 
-  it("reports a root read failure instead of throwing", () => {
-    const dir = skillsDir();
+  it("logs a warning and returns empty on a non-ENOENT error", () => {
+    // A regular file triggers ENOTDIR from readdirSync — not ENOENT.
+    const dir = makeTmpDir("zoo-skills");
     const file = join(dir, "not-a-dir");
-    writeFileSync(file, "x", "utf-8");
+    writeFileSync(file, "");
 
-    const snapshot = discoverSkills(file);
+    assert.deepEqual(scanSkillDirectories(file, ["alpha"]), []);
 
-    assert.deepEqual(snapshot.entries, []);
-    assert.deepEqual(snapshot.invalid, []);
-    assert.ok(snapshot.error?.includes("ENOTDIR"));
-  });
-
-  it("reports a missing directory as a root read failure", () => {
-    const snapshot = discoverSkills(join(skillsDir(), "missing"));
-
-    assert.deepEqual(snapshot.entries, []);
-    assert.ok(snapshot.error?.includes("ENOENT"));
-  });
-});
-
-describe("selectSkills", () => {
-  /** A snapshot with two usable skills and one invalid entry. */
-  function snapshot() {
-    return {
-      entries: [
-        { name: "alpha", path: "/skills/alpha" },
-        { name: "beta", path: "/skills/beta" },
-      ],
-      invalid: ["broken"],
-      error: null,
-    };
-  }
-
-  it("selects the profile names in profile order", () => {
-    const selection = selectSkills(snapshot(), ["beta", "alpha"]);
-
-    assert.deepEqual(selection.selected, [
-      { name: "beta", path: "/skills/beta" },
-      { name: "alpha", path: "/skills/alpha" },
-    ]);
-    assert.deepEqual(selection.missing, []);
-    assert.deepEqual(selection.invalid, []);
-  });
-
-  it("skips an absent name and reports it as missing", () => {
-    const selection = selectSkills(snapshot(), ["alpha", "ghost"]);
-
-    assert.deepEqual(selection.selected, [
-      { name: "alpha", path: "/skills/alpha" },
-    ]);
-    assert.deepEqual(selection.missing, ["ghost"]);
-    assert.deepEqual(selection.invalid, []);
-  });
-
-  it("reports an unusable entry as invalid, not missing", () => {
-    const selection = selectSkills(snapshot(), ["broken", "ghost"]);
-
-    assert.deepEqual(selection.selected, []);
-    assert.deepEqual(selection.invalid, ["broken"]);
-    assert.deepEqual(selection.missing, ["ghost"]);
-  });
-
-  it("selects a name the profile lists twice once", () => {
-    const selection = selectSkills(snapshot(), ["alpha", "alpha"]);
-
-    assert.deepEqual(selection.selected, [
-      { name: "alpha", path: "/skills/alpha" },
-    ]);
-  });
-
-  it("selects nothing when the profile names no skills", () => {
-    assert.deepEqual(selectSkills(snapshot(), []), {
-      selected: [],
-      missing: [],
-      invalid: [],
-    });
-  });
-});
-
-describe("filterSkillEntries", () => {
-  const ENTRIES: SkillEntry[] = [
-    { name: "wiki-query", path: "/skills/wiki-query" },
-    { name: "beaver-tdd", path: "/skills/beaver-tdd" },
-  ];
-  const RULES: SkillPermissionRule[] = [
-    { pattern: "*", action: "deny" },
-    { pattern: "wiki-query", action: "allow" },
-  ];
-
-  it("passes every entry through without rules", () => {
-    assert.deepEqual(filterSkillEntries(ENTRIES, undefined), ENTRIES);
-  });
-
-  it("keeps the entries the rules allow", () => {
-    assert.deepEqual(filterSkillEntries(ENTRIES, RULES), [ENTRIES[0]]);
+    const warnings = events("skill_register_error");
+    assert.equal(warnings.length, 1);
+    assert.ok(String(warnings[0].error).includes("ENOTDIR"));
   });
 });

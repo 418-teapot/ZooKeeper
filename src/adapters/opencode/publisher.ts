@@ -11,14 +11,13 @@
  *    lifecycle wiring, plus the close handle.  A start that fails in any
  *    later phase still has the runtime it created.
  *  - `prepare` activates the lifecycle extension (which binds the
- *    capability provision, including the host config pre-read) and builds
- *    the hook fragment.  The assembly also reads the skills directory once
- *    for this generation and selects the profile's entries, so the `config`
- *    hook only writes the selected paths.  A program error here — a
- *    capability the host could not read, a factory that throws — reaches the
- *    caller before the host could write anything.  A skills directory the
- *    reading cannot resolve is logged and skipped instead, so the start
- *    continues without skills.
+ *    capability provision, including the host config pre-read), assembles
+ *    the profile, builds the hook fragment, and reads the profile's skill
+ *    directories.  A program error here — a capability the host could not
+ *    read, a factory that throws — reaches the caller before the
+ *    host could write anything.  A skill directory the scan cannot read is
+ *    logged and skipped instead, so the start continues with the paths it
+ *    collected.
  *  - `publish` hands over the complete publication: the hook fragment plus
  *    the teardown, which is the runtime's own close handle.
  *
@@ -26,7 +25,7 @@
  * it is about to use, after the plugin returned, and a later plugin may have
  * changed the agent table in between.  Its final materialisation check
  * therefore stays inside the hook, and the hook writes the skill paths the
- * preparation selected instead of reading the directory again.
+ * preparation read instead of scanning again.
  *
  * @module
  */
@@ -49,7 +48,7 @@ import {
   contextSessionResources,
   createSessionResourceCatalog,
 } from "../../core/session/resources.js";
-import type { SkillSnapshot } from "../../core/skills.js";
+import { scanSkillDirectories } from "../../core/skills.js";
 import { log } from "../../utils/logger.js";
 import { buildInfraHooks } from "./infra-hooks.js";
 import {
@@ -73,12 +72,11 @@ export interface OpenCodeStartOverrides {
   /** Test seam: the instance's context runtime to inspect in place. */
   contextRuntime?: ContextRuntime;
   /**
-   * Test seam: the skills directory read of the generation.
-   *
-   * Defaults to the real read of `skills/`.  A program error thrown here
+   * Test seam: the profile skill-directory scan of the preparation phase.
+   * Defaults to the shared scan of `skills/`.  A program error thrown here
    * fails the start, which closes the runtime it created.
    */
-  discoverSkills?: (skillsDir: string) => SkillSnapshot;
+  scanSkills?: (profileSkills: readonly string[]) => string[];
 }
 
 /** The prepared OpenCode start: the whole plugin, computed. */
@@ -129,6 +127,8 @@ interface OpenCodeStartInput {
   readonly lifecycle: OpenCodeLifecycleWiring<OpenCodeExtensionDeclarations>;
   /** The close handle of this plugin instance. */
   readonly stop: () => Promise<CleanupReport>;
+  /** Optional test seams. */
+  readonly overrides?: OpenCodeStartOverrides;
 }
 
 /**
@@ -171,15 +171,6 @@ export function createOpenCodeRuntime(
     process,
     contextRuntime,
     sessionCatalog,
-    // The generation's skill catalog: read once here, then delivered by the
-    // `config` hook without a second read.
-    skills: {
-      kind: "read",
-      dir: SKILLS_DIR,
-      ...(overrides?.discoverSkills === undefined
-        ? {}
-        : { discover: overrides.discoverSkills }),
-    },
     ...(overrides?.zdebugExec === undefined
       ? {}
       : { zdebugExec: overrides.zdebugExec }),
@@ -204,6 +195,7 @@ export function createOpenCodeRuntime(
           contextRuntime,
           lifecycle,
           stop,
+          ...(overrides === undefined ? {} : { overrides }),
         }),
       publish: (prepared) => ({
         ...prepared.hooks,
@@ -218,17 +210,21 @@ export function createOpenCodeRuntime(
  * Build the plugin hooks of one prepared start.
  *
  * Every fallible step runs here, before the host receives anything: the
- * activation of the extension (the capability provision, the assembled
- * profile and the generation's skill selection), and the hook fragment.  The
- * returned hooks carry no host write.
+ * activation of the extension (the capability provision and the assembled
+ * profile), the skill-directory read, and the hook fragment.  The returned
+ * hooks carry no host write.
  *
- * @param input - The instance resources and the host input.
+ * @param input - The instance resources, the host input and the options.
  * @returns The prepared start: the hooks and the runtime's close handle.
  */
 async function prepareOpenCodeStart(
   input: OpenCodeStartInput,
 ): Promise<OpenCodeStartPrepared> {
-  const { client, process, contextRuntime, lifecycle, stop } = input;
+  const { client, process, contextRuntime, lifecycle, stop, overrides } = input;
+  const scanSkills =
+    overrides?.scanSkills ??
+    ((profileSkills: readonly string[]) =>
+      scanSkillDirectories(SKILLS_DIR, [...profileSkills]));
 
   // Activate the extension before assembling the hooks: the capability
   // provision (including the host config pre-read) and the assembled
@@ -246,7 +242,17 @@ async function prepareOpenCodeStart(
   // the delegation gate.
   const values = capabilities.values;
 
-  const selectionHooks = assembleProfileHooks(composed, values, selection);
+  // Read the profile's skill directories now, while no host write has
+  // happened: the `config` hook writes the resulting paths and never scans
+  // itself.  A directory the scan cannot read is logged and skipped.
+  const skillPaths = scanSkills(composed.skills.map((skill) => skill.name));
+
+  const selectionHooks = assembleProfileHooks(
+    composed,
+    values,
+    selection,
+    skillPaths,
+  );
 
   // Assemble the model-family wordings from every enabled agent, tracking
   // the contributing agent so a dropped pair can be traced.  The union is

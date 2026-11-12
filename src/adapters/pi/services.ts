@@ -66,7 +66,6 @@ import {
   defineSessionResourcesService,
   type SessionResourceCatalog,
 } from "../../core/session/resources.js";
-import type { SkillEntry, SkillSource } from "../../core/skills.js";
 import type {
   RunRegistry,
   RunScope,
@@ -171,20 +170,19 @@ export function createPiToolBaselines(
 }
 
 /**
- * The generation's selected skills, published after composition.
+ * The composed profile's skill directory names, published after composition.
  *
  * The subagent driver reads them per run (a sub-session may start long
  * after composition) and `resources_discover` reads them per bind, so both
  * consume one published value instead of a mutable local in the entry
- * point.  The entries carry their paths, so no consumer reads the skills
- * directory.  Release is terminal: a stopped extension serves no profile,
- * and a late publication must not revive one.
+ * point.  Release is terminal: a stopped extension serves no profile, and a
+ * late publication must not revive one.
  */
 export interface PiProfileCatalog {
-  /** Publish the generation's selected skill entries. */
-  publish(entries: readonly SkillEntry[]): void;
-  /** A copy of the published entries (empty before composition). */
-  get(): SkillEntry[];
+  /** Publish the composed profile's skill directory names. */
+  publish(names: readonly string[]): void;
+  /** A copy of the published names (empty before composition). */
+  get(): string[];
   /** Drop the publication (the extension scope is stopping). */
   release(): void;
 }
@@ -196,15 +194,15 @@ export interface PiProfileCatalog {
  *   read.
  */
 export function createPiProfileCatalog(): PiProfileCatalog {
-  let published: SkillEntry[] = [];
+  let published: string[] = [];
   let released = false;
 
   return {
-    publish(entries) {
+    publish(names) {
       // A stopped extension has no profile: drop the publication instead of
       // reviving a consumer's view of it.
       if (released) return;
-      published = [...entries];
+      published = [...names];
     },
     get() {
       // A copy: a consumer that mutates the list it received must not change
@@ -389,12 +387,6 @@ export interface PiServiceHost {
   /** pi's `appendEntry` binding for the tool host's notifications. */
   readonly appendEntry?: PiAppendEntry;
   /**
-   * How this generation obtains its skills: one directory read at a
-   * generation start, or the entries the parent runtime already selected
-   * (a sub-session runtime inherits them, so it reads no directory).
-   */
-  readonly skills?: SkillSource;
-  /**
    * Build this instance's capability provision over its extension-scope
    * ports.
    *
@@ -428,7 +420,7 @@ export interface PiCompositionPorts {
   readonly toolHost: ReturnType<typeof createPiToolHost>;
   /** The todo catalog restoring each session's plan. */
   readonly todo: ReturnType<typeof createPiTodoSessions>;
-  /** The published selected skills. */
+  /** The published profile skill directories. */
   readonly profileCatalog: PiProfileCatalog;
   /** The untrimmed tool baselines. */
   readonly toolBaselines: PiToolBaselines;
@@ -690,7 +682,6 @@ export function createPiHostServices(host: PiServiceHost) {
     // The product's orchestrator role.  The planner decides whether the
     // enabled profile can provide it; this host holds no fallback.
     orchestrator: ORCHESTRATOR_AGENT_NAME,
-    ...(host.skills === undefined ? {} : { skills: host.skills }),
   });
 
   // The loop engine over the composed settle strategies.  A profile that

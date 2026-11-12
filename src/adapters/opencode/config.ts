@@ -9,7 +9,7 @@
  *
  *  - `default_agent` — the selection's orchestrator;
  *  - agent prompts — the composed, profile-aware prompt of each agent;
- *  - `skills.paths` — the generation's selected skill directories;
+ *  - `skills.paths` — the skill directories the start preparation read;
  *  - `experimental.primary_tools` — the `compress` / `decompress` tools
  *    the profile enables;
  *  - `command` — the registered slash commands.
@@ -29,7 +29,6 @@ import type {
   HostMaterialisation,
   Selection,
 } from "../../core/selection.js";
-import type { SkillEntry } from "../../core/skills.js";
 import type { AgentContribution } from "../../core/unit.js";
 import { log } from "../../utils/logger.js";
 
@@ -249,20 +248,20 @@ function injectAgentPrompts(
 }
 
 /**
- * Register the skill directories the generation selected.
+ * Register the skill directories the profile resolved.
  *
- * The paths come from the assembly pass, which reads the skills directory
- * once before any host write; the `config` hook never reads it.  This
- * function only owns the OpenCode result sink (initialising and appending to
- * `config.skills.paths`).
+ * The paths come from the start preparation (see `publisher.ts`), which
+ * reads the skill directories before any host write; the `config` hook
+ * never scans.  This function only owns the OpenCode result sink
+ * (initialising and appending to `config.skills.paths`).
  *
  * @param config - The config object being mutated by the `config` hook.
- * @param skills - The generation's selected skill entries.
+ * @param skillPaths - Absolute paths of the profile's skill directories.
  */
-function registerSkillPaths(config: any, skills: readonly SkillEntry[]): void {
+function registerSkillPaths(config: any, skillPaths: readonly string[]): void {
   config.skills ??= {};
   config.skills.paths ??= [];
-  config.skills.paths.push(...skills.map((entry) => entry.path));
+  config.skills.paths.push(...skillPaths);
 }
 
 /**
@@ -342,12 +341,15 @@ function registerCommands(config: any, composed: ComposedResult): void {
  * @param composed - The host-agnostic composition result.
  * @param deps - Per-plugin-instance dependencies.
  * @param selection - The selection the composition was built from.
+ * @param skillPaths - Absolute paths of the profile's skill directories,
+ *   read by the start preparation.
  * @returns The hook the host calls with the config it is about to use.
  */
 export function createConfigHook(
   composed: ComposedResult,
   deps: Partial<Capabilities>,
   selection: Selection,
+  skillPaths: readonly string[],
 ): (config: any) => Promise<void> {
   return async (config: any): Promise<void> => {
     const agents = config.agent ?? {};
@@ -380,7 +382,7 @@ export function createConfigHook(
     }
 
     injectAgentPrompts(agents, composed.agents);
-    registerSkillPaths(config, composed.skills);
+    registerSkillPaths(config, skillPaths);
     registerProfileToolsInConfig(config, Object.keys(composed.tools));
     registerCommands(config, composed);
   };

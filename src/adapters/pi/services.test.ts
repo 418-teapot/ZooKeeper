@@ -21,7 +21,6 @@ import {
   contextSessionResources,
   createSessionResourceCatalog,
 } from "../../core/session/resources.js";
-import type { SkillEntry } from "../../core/skills.js";
 import type { RunSnapshot } from "../../core/subagent/registry.js";
 import type { TodoPhase } from "../../core/todo/types.js";
 import { piScope, renderZooWidget } from "../../testkits/pi-wiring.js";
@@ -241,37 +240,32 @@ describe("pi tool baselines", () => {
 });
 
 describe("pi profile catalog", () => {
-  /** Two selected entries, with their paths. */
-  const ENTRIES: SkillEntry[] = [
-    { name: "beaver-tdd", path: "/zoo/skills/beaver-tdd" },
-    { name: "wiki-query", path: "/zoo/skills/wiki-query" },
-  ];
-
-  it("publishes the selected skills to every lazy reader", () => {
+  it("publishes the composed skills to every lazy reader", () => {
     const catalog = createPiProfileCatalog();
     // The two consumers: the subagent driver's per-run thunk and the
     // resources_discover handler's read.
     const driverRead = () => catalog.get();
     assert.deepEqual(catalog.get(), [], "nothing is published before compose");
 
-    catalog.publish(ENTRIES);
+    catalog.publish(["beaver-tdd", "wiki-query"]);
 
-    assert.deepEqual(driverRead(), ENTRIES);
-    assert.deepEqual(catalog.get(), ENTRIES);
+    assert.deepEqual(driverRead(), ["beaver-tdd", "wiki-query"]);
+    assert.deepEqual(catalog.get(), ["beaver-tdd", "wiki-query"]);
   });
 
   it("hands out copies so a reader cannot corrupt the publication", () => {
     const catalog = createPiProfileCatalog();
-    catalog.publish(ENTRIES);
+    catalog.publish(["grill"]);
 
-    catalog.get().push({ name: "injected", path: "/zoo/skills/injected" });
+    const names = catalog.get();
+    names.push("injected");
 
-    assert.deepEqual(catalog.get(), ENTRIES);
+    assert.deepEqual(catalog.get(), ["grill"]);
   });
 
   it("publishes nothing after release", () => {
     const catalog = createPiProfileCatalog();
-    catalog.publish(ENTRIES);
+    catalog.publish(["grill"]);
 
     catalog.release();
 
@@ -284,7 +278,7 @@ describe("pi profile catalog", () => {
     catalog.release();
     // The stop is terminal: a late composition (a reload that re-runs the
     // factory on the same scope) must not revive the catalog.
-    catalog.publish(ENTRIES);
+    catalog.publish(["grill"]);
 
     assert.deepEqual(catalog.get(), []);
   });
@@ -581,9 +575,7 @@ describe("pi host services — declarations", () => {
     });
     await wiring.ensureSession({ id: "s1" });
     services.todo.set("s1", phase(["a"]));
-    services.profileCatalog.publish([
-      { name: "grill", path: "/zoo/skills/grill" },
-    ]);
+    services.profileCatalog.publish(["grill"]);
     services.toolBaselines.primary();
 
     await wiring.stopExtension({ type: "session_shutdown", reason: "quit" });

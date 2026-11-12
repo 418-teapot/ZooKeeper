@@ -13,6 +13,7 @@ import assert from "node:assert/strict";
 import { afterEach, describe, it } from "node:test";
 import { _getBufferForTesting, _resetForTesting } from "../../utils/logger.js";
 import {
+  filterAllowedSkills,
   isSkillAllowed,
   parseSkillPermissions,
   type SkillPermissionRule,
@@ -245,5 +246,42 @@ describe("isSkillAllowed — most-specific-wins", () => {
     assert.equal(isSkillAllowed(rules, "xwiki-query"), false);
     // A wildcard matches any run of characters after the prefix.
     assert.equal(isSkillAllowed(rules, "wiki-query-x"), true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// filterAllowedSkills
+// ---------------------------------------------------------------------------
+
+describe("filterAllowedSkills", () => {
+  const PROFILE = ["wiki-query", "beaver-tdd", "grill", "mola-plan"];
+
+  it("returns the full list in profile order when the agent has no rules", () => {
+    const kept = filterAllowedSkills(PROFILE, undefined);
+    assert.deepEqual(kept, PROFILE);
+    // A fresh array: callers must not alias the profile list.
+    assert.notEqual(kept, PROFILE);
+  });
+
+  it("keeps every skill when the rule set is empty (default allow)", () => {
+    assert.deepEqual(filterAllowedSkills(PROFILE, []), PROFILE);
+  });
+
+  it("drops skills matched by a deny glob and keeps the rest in order", () => {
+    const rules: SkillPermissionRule[] = [
+      { pattern: "*-*", action: "deny" },
+      { pattern: "wiki-query", action: "allow" },
+      { pattern: "grill", action: "allow" },
+    ];
+    const kept = filterAllowedSkills(PROFILE, rules);
+    assert.deepEqual(kept, ["wiki-query", "grill"]);
+  });
+
+  it("catch-all deny keeps only the explicitly allowed skills", () => {
+    const rules: SkillPermissionRule[] = [
+      { pattern: "*", action: "deny" },
+      { pattern: "mola-plan", action: "allow" },
+    ];
+    assert.deepEqual(filterAllowedSkills(PROFILE, rules), ["mola-plan"]);
   });
 });

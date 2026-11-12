@@ -101,59 +101,14 @@ describe("createOpenCodeRuntime — prepare", () => {
     assert.equal(initEntries().length, 0, "prepare runs no config stage");
   });
 
-  it("reads the skills directory once per generation and writes only the selected paths", async () => {
-    const poly = (POLY_ZOO.mode as { poly: Record<string, unknown> }).poly;
-    const zoo = {
-      ...POLY_ZOO,
-      mode: { poly: { ...poly, skills: ["wiki-query"] } },
-    };
-    let reads = 0;
-    let skillsDir = "";
-    const owner = createOpenCodeRuntime({
-      process: openCodeProcessState(),
-      scope: createConfigScope(zoo, POLY_RAW),
-      pluginInput: hostInput(),
-      overrides: {
-        discoverSkills: (dir) => {
-          reads += 1;
-          skillsDir = dir;
-          // Two usable entries; the profile selects one of them.
-          return {
-            entries: [
-              { name: "wiki-query", path: `${dir}/wiki-query` },
-              { name: "unlisted", path: `${dir}/unlisted` },
-            ],
-            invalid: [],
-            error: null,
-          };
-        },
-      },
-    });
-    const publication = await owner.publisher.publish(
-      await owner.publisher.prepare(),
-    );
-    const config = polyHostConfig();
-    const reloaded = polyHostConfig();
-
-    await publication.config(config);
-    // The host calls the config stage again after a reload: the generation
-    // reuses its selection and never reads the directory a second time.
-    await publication.config(reloaded);
-
-    assert.ok(skillsDir.endsWith("/skills"), skillsDir);
-    assert.equal(reads, 1, "one read per generation");
-    assert.deepEqual(config.skills, { paths: [`${skillsDir}/wiki-query`] });
-    assert.deepEqual(reloaded.skills, config.skills);
-  });
-
-  it("fails before any config write when the injected skill read throws", async () => {
+  it("fails before any config write when the injected scan throws", async () => {
     const owner = polyRuntime({
-      discoverSkills(): never {
-        throw new Error("skill read failed");
+      scanSkills(): string[] {
+        throw new Error("skill scan failed");
       },
     });
 
-    await assert.rejects(owner.publisher.prepare(), /skill read failed/);
+    await assert.rejects(owner.publisher.prepare(), /skill scan failed/);
     assert.equal(
       initEntries().length,
       0,
@@ -182,10 +137,10 @@ describe("createOpenCodeRuntime — the runtime owner", () => {
     assert.deepEqual(await handle.stop(), { errors: [] }, "the close repeats");
   });
 
-  it("closes the runtime when the injected skill read fails", async () => {
+  it("closes the runtime when the injected scan fails", async () => {
     const owner = polyRuntime({
-      discoverSkills(): never {
-        throw new Error("skill read failed");
+      scanSkills(): string[] {
+        throw new Error("skill scan failed");
       },
     });
 
@@ -195,7 +150,7 @@ describe("createOpenCodeRuntime — the runtime owner", () => {
         origin: MAIN_ORIGIN,
         createRuntime: () => owner,
       }),
-      /skill read failed/,
+      /skill scan failed/,
     );
 
     assert.equal(

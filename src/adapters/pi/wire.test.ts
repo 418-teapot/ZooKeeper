@@ -5027,29 +5027,6 @@ describe("buildPiSubagentExtension — the child runtime's ZooKeeper", () => {
     assert.deepEqual(closes, [], "a failed start reports no close handle");
   });
 
-  it("inherits the parent's selection and reads no skills directory", async () => {
-    // A delegation starts long after the outer generation resolved its
-    // skills, so the child composition receives those entries instead of
-    // reading the directory: a read here would find whatever the directory
-    // holds now, not what this generation selected.
-    const api = mockApi();
-    const factory = buildPiSubagentExtension(piScope(POLY_ZOO, MODES_RAW), {
-      agent: "beaver",
-      process: piProcess,
-      skills: [{ name: "grill", path: "/zoo/skills/grill" }],
-      discoverSkills: () => {
-        throw new Error("a child generation must not read the directory");
-      },
-    });
-
-    await factory(api as any);
-
-    const inits = _getBufferForTesting().filter(
-      (entry) => entry.event === "plugin_init",
-    );
-    assert.deepEqual(inits[0].skills, ["grill"]);
-  });
-
   it("builds the child handlers over the captured config snapshot", async () => {
     // A profile carrying the subagent tool: the child wires its own driver,
     // which is what lets a nested sub-session create its own inline factory.

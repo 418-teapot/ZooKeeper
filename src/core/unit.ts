@@ -1,9 +1,8 @@
 /**
  * Declarative unit contract.
  *
- * A unit is the smallest loadable feature: an agent prompt, a hook bundle,
- * a tool, or a slash command.  A skill is a selectable resource, not a
- * unit (see `core/skills.ts`), so it never appears here.  A unit declares
+ * A unit is the smallest loadable feature: an agent prompt, a skill
+ * directory, a hook bundle, a tool, or a slash command.  A unit declares
  * the capabilities it consumes (`needs` = required, `wants` = optional
  * enhancement) and the selection facts it reads (`uses`), plus a factory;
  * the `define*` helpers derive the factory's capability slice and fact
@@ -350,6 +349,12 @@ export interface AgentContribution {
   readonly promptVariants?: readonly PromptVariantPair[];
 }
 
+/** A skill registration contribution (directory under skills/). */
+export interface SkillContribution {
+  /** Skill directory name (registry key). */
+  name: string;
+}
+
 // ---------------------------------------------------------------------------
 // Contribution collections
 // ---------------------------------------------------------------------------
@@ -358,6 +363,12 @@ export interface AgentContribution {
 export interface AgentUnitContributions {
   kind: "agent";
   agents: AgentContribution[];
+}
+
+/** Contributions produced by a skill unit. */
+export interface SkillUnitContributions {
+  kind: "skill";
+  skills: SkillContribution[];
 }
 
 /**
@@ -391,6 +402,7 @@ export interface CommandUnitContributions {
 /** The union of all per-kind contribution collections. */
 export type UnitContributions =
   | AgentUnitContributions
+  | SkillUnitContributions
   | HookUnitContributions
   | ToolUnitContributions
   | CommandUnitContributions;
@@ -425,8 +437,8 @@ function completeHookContributions(
 // Descriptor contract
 // ---------------------------------------------------------------------------
 
-/** The four loadable unit kinds. */
-export type UnitKind = "agent" | "hook" | "tool" | "command";
+/** The five loadable unit kinds. */
+export type UnitKind = "agent" | "skill" | "hook" | "tool" | "command";
 
 /** The capability keys a unit may declare in `needs` / `wants`. */
 export type CapabilityKey = keyof Capabilities;
@@ -442,6 +454,19 @@ export interface AgentUnitDescriptor {
     caps: Partial<Capabilities>,
     facts: SelectionFacts,
   ): AgentUnitContributions;
+}
+
+/** Descriptor of a skill unit. */
+export interface SkillUnitDescriptor {
+  name: string;
+  kind: "skill";
+  needs: readonly CapabilityKey[];
+  wants: readonly CapabilityKey[];
+  uses: readonly SelectionFactKey[];
+  create(
+    caps: Partial<Capabilities>,
+    facts: SelectionFacts,
+  ): SkillUnitContributions;
 }
 
 /** Descriptor of a hook unit. */
@@ -491,6 +516,7 @@ export interface CommandUnitDescriptor {
  */
 export type UnitDescriptor =
   | AgentUnitDescriptor
+  | SkillUnitDescriptor
   | HookUnitDescriptor
   | ToolUnitDescriptor
   | CommandUnitDescriptor;
@@ -667,6 +693,26 @@ export function definePromptAgent(
       return { prompt };
     },
   });
+}
+
+/**
+ * Define a skill unit.
+ *
+ * @param d - Name, capability lists, fact uses, and factory.
+ * @returns The skill unit descriptor.
+ */
+export function defineSkill<
+  const N extends readonly CapabilityKey[],
+  const W extends readonly CapabilityKey[] = [],
+  const U extends readonly SelectionFactKey[] = [],
+>(d: {
+  name: string;
+  needs: N;
+  wants?: W;
+  uses?: U;
+  create(caps: UnitCaps<N, W>, uses: UnitUses<U>): SkillUnitContributions;
+}): SkillUnitDescriptor {
+  return defineUnit("skill", d);
 }
 
 /**
