@@ -8,11 +8,11 @@
  * The shapes describe the host messages as they arrive at the
  * `messages.transform` hook, so they belong here — not in the
  * framework-agnostic core.  `SessionClient` likewise types the v1
- * client slice the tools, the `/dcp` handler, and the tool host consume.
+ * client slice the tools and the tool host consume.
  *
  * Context measurement and reporting live in `src/core/context/` (the
- * lens pipeline, consumed by the sidebar and `/dcp`); this module holds
- * no estimation, report, or cache logic.
+ * lens pipeline, consumed by the sidebar); this module holds no
+ * estimation, report, or cache logic.
  *
  * @module
  */
@@ -73,8 +73,8 @@ export interface ContextMessageEntry {
  * Minimal OpenCode v1 session client slice consumed by the
  * context-management units.
  *
- * Consumed by the `/dcp` command handler, the compress/decompress tool
- * adapters, and the v1 tool host; declares only the session APIs
+ * Consumed by the compress/decompress tool adapters and the v1 tool
+ * host; declares only the session APIs
  * (`session.messages`, `session.prompt`, `session.get`) those units
  * use, since the full v1 client is much larger.  `session.prompt`
  * carries the optional `agent` field so a notification can address the

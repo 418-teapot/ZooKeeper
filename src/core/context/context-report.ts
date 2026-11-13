@@ -1,17 +1,13 @@
 /**
- * Context report data types and formatting for the `/dcp context` command.
+ * Context report data types and formatting helpers.
  *
  * Declares the report data types (`ContextReport`,
- * `ContextCategoryBreakdown`) and the pure display layer — the report
+ * `ContextCategoryBreakdown`) and the pure display helpers — the report
  * values are computed by the lens producer (`context-report-lens.ts`
- * over the host-agnostic lens).  Provides token/cache/percentage
- * formatting helpers and the final multi-line report string in Chinese
- * (user-facing).
+ * over the host-agnostic lens), and the context panel renders them.
  *
  * @module
  */
-
-import type { SessionState } from "./state.js";
 
 // ---------------------------------------------------------------------------
 // Report types (display-agnostic — only data)
@@ -43,8 +39,6 @@ export interface ContextReport {
   exact: number;
   /** Heuristic estimate for messages after the last assistant. */
   heuristic: number;
-  /** Total message count. */
-  messageCount: number;
   /** Cache hit ratio (0–1), or null when unavailable. */
   cacheHitRate: number | null;
   /** Heuristic category breakdown. */
@@ -99,175 +93,4 @@ export function formatPercent(ratio: number): string {
   if (pct === 0) return "0%";
   if (pct === 100) return "100%";
   return `${pct.toFixed(1)}%`;
-}
-
-// ---------------------------------------------------------------------------
-// Block stats (derived from SessionState)
-// ---------------------------------------------------------------------------
-
-/**
- * Count of compression blocks currently folding their interval.
- *
- * Drives the "N 个压缩块" parenthetical in the report's reclaim
- * section.  Terminal-status blocks are excluded — the report's "active
- * scope" semantics.
- *
- * @param state - The session state.
- * @returns Number of active blocks.
- */
-function activeBlockCount(state: SessionState): number {
-  let count = 0;
-  for (const block of state.blocks.values()) {
-    if (block.status === "active") count++;
-  }
-  return count;
-}
-
-/**
- * Net reclaimed tokens across all active blocks.
- *
- * Each active block contributes `compressedTokens - summaryTokens`
- * (the count saved by folding the segment).  Terminal-status blocks are
- * excluded.
- *
- * @param state - The session state.
- * @returns Total net reclaimed tokens from active blocks.
- */
-function activeReclaimedTokens(state: SessionState): number {
-  let sum = 0;
-  for (const block of state.blocks.values()) {
-    if (block.status === "active") {
-      sum += block.compressedTokens - block.summaryTokens;
-    }
-  }
-  return sum;
-}
-
-// ---------------------------------------------------------------------------
-// Types
-// ---------------------------------------------------------------------------
-
-/**
- * Optional parameters for {@link formatContextReport}.
- *
- * All fields are optional -- omitted fields are treated as absent/zero
- * and their corresponding lines are omitted from the report.
- */
-export interface FormatContextReportOptions {
-  /** Cumulative tokens reclaimed by pruning (from marks). */
-  prunedTokens?: number;
-  /** Count of marks still pending batch release. */
-  pendingCount?: number;
-  /** Total tokens still pending batch release. */
-  pendingTokens?: number;
-  /** Session state for deriving compression block stats. */
-  state?: SessionState;
-  /** Non-ignored message count in the folded view (模型可见). */
-  foldedMessageCount?: number;
-  /** Non-ignored message count in storage (存储). */
-  storageMessageCount?: number;
-}
-
-// ---------------------------------------------------------------------------
-// Full report formatter
-// ---------------------------------------------------------------------------
-
-/**
- * Format a context report into a human-readable multi-line string.
- *
- * Output is in Chinese (user-facing), with a 60-character line width
- * constraint suitable for TUI chat windows.  Only the compact summary
- * lines are shown: 用量, 缓存, 消息, 回收 (when pruned or pending).
- * The detailed category breakdown (user/asst/tool/sys with progress
- * bars) was dropped in favor of the TUI sidebar panel.
- *
- * Labels are padded with 4 trailing spaces so values align at one column.
- * Continuation lines (e.g. 待生效) use 8 spaces indent to align with the
- * value column (accounting for CJK double-width display).
- *
- * @param report - The computed context report.
- * @param opts - Optional display parameters.
- * @returns Formatted string for display.
- */
-export function formatContextReport(
-  report: ContextReport,
-  opts?: FormatContextReportOptions,
-): string {
-  const {
-    prunedTokens,
-    pendingCount,
-    pendingTokens,
-    state,
-    foldedMessageCount,
-    storageMessageCount,
-  } = opts ?? {};
-
-  const lines: string[] = [];
-
-  lines.push("━━ 上下文报告 ━━");
-  lines.push("");
-
-  // ── Usage line ────────────────────────────────────────────────────────
-  lines.push(`用量    ~${formatTokens(report.total)} tokens`);
-
-  // ── Cache hit rate ────────────────────────────────────────────────────
-  if (report.cacheHitRate !== null) {
-    lines.push(`缓存    ${formatPercent(report.cacheHitRate)}`);
-  } else {
-    lines.push(`缓存    —`);
-  }
-
-  // ── Message count ─────────────────────────────────────────────────────
-  // Dual-scope when both folded and storage counts are available and
-  // differ; single-count fallback otherwise.
-  const folded = foldedMessageCount ?? report.messageCount;
-  const storage = storageMessageCount ?? report.messageCount;
-  if (folded === storage) {
-    lines.push(`消息    ${report.messageCount} 条`);
-  } else {
-    lines.push(`消息    模型可见 ${folded} 条 · 存储 ${storage} 条`);
-  }
-
-  // ── Reclaim section ──────────────────────────────────────────────────
-  // "已生效" (in effect) = cumulative pruned tokens + active-block net
-  // reclaimed.  "待生效" (pending) appears only when pendingCount > 0.
-  const blockCnt = state ? activeBlockCount(state) : 0;
-  const blockReclaimed = state ? activeReclaimedTokens(state) : 0;
-  let blockCovered = 0;
-  if (state) {
-    for (const block of state.blocks.values()) {
-      if (block.status === "active") {
-        blockCovered += block.end - block.start;
-      }
-    }
-  }
-  const pruneVal = prunedTokens ?? 0;
-  const totalReclaimed = pruneVal + blockReclaimed;
-  const hasPending = (pendingCount ?? 0) > 0;
-
-  if (totalReclaimed > 0 || hasPending) {
-    const parentheticalParts: string[] = [];
-    if (blockCnt > 0) {
-      parentheticalParts.push(`${blockCnt} 个压缩块，折叠 ${blockCovered} 条`);
-    }
-    if (pruneVal > 0) {
-      parentheticalParts.push(`累计剪枝 ~${formatTokens(pruneVal)}`);
-    }
-    const parenthetical =
-      parentheticalParts.length > 0
-        ? `（${parentheticalParts.join("，")}）`
-        : "";
-
-    lines.push(
-      `回收    已生效 ~${formatTokens(totalReclaimed)}${parenthetical}`,
-    );
-
-    if (hasPending) {
-      lines.push(
-        `        待生效 ~${formatTokens(pendingTokens ?? 0)}（${pendingCount} 个剪枝标记）`,
-      );
-    }
-  }
-
-  return lines.join("\n");
 }

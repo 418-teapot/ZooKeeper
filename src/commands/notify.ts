@@ -2,7 +2,7 @@
  * Shared slash-command failure notification.
  *
  * Injects a failed slash-command error into the session chat (silently)
- * for the command units (`/go`, `/dcp`, `/switch`).  Kept as a neutral
+ * for the command units (`/go`, `/switch`, `/debug`).  Kept as a neutral
  * helper module under `src/commands/` so no command unit owns the
  * others.
  *
@@ -30,8 +30,8 @@ type NotifyTarget = {
  * @param target - The host surface (`ToolHost.notify`).
  * @param sessionID - The session receiving the error message.
  * @param error - The thrown error (message text is extracted).
- * @param logHook - Logger hook module name (e.g. `"context-command"`).
- * @param logEvent - Logger event name (e.g. `"dcp_command_failed"`).
+ * @param logHook - Logger hook module name (e.g. `"go-command"`).
+ * @param logEvent - Logger event name (e.g. `"go_command_failed"`).
  */
 export async function notifySessionError(
   target: NotifyTarget | null | undefined,

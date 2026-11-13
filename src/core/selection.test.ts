@@ -203,7 +203,7 @@ describe("planSelection — needs", () => {
   it("treats a want as non-blocking", () => {
     const units: UnitDescriptor[] = [
       {
-        name: "dcp",
+        name: "custom",
         kind: "command",
         needs: [],
         wants: ["toolHost", "contextConfig"],
@@ -219,7 +219,7 @@ describe("planSelection — needs", () => {
       skills: [],
       hooks: [],
       tools: [],
-      commands: ["dcp"],
+      commands: ["custom"],
     };
 
     const selection = planSelection({
@@ -229,7 +229,7 @@ describe("planSelection — needs", () => {
       agentModes: {},
     });
 
-    assert.deepEqual(selection.report.selected, ["dcp"]);
+    assert.deepEqual(selection.report.selected, ["custom"]);
     assert.deepEqual(selection.report.skipped, []);
   });
 });

@@ -16,7 +16,7 @@
  *      reply-strip (textComplete), todo-continuation → auto-debug
  *      (onSettled).
  *   2. tool units — compress, decompress, subagent, ask.
- *   3. command units — go, dcp, switch, debug.
+ *   3. command units — go, switch, debug.
  *   4. agent units — the two behavioral agents plus the five
  *      prompt-only agents generated from the table in
  *      `agents/prompt-agents.ts`.
@@ -37,7 +37,6 @@ import { fileURLToPath } from "node:url";
 import { unit as dolphinUnit } from "./agents/dolphin.js";
 import { unit as molaUnit } from "./agents/mola.js";
 import { promptAgentUnits } from "./agents/prompt-agents.js";
-import { unit as dcpCommandUnit } from "./commands/dcp/index.js";
 import { unit as debugCommandUnit } from "./commands/debug/index.js";
 import { unit as goCommandUnit } from "./commands/go/index.js";
 import { unit as switchCommandUnit } from "./commands/switch/index.js";
@@ -177,7 +176,6 @@ export const REGISTRY: UnitDescriptor[] = [
   todoToolUnit,
   // ── Command units ───────────────────────────────────────────────
   goCommandUnit,
-  dcpCommandUnit,
   switchCommandUnit,
   debugCommandUnit,
   // ── Agent units ─────────────────────────────────────────────────

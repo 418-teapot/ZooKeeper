@@ -45,7 +45,7 @@ describe("plugin wiring", () => {
           "reply-strip",
         ],
         tools: [],
-        commands: ["go", "dcp"],
+        commands: ["go"],
       },
     },
   };

@@ -4,10 +4,10 @@
  *
  * The runner is host-neutral: the message shape is the generic `M`, and
  * every host-dependent operation goes through the `PipelineHost` seam
- * (transform invocation, tool execution, /dcp handling, mark-target
+ * (transform invocation, tool execution, mark-target
  * resolution, plan landing, final view projection).  Actions that only
  * touch core state (`restart`, marks/blocks mutation, model limits,
- * manual-trigger flags) are dispatched here.
+ * pending-view-change flags) are dispatched here.
  *
  * A round clones its message view (fixtures are module-level singletons
  * and the lane splices the round's view back into it), runs the optional
@@ -49,7 +49,7 @@ import type {
 /**
  * Execute one round action and capture its tool result / error.
  *
- * Tool and /dcp actions are delegated to the host; state-only actions
+ * Tool actions are delegated to the host; state-only actions
  * run here against the core state.
  *
  * @param action - The action to run.
@@ -96,16 +96,6 @@ async function runAction<M>(
           messages,
           notifications,
         );
-      case "dcp": {
-        await host.handleDcp(
-          sessionID,
-          action.args,
-          config,
-          messages,
-          notifications,
-        );
-        return { result: null, error: null };
-      }
       case "add-mark": {
         // Translate the callID-keyed fixture action into the core's
         // `(ordinal, regionIndex)` key through the host's lens mapping.
@@ -158,12 +148,6 @@ async function runAction<M>(
           action.context,
           "test-model",
         );
-        return { result: null, error: null };
-      }
-      case "arm-manual-trigger": {
-        await host.runtime.commit(permitFor(sessionID), (draft) => {
-          draft.pendingManualTrigger = true;
-        });
         return { result: null, error: null };
       }
       case "set-pending-view-change": {

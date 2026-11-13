@@ -7,7 +7,7 @@
  *
  * 1. **State + read** — the plugin instance's `ContextRuntime`
  *    (`runtime.ts`, injected as a capability) yields the session state
- *    the compress/decompress tools and the /dcp command share;
+ *    the compress/decompress tools share;
  *    `adapter.history()` maps the host messages to lens messages, and the
  *    prompt-side token total of the last completed assistant is extracted
  *    for the release gate.
@@ -48,10 +48,7 @@
  *    appended at the END via `adapter.appendUserMessage`, never
  *    ref-assigned), and the same decision point fires the optional
  *    transient-UI toast (human-facing, host-rendered).
- * 7. **Manual compress** — the `/dcp compress` one-shot
- *    `pendingManualTrigger` flag injects the synthetic user command
- *    driving the `compress` tool.
- * 8. **Commit** — every phase runs on the draft of one
+ * 7. **Commit** — every phase runs on the draft of one
  *    `runtime.commit(permit, ...)`: the whole read-modify-write becomes the
  *    committed state only while the permit stays active and the write
  *    succeeded.  A draft that never commits leaves the caller's
@@ -68,8 +65,8 @@
  * Enablement is decided by the caller (opencode.ts / pi.ts) from the
  * mode profile and by the hook unit's `create`: when `deps.adapter` is
  * undefined the unit contributes no transform handler (fail-closed).
- * `hasCompressTool` gates the nudge and manual-compress phases (they
- * advertise windows the registered `compress` tool would accept).
+ * `hasCompressTool` gates the nudge phase (it advertises windows the
+ * registered `compress` tool would accept).
  *
  * Does NOT catch errors — the caller (`handleContextPruning`) wraps
  * this in try/catch so a pruning failure never disrupts the LLM turn.
@@ -81,7 +78,6 @@ import { log } from "../../utils/logger.js";
 import type { ContextPruningConfig } from "../config-types.js";
 import type { WorkPermit } from "../lifecycle/index.js";
 import type { ToastPayload, ToolHost } from "../ports/tool-host.js";
-import { MANUAL_COMPRESS_TEMPLATE } from "../prompts.js";
 import type { TransformOutput } from "../unit.js";
 import { formatTokens } from "./context-report.js";
 import { type FoldExpiryReason, fold } from "./fold.js";
@@ -94,11 +90,7 @@ import type {
 } from "./lens.js";
 import { promptSideTokens } from "./measure.js";
 import type { ModelLimitInfo } from "./model-limits.js";
-import {
-  computeEligibility,
-  type EligibilityConfig,
-  evaluateNudge,
-} from "./nudge.js";
+import { type EligibilityConfig, evaluateNudge } from "./nudge.js";
 import { runDedup } from "./producers/dedup.js";
 import { runPurgeErrors } from "./producers/purge-errors.js";
 import {
@@ -173,14 +165,14 @@ interface StagedLog {
  * read results, later phases update `messages` (the conversation array
  * is threaded, not copied) and the shared view/snapshot pair, and the
  * publish phase stores the numbered view plus the window-protection
- * inputs the nudge and manual-compress phases consume.
+ * inputs the nudge phase consumes.
  */
 interface PipelinePhaseContext {
   /** Host adapter that projects and renders the conversation. */
   adapter: HostAdapter<unknown>;
   /** Unified context-pruning configuration. */
   config: ContextPruningConfig;
-  /** Gates the nudge and manual-compress phases. */
+  /** Gates the nudge phase. */
   hasCompressTool?: boolean;
   /** Optional transient-UI port (source/level/text payload). */
   toast?: (payload: ToastPayload) => void;
@@ -210,14 +202,12 @@ interface PipelinePhaseContext {
   numbered: NumberedItem[];
   /** The frozen round view the commit publishes to the tools. */
   roundView: RoundView;
-  /** The frozen protection map shared by the nudge, the manual-compress
-   * window and the compress tool; absent when the config defines no
-   * protection inputs. */
+  /** The frozen protection map shared by the nudge and the compress tool;
+   * absent when the config defines no protection inputs. */
   protection?: ProtectionMap;
   /** The folded view items, read by the producers and rendered. */
   foldedItems: ViewItem[];
-  /** The phantom threshold shared by the nudge and the manual-compress
-   * window. */
+  /** The phantom threshold shared by the nudge and the compress tool. */
   eligibilityConfig: EligibilityConfig;
 }
 
@@ -571,15 +561,14 @@ function producersPhase(ctx: PipelinePhaseContext): void {
 /**
  * Number and materialize the folded view.
  *
- * Per-round line refs used by the nudge, the manual-compress window and
- * the compression tools (line numbers are transient — valid for this
- * round only).  The numbering runs over the frozen snapshot the fold
- * hashed, so the refs the model reads and the refs the tools resolve
- * cannot drift apart.  The round view — including the protection map the
- * read phase built — is frozen HERE, before materializing renders the
- * conversation: it must carry the transcript the fold hashed, never the
- * rendered one.  The commit publishes it (see
- * `contextPruningTransformHandler`).
+ * Per-round line refs used by the nudge and the compression tools (line
+ * numbers are transient — valid for this round only).  The numbering runs
+ * over the frozen snapshot the fold hashed, so the refs the model reads
+ * and the refs the tools resolve cannot drift apart.  The round view —
+ * including the protection map the read phase built — is frozen HERE,
+ * before materializing renders the conversation: it must carry the
+ * transcript the fold hashed, never the rendered one.  The commit
+ * publishes it (see `contextPruningTransformHandler`).
  *
  * The render plan is computed here, once, over the lens the round's
  * edits landed in; the adapter only applies it.
@@ -701,81 +690,7 @@ function nudgePhase(ctx: PipelinePhaseContext): void {
 }
 
 // ---------------------------------------------------------------------------
-// Phase 7: manual compress trigger — synthetic user command
-// ---------------------------------------------------------------------------
-
-/**
- * Inject the `/dcp compress` one-shot synthetic user command.
- *
- * `/dcp compress` sets a one-shot in-memory flag on the shared state;
- * the NEXT transform appends a synthetic user message (id
- * `zoo-manual-compress`) that the model treats as a direct instruction
- * to call the `compress` tool.  Runs after the view render so the
- * message never enters ref numbering, and never calls session.prompt
- * (transform-only, invisible in storage).  The flag is cleared after
- * the phase — one-shot, never re-injected on later turns.  A stale
- * trigger (compress tool unregistered, either shared active key or the
- * compress threshold missing) is cleared so it never fires later.
- */
-function manualCompressPhase(ctx: PipelinePhaseContext): void {
-  const { adapter, config, sessionId, state, view } = ctx;
-  const compressCfg = config.compress;
-  if (state.pendingManualTrigger !== true) return;
-
-  if (
-    ctx.hasCompressTool &&
-    config.activeMessages !== undefined &&
-    config.activeTokens !== undefined &&
-    compressCfg?.thresholdTokens !== undefined
-  ) {
-    const eligibility = computeEligibility(ctx.protection, view, ctx.numbered, {
-      thresholdTokens: compressCfg.thresholdTokens,
-    });
-    const windowLine = eligibility
-      ? `可压缩窗口：${eligibility.startRef}–${eligibility.endRef}（约 ${eligibility.reclaimTokens} tokens，两端 ref 均为包含边界）。你可以在此窗口内选择连续子范围，fromRef 与 toRef 都指向要压缩的消息本身。`
-      : "未检测到明确的可压缩窗口（全部内容均在保护区内）。如你判断仍有已完成且无需逐字保留的历史，请自行选择合适的范围压缩。";
-    const text = MANUAL_COMPRESS_TEMPLATE.replace("{WINDOW}", windowLine);
-
-    // Synthetic user command appended at the very END — never
-    // persisted, never ref-assigned.
-    ctx.messages = adapter.appendUserMessage(
-      ctx.messages,
-      "zoo-manual-compress",
-      sessionId,
-      text,
-    );
-    state.pendingManualTrigger = false;
-
-    ctx.logs.push({
-      event: "manual_compress_injected",
-      fields: {
-        sessionId,
-        ...(eligibility
-          ? {
-              startRef: eligibility.startRef,
-              endRef: eligibility.endRef,
-              reclaimTokens: eligibility.reclaimTokens,
-            }
-          : { eligibility: null }),
-      },
-    });
-  } else {
-    // Compress tool / protection inputs unavailable — a stale trigger
-    // can never produce a meaningful command.  Clear the flag so it never
-    // fires later (the /dcp compress registration gate normally prevents
-    // this state).
-    state.pendingManualTrigger = false;
-    log.warn({
-      hook: "context-pruning",
-      event: "manual_compress_skipped",
-      sessionId,
-      reason: "compress tool not registered or protection inputs missing",
-    });
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Phase 8: summary
+// Phase 7: summary
 // ---------------------------------------------------------------------------
 
 /** Effective-only accounting of one committed round. */
@@ -817,8 +732,7 @@ function summarizePhase(ctx: PipelinePhaseContext): PruneSummary {
  * succeeded, and the log surface keeps its event contracts
  * (`prune_completed` counts effective marks only, `marks_released` carries
  * the forced field and reports the flipped marks and the written edits
- * apart, `nudge_injected` / `manual_compress_injected` carry
- * their payloads).
+ * apart, `nudge_injected` carries its payload).
  *
  * The adapter delivers into a private copy, so the input conversation is
  * never rewritten: a round that never committed returns it unchanged, and
@@ -832,8 +746,7 @@ function summarizePhase(ctx: PipelinePhaseContext): PruneSummary {
  * @param config - Unified context-pruning configuration.
  * @param notify - Optional callback for user-visible release notification.
  * @param hasCompressTool - Whether the `compress` tool is registered in
- *   the active mode profile.  Gates the nudge and manual-compress
- *   phases.  Defaults to false.
+ *   the active mode profile.  Gates the nudge phase.  Defaults to false.
  * @param toast - Optional transient-UI port (source/level/text
  *   payload).  Fires on every nudge injection — the human-facing
  *   companion of the model nudge at the same watermark-ratchet
@@ -868,7 +781,6 @@ export async function contextPruningTransformHandler(
     producersPhase(ctx);
     publishPhase(ctx);
     nudgePhase(ctx);
-    manualCompressPhase(ctx);
     return { ctx, summary: summarizePhase(ctx) };
   });
   if (committed === undefined) return messages;

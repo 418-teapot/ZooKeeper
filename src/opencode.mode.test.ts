@@ -4,7 +4,7 @@
  * Covers: poly-full registration parity with the full hook key set,
  * event-key composition by the enabled hook set (tool.definition /
  * tool.execute.before / tool.execute.after / messages.transform),
- * command atomic registration (go / dcp), tool / skill / agent gating by
+ * command atomic registration (go / debug), tool / skill / agent gating by
  * the profile lists, and the null-profile skip (no registration, but the
  * infrastructure hooks keep working).
  */
@@ -63,7 +63,7 @@ const POLY_PROFILE = {
     "reply-strip",
   ],
   tools: ["compress", "decompress", "todo"],
-  commands: ["go", "dcp"],
+  commands: ["go"],
 };
 
 /**
@@ -525,10 +525,6 @@ describe("poly full profile — registration parity", () => {
       template: "",
       description: "Approve plan and handoff to execution",
     });
-    assert.deepEqual(config.command.dcp, {
-      template: "",
-      description: "显示上下文用量与缓存命中率",
-    });
   });
 
   it("registers no /<agent> primary-switch commands on OpenCode", async () => {
@@ -541,7 +537,7 @@ describe("poly full profile — registration parity", () => {
     await plugin.config(config);
     assert.deepEqual(
       Object.keys(config.command ?? {}).sort(),
-      ["dcp", "go"],
+      ["go"],
       "no config-derived /<agent> switch command on OpenCode",
     );
 
@@ -816,7 +812,7 @@ describe("command atomic registration", () => {
     const config = hostConfig();
     await plugin.config(config);
     assert.ok(config.command.go, "go command must be registered");
-    assert.equal(config.command.dcp, undefined);
+    assert.equal(config.command.debug, undefined);
 
     // go is handled (always short-circuits with COMMAND_HANDLED).
     await assert.rejects(
@@ -826,24 +822,30 @@ describe("command atomic registration", () => {
       ),
       (err: unknown) => err === COMMAND_HANDLED,
     );
-    // dcp is NOT handled — the hook resolves without touching it.
+    // switch is NOT handled — the hook resolves without touching it.
     const result = await plugin["command.execute.before"](
-      { command: "dcp", sessionID: "s", arguments: "" },
+      { command: "switch", sessionID: "s", arguments: "" },
       {},
     );
     assert.equal(result, undefined);
   });
 
-  it('commands=["dcp"] registers dcp only — command + handler branch', async () => {
-    const plugin = await pluginWithCommands(["dcp"]);
+  it('commands=["debug"] registers debug only — command + handler branch', async () => {
+    const plugin = await makePlugin({
+      ...POLY_ZOO,
+      // The debug unit registers only when the wake budget parses.
+      autodebug: { max_wakes: 3 },
+      mode: { poly: { ...POLY_PROFILE, commands: ["debug"] } },
+    });
     const config = hostConfig();
     await plugin.config(config);
-    assert.ok(config.command.dcp, "dcp command must be registered");
+    assert.ok(config.command.debug, "debug command must be registered");
     assert.equal(config.command.go, undefined);
 
+    // Empty arguments only show the usage hint, so no Case is created.
     await assert.rejects(
       plugin["command.execute.before"](
-        { command: "dcp", sessionID: "s", arguments: "" },
+        { command: "debug", sessionID: "s", arguments: "" },
         {},
       ),
       (err: unknown) => err === COMMAND_HANDLED,

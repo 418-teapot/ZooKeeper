@@ -79,20 +79,6 @@ import type { Mark, SessionState } from "./state.js";
 // ---------------------------------------------------------------------------
 
 /**
- * Count of marks that are not yet effective (pending batch release).
- *
- * @param state - The session state.
- * @returns Number of pending (non-effective) marks.
- */
-export function pendingCount(state: SessionState): number {
-  let count = 0;
-  for (const mark of state.marks.values()) {
-    if (!mark.effective) count++;
-  }
-  return count;
-}
-
-/**
  * Total estimated reclaim tokens of all pending (non-effective) marks.
  *
  * @param state - The session state.
@@ -360,8 +346,8 @@ export function computeEdits(
  * The read-side twin of `computeEdits`: where that returns the edits the
  * release phase writes into the model-bound copy, this returns a
  * transcript whose effective-mark regions read back the same placeholder
- * — so a consumer that reports over storage (the sidebar, `/dcp`) counts
- * a pruned tool call as `input + placeholder` instead of the stored
+ * — so a consumer that reports over storage (the sidebar) counts a
+ * pruned tool call as `input + placeholder` instead of the stored
  * original output.  Both share the `(ordinal, regionIndex)` address
  * vocabulary, `isProtectedOrdinal` and `placeholderFor`, so the report
  * and the transform always agree on what was pruned and where.

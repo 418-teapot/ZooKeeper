@@ -69,7 +69,7 @@ describe("vendor smol-toml — config.toml zoo section", () => {
       "subagent",
       "todo",
     ]);
-    assert.deepEqual(poly.commands, ["go", "dcp", "switch", "debug"]);
+    assert.deepEqual(poly.commands, ["go", "switch", "debug"]);
   });
 
   it("extracts the mono profile lists", () => {
@@ -99,7 +99,7 @@ describe("vendor smol-toml — config.toml zoo section", () => {
       "fetch",
       "todo",
     ]);
-    assert.deepEqual(mono.commands, ["go", "dcp", "switch", "debug"]);
+    assert.deepEqual(mono.commands, ["go", "switch", "debug"]);
   });
 
   it("extracts the validation / context / logging sections", () => {

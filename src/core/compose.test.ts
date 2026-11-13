@@ -131,10 +131,10 @@ function makeUnits(): UnitDescriptor[] {
         { name: "go", description: "handoff", handle: async () => {} },
       ],
     })),
-    mockUnit("dcp", "command", () => ({
+    mockUnit("custom", "command", () => ({
       kind: "command",
       commands: [
-        { name: "dcp", description: "context", handle: async () => {} },
+        { name: "custom", description: "custom", handle: async () => {} },
       ],
     })),
   ];
@@ -180,7 +180,7 @@ const ALL_UNITS_PROFILE: ModeProfile = {
   skills: ["beaver-tdd", "wiki-query"],
   hooks: ["subagent-prompt", "context-pruning"],
   tools: ["compress", "decompress"],
-  commands: ["go", "dcp"],
+  commands: ["go", "custom"],
 };
 
 /** Profile enabling a subset of units across several kinds. */
@@ -220,7 +220,7 @@ const ONE_OF_EACH_PROFILE: ModeProfile = {
   skills: ["wiki-query"],
   hooks: [],
   tools: ["compress"],
-  commands: ["dcp"],
+  commands: ["custom"],
 };
 
 // ---------------------------------------------------------------------------
@@ -241,7 +241,7 @@ describe("assemble — full profile", () => {
       "compress",
       "decompress",
       "go",
-      "dcp",
+      "custom",
     ]);
     assert.deepEqual(report.selected, calls);
   });
@@ -282,7 +282,7 @@ describe("assemble — full profile", () => {
     );
     assert.equal(composed.gateNeedsCaller, false);
     assert.deepEqual(Object.keys(composed.tools), ["compress", "decompress"]);
-    assert.deepEqual(Object.keys(composed.commands), ["go", "dcp"]);
+    assert.deepEqual(Object.keys(composed.commands), ["go", "custom"]);
   });
 });
 
@@ -386,14 +386,14 @@ describe("assemble — per-kind selection", () => {
   it("selects agent / skill / tool / command units independently", () => {
     const { calls, composed } = run(ONE_OF_EACH_PROFILE, makeUnits());
 
-    assert.deepEqual(calls, ["beaver", "wiki-query", "compress", "dcp"]);
+    assert.deepEqual(calls, ["beaver", "wiki-query", "compress", "custom"]);
     assert.deepEqual(composed.agents, [{ name: "beaver", prompt: "BEAVER" }]);
     assert.deepEqual(composed.skills, [{ name: "wiki-query" }]);
     assert.deepEqual(composed.afterExec, []);
     assert.deepEqual(composed.transform, []);
     assert.deepEqual(composed.toolDefinition, []);
     assert.deepEqual(Object.keys(composed.tools), ["compress"]);
-    assert.deepEqual(Object.keys(composed.commands), ["dcp"]);
+    assert.deepEqual(Object.keys(composed.commands), ["custom"]);
   });
 
   it("selects nothing for an empty profile (no defaults)", () => {

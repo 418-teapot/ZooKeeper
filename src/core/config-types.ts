@@ -166,7 +166,7 @@ export interface ModeProfile {
   hooks: string[];
   /** Tool names registered (compress, decompress). */
   tools: string[];
-  /** Slash-command names registered (go, dcp). */
+  /** Slash-command names registered (go, switch, debug). */
   commands: string[];
 }
 
@@ -214,8 +214,8 @@ export type AgentColorMap = Record<string, string>;
  * release phase fails closed.
  * Enablement is decided exclusively by the mode profile: registering
  * the `context-pruning` hook unit runs the whole pipeline, and
- * registering the `compress` tool gates the nudge / manual-compress
- * phases.  There is no master `enabled` switch.
+ * registering the `compress` tool gates the nudge phase.  There is no
+ * master `enabled` switch.
  */
 export interface ContextPruningConfig {
   /**

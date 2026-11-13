@@ -276,9 +276,9 @@ export interface HostAdapter<THostConversation> {
   /**
    * Append a synthetic user text message to the conversation.
    *
-   * Used for context-pressure nudges and manual compress triggers.  The
-   * message is appended at the end and is not persisted by the host.  The
-   * input stays untouched; callers use the returned conversation.
+   * Used for context-pressure nudges.  The message is appended at the
+   * end and is not persisted by the host.  The input stays untouched;
+   * callers use the returned conversation.
    *
    * @param conversation - The host conversation before appending.
    * @param id - The synthetic message id.

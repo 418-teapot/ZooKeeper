@@ -688,44 +688,6 @@ export async function expectRejectedToolCallsPreserveView<M>(
 }
 
 /**
- * Assert that the `/dcp context` report exposes the reclaim accounting.
- *
- * The report is the read side of the mark bookkeeping — the effective
- * mark's reclaimed tokens accumulate into the block's total, and the
- * pending mark shows up as an unreleased batch.  Only the opencode lane
- * drives this check: the pi lane wires no command seam.
- *
- * @param scenario - The opencode lane's G-REPORT-01 scenario.
- * @param host - The opencode lane host seam.
- */
-export async function expectReportExposesMarkAccounting<M>(
-  scenario: Scenario<M>,
-  host: PipelineHost<M>,
-): Promise<void> {
-  const capture = await runScenario(scenario, host);
-
-  const empty = roundByLabel(capture, "dcp-context-no-reclaim");
-  expect(
-    empty.notifications.join("\n"),
-    "a session with no block and no mark reports no reclaim section",
-  ).not.toContain("回收");
-
-  const report = roundByLabel(
-    capture,
-    "dcp-context-with-reclaim",
-  ).notifications.join("\n");
-  expect(report, "the active block is counted").toContain("1 个压缩块");
-  expect(
-    report,
-    "the effective mark's tokens accumulate into the block's total",
-  ).toContain("累计剪枝 ~300");
-  expect(
-    report,
-    "the pending mark is reported as an unreleased batch",
-  ).toContain("待生效 ~500（1 个剪枝标记）");
-}
-
-/**
  * A restart fixture: a session, a mark target and the view replayed
  * before and after the simulated crash.
  */

@@ -402,7 +402,12 @@ describe("estimation over the mapped transcript", () => {
     const v1 = [
       entry("user", [textPart("Hello")]),
       entry("assistant", [textPart("Response")], { input: 500, output: 100 }),
-      entry("user", [textPart("Ignored /dcp context report")], undefined, true),
+      entry(
+        "user",
+        [textPart("Ignored synthetic context notice")],
+        undefined,
+        true,
+      ),
       entry("user", [textPart("Normal follow-up")]),
     ];
     const measured = measureMessages(messagesOf(v1));

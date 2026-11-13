@@ -37,7 +37,6 @@ import {
 import {
   computeEdits,
   flipReleasedMarks,
-  pendingCount,
   pendingTokens,
   type ReleaseOptions,
   type ReleaseResult,
@@ -176,15 +175,6 @@ function releasePhase(
 // ===========================================================================
 
 describe("derived stats", () => {
-  it("pendingCount counts non-effective marks only", () => {
-    const state = makeState();
-    assert.equal(pendingCount(state), 0);
-    rawSeed(state, 0, 1, 100, false);
-    rawSeed(state, 1, 1, 50, true);
-    rawSeed(state, 2, 1, 30, false);
-    assert.equal(pendingCount(state), 2);
-  });
-
   it("pendingTokens sums non-effective contentTokens", () => {
     const state = makeState();
     rawSeed(state, 0, 1, 100, false);
@@ -464,7 +454,7 @@ describe("releasedPercent gate", () => {
     });
     assert.equal(r.releasedCount, 1);
     assert.equal(r.releasedTokens, 100);
-    assert.equal(pendingCount(state), 0);
+    assert.equal(state.marks.get(markKey(0, 1))?.effective, true);
   });
 
   it("below threshold retains pending; marks accumulate across calls", () => {
@@ -519,7 +509,7 @@ describe("pendingViewChange bypass", () => {
     });
     assert.equal(r.releasedCount, 1);
     assert.equal(r.forced, true);
-    assert.equal(pendingCount(state), 0);
+    assert.equal(state.marks.get(markKey(0, 1))?.effective, true);
     assert.equal(lens[0].regions[1].get(), PRUNED_TOOL_OUTPUT_REPLACEMENT);
   });
 
@@ -572,7 +562,8 @@ describe("pendingViewChange bypass", () => {
     });
     assert.equal(r2.forced, false);
     assert.equal(r2.releasedCount, 0);
-    assert.equal(pendingCount(state), 1);
+    assert.equal(state.marks.get(markKey(0, 1))?.effective, true);
+    assert.equal(state.marks.get(markKey(0, 3))?.effective, false);
   });
 });
 
@@ -811,7 +802,8 @@ describe("protection", () => {
       releasedTokens: 0,
       forced: false,
     });
-    assert.equal(pendingCount(state), 2, "both marks stay pending");
+    assert.equal(state.marks.get(markKey(1, 1))?.effective, false);
+    assert.equal(state.marks.get(markKey(0, 1))?.effective, false);
 
     // With the tail lifted, the full total clears the threshold.
     const released = flipReleasedMarks(state, {
@@ -852,7 +844,7 @@ describe("protection", () => {
       releasedTokens: 0,
       forced: false,
     });
-    assert.equal(pendingCount(state), 1);
+    assert.equal(state.marks.get(markKey(0, 1))?.effective, false);
     assert.equal(lens[0].regions[1].get(), LONG_OUTPUT);
   });
 

@@ -35,24 +35,24 @@ afterEach(() => {
 describe("buildPiCommandRegistrationPlan", () => {
   it("produces one registration per composed command with description passthrough", () => {
     const commands: ComposedResult["commands"] = {
-      dcp: {
-        name: "dcp",
-        description: "显示上下文用量与缓存命中率",
+      custom: {
+        name: "custom",
+        description: "custom description",
         handle: async () => {},
       },
     };
     const plan = buildPiCommandRegistrationPlan(commands);
     assert.equal(plan.length, 1);
-    assert.equal(plan[0].name, "dcp");
-    assert.equal(plan[0].description, "显示上下文用量与缓存命中率");
+    assert.equal(plan[0].name, "custom");
+    assert.equal(plan[0].description, "custom description");
     assert.equal(typeof plan[0].handler, "function");
   });
 
   it("resolves the sessionID from ctx and passes arguments to the contribution", async () => {
     let captured: CommandInput | undefined;
     const commands: ComposedResult["commands"] = {
-      dcp: {
-        name: "dcp",
+      custom: {
+        name: "custom",
         description: "desc",
         handle: async (input) => {
           captured = input;
@@ -64,7 +64,7 @@ describe("buildPiCommandRegistrationPlan", () => {
       sessionManager: { getSessionId: () => "sess-pi" },
     });
     assert.deepEqual(captured, {
-      command: "dcp",
+      command: "custom",
       sessionID: "sess-pi",
       arguments: "context",
     });
@@ -73,8 +73,8 @@ describe("buildPiCommandRegistrationPlan", () => {
   it("falls back to an empty session id when the context has no sessionManager", async () => {
     let captured: CommandInput | undefined;
     const commands: ComposedResult["commands"] = {
-      dcp: {
-        name: "dcp",
+      custom: {
+        name: "custom",
         description: "desc",
         handle: async (input) => {
           captured = input;
@@ -95,9 +95,9 @@ describe("buildPiCommandRegistrationPlan", () => {
         replacesSession: true,
         handle: async () => {},
       },
-      dcp: {
-        name: "dcp",
-        description: "dcp",
+      custom: {
+        name: "custom",
+        description: "custom",
         handle: async () => {},
       },
     };
@@ -108,7 +108,7 @@ describe("buildPiCommandRegistrationPlan", () => {
       ]),
       [
         ["go", true],
-        ["dcp", false],
+        ["custom", false],
       ],
     );
   });

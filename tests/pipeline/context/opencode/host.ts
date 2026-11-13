@@ -3,7 +3,7 @@
  *
  * Encapsulates every host-dependent operation the host-neutral runner
  * drives: the transform invocation through the v1 adapter, tool
- * execution through the v1 tool host, /dcp command handling, call-id →
+ * execution through the v1 tool host, call-id →
  * mark-target resolution under the v1 lens mapping, plan landing with
  * span hashing over the v1 transcript, and the v1 view projection.
  *
@@ -17,7 +17,6 @@ import type {
   ContextMessageEntry,
   SessionClient,
 } from "../../../../src/adapters/opencode/types.js";
-import { handleDcpCommand } from "../../../../src/commands/dcp/command.js";
 import type { ContextPruningConfig } from "../../../../src/core/config-types.js";
 import { contextPruningTransformHandler } from "../../../../src/core/context/pipeline.js";
 import { computeSpanHash } from "../../../../src/core/context/spanhash.js";
@@ -305,18 +304,6 @@ export function createV1PipelineHost(
     },
     runTool: (action, sessionID, config, messages, notifications) =>
       runTool(sandbox, action, sessionID, config, messages, notifications),
-    async handleDcp(sessionID, args, config, messages, notifications) {
-      const client = makeClient(messages, notifications);
-      await handleDcpCommand(
-        sandbox.runtime,
-        permitFor(sessionID),
-        createV1ToolHost(client, () => undefined),
-        sessionID,
-        args,
-        config,
-        true,
-      );
-    },
     resolveMarkTarget,
     landPlan,
     captureView,

@@ -32,9 +32,8 @@ export { contextPruningTransformHandler, handleContextPruning };
  * routes through `caps.toolHost` and is skipped when the host wires no
  * tool host or the session agent cannot be resolved).  `hasCompressTool`
  * is read from the `uses` projection of the selected tools, so the
- * nudge / manual-compress phases only advertise windows a selected
- * `compress` tool would accept — whether or not that tool is
- * registered yet.
+ * nudge phase only advertises windows a selected `compress` tool would
+ * accept — whether or not that tool is registered yet.
  *
  * Fail-closed: a host without an adapter never activates the unit,
  * matching how a null mode profile disables every unit.

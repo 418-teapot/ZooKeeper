@@ -1,11 +1,8 @@
 /**
- * Scenarios — persistence round-trip and /dcp report.
+ * Scenario — persistence round-trip.
  *
  * - G-PERSIST-01: state written to disk survives a simulated restart —
  *   blocks keep folding and effective marks keep pruning afterwards.
- * - G-REPORT-01: /dcp context report rendering — empty reclaim section,
- *   dual message counts, reclaim section with active blocks + marks,
- *   and the unknown-subcommand help.
  *
  * @module
  */
@@ -96,96 +93,6 @@ export const G_PERSIST_01: Scenario = {
         msg("user", "u2", [textPart("again")], SID),
         msg("assistant", "a2", [toolPart("c3", LONG, { cmd: "echo x" })]),
       ],
-    },
-  ],
-};
-
-const RPT_SID = "golden-g-report-01";
-
-/** Six-message view: first user + 3 tool messages + last user + answer. */
-function reportView(sessionID: string) {
-  return [
-    msg("user", "u0", [textPart("开场问题")], sessionID),
-    msg("assistant", "a1", [toolPart("c1", LONG)]),
-    msg("assistant", "a2", [toolPart("c2", LONG)]),
-    msg("assistant", "a3", [toolPart("c3", LONG)]),
-    msg("user", "u4", [textPart("最后一个问题")], sessionID),
-    msg("assistant", "a5", [textPart("回答完毕")]),
-  ];
-}
-
-/**
- * G-REPORT-01 — /dcp context report and reclaim-section rendering.
- */
-export const G_REPORT_01: Scenario = {
-  id: "G-REPORT-01",
-  sessionID: RPT_SID,
-  config: {
-    // Both protection inputs size the round's map; here both windows are
-    // empty, so the report overlays every effective mark.
-    activeMessages: 0,
-    activeTokens: 0,
-    releasedPercent: 0,
-    compress: {},
-    dedup: { minMessages: 20, thresholdContext: 100000 },
-    purgeErrors: {},
-  },
-  rounds: [
-    {
-      label: "baseline-transform",
-      messages: reportView(RPT_SID),
-    },
-    {
-      label: "dcp-context-no-reclaim",
-      messages: reportView(RPT_SID),
-      action: { kind: "dcp", args: "context" },
-    },
-    {
-      label: "create-block",
-      messages: reportView(RPT_SID),
-      action: {
-        kind: "create-block",
-        plan: {
-          anchorMessageId: "a3",
-          messageIds: ["a1", "a2", "a3"],
-          summary: "report block.",
-          title: "报告块",
-          compressedTokens: 900,
-          summaryTokens: 40,
-        },
-      },
-    },
-    {
-      label: "seed-effective-mark",
-      messages: reportView(RPT_SID),
-      action: {
-        kind: "add-mark",
-        callID: "c1",
-        tokens: 300,
-        effective: true,
-        action: "tool-output",
-      },
-    },
-    {
-      label: "seed-pending-mark",
-      messages: reportView(RPT_SID),
-      action: {
-        kind: "add-mark",
-        callID: "c2",
-        tokens: 500,
-        effective: false,
-        action: "tool-output",
-      },
-    },
-    {
-      label: "dcp-context-with-reclaim",
-      messages: reportView(RPT_SID),
-      action: { kind: "dcp", args: "context" },
-    },
-    {
-      label: "dcp-help-unknown-subcommand",
-      messages: reportView(RPT_SID),
-      action: { kind: "dcp", args: "bogus" },
     },
   ],
 };

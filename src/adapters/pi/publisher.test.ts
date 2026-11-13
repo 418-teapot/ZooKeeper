@@ -88,7 +88,7 @@ describe("createPiRuntime — prepare", () => {
     );
     assert.deepEqual(
       prepared.commands.map((command) => command.name),
-      ["go", "dcp", "dolphin", "mola"],
+      ["go", "dolphin", "mola"],
       "the prepared start holds the commands",
     );
   });
@@ -127,7 +127,6 @@ describe("createPiRuntime — publish", () => {
       ["compress", "decompress"],
     );
     assert.deepEqual(api.commands.map((command) => command.name).sort(), [
-      "dcp",
       "dolphin",
       "go",
       "mola",

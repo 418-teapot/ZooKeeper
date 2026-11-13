@@ -59,7 +59,7 @@ describe("commit / read under a permit", () => {
 
     const value = await runtime.commit(permit, (state) => {
       state.blocks.set(1, { ...BLOCK });
-      state.pendingManualTrigger = true;
+      state.pendingViewChange = true;
       return "done";
     });
 
@@ -70,7 +70,7 @@ describe("commit / read under a permit", () => {
       1,
     );
     assert.equal(
-      runtime.read(permit, (state) => state.pendingManualTrigger),
+      runtime.read(permit, (state) => state.pendingViewChange),
       true,
     );
   });

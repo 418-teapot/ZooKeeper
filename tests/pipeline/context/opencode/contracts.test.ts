@@ -24,7 +24,6 @@ import {
   expectPurgeErrorsTwoTurnEffect,
   expectRangeRejectionsCreateNoBlock,
   expectRejectedToolCallsPreserveView,
-  expectReportExposesMarkAccounting,
   expectStaleBlockUnfolds,
   expectViewChangeReleasesNextTurn,
 } from "../semantic-contracts.js";
@@ -36,7 +35,7 @@ import { G_DEC_02 } from "./scenarios/decompress.js";
 import { G_FOLD_02, G_FOLD_03 } from "./scenarios/fold.js";
 import { G_MS_01, G_MS_02, G_MS_04 } from "./scenarios/marks.js";
 import { G_NUDGE_01 } from "./scenarios/nudgeRefs.js";
-import { G_PERSIST_01, G_REPORT_01 } from "./scenarios/persistReport.js";
+import { G_PERSIST_01 } from "./scenarios/persistReport.js";
 import { G_TOOL_01 } from "./scenarios/tools.js";
 
 /** Session id of the mark-restart fixture. */
@@ -120,15 +119,6 @@ describe("tool rejections (opencode)", () => {
   test("every rejected tool call reports a loud error and leaves the view unchanged", async () => {
     await expectRejectedToolCallsPreserveView(
       G_TOOL_01,
-      createV1PipelineHost(SANDBOX),
-    );
-  });
-});
-
-describe("reclaim accounting (opencode)", () => {
-  test("the /dcp context report counts the effective mark and the pending batch", async () => {
-    await expectReportExposesMarkAccounting(
-      G_REPORT_01,
       createV1PipelineHost(SANDBOX),
     );
   });

@@ -807,7 +807,7 @@ export function createPiRuntimeInstance(
   // difference, so every surface below derives from it.
   const fixedAgent = originAgent(origin);
   // The single pi tool host routes every in-session chat notification
-  // (tool prompts, /dcp reports, command failures) through pi's
+  // (tool prompts, command notices, command failures) through pi's
   // `appendEntry` channel as a `zoo-notice` custom entry — persistent,
   // rendered by the entry renderer, never part of the LLM context (the
   // pi equivalent of v1's ignored noReply message).  `appendEntry` is
@@ -1329,10 +1329,11 @@ export async function preparePiStart(
     },
   }));
 
-  // The `zoo-notice` entry renderer: every notify — tool prompts, /dcp
-  // reports, command failures — posts a `zoo-notice` entry that needs a
-  // renderer, so it is built independently of the profile and the composed
-  // commands.  The renderer itself is duck-typed (no pi package import).
+  // The `zoo-notice` entry renderer: every notify — tool prompts,
+  // command notices, command failures — posts a `zoo-notice` entry that
+  // needs a renderer, so it is built independently of the profile and the
+  // composed commands.  The renderer itself is duck-typed (no pi package
+  // import).
   const noticeRenderer = buildPiNoticeEntryRenderer();
 
   // The fourteen handlers close over the wiring surfaces assembled above;

@@ -32,13 +32,12 @@
  *
  * The context pipeline's per-session records (the persisted state, the model
  * limit, the round view, the pending view-change flag, the session's entry in
- * the agent registry) belong to the plugin instance: the hook, the tools and
- * the `/dcp` command share one `ContextRuntime` per instance, so no session
- * scope may own them.  They are declared by
- * `contextSessionResources(runtime)` in `core/session/resources.ts` and are
- * applied by the session lifecycle coordinator: the `sessionResources`
- * service releases them when the scope stops, and a session deletion drops
- * them after the scope stopped.
+ * the agent registry) belong to the plugin instance: the hook and the tools
+ * share one `ContextRuntime` per instance, so no session scope may own them.
+ * They are declared by `contextSessionResources(runtime)` in
+ * `core/session/resources.ts` and are applied by the session lifecycle
+ * coordinator: the `sessionResources` service releases them when the scope
+ * stops, and a session deletion drops them after the scope stopped.
  *
  * A `release-runtime` stop (the plugin dispose) stops the scope while the
  * session lives on: the runtime records are released and the persisted

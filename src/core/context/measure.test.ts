@@ -140,7 +140,7 @@ describe("measureMessages", () => {
       makeMsg("assistant", ["Response"], {
         usage: { input: 500, output: 100 },
       }),
-      makeMsg("user", ["Ignored /dcp context report"], { hidden: true }),
+      makeMsg("user", ["Ignored synthetic context notice"], { hidden: true }),
       makeMsg("user", ["Normal follow-up"]),
     ];
     const measured = measureMessages(lensMessages);

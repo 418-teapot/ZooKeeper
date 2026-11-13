@@ -4,10 +4,9 @@
  * Encapsulates every host-dependent operation the host-neutral runner
  * drives: the transform invocation through the production pi `context`
  * entry (`buildPiContextHandler` + the composed pruning contribution),
- * tool execution through the real pi tool host, the /dcp command (absent
- * on pi — the seam throws), call-id → mark-target resolution under the
- * pi lens mapping, plan landing with span hashing over the pi transcript,
- * and the pi view projection.
+ * tool execution through the real pi tool host, call-id → mark-target
+ * resolution under the pi lens mapping, plan landing with span hashing
+ * over the pi transcript, and the pi view projection.
  *
  * Session binding: pi `AgentMessage`s carry no session id and the pi
  * adapter names none, so every seam takes the scenario's session id
@@ -72,9 +71,9 @@ import { captureView } from "./capture.js";
  *
  * Runs the selection engine over the full registry with a minimal
  * profile that enables exactly the `context-pruning` hook (plus the
- * `compress` tool when the round advertises it, so the nudge /
- * manual-compress gates see the selected `compress` in their `uses`
- * projection — the same derivation production pi uses).  The per-round
+ * `compress` tool when the round advertises it, so the nudge gate sees
+ * the selected `compress` in its `uses` projection — the same
+ * derivation production pi uses).  The per-round
  * config is captured by the contribution closure, so config overrides
  * land on the right round.  The round's pi tool host is placed into
  * `deps.toolHost` so the release notification posts through the same
@@ -277,17 +276,6 @@ async function runTool(
 }
 
 /**
- * The /dcp command seam — this host does not wire it.
- *
- * Pi itself registers /dcp (pi `registration` `registerCommand`), but the
- * harness has no command surface.  Throws so the runner captures
- * a clear `toolError` naming the gap instead of silently no-op'ing.
- */
-async function handleDcp(): Promise<void> {
-  throw new Error("dcp is not wired in the pi pipeline host");
-}
-
-/**
  * Resolve the (ordinal, regionIndex) of a tool-call id under the pi lens
  * mapping.
  *
@@ -454,7 +442,6 @@ export function createPiPipelineHost(
       ),
     runTool: (action, toolSessionID, config, messages, notifications) =>
       runTool(sandbox, action, toolSessionID, config, messages, notifications),
-    handleDcp,
     resolveMarkTarget,
     landPlan,
     captureView,

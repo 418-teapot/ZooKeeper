@@ -69,7 +69,7 @@ export const POLY_PROFILE = {
     "context-pruning",
   ],
   tools: ["compress", "decompress"],
-  commands: ["go", "dcp", "switch"],
+  commands: ["go", "switch"],
 };
 
 /** A full zoo config carrying the poly profile. */

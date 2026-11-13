@@ -52,7 +52,7 @@ POLY_PROFILE: dict[str, object] = {
         "context-pruning",
     ],
     "tools": ["compress", "decompress"],
-    "commands": ["go", "dcp"],
+    "commands": ["go"],
 }
 
 EXPECTED_AGENTS = [
@@ -72,7 +72,7 @@ MONO_PROFILE: dict[str, object] = {
     "skills": ["git-commit", "grill", "mola-plan", "wiki-query"],
     "hooks": ["context-pruning", "json-error-nudge"],
     "tools": ["compress", "decompress"],
-    "commands": ["go", "dcp"],
+    "commands": ["go"],
 }
 
 # Built-in agents explicitly disabled with ``disable = true`` in

@@ -1,9 +1,9 @@
 /**
  * Unit tests for the pi lane host seam (`host.ts`).
  *
- * Covers the seam methods that the smoke scenario does not drive: the
- * /dcp absence error, call-id → mark-target resolution under the pi lens
- * mapping (linked toolResult, bare toolCall fallback, unknown id), plan
+ * Covers the seam methods that the smoke scenario does not drive:
+ * call-id → mark-target resolution under the pi lens mapping (linked
+ * toolResult, bare toolCall fallback, unknown id), plan
  * landing over the pi transcript (span hashing, absent-id no-op, empty
  * transcript no-op), and the tool path through the REAL pi tool host
  * (compress / decompress dispatch with their loud Chinese guidance
@@ -59,21 +59,6 @@ function toolView(): PiAgentMessage[] {
     assistantMsg([textPart("done")]),
   ];
 }
-
-describe("pi host — /dcp absence", () => {
-  test("handleDcp throws the pi-specific absence error", async () => {
-    const host = createPiPipelineHost(SANDBOX);
-    await expect(
-      host.handleDcp(
-        "pi-host-dcp",
-        "compress",
-        { dedup: {}, purgeErrors: {} },
-        [],
-        [],
-      ),
-    ).rejects.toThrow("dcp is not wired in the pi pipeline host");
-  });
-});
 
 describe("pi host — resolveMarkTarget", () => {
   test("resolves a call id to its linked toolResult's tool-output region", () => {

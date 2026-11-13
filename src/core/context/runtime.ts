@@ -50,27 +50,23 @@ import type { SessionState } from "./state.js";
 import { createStateStore, type StateStore } from "./store.js";
 
 /**
- * In-memory-only flags carried on the session state object by sibling
- * units (the compress / decompress tools, the pipeline, and the /dcp
- * command).
+ * In-memory-only flag carried on the session state object by sibling
+ * units (the compress / decompress tools and the pipeline).
  *
- * Not part of the persisted `SessionState` schema — one-shot signals
+ * Not part of the persisted `SessionState` schema — a one-shot signal
  * carried by the committed state and dropped with its cache entry:
  *
- *  - `pendingManualTrigger` injects the synthetic compress command on the
- *    next turn;
  *  - `pendingViewChange` forces the next release regardless of the
  *    releasedPercent gate.
  *
- * Both are written on the state draft, so they commit and fail with the
- * state they belong to.  Loss on restart is benign.
+ * It is written on the state draft, so it commits and fails with the
+ * state it belongs to.  Loss on restart is benign.
  */
 export interface RuntimeFlags {
-  pendingManualTrigger?: boolean;
   pendingViewChange?: boolean;
 }
 
-/** The session state plus the runtime-only flag fields. */
+/** The session state plus the runtime-only flag field. */
 export type RuntimeFlaggedState = SessionState & RuntimeFlags;
 
 /**

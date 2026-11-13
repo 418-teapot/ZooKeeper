@@ -46,7 +46,7 @@ const POLY_PROFILE = {
     "context-pruning",
   ],
   tools: ["compress", "decompress"],
-  commands: ["go", "dcp"],
+  commands: ["go", "custom"],
 };
 
 function warnsOf(event: string): Array<Record<string, unknown>> {

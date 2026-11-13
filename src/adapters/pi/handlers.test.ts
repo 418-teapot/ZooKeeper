@@ -39,6 +39,7 @@ import {
   startPi,
   startPiRuntime,
 } from "../../testkits/pi-wiring.js";
+import { makeTmpDir } from "../../testkits/tmp.js";
 import { _getBufferForTesting, _resetForTesting } from "../../utils/logger.js";
 import { createPiEventHandlers, type PiEventHandlerDeps } from "./handlers.js";
 import { createPiLifecycleWiring } from "./lifecycle-wiring.js";
@@ -1683,18 +1684,21 @@ describe("lifecycle scope", () => {
 
   it("a command execution bridge admits the call for the event's session", async () => {
     const api = mockApi();
-    await startInstance(piScope(POLY_ZOO, MODES_RAW), api as any);
-    const dcp = api.commands.find((command) => command.name === "dcp");
-    assert.ok(dcp && typeof dcp.handler === "function");
+    const dir = makeTmpDir("zoo-pi-command-bridge");
+    await startInstance(piScope(POLY_ZOO, MODES_RAW), api as any, {
+      directory: dir,
+    });
+    const go = api.commands.find((command) => command.name === "go");
+    assert.ok(go && typeof go.handler === "function");
     const before = api.appendedEntries.length;
 
-    await (dcp.handler as (args: string, ctx: unknown) => Promise<void>)("", {
+    await (go.handler as (args: string, ctx: unknown) => Promise<void>)("", {
       sessionManager: { getSessionId: () => "sess-command-first" },
       ui: { notify: () => {} },
     });
 
-    // The admitted command body ran: with no context report available it
-    // posts its failure notice into the session chat.
+    // The admitted command body ran: with no plan to hand off it posts
+    // its failure notice into the session chat.
     assert.equal(api.appendedEntries.length - before, 1);
     assert.equal(api.appendedEntries.at(-1)?.customType, "zoo-notice");
   });

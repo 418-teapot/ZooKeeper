@@ -398,10 +398,10 @@ describe("permit-gated commit", () => {
     const { manager } = makeManager(dir);
     const permit = makePermit("sess-commit-6");
     await manager.commit(permit, (state) => {
-      (state as RuntimeFlaggedState).pendingManualTrigger = true;
+      (state as RuntimeFlaggedState).pendingViewChange = true;
     });
     const observed = await manager.commit(permit, (state) => {
-      return (state as RuntimeFlaggedState).pendingManualTrigger;
+      return (state as RuntimeFlaggedState).pendingViewChange;
     });
     assert.equal(observed, true);
   });

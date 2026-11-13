@@ -2,9 +2,9 @@
  * Scenario registry, pi lane — the ordered list of every pi scenario.
  *
  * The list mirrors the opencode corpus in pi-native message shapes and
- * pi numbering (G-REPORT-01 is absent: the pi host wires no /dcp command
- * seam), plus the smoke scenario and the two pi-specific scenarios
- * (PI-PAIR-01 pair folding, PI-SUMMARY-01 summary materialization).
+ * pi numbering, plus the smoke scenario and the two pi-specific
+ * scenarios (PI-PAIR-01 pair folding, PI-SUMMARY-01 summary
+ * materialization).
  *
  * @module
  */

@@ -3,14 +3,14 @@
  *
  * Focused suite covering the handler contracts and the pipeline phase
  * wiring (state → history → release → fold + block maintenance →
- * two producers → view render → nudge / manual compress → save):
+ * two producers → view render → nudge → save):
  *
  * - Release notification fires only for a written edit, text carries the
  *   "上下文清理" / "约回收" wording.
  * - Log field sets: `prune_completed` counts effective marks
  *   only, `marks_released` carries the forced field and reports the
- *   released marks apart from the written edits, `nudge_injected` /
- *   `manual_compress_injected` carry their payloads.
+ *   released marks apart from the written edits, `nudge_injected`
+ *   carries its payload.
  * - Robust no-ops for null / undefined / empty inputs and for a lapsed
  *   permit.
  * - The unit registration contributes the transform handler
@@ -240,8 +240,6 @@ const TEST_SESSION_IDS = [
   "sess-nudge-toast-urgent",
   "sess-toast-wire",
   "sess-toast-wire-noui",
-  "sess-manual-basic",
-  "sess-manual-no-tool",
   "sess-dedup-marked",
   "sess-dedup-gated",
   "sess-dedup-pending",
@@ -1785,130 +1783,6 @@ describe("context-nudge injection", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Manual compress trigger (pendingManualTrigger)
-// ---------------------------------------------------------------------------
-
-describe("manual compress trigger", () => {
-  /** Two-turn view with the compress section thresholds disabled. */
-  function manualMessages(sessionID: string): TestMessageEntry[] {
-    return [
-      msg("user", "u1", [textPart("hello")], sessionID),
-      msg("assistant", "a1", [toolPart("data one")], undefined, {
-        input: 150000,
-        output: 100,
-      }),
-      msg("user", "u2", [textPart("again")], sessionID),
-      msg("assistant", "a2", [toolPart("data two")]),
-    ];
-  }
-
-  function manualConfig(activeMessages: number) {
-    return {
-      activeMessages,
-      activeTokens: 0,
-      compress: { thresholdTokens: 0 },
-      dedup: {},
-      purgeErrors: {},
-    };
-  }
-
-  it("injects the synthetic user command at the END and clears the flag", async () => {
-    const sessionID = "sess-manual-basic";
-    const state = stateOf(sessionID);
-    state.pendingManualTrigger = true;
-
-    const messages = manualMessages(sessionID);
-    await transform(adapter, messages, manualConfig(2), undefined, true);
-
-    assert.equal(messages.length, 5, "synthetic command appended");
-    const last = messages[messages.length - 1];
-    assert.equal(last.info.id, "zoo-manual-compress");
-    assert.equal(last.info.role, "user");
-    assert.equal(last.info.sessionID, sessionID);
-    const text = (last.parts?.[0] as { text?: string }).text ?? "";
-    assert.ok(
-      text.startsWith("请立即使用 compress 工具压缩历史上下文"),
-      "user-instruction tone opener",
-    );
-    // activeMessages=2 + the instruction before it → window is a1
-    // only (m2).
-    assert.ok(text.includes("可压缩窗口：m2–m2"), "window payload attached");
-    // One-shot: the flag is cleared after injection.
-    assert.equal(
-      stateOf(sessionID).pendingManualTrigger,
-      false,
-      "flag cleared",
-    );
-
-    // manual_compress_injected log carries the eligibility payload.
-    const entry = _getBufferForTesting().find(
-      (e) => e.event === "manual_compress_injected",
-    ) as Record<string, unknown> | undefined;
-    assert.ok(entry, "manual_compress_injected log event");
-    assert.equal(entry.startRef, "m2");
-    assert.equal(entry.endRef, "m2");
-    assert.equal(typeof entry.reclaimTokens, "number");
-  });
-
-  it("clears a stale flag without injecting when active_messages is missing", async () => {
-    const sessionID = "sess-manual-no-active-messages";
-    const state = stateOf(sessionID);
-    state.pendingManualTrigger = true;
-
-    const messages = manualMessages(sessionID);
-    await transform(
-      adapter,
-      messages,
-      {
-        activeTokens: 0,
-        compress: { thresholdTokens: 0 },
-        dedup: {},
-        purgeErrors: {},
-      },
-      undefined,
-      true,
-    );
-
-    assert.equal(
-      messages.length,
-      4,
-      "no injection without the shared active keys",
-    );
-    assert.equal(
-      stateOf(sessionID).pendingManualTrigger,
-      false,
-      "stale flag cleared",
-    );
-    const entries = _getBufferForTesting();
-    assert.ok(
-      entries.some((e) => e.event === "manual_compress_skipped"),
-      "manual_compress_skipped warn event",
-    );
-  });
-
-  it("clears a stale flag without injecting when the compress tool is absent", async () => {
-    const sessionID = "sess-manual-no-tool";
-    const state = stateOf(sessionID);
-    state.pendingManualTrigger = true;
-
-    const messages = manualMessages(sessionID);
-    await transform(adapter, messages, manualConfig(2), undefined, false);
-
-    assert.equal(messages.length, 4, "no injection without the compress tool");
-    assert.equal(
-      stateOf(sessionID).pendingManualTrigger,
-      false,
-      "stale flag cleared",
-    );
-    const entries = _getBufferForTesting();
-    assert.ok(
-      entries.some((e) => e.event === "manual_compress_skipped"),
-      "manual_compress_skipped warn event",
-    );
-  });
-});
-
-// ---------------------------------------------------------------------------
 // Config gating combinations
 // ---------------------------------------------------------------------------
 
@@ -2248,7 +2122,6 @@ describe("an uncommitted round leaves nothing behind", () => {
     "purge-errors_marked",
     "refs_assigned",
     "nudge_injected",
-    "manual_compress_injected",
     "prune_completed",
   ];
 

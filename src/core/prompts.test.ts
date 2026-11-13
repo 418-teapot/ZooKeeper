@@ -3,9 +3,8 @@
  *
  * Covers the `compress-usage` skill pointer: both nudge levels
  * carry the EXACT pointer (an inline copy would fail the equality
- * assertion), the nudge template still exposes the `{TEACHING}` slot,
- * and the manual compress template points at the `compress-usage`
- * skill instead of embedding segmentation teaching inline.
+ * assertion), and the nudge template still exposes the `{TEACHING}`
+ * slot.
  */
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
@@ -13,7 +12,6 @@ import {
   COMPRESS_USAGE_POINTER,
   CONTEXT_NUDGE_LEVELS,
   CONTEXT_NUDGE_TEMPLATE,
-  MANUAL_COMPRESS_TEMPLATE,
 } from "./prompts.js";
 
 describe("compress-usage skill pointer", () => {
@@ -39,12 +37,5 @@ describe("compress-usage skill pointer", () => {
         `${level} teaching must reference the pointer, not a copy`,
       );
     }
-  });
-
-  it("points the manual compress template at the compress-usage skill", () => {
-    assert.ok(
-      MANUAL_COMPRESS_TEMPLATE.includes("compress-usage"),
-      "manual compress template must reference the compress-usage skill",
-    );
   });
 });

@@ -1,6 +1,6 @@
 /**
  * Tests for the lens context report producer (`computeContextReportLens`)
- * and the dual-scope message counter (`countFoldedMessages`).
+ * and the folded transcript materializer (`foldedLensTranscript`).
  *
  * Fixtures are built directly as lens `HostMessage`s (through the core
  * testkit), so the tests no longer depend on the OpenCode v1 adapter.
@@ -23,7 +23,6 @@ import {
 } from "../../testkits/context.js";
 import {
   computeContextReportLens,
-  countFoldedMessages,
   foldedLensTranscript,
 } from "./context-report-lens.js";
 import type { HostMessage, ViewItem } from "./lens.js";
@@ -56,7 +55,6 @@ describe("computeContextReportLens", () => {
       total: 0,
       exact: 0,
       heuristic: 0,
-      messageCount: 0,
       cacheHitRate: null,
       categories: { user: 0, assistant: 0, tool: 0, system: 0 },
     });
@@ -73,13 +71,12 @@ describe("computeContextReportLens", () => {
       total: 250,
       exact: 250,
       heuristic: 0,
-      messageCount: 2,
       cacheHitRate: 0, // read 0 / (input 200 + 0 + 0)
       categories: { user: 2, assistant: 50, tool: 0, system: 198 },
     });
   });
 
-  it("excludes hidden messages from the count and categories", () => {
+  it("excludes hidden messages from the categories", () => {
     const messages: HostMessage[] = [
       makeMsg("user", ["Hello"]),
       makeMsg("user", ["secret"], { hidden: true }),
@@ -89,7 +86,6 @@ describe("computeContextReportLens", () => {
       total: 120,
       exact: 120,
       heuristic: 0,
-      messageCount: 2,
       cacheHitRate: 0,
       categories: { user: 2, assistant: 20, tool: 0, system: 98 },
     });
@@ -104,7 +100,6 @@ describe("computeContextReportLens", () => {
       total: 4,
       exact: 0,
       heuristic: 4,
-      messageCount: 2,
       cacheHitRate: null,
       categories: { user: 2, assistant: 2, tool: 0, system: 0 },
     });
@@ -144,7 +139,6 @@ describe("computeContextReportLens", () => {
       total: 360,
       exact: 360,
       heuristic: 0,
-      messageCount: 5,
       cacheHitRate: 0,
       categories: { user: 3, assistant: 68, tool: 0, system: 289 },
     });
@@ -163,7 +157,6 @@ describe("computeContextReportLens", () => {
       total: 600,
       exact: 600,
       heuristic: 0,
-      messageCount: 2,
       cacheHitRate: 0,
       categories: { user: 3, assistant: 100, tool: 23, system: 474 },
     });
@@ -405,58 +398,3 @@ describe("foldedLensTranscript", () => {
     assert.equal(folded[0].regions[0].get(), "[Block 1 条]\ngone");
   });
 });
-
-// ---------------------------------------------------------------------------
-// countFoldedMessages — dual-scope message counts
-// ---------------------------------------------------------------------------
-
-describe("countFoldedMessages", () => {
-  it("counts summary items as one each and originals by hidden flag", () => {
-    const messages: HostMessage[] = [
-      makeHiddenUser(),
-      makeUser(),
-      makeHiddenUser(),
-      makeUser(),
-    ];
-    const items: ViewItem[] = [
-      { type: "summary", block: { start: 0, end: 2, summary: "s" } },
-      { type: "original", start: 2, end: 3 },
-      { type: "original", start: 3, end: 4 },
-    ];
-    const counts = countFoldedMessages(items, messages);
-    // storage: non-hidden = 2 (idx 1, 3).  folded: summary=1 + original
-    // idx2 (hidden→0) + original idx3 (non-hidden→1) = 2.
-    assert.equal(counts.storageMessageCount, 2);
-    assert.equal(counts.foldedMessageCount, 2);
-  });
-
-  it("folded count differs from storage when a block folds hidden and visible", () => {
-    const messages: HostMessage[] = [
-      makeUser(), // 0
-      makeHiddenUser(), // 1
-      makeUser(), // 2
-      makeUser(), // 3
-    ];
-    const items: ViewItem[] = [
-      { type: "original", start: 0, end: 1 },
-      // Block covers ordinals 1..3 (hidden + 2 visible) → one summary.
-      { type: "summary", block: { start: 1, end: 4, summary: "s" } },
-    ];
-    const counts = countFoldedMessages(items, messages);
-    // storage: non-hidden = 3 (0, 2, 3).  folded: original 0 (1) + summary (1) = 2.
-    assert.equal(counts.storageMessageCount, 3);
-    assert.equal(counts.foldedMessageCount, 2);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Test helpers
-// ---------------------------------------------------------------------------
-
-function makeUser(): HostMessage {
-  return { role: "user", hidden: false, regions: [] };
-}
-
-function makeHiddenUser(): HostMessage {
-  return { role: "user", hidden: true, regions: [] };
-}

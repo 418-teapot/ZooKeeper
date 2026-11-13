@@ -774,7 +774,6 @@ tools = [
 ]
 commands = [
   "go",
-  "dcp",
   "switch",
   "debug",
 ]
@@ -810,7 +809,6 @@ tools = [
 ]
 commands = [
   "go",
-  "dcp",
   "switch",
   "debug",
 ]

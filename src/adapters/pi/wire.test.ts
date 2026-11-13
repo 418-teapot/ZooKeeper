@@ -160,7 +160,7 @@ describe("composePi — profile-driven selection", () => {
     // Tool units require a tool host; this profile-driven composition
     // carries none, so no tool activates.  Commands still compose.
     assert.deepEqual(Object.keys(composed.tools).sort(), []);
-    assert.deepEqual(Object.keys(composed.commands).sort(), ["dcp", "go"]);
+    assert.deepEqual(Object.keys(composed.commands).sort(), ["go"]);
   });
 
   it("agents=[dolphin] → only dolphin, no skills", async () => {
@@ -223,9 +223,20 @@ describe("composePi — profile-driven selection", () => {
     };
     // The pi switch surface is what contributes the `/<agent>` commands, so
     // a stub host brings them into the same composition.
-    const { composed } = await compose(piScope(POLY_ZOO, MODES_RAW), {
-      switchHost,
-    });
+    const { composed } = await compose(
+      piScope(
+        {
+          ...POLY_ZOO,
+          // `/debug` registers only when the wake budget parses.
+          autodebug: { max_wakes: 3 },
+          mode: {
+            poly: { ...POLY_PROFILE, commands: ["go", "switch", "debug"] },
+          },
+        },
+        MODES_RAW,
+      ),
+      { switchHost },
+    );
     const plan = buildPiCommandRegistrationPlan(composed.commands);
     assert.deepEqual(
       plan
@@ -235,7 +246,8 @@ describe("composePi — profile-driven selection", () => {
       ["dolphin", "go", "mola"],
     );
     assert.equal(
-      plan.find((registration) => registration.name === "dcp")?.replacesSession,
+      plan.find((registration) => registration.name === "debug")
+        ?.replacesSession,
       false,
     );
   });
@@ -1200,19 +1212,19 @@ describe("startPi — registerCommand wiring", () => {
     const api = mockApi();
     // rawConfig supplies the `[agent.*].mode` table, so the switch unit
     // derives the primaries (dolphin, mola) and contributes a command
-    // per primary alongside go/dcp — names are config-derived.
+    // per primary alongside `/go` — names are config-derived.
     await startInstance(piScope(POLY_ZOO, MODES_RAW), api as any);
     const names = api.commands.map((c) => c.name).sort();
-    assert.deepEqual(names, ["dcp", "dolphin", "go", "mola"]);
+    assert.deepEqual(names, ["dolphin", "go", "mola"]);
   });
 
   it("preserves description and a handler on each registration", async () => {
     const api = mockApi();
     await startInstance(piScope(POLY_ZOO, MODES_RAW), api as any);
-    const dcp = api.commands.find((c) => c.name === "dcp");
-    assert.ok(dcp, "dcp must be registered");
-    assert.equal(dcp.description, "显示上下文用量与缓存命中率");
-    assert.equal(typeof dcp.handler, "function");
+    const go = api.commands.find((c) => c.name === "go");
+    assert.ok(go, "go must be registered");
+    assert.equal(go.description, "Approve plan and handoff to execution");
+    assert.equal(typeof go.handler, "function");
   });
 
   it("null profile registers no commands (fail-closed)", async () => {
@@ -1237,77 +1249,63 @@ describe("startPi — registerCommand wiring", () => {
     assert.deepEqual(api.commands, []);
   });
 
-  it("/dcp context appends a zoo-notice custom entry (persistent, no LLM context)", async () => {
+  it("a command notification appends a zoo-notice custom entry (persistent, no LLM context)", async () => {
     const api = mockApi();
-    const runtime = createContextRuntime();
-    await startInstance(piScope(POLY_ZOO, MODES_RAW), api as any, {
-      contextRuntime: runtime,
-    });
-    const dcp = api.commands.find((c) => c.name === "dcp");
-    assert.ok(dcp && typeof dcp.handler === "function");
-
-    // pi offers no host history read, so /dcp reports over the round view
-    // published by the context transform — the projection the model holds.
-    runtime.publishRoundView("sess-dcp", {
-      projection: project(
-        [
-          {
-            role: "user",
-            hidden: false,
-            regions: [{ kind: "content", get: () => "hi" }],
-          },
-        ],
-        [],
+    await startInstance(
+      piScope(
+        {
+          ...POLY_ZOO,
+          autodebug: { max_wakes: 3 },
+          mode: { poly: { ...POLY_PROFILE, commands: ["debug"] } },
+        },
+        MODES_RAW,
       ),
-      numbered: [],
+      api as any,
+    );
+    const debug = api.commands.find((c) => c.name === "debug");
+    assert.ok(debug && typeof debug.handler === "function");
+
+    // Empty arguments only show the usage hint — no Case is created.
+    await (debug.handler as (args: string, ctx: unknown) => Promise<void>)("", {
+      sessionManager: { getSessionId: () => "sess-notice" },
     });
-    const ctx = {
-      sessionManager: {
-        getSessionId: () => "sess-dcp",
-      },
-    };
-    try {
-      await (dcp.handler as (args: string, ctx: unknown) => Promise<void>)(
-        "context",
-        ctx,
-      );
-    } finally {
-      runtime.clearRoundView("sess-dcp");
-    }
 
     assert.ok(
       api.appendedEntries.length >= 1,
-      "dcp must append a custom entry",
+      "the command must append a custom entry",
     );
     const entry = api.appendedEntries.find(
       (e) => e.customType === "zoo-notice",
     );
-    assert.ok(entry, "dcp report must go through the zoo-notice custom entry");
+    assert.ok(entry, "the notice must go through the zoo-notice custom entry");
     assert.equal(typeof (entry.data as any)?.content, "string");
-    assert.ok(String((entry.data as any)?.content).includes("上下文报告"));
+    assert.ok(String((entry.data as any)?.content).includes("用法"));
   });
 
-  it("/dcp errors route through notifySessionError into appendEntry", async () => {
+  it("command errors route through notifySessionError into appendEntry", async () => {
     const api = mockApi();
-    await startInstance(piScope(POLY_ZOO, MODES_RAW), api as any);
-    const dcp = api.commands.find((c) => c.name === "dcp");
-    assert.ok(dcp && typeof dcp.handler === "function");
+    const dir = makeTmpDir("zoo-pi-go-failure");
+    await startInstance(piScope(POLY_ZOO, MODES_RAW), api as any, {
+      directory: dir,
+    });
+    const go = api.commands.find((c) => c.name === "go");
+    assert.ok(go && typeof go.handler === "function");
 
-    // pi's tool host exposes no history read and no round view is
-    // published, so `/dcp context` fails to resolve its source; the
-    // handler surfaces the failure through notifySessionError →
+    // The empty directory holds no plan for `/go`, so the handoff throws
+    // and the handler surfaces the failure through notifySessionError →
     // appendEntry.
-    await (dcp.handler as (args: string, ctx: unknown) => Promise<void>)(
-      "context",
-      { sessionManager: { getSessionId: () => "sess-dcp" } },
-    );
+    await (go.handler as (args: string, ctx: unknown) => Promise<void>)("", {
+      sessionManager: { getSessionId: () => "sess-go-failure" },
+    });
 
     const entry = api.appendedEntries.find(
       (e) => e.customType === "zoo-notice",
     );
-    assert.ok(entry, "dcp error must be surfaced via appendEntry");
+    assert.ok(entry, "the command error must be surfaced via appendEntry");
     assert.ok(
-      String((entry.data as any)?.content).includes("无法获取会话消息"),
+      String((entry.data as any)?.content).includes(
+        'No plan with status "planning-done" found',
+      ),
     );
   });
 
@@ -1387,10 +1385,10 @@ describe("startPi — registerCommand wiring", () => {
     assert.equal(typeof renderer.renderer, "function");
   });
 
-  it("registers the zoo-notice renderer even without dcp enabled", async () => {
+  it("registers the zoo-notice renderer even without commands enabled", async () => {
     // The renderer is unconditional: every in-session notification is a
-    // zoo-notice entry, so a profile that enables no /dcp command still
-    // needs the renderer.
+    // zoo-notice entry, so a profile that enables no command still needs
+    // the renderer.
     const api = mockApi();
     await startInstance(
       piScope(
@@ -1408,19 +1406,20 @@ describe("startPi — registerCommand wiring", () => {
         (r) =>
           r.customType === "zoo-notice" && typeof r.renderer === "function",
       ),
-      "zoo-notice renderer must be registered even without /dcp",
+      "zoo-notice renderer must be registered even without commands",
     );
   });
 
-  it("non-null profile with dcp enabled still registers the renderer", async () => {
-    // A profile that registers dcp (but no other command) must register
-    // the zoo-notice entry renderer so reports draw a card in the TUI.
+  it("non-null profile with a command enabled still registers the renderer", async () => {
+    // A profile that registers one command (but nothing else) must
+    // register the zoo-notice entry renderer so notices draw a card in
+    // the TUI.
     const api = mockApi();
     await startInstance(
       piScope(
         {
           mode: {
-            poly: { ...POLY_PROFILE, commands: ["dcp"] },
+            poly: { ...POLY_PROFILE, commands: ["go"] },
           },
         },
         MODES_RAW,
@@ -4744,12 +4743,14 @@ describe("startPi — tool and command admission", () => {
 
   it("runs no command after the session stopped", async () => {
     const api = mockApi();
+    const dir = makeTmpDir("zoo-pi-command-after-stop");
     const handlers = await startInstance(
       piScope(POLY_ZOO, MODES_RAW),
       api as any,
+      { directory: dir },
     );
-    const dcp = api.commands.find((command) => command.name === "dcp");
-    assert.ok(dcp && typeof dcp.handler === "function");
+    const go = api.commands.find((command) => command.name === "go");
+    assert.ok(go && typeof go.handler === "function");
     await handlers.sessionStart(
       { type: "session_start", reason: "startup" },
       SESSION_CTX,
@@ -4760,26 +4761,26 @@ describe("startPi — tool and command admission", () => {
     );
     const appended = api.appendedEntries.length;
 
-    await (dcp.handler as (args: string, ctx: unknown) => Promise<void>)(
-      "context",
+    await (go.handler as (args: string, ctx: unknown) => Promise<void>)(
+      "",
       SESSION_CTX,
     );
 
-    // The command body appends a report when it runs; a late command adds
-    // nothing.
+    // The command body appends a failure notice when it runs; a late
+    // command adds nothing.
     assert.equal(api.appendedEntries.length, appended);
   });
 
   it("runs no command without a session id", async () => {
     const api = mockApi();
-    await startInstance(piScope(POLY_ZOO, MODES_RAW), api as any);
-    const dcp = api.commands.find((command) => command.name === "dcp");
-    assert.ok(dcp && typeof dcp.handler === "function");
+    const dir = makeTmpDir("zoo-pi-command-no-session");
+    await startInstance(piScope(POLY_ZOO, MODES_RAW), api as any, {
+      directory: dir,
+    });
+    const go = api.commands.find((command) => command.name === "go");
+    assert.ok(go && typeof go.handler === "function");
 
-    await (dcp.handler as (args: string, ctx: unknown) => Promise<void>)(
-      "context",
-      {},
-    );
+    await (go.handler as (args: string, ctx: unknown) => Promise<void>)("", {});
 
     assert.equal(api.appendedEntries.length, 0);
   });

@@ -126,7 +126,7 @@ export async function applyToolDefinitionContributions(
 
 /** One pi `registerCommand` registration assembled from a contribution. */
 interface PiCommandRegistration {
-  /** Command name (invocation name, e.g. `"dcp"`). */
+  /** Command name (invocation name, e.g. `"go"`). */
   name: string;
   /** Command description surfaced by pi's command list. */
   description: string;

@@ -6,8 +6,8 @@
  * hit-rate trend between the last two completed assistants, and the
  * cumulative cache hit rate.  These are the lens replacements for the
  * v1 adapter's `computeTokenBreakdown` / `computeCacheTrend` /
- * `computeCumulativeCacheRate`, so the sidebar and `/dcp` share one
- * measurement pipeline and no host message structures are unpacked.
+ * `computeCumulativeCacheRate`, so the sidebar uses one measurement
+ * pipeline and no host message structures are unpacked.
  *
  * All three read `HostMessage.usage` only: a message without usage
  * contributes nothing, and the cache-rate convention is

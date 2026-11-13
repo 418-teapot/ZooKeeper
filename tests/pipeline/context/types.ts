@@ -5,7 +5,7 @@
  * A scenario is an ordered sequence of rounds.  Each round carries the
  * message view of that turn (a fresh array every round — the lane splices
  * the round's view back into it) plus an optional programmatic action that
- * runs BEFORE the transform (tool calls, /dcp commands, mark seeding,
+ * runs BEFORE the transform (tool calls, mark seeding,
  * state restart).  The runner captures the observable output of every
  * round: the final view structure, tool results/errors, and notification
  * texts.
@@ -71,12 +71,11 @@ export type ToolRoundAction =
  * Programmatic step executed before the round's transform.
  *
  * Each kind drives a public entry point of the context-pruning
- * pipeline: the compress/decompress tool factories, the /dcp command
- * handler, the marks/blocks state APIs, or a simulated process restart.
+ * pipeline: the compress/decompress tool factories, the marks/blocks
+ * state APIs, or a simulated process restart.
  */
 export type RoundAction =
   | ToolRoundAction
-  | { kind: "dcp"; args: string }
   | {
       kind: "add-mark";
       callID: string;
@@ -88,7 +87,6 @@ export type RoundAction =
   | { kind: "stale-block"; blockId: number }
   | { kind: "restart" }
   | { kind: "set-model-limit"; context: number }
-  | { kind: "arm-manual-trigger" }
   | { kind: "set-pending-view-change" };
 
 /**
@@ -130,7 +128,7 @@ export interface Scenario<M = unknown> {
   sessionID: string;
   /** Transform config shared by all rounds. */
   config: ContextPruningConfig;
-  /** Default `hasCompressTool` for the transform (nudge/manual gates). */
+  /** Default `hasCompressTool` for the transform (nudge gate). */
   hasCompressTool?: boolean;
   /** The ordered rounds. */
   rounds: ScenarioRound<M>[];
@@ -203,7 +201,7 @@ export interface ScenarioCapture {
  *
  * Every member depends on the host's message shape or adapter and is
  * therefore implemented per lane: the transform invocation, tool
- * execution, /dcp handling, call-id → mark-target resolution, plan
+ * execution, call-id → mark-target resolution, plan
  * landing (span hashing over the host transcript), and the final view
  * projection.
  */
@@ -253,22 +251,6 @@ export interface PipelineHost<M> {
     messages: M[],
     notifications: string[],
   ): Promise<{ result: string | null; error: string | null }>;
-  /**
-   * Handle a /dcp command against the round's message view.
-   *
-   * @param sessionID - The scenario session id.
-   * @param args - The raw command argument string.
-   * @param config - The merged transform config.
-   * @param messages - The round's message view.
-   * @param notifications - Notification accumulator (mutated).
-   */
-  handleDcp(
-    sessionID: string,
-    args: string,
-    config: ContextPruningConfig,
-    messages: M[],
-    notifications: string[],
-  ): Promise<void>;
   /**
    * Resolve a tool call id to its mark-target key on the core state.
    *

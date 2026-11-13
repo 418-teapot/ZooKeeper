@@ -1,10 +1,9 @@
 /**
- * Lens-based context report producer — computes the `/dcp context`
- * report (`ContextReport`) from the host-agnostic lens transcript
+ * Lens-based context report producer — computes the context report
+ * (`ContextReport`) from the host-agnostic lens transcript
  * (`HostMessage[]`), with no host message structures unpacked.
  *
  * Field rules:
- * - `messageCount` — non-hidden messages.
  * - `exact` — API-reported tokens of the last completed assistant
  *   (input + output + reasoning + cache read + cache write).
  * - `cacheHitRate` — `cacheRead / (input + cacheRead + cacheWrite)` of
@@ -33,13 +32,8 @@
  * Compaction boundary: category statistics (user/tool/assistant) only
  * reflect messages at/after the last message marked `compaction` (a
  * host-native compaction summary); messages before it are historical and
- * excluded.  The total/exact/heuristic/messageCount fields are
- * unaffected — they always cover the whole transcript.
- *
- * The dual-scope ("模型可见 vs 存储") message counts are exposed as a
- * separate helper (`countFoldedMessages`) so the `ContextReport` type
- * stays unchanged — the formatter receives those counts via
- * `FormatContextReportOptions`.
+ * excluded.  The total/exact/heuristic fields are unaffected — they
+ * always cover the whole transcript.
  *
  * A consumer that reports over the model-visible view materializes the
  * folded view as a lens transcript with `foldedLensTranscript` and feeds
@@ -91,9 +85,8 @@ function categoryStartIndex(messages: HostMessage[]): number {
  * Compute a context report from the host-agnostic lens transcript.
  *
  * Hidden messages are skipped by estimation, the heuristic tail, and the
- * category breakdown, and excluded from `messageCount`.  Category
- * statistics start at the last compaction boundary (see
- * `categoryStartIndex`).
+ * category breakdown.  Category statistics start at the last compaction
+ * boundary (see `categoryStartIndex`).
  *
  * @param messages - The lens transcript (host-projected, ordinal-aligned).
  * @returns The computed context report.
@@ -102,8 +95,6 @@ export function computeContextReportLens(
   messages: HostMessage[] | undefined | null,
 ): ContextReport {
   const transcript = messages ?? [];
-
-  const messageCount = transcript.filter((m) => !m?.hidden).length;
 
   // ── Step 0: Find compaction boundary ──────────────────────────────
   // After compaction, category statistics only reflect messages at/after
@@ -191,7 +182,6 @@ export function computeContextReportLens(
     total,
     exact,
     heuristic,
-    messageCount,
     cacheHitRate,
     categories: {
       user: userTokens,
@@ -249,41 +239,4 @@ export function foldedLensTranscript(
     }
   }
   return hasSummary ? folded : undefined;
-}
-
-// ---------------------------------------------------------------------------
-// Dual-scope message counts
-// ---------------------------------------------------------------------------
-
-/**
- * Dual-scope message counts of a folded view ("模型可见 vs 存储").
- *
- * `storageMessageCount` is the number of non-hidden messages in storage.
- * `foldedMessageCount` is the model-visible count over the folded view
- * items: each summary item counts as one (the synthetic user message is
- * not hidden), and each original item counts the non-hidden messages
- * inside its unit interval (a tool call and its result may span two).
- *
- * @param items - The folded view items, in view order.
- * @param messages - The lens transcript aligned 1:1 with the items'
- *   original ordinals.
- * @returns The two non-hidden message counts.
- */
-export function countFoldedMessages(
-  items: ViewItem[],
-  messages: HostMessage[],
-): { foldedMessageCount: number; storageMessageCount: number } {
-  const storageMessageCount = messages.filter((m) => !m?.hidden).length;
-  let foldedMessageCount = 0;
-  for (const item of items) {
-    if (item.type === "summary") {
-      foldedMessageCount += 1;
-    } else {
-      for (let ordinal = item.start; ordinal < item.end; ordinal++) {
-        const msg = messages[ordinal];
-        if (msg && !msg.hidden) foldedMessageCount += 1;
-      }
-    }
-  }
-  return { foldedMessageCount, storageMessageCount };
 }

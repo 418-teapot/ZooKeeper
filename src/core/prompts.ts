@@ -148,31 +148,6 @@ RESURRECTED PLAN = BROKEN TRACKING = LOST PROGRESS.
 </internal-reminder>`;
 
 // ---------------------------------------------------------------------------
-// Manual compress template (synthetic user message for /dcp compress)
-// ---------------------------------------------------------------------------
-
-/**
- * Template for the synthetic user message injected by the transform one
- * turn after a `/dcp compress` command (pendingManualTrigger one-shot
- * flag).
- *
- * Written in a user-instruction tone (not a reminder) — the model treats
- * it as a direct command to call the `compress` tool.  The `{WINDOW}`
- * placeholder is replaced at injection time with the compressible-window
- * line (from `computeEligibility`) or a fallback line when no eligible
- * window exists.  Range-selection and segmentation strategy is delegated
- * to the `compress-usage` skill by pointer instead of inline
- * teaching.
- */
-export const MANUAL_COMPRESS_TEMPLATE = `请立即使用 compress 工具压缩历史上下文：
-
-{WINDOW}
-
-范围选择与分段策略：加载 compress-usage 技能。
-
-加载完成后立即执行：按技能指引选择一个或多个连续范围，调用 compress 工具一次性批量提交。`;
-
-// ---------------------------------------------------------------------------
 // Context nudge (context-pressure reminders)
 // ---------------------------------------------------------------------------
 

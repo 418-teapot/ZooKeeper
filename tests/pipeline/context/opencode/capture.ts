@@ -17,7 +17,7 @@ import { captureToolInput, captureToolOutput } from "../capture-core.js";
 import type { ViewMessageCapture } from "../types.js";
 
 /** Sentinel synthetic message id prefixes kept in the snapshot. */
-const SENTINEL_PREFIXES = ["zoo-fold-b", "zoo-nudge", "zoo-manual-compress"];
+const SENTINEL_PREFIXES = ["zoo-fold-b", "zoo-nudge"];
 
 /**
  * Capture one message's observable view shape.

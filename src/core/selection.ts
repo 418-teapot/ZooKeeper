@@ -235,7 +235,7 @@ export type SelectionStatus = "disabled" | "ready" | "invalid";
  * Only facts with a consumer exist here: the selected agents (prompt
  * adaptation, and the delegation target guards of the subagent tool and
  * the delegation gate), the derived primaries (the switch commands), the
- * selected tools (the pruning/`/dcp` compress gate) and the resolved
+ * selected tools (the pruning compress gate) and the resolved
  * orchestrator (the role-gated infrastructure hooks).  A category without
  * a consumer gets no global view — a unit that needs one adds it then.
  *
