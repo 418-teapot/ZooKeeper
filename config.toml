@@ -120,6 +120,21 @@ cache_write = 1.06
 context = 1000000
 output  = 128000
 
+[provider.Aliyun.models."qwen4-max"]
+name      = "aliyun/qwen4-max"
+id        = "aliyun/qwen4-max"
+reasoning = true
+
+[provider.Aliyun.models."qwen4-max".cost]
+input       = 8
+output      = 24
+cache_read  = 0.4
+cache_write = 16
+
+[provider.Aliyun.models."qwen4-max".limit]
+context = 1000000
+output  = 128000
+
 # ── Volces ────────────────────────────────────────────────────────────────────
 
 [provider.Volces]
