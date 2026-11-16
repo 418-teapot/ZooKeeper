@@ -57,14 +57,15 @@ export function requireZdebugBinary(): string {
  * Run one `zdebug` invocation against the absolute release binary.
  *
  * Resolves with both streams and the exit code; rejects only when the
- * child cannot be spawned.  An optional `timeoutMs` bounds the run, used
- * by the fixture's own setup commands as a liveness net; the `ZdebugExec`
- * port below stays unbounded like the production port.
+ * child cannot be spawned or was cancelled.  An optional `timeoutMs`
+ * bounds the run, used by the fixture's own setup commands as a liveness
+ * net; the `ZdebugExec` port below stays unbounded, like the production
+ * port.
  */
 function execZdebug(
   args: readonly string[],
   cwd: string,
-  timeoutMs?: number,
+  options: { signal?: AbortSignal; timeoutMs?: number } = {},
 ): Promise<ZdebugExecResult> {
   return new Promise<ZdebugExecResult>((resolve, reject) => {
     execFile(
@@ -73,7 +74,10 @@ function execZdebug(
       {
         cwd,
         maxBuffer: 64 * 1024 * 1024,
-        ...(timeoutMs === undefined ? {} : { timeout: timeoutMs }),
+        ...(options.signal === undefined ? {} : { signal: options.signal }),
+        ...(options.timeoutMs === undefined
+          ? {}
+          : { timeout: options.timeoutMs }),
       },
       (error, stdout, stderr) => {
         if (error && typeof error.code !== "number") {
@@ -94,11 +98,12 @@ function execZdebug(
  * Fixture `ZdebugExec` port.
  *
  * Mirrors the default subprocess port's contract (resolve with both
- * streams and the exit code; reject only when the child cannot be
- * spawned) so the strategy sees the same shape it sees in production,
- * including the unbounded run.
+ * streams and the exit code; reject only when the child cannot be spawned
+ * or was cancelled) so the strategy sees the same shape it sees in
+ * production, including the unbounded run and the settle's cancellation.
  */
-export const zdebugExec: ZdebugExec = (args, cwd) => execZdebug(args, cwd);
+export const zdebugExec: ZdebugExec = (args, cwd, signal) =>
+  execZdebug(args, cwd, { signal });
 
 /** A temporary workspace wrapping one on-disk Case. */
 export interface CaseFixture {
@@ -132,7 +137,9 @@ const DEFAULT_VERIFY_TIMEOUT_MS = 60_000;
  * @returns The report's `result` object.
  */
 async function runZdebug(args: string[], cwd: string): Promise<Report> {
-  const result = await execZdebug(args, cwd, FIXTURE_EXEC_TIMEOUT_MS);
+  const result = await execZdebug(args, cwd, {
+    timeoutMs: FIXTURE_EXEC_TIMEOUT_MS,
+  });
   if (result.exitCode !== 0) {
     throw new Error(
       `zdebug ${args.join(" ")} failed (exit ${result.exitCode}): ` +

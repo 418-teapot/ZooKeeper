@@ -12,6 +12,7 @@ import { rmSync } from "node:fs";
 import { afterEach, beforeEach, describe, it } from "node:test";
 import { createConfigScope } from "../../core/config-snapshot.js";
 import { createContextRuntime } from "../../core/context/runtime.js";
+import type { WorkPermit } from "../../core/lifecycle/index.js";
 import { createProcessState } from "../../core/process-state.js";
 import { createSessionAgentResource } from "../../core/session/agent.js";
 import {
@@ -151,11 +152,25 @@ async function makeHooks(
 /** The hooks one activated instance exposes. */
 type Hooks = Awaited<ReturnType<typeof makeHooks>>["hooks"];
 
+/**
+ * The permit a direct hook call runs under.
+ *
+ * The real plugin admits every per-session event before its body runs (see
+ * `withSessionWork`); a test that drives the handler itself supplies the
+ * same admission proof, with a signal nothing cancels.
+ */
+const PERMIT: WorkPermit = {
+  sessionID: "s1",
+  signal: new AbortController().signal,
+  isActive: () => true,
+};
+
 /** Send one `session.idle` event for `sessionID`. */
 async function idle(hooks: Hooks, sessionID: string): Promise<void> {
-  await hooks.event({
-    event: { type: "session.idle", properties: { sessionID } },
-  });
+  await hooks.event(
+    { event: { type: "session.idle", properties: { sessionID } } },
+    PERMIT,
+  );
 }
 
 describe("infra hooks — orchestrator gate", () => {
@@ -190,12 +205,15 @@ describe("infra hooks — orchestrator gate", () => {
 describe("infra hooks — per-session state", () => {
   /** Send one `session.error` abort for `sessionID`. */
   async function abort(hooks: Hooks, sessionID: string): Promise<void> {
-    await hooks.event({
-      event: {
-        type: "session.error",
-        properties: { sessionID, error: { name: "MessageAbortedError" } },
+    await hooks.event(
+      {
+        event: {
+          type: "session.error",
+          properties: { sessionID, error: { name: "MessageAbortedError" } },
+        },
       },
-    });
+      PERMIT,
+    );
   }
 
   it("records an abort on a session whose first event is the abort", async () => {

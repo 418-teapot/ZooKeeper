@@ -58,6 +58,7 @@ export const unit = defineHook({
             decide(ports, {
               workspace: caps.directory,
               sessionID: input.sessionID,
+              signal: input.signal,
             }),
         },
       ],

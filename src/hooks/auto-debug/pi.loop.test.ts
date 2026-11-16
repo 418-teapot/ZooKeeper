@@ -35,12 +35,15 @@
  * profile without the feature performs no bookkeeping at all.
  */
 import assert from "node:assert/strict";
+import { mkdirSync, rmSync } from "node:fs";
+import { join } from "node:path";
 import { afterEach, beforeEach, describe, it } from "node:test";
 import {
   _resetPiProcessStateForTesting,
   createPiProcessState,
 } from "../../adapters/pi/process.js";
 import type { PiBoundaryResult } from "../../adapters/pi/types.js";
+import type { ZdebugExec } from "../../core/ports/autodebug.js";
 import {
   type CaseFixture,
   createCaseFixture,
@@ -49,6 +52,7 @@ import {
 } from "../../testkits/auto-debug.js";
 import { restoreEnv, saveEnv } from "../../testkits/env.js";
 import { piScope, startPi, startPiRuntime } from "../../testkits/pi-wiring.js";
+import { makeTmpDir } from "../../testkits/tmp.js";
 import { _getBufferForTesting, _resetForTesting } from "../../utils/logger.js";
 import { CONTINUATION_PROMPT } from "../todo-continuation/decide.js";
 
@@ -1268,5 +1272,152 @@ describe("startPi — settled-turn facts", () => {
 
     assert.equal(wakes(result).length, 1);
     assert.equal(settleReceivedCause(), "settled");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Settle cancellation (session or extension stop)
+// ---------------------------------------------------------------------------
+
+/** A promise plus its resolvers, used to hold a step mid-flight. */
+function deferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
+
+/**
+ * Run the pending microtasks so a parked promise can complete.
+ *
+ * Admission and stop are promise chains, so a bounded number of turns is
+ * enough to reach the point where a stop either completed or parked on the
+ * admitted work.
+ */
+async function flushMicrotasks(turns = 20): Promise<void> {
+  for (let i = 0; i < turns; i += 1) await Promise.resolve();
+}
+
+/** A workspace holding one discoverable Case directory. */
+function caseWorkspace(): string {
+  const workspace = makeTmpDir("zoo-pi-loop-cancel");
+  mkdirSync(join(workspace, ".zoo", "debug", "CASE-1"), { recursive: true });
+  return workspace;
+}
+
+/** A `case status` report whose verify pointer is materialized. */
+const OPEN_CASE_REPORT = {
+  stdout: JSON.stringify({
+    ok: true,
+    result: {
+      case_id: "CASE-1",
+      lifecycle: "OPEN",
+      verify: { experiment: "EX-001", timeout_ms: 60_000 },
+    },
+  }),
+  stderr: "",
+  exitCode: 0,
+};
+
+/** Whether the log holds an entry named `event` since the last reset. */
+function loggedEvent(event: string): boolean {
+  return _getBufferForTesting().some((entry) => entry.event === event);
+}
+
+describe("startPi — settle cancellation", () => {
+  let origDebug: string | undefined;
+
+  beforeEach(() => {
+    origDebug = saveEnv("ZOO_DEBUG");
+    process.env.ZOO_DEBUG = "1";
+  });
+  afterEach(() => {
+    restoreEnv("ZOO_DEBUG", origDebug);
+  });
+
+  it("commits no entry for a settle the extension stop cancels", async () => {
+    const workspace = caseWorkspace();
+    try {
+      const entered = deferred<void>();
+      const gate = deferred<void>();
+      const execCalls: string[][] = [];
+      const exec: ZdebugExec = async (args) => {
+        execCalls.push([...args]);
+        entered.resolve();
+        await gate.promise;
+        return OPEN_CASE_REPORT;
+      };
+      const handlers = await startPi(
+        piScope(autoDebugZoo(), RAW_AGENTS),
+        mockApi() as any,
+        { directory: workspace, zdebugExec: exec },
+      );
+      const ctx = settleCtx("ad-cancel");
+
+      const settling = settle(handlers, RUN_ENDED, ctx);
+      await entered.promise;
+
+      let stopped = false;
+      const stopping = handlers
+        .sessionShutdown(
+          { type: "session_shutdown", reason: "quit" },
+          ctx as any,
+        )
+        .then(() => {
+          stopped = true;
+        });
+      await flushMicrotasks();
+      assert.equal(stopped, false, "the stop waits for the admitted settle");
+
+      gate.resolve();
+      const boundary = await settling;
+      await stopping;
+
+      assert.deepEqual(wakes(boundary), [], "no wake entry is committed");
+      assert.equal(execCalls.length, 1, "the re-run never starts");
+      assert.equal(loggedEvent("wake_injected"), false);
+      assert.equal(loggedEvent("settle_cancelled"), true);
+    } finally {
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it("commits the wake of a settle nothing cancelled", async () => {
+    // The pi delivery IS the returned boundary result, so the commit point
+    // is the return: a settle that reaches it always carries its entry.
+    const workspace = caseWorkspace();
+    const secondRun = {
+      stdout: JSON.stringify({
+        ok: true,
+        result: { attempt_id: "AT-002", exit_code: 1 },
+      }),
+      stderr: "",
+      exitCode: 0,
+    };
+    try {
+      const exec: ZdebugExec = async (args) => {
+        if (args[1] === "status") return OPEN_CASE_REPORT;
+        return secondRun;
+      };
+      const handlers = await startPi(
+        piScope(autoDebugZoo(), RAW_AGENTS),
+        mockApi() as any,
+        { directory: workspace, zdebugExec: exec },
+      );
+
+      const boundary = await settle(
+        handlers,
+        RUN_ENDED,
+        settleCtx("ad-commit"),
+      );
+
+      assert.equal(wakes(boundary).length, 1, "the wake is committed");
+      assert.equal(loggedEvent("wake_injected"), true);
+    } finally {
+      rmSync(workspace, { recursive: true, force: true });
+    }
   });
 });

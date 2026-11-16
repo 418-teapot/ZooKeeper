@@ -24,6 +24,7 @@ import type {
 import { _getBufferForTesting, _resetForTesting } from "../../utils/logger.js";
 import {
   type AutoDebugContext,
+  type AutoDebugDecision,
   type AutoDebugPorts,
   decide,
   renderWakeText,
@@ -164,6 +165,7 @@ function execFake(options: {
 const CONTEXT: AutoDebugContext = {
   workspace: WORKSPACE,
   sessionID: "sess-decide",
+  signal: new AbortController().signal,
 };
 
 /** Bundle an fs and an exec into the strategy's ports. */
@@ -435,7 +437,125 @@ describe("decide — convergence branches", () => {
     });
     await decide(ports(fs, exec), CONTEXT);
     assert.ok(calls.length >= 2, "status probe and re-run both ran");
-    assert.equal(exec.length, 2, "the port takes only args and cwd");
+  });
+});
+
+describe("decide — cancellation", () => {
+  beforeEach(() => {
+    _resetForTesting();
+  });
+
+  /** An aborted settle's decision. */
+  const CANCELLED: AutoDebugDecision = {
+    kind: "silence",
+    reason: "cancelled",
+  };
+
+  it("probes nothing for an already cancelled settle", async () => {
+    const { fs } = workspace({ "CASE-1": {} });
+    const { exec, calls } = execFake({});
+    const controller = new AbortController();
+    controller.abort();
+
+    assert.deepEqual(
+      await decide(ports(fs, exec), {
+        ...CONTEXT,
+        signal: controller.signal,
+      }),
+      CANCELLED,
+    );
+    assert.deepEqual(calls, [], "no zdebug invocation starts");
+  });
+
+  it("hands the settle signal to every zdebug invocation", async () => {
+    const { fs } = workspace({ "CASE-1": {} });
+    const controller = new AbortController();
+    const seen: AbortSignal[] = [];
+    const exec: ZdebugExec = async (args, _cwd, signal) => {
+      seen.push(signal);
+      if (args[1] === "status") return ok(openStatus());
+      return ok({ exit_code: 0 });
+    };
+
+    await decide(ports(fs, exec), {
+      ...CONTEXT,
+      signal: controller.signal,
+    });
+
+    assert.equal(seen.length, 2, "the probe and the re-run both ran");
+    for (const signal of seen) assert.equal(signal, controller.signal);
+  });
+
+  it("silences cancelled when the stop kills the status probe", async () => {
+    const { fs } = workspace({ "CASE-1": {} });
+    const controller = new AbortController();
+    const calls: string[][] = [];
+    const exec: ZdebugExec = async (args) => {
+      calls.push([...args]);
+      controller.abort();
+      throw new DOMException("cancelled", "AbortError");
+    };
+
+    assert.deepEqual(
+      await decide(ports(fs, exec), {
+        ...CONTEXT,
+        signal: controller.signal,
+      }),
+      CANCELLED,
+    );
+    assert.equal(calls.length, 1, "the re-run never starts");
+    // A stop is not a broken criterion: it must not be reported as one.
+    assert.deepEqual(
+      _getBufferForTesting().map((entry) => entry.event),
+      [],
+      "a cancelled settle logs no failure",
+    );
+  });
+
+  it("silences cancelled when the stop kills the re-run", async () => {
+    const { fs } = workspace({ "CASE-1": {} });
+    const controller = new AbortController();
+    const calls: string[][] = [];
+    const exec: ZdebugExec = async (args) => {
+      calls.push([...args]);
+      if (args[1] === "status") return ok(openStatus());
+      controller.abort();
+      throw new DOMException("cancelled", "AbortError");
+    };
+
+    assert.deepEqual(
+      await decide(ports(fs, exec), {
+        ...CONTEXT,
+        signal: controller.signal,
+      }),
+      CANCELLED,
+    );
+    assert.equal(calls.length, 2, "the probe ran, the re-run was killed");
+    assert.deepEqual(
+      _getBufferForTesting().map((entry) => entry.event),
+      [],
+      "a cancelled settle logs no failure",
+    );
+  });
+
+  it("does not judge a re-run that finished after the stop", async () => {
+    // Exit 1 is the wake verdict; the stop arrived before the process died,
+    // so the result must not be turned into one.
+    const { fs } = workspace({ "CASE-1": {} });
+    const controller = new AbortController();
+    const exec: ZdebugExec = async (args) => {
+      if (args[1] === "status") return ok(openStatus());
+      controller.abort();
+      return ok({ attempt_id: "AT-009", exit_code: 1 });
+    };
+
+    assert.deepEqual(
+      await decide(ports(fs, exec), {
+        ...CONTEXT,
+        signal: controller.signal,
+      }),
+      CANCELLED,
+    );
   });
 });
 

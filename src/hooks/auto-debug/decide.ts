@@ -18,6 +18,9 @@
  *     criterion timeout) is declared, so the criterion is not
  *     materialized (no loop);
  *   - `converged` — the verification experiment exited 0;
+ *   - `cancelled` — the settle was cancelled (the session or the
+ *     extension stopped), so the strategy abandoned its work instead of
+ *     judging a killed subprocess;
  *   - `verify-error` — the criterion itself is broken (exit > 1, timeout,
  *     an invocation failure such as `CASE_BUSY` or a missing binary, or a
  *     malformed payload).  This is NOT a "not fixed" verdict, so it never
@@ -39,6 +42,7 @@ export type AutoDebugSilenceReason =
   | "closed"
   | "no-verify"
   | "converged"
+  | "cancelled"
   | "verify-error";
 
 /** The auto-debug strategy's verdict for one stopped turn. */
@@ -58,6 +62,12 @@ export interface AutoDebugContext {
   workspace: string;
   /** The session whose settle triggered this judgment (for logging). */
   sessionID: string;
+  /**
+   * The settle's cancellation, aborted when the session or the extension
+   * stops.  It kills the running `zdebug` invocation, and a stop before
+   * the verdict silences as `cancelled`.
+   */
+  signal: AbortSignal;
 }
 
 /** The `verify` pointer resolved from the status payload. */
@@ -125,6 +135,11 @@ function isPositiveInteger(value: unknown): value is number {
 /** The canonical `verify-error` silence. */
 function verifyError(): AutoDebugDecision {
   return { kind: "silence", reason: "verify-error" };
+}
+
+/** The canonical `cancelled` silence. */
+function cancelled(): AutoDebugDecision {
+  return { kind: "silence", reason: "cancelled" };
 }
 
 /**
@@ -255,13 +270,16 @@ export function renderWakeText(facts: WakeFacts): string {
  * is enforced by `zdebug` itself — and its exit code decides: `0`
  * converges, `1` wakes, and anything else (including a thrown port error,
  * a `TIMED_OUT` run, or a `CASE_BUSY` business error) silences as
- * `verify-error`.  No retry or throttle lives here — a busy Case simply
- * waits for the next settle.
+ * `verify-error`.  A cancelled settle (the session or the extension
+ * stopped) abandons the work instead and silences as `cancelled`, so a
+ * stop is never mistaken for a broken criterion.  No retry or throttle
+ * lives here — a busy Case simply waits for the next settle.
  */
 export async function decide(
   ports: AutoDebugPorts,
   context: AutoDebugContext,
 ): Promise<AutoDebugDecision> {
+  const { signal } = context;
   let discovery: Discovery;
   try {
     discovery = await discoverCase(ports.fs, context.workspace);
@@ -270,6 +288,7 @@ export async function decide(
     // own silence rather than collapsing it into the empty-workspace gate.
     // The underlying error is logged so a persistent discovery-error is
     // diagnosable, without leaking it into the user-visible verdict.
+    if (signal.aborted) return cancelled();
     log.warn({
       hook: "auto-debug",
       event: "discovery_error",
@@ -278,6 +297,8 @@ export async function decide(
     });
     return { kind: "silence", reason: "discovery-error" };
   }
+  // A stop that arrived while scanning ends the judgment: no probe runs.
+  if (signal.aborted) return cancelled();
   if (discovery.kind === "none") {
     return { kind: "silence", reason: "no-case" };
   }
@@ -290,7 +311,9 @@ export async function decide(
     const report = await ports.zdebugExec(
       ["case", "status", "--json", "--case-dir", caseDir],
       context.workspace,
+      signal,
     );
+    if (signal.aborted) return cancelled();
     if (report.exitCode !== 0) return verifyError();
     const result = parseReport(report.stdout);
     if (result === null) return verifyError();
@@ -301,6 +324,8 @@ export async function decide(
     if (parsed === null) return { kind: "silence", reason: "no-verify" };
     verify = parsed;
   } catch (err) {
+    // A killed probe is the cancellation, not a broken criterion.
+    if (signal.aborted) return cancelled();
     // The probe's own failure is otherwise indistinguishable from a
     // legitimate non-zero report; log it so a persistent verify-error is
     // diagnosable.
@@ -321,10 +346,14 @@ export async function decide(
     const report = await ports.zdebugExec(
       ["experiment", "run", verify.experiment, "--json", "--case-dir", caseDir],
       context.workspace,
+      signal,
     );
+    if (signal.aborted) return cancelled();
     if (report.exitCode !== 0) return verifyError();
     run = readRunResult(report.stdout);
   } catch (err) {
+    // A killed re-run is the cancellation, not a broken criterion.
+    if (signal.aborted) return cancelled();
     // The re-run's own failure is otherwise indistinguishable from a
     // legitimate non-zero report; log it so a persistent verify-error is
     // diagnosable.

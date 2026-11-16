@@ -74,7 +74,11 @@ function makeDeps(partial: Record<string, unknown>): Partial<Capabilities> {
 async function settle(deps: Partial<Capabilities>, hadActivity = true) {
   const composed = unit.create(deps, facts());
   assert.equal(composed.onSettled.length, 1);
-  return composed.onSettled[0].handle({ sessionID: "s1", hadActivity });
+  return composed.onSettled[0].handle({
+    sessionID: "s1",
+    hadActivity,
+    signal: new AbortController().signal,
+  });
 }
 
 describe("todo-continuation unit — descriptor", () => {

@@ -62,7 +62,7 @@ import type { ComposedResult } from "../../core/compose.js";
 import { runIsolated, runIsolatedSync } from "../../core/compose.js";
 import type { ContextRuntime } from "../../core/context/runtime.js";
 import type { CleanupReport, WorkPermit } from "../../core/lifecycle/index.js";
-import type { StopCause } from "../../core/loop/index.js";
+import { commitSettle, type StopCause } from "../../core/loop/index.js";
 import type { SkillPermissionMap } from "../../core/permissions/skill-permissions.js";
 import { filterAllowedSkills } from "../../core/permissions/skill-permissions.js";
 import { applyModelVariant } from "../../core/prompt-variant.js";
@@ -862,7 +862,7 @@ export function createPiEventHandlers(
       // whole body: log and fail closed.
       let sessionID: string | undefined;
       try {
-        const result = await deps.runSession<PiBoundaryResult>(
+        const result = await deps.runSession<PiBoundaryResult | null>(
           ctx,
           async (permit, session) => {
             const loop = session.loop;
@@ -918,42 +918,40 @@ export function createPiEventHandlers(
             }
             // `hadActivity` is derived above from the settled turn's tool
             // calls; the engine's interlocks and the todo strategy's gates
-            // decide the rest.
-            const decision = await loop.run({
-              cause,
-              hadActivity,
-            });
-            if (decision === null) return {};
-            // Count BEFORE returning the entry, mirroring the OpenCode host:
-            // once pi adopts the boundary result the verdict has taken
-            // effect, so the wake must already be counted — re-judging this
-            // settle must not produce a second reminder.  pi commits the
-            // entry and runs the continuation within this run, so the verdict
-            // and its effect cannot diverge and no queued reminder outlives
-            // the run that produced it.
-            loop.record(decision.name);
-            log.info({
-              hook: "loop",
-              event: "wake_injected",
-              sessionId: permit.sessionID,
-              handler: decision.name,
-              used: loop.used(decision.name),
-            });
-            return {
-              entries: [
-                ...boundaryEntries(evt),
-                {
-                  type: "custom_message",
-                  customType: "zoo-loop-wake",
-                  content: decision.text,
-                  // Shown in the TUI so the user can see the loop wake fire;
-                  // the model receives it as a user-role message either way
-                  // (pi converts custom messages via convertToLlm).
-                  display: true,
-                },
-              ],
-              continue: true,
-            };
+            // decide the rest.  The commit gate charges the wake before pi
+            // can deliver it: once pi adopts the boundary result the verdict
+            // has taken effect, so re-judging this settle must not produce a
+            // second reminder.  A stop of the session or the extension
+            // cancels the settle and commits nothing.
+            return await commitSettle(
+              loop,
+              { cause, hadActivity, signal: permit.signal },
+              async (wake) => {
+                log.info({
+                  hook: "loop",
+                  event: "wake_injected",
+                  sessionId: permit.sessionID,
+                  handler: wake.name,
+                  used: loop.used(wake.name),
+                });
+                return {
+                  entries: [
+                    ...boundaryEntries(evt),
+                    {
+                      type: "custom_message",
+                      customType: "zoo-loop-wake",
+                      content: wake.text,
+                      // Shown in the TUI so the user can see the loop wake
+                      // fire; the model receives it as a user-role message
+                      // either way (pi converts custom messages via
+                      // convertToLlm).
+                      display: true,
+                    },
+                  ],
+                  continue: true,
+                };
+              },
+            );
           },
         );
         // No admitted session to attribute the reminder to → fail closed.

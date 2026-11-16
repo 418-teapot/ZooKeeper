@@ -51,6 +51,13 @@ export interface DebugCommandOptions {
   /** Injected `zdebug` runner (defaults to the subprocess wrapper). */
   zdebugExec: ZdebugExec;
   /**
+   * The command's cancellation: the permit of the session it runs in.
+   *
+   * A command is admitted session work, so a stop cancels its `zdebug`
+   * invocation instead of leaving it running.
+   */
+  signal: AbortSignal;
+  /**
    * Injected read-only filesystem used to enumerate existing Case ids.
    *
    * The command derives the next id from the directory listing, so a
@@ -206,6 +213,7 @@ async function initCase(
       result = await options.zdebugExec(
         buildInitArgs(caseId, title, objective, options.directory),
         options.directory,
+        options.signal,
       );
     } catch (err) {
       throw new Error(

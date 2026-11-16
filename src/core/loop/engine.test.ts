@@ -40,6 +40,7 @@ afterEach(() => {
 const REQUEST: SettleRequest = {
   cause: "settled",
   hadActivity: true,
+  signal: new AbortController().signal,
 };
 
 /** Build a named contribution from a judging function. */
@@ -244,7 +245,7 @@ describe("createLoopEngine — convergence", () => {
     assert.equal(crashed[0].handler, "boom");
   });
 
-  it("passes only the session and the activity fact to a strategy", async () => {
+  it("passes the session, the activity fact, and the signal", async () => {
     let seen: unknown;
     const engine = createLoopEngine([
       handler("probe", async (input) => {
@@ -253,8 +254,11 @@ describe("createLoopEngine — convergence", () => {
       }),
     ]);
 
-    await engine.createSession("s9").run({ ...REQUEST, hadActivity: false });
-    assert.deepEqual(seen, { sessionID: "s9", hadActivity: false });
+    const signal = new AbortController().signal;
+    await engine
+      .createSession("s9")
+      .run({ ...REQUEST, hadActivity: false, signal });
+    assert.deepEqual(seen, { sessionID: "s9", hadActivity: false, signal });
   });
 });
 
@@ -500,5 +504,109 @@ describe("createLoopEngine — budget bookkeeping", () => {
 
     assert.equal(session.used("a"), 2);
     assert.equal(session.used("b"), 1);
+  });
+});
+
+describe("createLoopEngine — cancelled settle", () => {
+  it("ends as cancelled when the stop lands during the last strategy", async () => {
+    const controller = new AbortController();
+    const engine = createLoopEngine([
+      handler("slow", async () => {
+        controller.abort();
+        return { kind: "silence", reason: "cancelled" };
+      }),
+    ]);
+
+    assert.equal(
+      await engine
+        .createSession("s2")
+        .run({ ...REQUEST, signal: controller.signal }),
+      null,
+    );
+    const events = _getBufferForTesting().map((e) => e.event);
+    assert.ok(events.includes("settle_cancelled"));
+    assert.equal(events.includes("handler_crashed"), false);
+  });
+
+  it("records no strategy silence when the stop lands before the verdict", async () => {
+    // A strategy that answers after the stop reached it reports nothing:
+    // its silence belongs to a cancelled settle, not to the strategy.
+    const controller = new AbortController();
+    let secondConsulted = false;
+    const engine = createLoopEngine([
+      handler("aborter", async () => {
+        controller.abort();
+        return { kind: "silence", reason: "no-work" };
+      }),
+      handler("waker", async () => {
+        secondConsulted = true;
+        return { kind: "wake", text: "go" };
+      }),
+    ]);
+
+    assert.equal(
+      await engine
+        .createSession("s3")
+        .run({ ...REQUEST, signal: controller.signal }),
+      null,
+    );
+    assert.equal(secondConsulted, false);
+    const events = _getBufferForTesting().map((e) => e.event);
+    assert.ok(events.includes("settle_cancelled"));
+    assert.equal(
+      events.includes("settle_silent"),
+      false,
+      "a cancelled settle is not a strategy's silence",
+    );
+  });
+
+  it("logs no handler crash when the stop rejects the strategy", async () => {
+    // The abort reason is the strategy abandoning its work, not a crash.
+    const controller = new AbortController();
+    const engine = createLoopEngine([
+      handler("aborter", async () => {
+        controller.abort();
+        throw new Error("the operation was aborted");
+      }),
+    ]);
+
+    assert.equal(
+      await engine
+        .createSession("s4")
+        .run({ ...REQUEST, signal: controller.signal }),
+      null,
+    );
+    const events = _getBufferForTesting().map((e) => e.event);
+    assert.ok(events.includes("settle_cancelled"));
+    assert.equal(events.includes("handler_crashed"), false);
+  });
+
+  it("consults no strategy and logs the cancellation with its session", async () => {
+    let consulted = false;
+    const engine = createLoopEngine([
+      handler("waker", async () => {
+        consulted = true;
+        return { kind: "wake", text: "go" };
+      }),
+    ]);
+    const controller = new AbortController();
+    controller.abort();
+
+    assert.equal(
+      await engine
+        .createSession("s1")
+        .run({ ...REQUEST, signal: controller.signal }),
+      null,
+    );
+    assert.equal(consulted, false);
+    const entry = _getBufferForTesting().find(
+      (e) => e.event === "settle_cancelled",
+    );
+    assert.equal(entry?.sessionId, "s1");
+    assert.equal(
+      _getBufferForTesting().filter((e) => e.event === "settle_silent").length,
+      0,
+      "a cancelled settle is not a strategy's silence",
+    );
   });
 });

@@ -47,7 +47,10 @@ export const unit = defineCommand({
         {
           name: "debug",
           description: "创建调试 Case 并立即启动调查",
-          handle: async (input) => {
+          handle: async (input, permit) => {
+            // Command work runs under its session's permit.  A host holding
+            // none cannot cancel the invocation, so it runs uncancelled.
+            const signal = permit?.signal ?? new AbortController().signal;
             try {
               await handleDebugCommand(
                 caps.toolHost,
@@ -58,6 +61,7 @@ export const unit = defineCommand({
                   fs,
                   directory: caps.directory,
                   messageInjector: caps.messageInjector,
+                  signal,
                 },
               );
             } catch (err) {

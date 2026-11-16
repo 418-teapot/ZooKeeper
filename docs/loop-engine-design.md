@@ -107,20 +107,21 @@ K8s 把控制论带进了软件工程：`Desired State → Observe → Compare �
 
 ```
 宿主事件（session.idle / agent_end）
-        │  适配层：翻译为 SettleRequest { cause, hadActivity }（会话由句柄持有）
+        │  适配层：翻译为 SettleRequest { cause, hadActivity, signal }（会话由句柄持有）
         ▼
 ┌─ 引擎（src/core/loop/）────────────────────────────┐
+│ 联锁 0: signal 已中止 → 沉默(settle_cancelled)      │
 │ 联锁 1: cause ≠ settled → 沉默(not-settled)        │
 │ 解锁: 本轮有任何工具活动 → 清该句柄全部锁          │
 │ 联锁 2: 策略被锁且本轮无活动 → 跳过该策略          │
 │ （awaiting-activity），不烧额度；其余策略照常      │
 │ 联锁 3: 逐策略额度检查 → 跳过(budget-exhausted)    │
-│ 询问: 逐个调用策略 handle({sessionID, hadActivity})│
+│ 询问: 逐个调用策略 handle({sessionID,hadActivity,signal})│
 │ 汇聚: 首个 wake 胜出；崩溃隔离；全沉默 → null      │
 └────────────────────────────────────────────────────┘
         │  Wake { name, text } 或 null
         ▼
-适配层：先 record（记账并对该策略上待进展锁）→ 投递 wake 文本到会话
+适配层：提交门 commitSettle（未取消 → record 记账并上待进展锁 → 投递 wake 文本）
 ```
 
 ### 所有权三角
@@ -153,9 +154,13 @@ interface LoopSession {           // 会话作用域持有，随作用域消失
   reset(): void;                  // 真实用户回合开始时重置额度并清锁
   used(name: string): number;     // 读取已用额度（日志用）
 }
+
+commitSettle<Result>(loop, request, deliver): Promise<Result | null>
+// 两宿主共用的提交门：检查 signal → run → 再次检查 signal
+// → 同一同步片段内 record 并调用宿主的 deliver(wake, signal)
 ```
 
-- `SettleRequest { cause: StopCause, hadActivity: boolean }`——宿主上报的停稳事实；会话由句柄自己持有，调用不再点名会话。`StopCause = "settled" | "awaiting-input" | "aborted"`。
+- `SettleRequest { cause: StopCause, hadActivity: boolean, signal: AbortSignal }`——宿主上报的停稳事实与取消信号；会话由句柄自己持有，调用不再点名会话。`StopCause = "settled" | "awaiting-input" | "aborted"`。`signal` 在会话或扩展停止时中止，取消是正常沉默：不再咨询策略，也不记账、不投递。
 - `Wake { name, text }`——胜出策略名 + 唤醒文字。宿主需要名字来把这次唤醒记到对应策略的账上。
 - 构造时拒绝重名策略：策略名是预算账户键，重名会让一个策略的唤醒消耗另一个策略的额度。
 - 引擎只持有策略：预算与待进展锁归 `createSession` 返回的句柄。引擎不缓存句柄，因此没有会话上限，也不需要淘汰——句柄随作用域释放，同一会话的新作用域从零开始。
@@ -164,11 +169,14 @@ interface LoopSession {           // 会话作用域持有，随作用域消失
 
 `run()` 的固定顺序：
 
-1. **停稳联锁**：`cause !== "settled"` → 记 `not-settled`，返回 `null`，**不询问任何策略**；
-2. **待进展联锁**：锁按 **(会话, 策略)** 键控。`record` 投递记账时只给该会话的**该策略**上"待进展锁"；本次 settle 若 `hadActivity` 为真 → 清除该会话全部锁——一次活动应答所有挂起的唤醒（保持 oh-my-pi "任何工具结果即解锁"的语义）；若为假 → 锁定中的策略逐个记 `awaiting-activity`（带策略名）并**跳过——不咨询该策略、不消耗额度、保持锁**，未锁定的策略照常咨询，不再整体沉默。锁与额度同生命周期：`reset` 一并清除；
-3. **逐策略额度联锁**：按注册顺序遍历，某策略已用额度 ≥ 其 `maxWakes` → 记 `budget-exhausted`（带策略名），**跳过该策略**，后续策略仍可胜出；
-4. **询问与汇聚**：逐个 `await handle(input)`，首个 `wake` 直接胜出返回；每个策略的沉默记 `settle_silent`；
-5. **崩溃隔离**：策略抛错记 `handler_crashed`（error 级）后继续下一策略——崩溃表现为沉默而非唤醒。
+1. **取消联锁**：`signal` 已中止 → 记 `settle_cancelled`，返回 `null`，**不询问任何策略**；咨询下一个策略前同样复查 `signal`，取消即结束本次 settle；
+2. **停稳联锁**：`cause !== "settled"` → 记 `not-settled`，返回 `null`，**不询问任何策略**；
+3. **待进展联锁**：锁按 **(会话, 策略)** 键控。`record` 投递记账时只给该会话的**该策略**上"待进展锁"；本次 settle 若 `hadActivity` 为真 → 清除该会话全部锁——一次活动应答所有挂起的唤醒（保持 oh-my-pi "任何工具结果即解锁"的语义）；若为假 → 锁定中的策略逐个记 `awaiting-activity`（带策略名）并**跳过——不咨询该策略、不消耗额度、保持锁**，未锁定的策略照常咨询，不再整体沉默。锁与额度同生命周期：`reset` 一并清除；
+4. **逐策略额度联锁**：按注册顺序遍历，某策略已用额度 ≥ 其 `maxWakes` → 记 `budget-exhausted`（带策略名），**跳过该策略**，后续策略仍可胜出；
+5. **询问与汇聚**：逐个 `await handle(input)`，首个 `wake` 直接胜出返回；每个策略的沉默记 `settle_silent`；
+6. **崩溃隔离**：策略抛错记 `handler_crashed`（error 级）后继续下一策略——崩溃表现为沉默而非唤醒。
+
+提交门（`commitSettle`）在 `run()` 之外完成最后两步：`run()` 之前、之后各查一次 `signal`——取消发生在策略执行期间时，胜出的 wake 被丢弃（记 `settle_cancelled`），既不记账也不投递；未取消则在同一个同步片段内 `record` 并调用宿主 `deliver`，取消无法插在记账与投递之间。投递开始后到达的取消保留记账，停止不会变成无界重试。投递开始后，投递日志以宿主返回的结果为准：投递成功则记 `wake_injected`，被停止拒绝的投递记沉默而不记 `wake_inject_failed`。
 
 联锁先于策略门是有意为之：额度耗尽的停稳，无论 todo 列表状态如何，日志真因都是 `budget-exhausted`，而不是被策略门（`empty`/`no-active`）掩盖；对唤醒的纯文本回复同理——由待进展锁以 `awaiting-activity` 拦下**其自身策略**（其他未锁定策略照常咨询），既到不了策略门，也烧不掉额度。
 
@@ -178,6 +186,8 @@ interface LoopSession {           // 会话作用域持有，随作用域消失
 - **策略面**：`Decision<R extends string = string>` 泛型让每个策略钉住自己的沉默词汇。
 
 每次不唤醒都有机器可读原因且归属明确（引擎原因 or 哪个策略的哪个门），这是不变量 4 的落地。
+
+取消不属于上述词汇：它记 `settle_cancelled`（debug 级，带会话），不与 `not-settled`、`handler_crashed`、`wake_injected` 混用；策略内部因取消而停止的 `zdebug` 调用同样记 `cancelled` 沉默，而不是 `verify-error`。
 
 ---
 
@@ -190,6 +200,7 @@ interface LoopSession {           // 会话作用域持有，随作用域消失
 interface SettledInput {              // 策略视野：停稳事实，无 cause 无预算
   sessionID: string;
   hadActivity: boolean;               // 本轮是否发生过任何工具调用（观测事实）
+  signal: AbortSignal;                // settle 的取消信号，随会话或扩展停止而中止
 }
 
 interface SettledContribution {
@@ -233,7 +244,7 @@ interface SettledContribution {
 2. **观测采集**：把本轮工具调用归约为 `hadActivity` 布尔——任何工具调用（含只读工具与 todo 更新）都算活动，只有纯文本轮次算无活动；宿主过滤掉格式不良的 tool part 后直接计数，工具名不进入 core；
 3. **身份门禁**：只有主运行时的停稳才进入循环；子代理运行时（`fixedAgent`）记 `settle_skipped` 跳过；
 4. **额度重置与释放**：真实用户回合开始 = 新的工作意图，额度归零重新计；会话停止时，该会话的作用域连同其循环句柄一起释放，额度与待进展锁不留存；
-5. **投递**：`record` 先记账，再投递 wake 文本——投递失败不会变成无界重试。
+5. **投递**：`commitSettle` 先记账再投递 wake 文本——投递失败不会变成无界重试；取消（会话或扩展停止）则不记账、不投递，策略内部的子进程随之被终止。
 
 ### 双宿主差异
 

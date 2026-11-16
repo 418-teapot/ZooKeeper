@@ -11,6 +11,7 @@
 import assert from "node:assert/strict";
 import { afterEach, describe, it } from "node:test";
 import type { ModeProfile } from "../../core/config-types.js";
+import type { WorkPermit } from "../../core/lifecycle/index.js";
 import type {
   AutoDebugDirEntry,
   AutoDebugFs,
@@ -19,7 +20,7 @@ import type {
 } from "../../core/ports/autodebug.js";
 import type { MessageInjector } from "../../core/ports/handoff.js";
 import type { ToastPayload, ToolHost } from "../../core/ports/tool-host.js";
-import type { CommandUnitDescriptor } from "../../core/unit.js";
+import type { CommandInput, CommandUnitDescriptor } from "../../core/unit.js";
 import { composeForTest, facts } from "../../testkits/compose.js";
 import { _resetForTesting } from "../../utils/logger.js";
 import {
@@ -38,6 +39,16 @@ const WORKSPACE = "/workspace/zoo";
 
 /** Case root the handler scans under {@link WORKSPACE}. */
 const DEBUG_ROOT = `${WORKSPACE}/.zoo/debug`;
+
+/** The signal a direct handler call runs under: nothing cancels it. */
+const SIGNAL = new AbortController().signal;
+
+/** The permit the contributed command is admitted under. */
+const PERMIT: WorkPermit = {
+  sessionID: "sess-debug",
+  signal: SIGNAL,
+  isActive: () => true,
+};
 
 /**
  * Build a fake read-only filesystem listing `names` under the Case root.
@@ -70,6 +81,7 @@ function expectedTitle(objective: string): string {
 interface FakeCall {
   args: readonly string[];
   cwd: string;
+  signal: AbortSignal;
 }
 
 /**
@@ -81,8 +93,8 @@ function makeFakeExec(options: { result?: ZdebugExecResult; error?: Error }): {
   calls: FakeCall[];
 } {
   const calls: FakeCall[] = [];
-  const exec: ZdebugExec = async (args, cwd) => {
-    calls.push({ args, cwd });
+  const exec: ZdebugExec = async (args, cwd, signal) => {
+    calls.push({ args, cwd, signal });
     if (options.error) throw options.error;
     return options.result ?? { stdout: "", stderr: "", exitCode: 0 };
   };
@@ -153,17 +165,16 @@ function makeUses(): Parameters<CommandUnitDescriptor["create"]>[1] {
 }
 
 /**
- * Run the contributed `/debug` command through the unit descriptor.
+ * Build the contributed `/debug` handler over the injected fakes.
  *
- * @returns The mock host notifications recorded during the run.
+ * @returns The handler, called with or without a permit.
  */
-async function runCommand(
-  args: string,
+function makeHandler(
   exec: ZdebugExec,
   toolHost: ToolHost,
   fs: AutoDebugFs = makeFakeFs().fs,
   injector: MessageInjector = makeInjector().injector,
-): Promise<void> {
+): (input: CommandInput, permit?: WorkPermit) => Promise<void> {
   const contributions = unit.create(
     makeDeps({
       zdebugExec: exec,
@@ -175,11 +186,35 @@ async function runCommand(
   );
   assert.equal(contributions.kind, "command");
   assert.equal(contributions.commands.length, 1);
-  await contributions.commands[0].handle({
-    command: "debug",
-    sessionID: "sess-debug",
-    arguments: args,
-  });
+  return (input, permit) => contributions.commands[0].handle(input, permit);
+}
+
+/**
+ * Run the contributed `/debug` command through the unit descriptor.
+ *
+ * @returns The mock host notifications recorded during the run.
+ */
+async function runCommand(
+  args: string,
+  exec: ZdebugExec,
+  toolHost: ToolHost,
+  fs: AutoDebugFs = makeFakeFs().fs,
+  injector: MessageInjector = makeInjector().injector,
+  permit: WorkPermit | undefined = PERMIT,
+): Promise<void> {
+  await makeHandler(
+    exec,
+    toolHost,
+    fs,
+    injector,
+  )(
+    {
+      command: "debug",
+      sessionID: "sess-debug",
+      arguments: args,
+    },
+    permit,
+  );
 }
 
 afterEach(() => {
@@ -320,6 +355,7 @@ describe("/debug objective passthrough", () => {
       fs: makeFakeFs().fs,
       directory: WORKSPACE,
       messageInjector: undefined,
+      signal: SIGNAL,
     });
 
     assert.equal(notifyCalls.length, 1);
@@ -377,6 +413,7 @@ describe("/debug objective passthrough", () => {
       fs: makeFakeFs().fs,
       directory: WORKSPACE,
       messageInjector: undefined,
+      signal: SIGNAL,
     });
 
     assert.equal(toastCalls.length, 1);
@@ -472,8 +509,8 @@ describe("/debug sequential case ids", () => {
     const { toolHost } = makeToolHost();
     const calls: FakeCall[] = [];
     let first = true;
-    const exec: ZdebugExec = async (args, cwd) => {
-      calls.push({ args, cwd });
+    const exec: ZdebugExec = async (args, cwd, signal) => {
+      calls.push({ args, cwd, signal });
       if (first) {
         first = false;
         // The concurrent `/debug` that won CASE-4 leaves it on disk.
@@ -579,6 +616,7 @@ describe("/debug failure paths", () => {
           fs: makeFakeFs().fs,
           directory: WORKSPACE,
           messageInjector: undefined,
+          signal: SIGNAL,
         }),
       /无法运行 zdebug/,
     );
@@ -589,6 +627,44 @@ describe("/debug failure paths", () => {
     const { toolHost } = makeToolHost();
 
     await runCommand("目标", exec, toolHost);
-    assert.equal(exec.length, 2, "the port takes only args and cwd");
+    assert.equal(exec.length, 3, "the port takes args, cwd, and the signal");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Permit handling
+// ---------------------------------------------------------------------------
+describe("/debug permit handling", () => {
+  it("runs the command when the host admits no permit", async () => {
+    // A host that holds no session for the command still runs it: the
+    // command is the entry that creates a Case.
+    const { exec, calls } = makeFakeExec({});
+    const { toolHost, notifyCalls } = makeToolHost();
+
+    const handle = makeHandler(exec, toolHost);
+    await handle({
+      command: "debug",
+      sessionID: "sess-debug",
+      arguments: "调查登录失败",
+    });
+
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].signal.aborted, false);
+    assert.equal(notifyCalls.length, 1);
+    assert.ok(notifyCalls[0].text.includes("已创建调试 Case"));
+  });
+
+  it("forwards the admitted permit's signal to zdebug", async () => {
+    const { exec, calls } = makeFakeExec({});
+    const { toolHost } = makeToolHost();
+
+    await runCommand("调查登录失败", exec, toolHost);
+
+    assert.equal(calls.length, 1);
+    assert.equal(
+      calls[0].signal,
+      PERMIT.signal,
+      "the admitted permit's signal cancels the invocation",
+    );
   });
 });

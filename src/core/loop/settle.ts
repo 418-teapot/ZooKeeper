@@ -49,6 +49,12 @@ export interface SettledInput {
    * wakefulness from their own state, not from this fact.
    */
   hadActivity: boolean;
+  /**
+   * The settle's cancellation, aborted when the session or the extension
+   * stops.  A strategy must abandon its own work on it: the engine stops
+   * consulting strategies once it aborts.
+   */
+  signal: AbortSignal;
 }
 
 /**
@@ -63,6 +69,13 @@ export interface SettleRequest {
   cause: StopCause;
   /** Whether the settled turn made any tool call. */
   hadActivity: boolean;
+  /**
+   * The settle's cancellation, aborted when the session or the extension
+   * stops.  Cancellation is normal silence: no further strategy is
+   * consulted, and a verdict reached after it is neither recorded nor
+   * delivered.
+   */
+  signal: AbortSignal;
 }
 
 /**

@@ -77,7 +77,10 @@ export interface LoopSession {
    *
    * Enforces the cause interlock first: a turn that did not settle logs
    * `not-settled` and returns `null` without consulting any strategy.
-   * Then the awaiting-progress lock: any tool activity releases every
+   * Then the cancelled settle: an aborted signal logs `settle_cancelled`
+   * and returns `null` without consulting any strategy, and a signal that
+   * aborts between two strategies ends the settle the same way.  Then the
+   * awaiting-progress lock: any tool activity releases every
    * lock this session holds and evaluation continues; a settle without
    * activity skips the locked strategies — each logged
    * `awaiting-activity` with its name, unconsulted and spending no
@@ -89,7 +92,10 @@ export interface LoopSession {
    * the first `wake` wins and every strategy silence is logged.  `null`
    * means silence — the host must not invent a wake.
    *
-   * @param request - The stopped turn's facts (cause and activity).
+   * The stop may also arrive while the last strategy runs, so a settle
+   * that ends after an abort is logged as cancelled.
+   *
+   * @param request - The stopped turn's facts (cause, activity, signal).
    * @returns The first wake verdict, or `null` when nothing wakes.
    */
   run(request: SettleRequest): Promise<Wake | null>;
@@ -171,9 +177,20 @@ export function createLoopEngine(
       // like oh-my-pi's loop lock.  Cleared with the counters on reset.
       const awaiting = new Set<string>();
 
+      // A cancelled settle is normal silence, not a verdict: record it so a
+      // silent stop stays distinguishable from a strategy's silence.
+      const cancelled = (): null => {
+        log.debug({
+          hook: "loop",
+          event: "settle_cancelled",
+          sessionId: sessionID,
+        });
+        return null;
+      };
+
       return {
         async run(request: SettleRequest): Promise<Wake | null> {
-          const { cause, hadActivity } = request;
+          const { cause, hadActivity, signal } = request;
           if (cause !== "settled") {
             log.debug({
               hook: "loop",
@@ -183,14 +200,19 @@ export function createLoopEngine(
             });
             return null;
           }
+          // A stop cancels the whole settle: no strategy is consulted.
+          if (signal.aborted) return cancelled();
           if (hadActivity) {
             // Any tool activity is progress on some wake: one active turn
             // answers every pending lock of the session.
             awaiting.clear();
           }
 
-          const input: SettledInput = { sessionID, hadActivity };
+          const input: SettledInput = { sessionID, hadActivity, signal };
           for (const { name, maxWakes, handle } of contributions) {
+            // The stop may arrive between two strategies: the settle ends
+            // here instead of consulting the next one.
+            if (signal.aborted) return cancelled();
             if (awaiting.has(name)) {
               // A text-only reply to this strategy's wake is not progress:
               // skip the strategy, spend no budget, keep the lock.  The
@@ -216,6 +238,9 @@ export function createLoopEngine(
             }
             try {
               const decision = await handle(input);
+              // The stop may land while the strategy runs: its verdict
+              // belongs to a cancelled settle, so it is not recorded.
+              if (signal.aborted) return cancelled();
               if (decision.kind === "wake")
                 return { name, text: decision.text };
               // A silence is otherwise invisible to field diagnosis: record
@@ -228,6 +253,8 @@ export function createLoopEngine(
                 reason: decision.reason,
               });
             } catch (err) {
+              // A strategy abandoned by the stop did not crash.
+              if (signal.aborted) return cancelled();
               log.error({
                 hook: "plugin",
                 event: "handler_crashed",
@@ -237,6 +264,9 @@ export function createLoopEngine(
               });
             }
           }
+          // The stop may also arrive while the last strategy runs: the
+          // settle ends as cancelled rather than as an ordinary silence.
+          if (signal.aborted) return cancelled();
           return null;
         },
 

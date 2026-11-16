@@ -33,17 +33,19 @@ export interface ZdebugExecResult {
  * verification experiment through this port.  It resolves for any
  * process that ran to completion, including a non-zero CLI exit; it
  * rejects only when the process could not be launched (the binary is not
- * on `PATH`).  The invocation is unbounded: each criterion's declared
- * timeout is enforced by `zdebug` itself.  The default implementation
- * spawns `zdebug` from `PATH`; tests inject a fake so no real binary
- * runs.
+ * on `PATH`) or was cancelled.  The invocation is unbounded apart from
+ * cancellation: each criterion's declared timeout is enforced by
+ * `zdebug` itself.  The default implementation spawns `zdebug` from
+ * `PATH`; tests inject a fake so no real binary runs.
  *
  * @param args - CLI arguments, without the leading program name.
  * @param cwd - Working directory for the invocation.
+ * @param signal - The settle's cancellation; the invocation stops with it.
  */
 export type ZdebugExec = (
   args: readonly string[],
   cwd: string,
+  signal: AbortSignal,
 ) => Promise<ZdebugExecResult>;
 
 /** One directory entry returned by the injected filesystem port. */

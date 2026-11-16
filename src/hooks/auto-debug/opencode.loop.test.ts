@@ -23,8 +23,11 @@
  * the strategy is consulted.
  */
 import assert from "node:assert/strict";
+import { mkdirSync, rmSync } from "node:fs";
+import { join } from "node:path";
 import { afterEach, beforeEach, describe, it } from "node:test";
 import { _resetOpenCodeProcessStateForTesting } from "../../adapters/opencode/process.js";
+import type { ZdebugExec } from "../../core/ports/autodebug.js";
 import { buildPlugin } from "../../opencode.js";
 import {
   type CaseFixture,
@@ -33,6 +36,7 @@ import {
   zdebugExec,
 } from "../../testkits/auto-debug.js";
 import { restoreEnv, saveEnv } from "../../testkits/env.js";
+import { makeTmpDir } from "../../testkits/tmp.js";
 import { _getBufferForTesting, _resetForTesting } from "../../utils/logger.js";
 import { CONTINUATION_PROMPT } from "../todo-continuation/decide.js";
 
@@ -475,6 +479,37 @@ describe("session.idle — the list decides wakefulness", () => {
     await idle(plugin);
 
     assert.equal(calls.length, 0);
+  });
+
+  it("reports a delivery the host rejects", async () => {
+    const calls: PromptCall[] = [];
+    const client = {
+      config: { get: async () => ({ data: RAW_AGENTS }) },
+      session: {
+        todo: async () => ({ data: ACTIVE_TODOS }),
+        messages: async () => ({ data: WORKED_TURN }),
+        promptAsync: async (input: PromptCall) => {
+          calls.push(input);
+          throw new Error("boom");
+        },
+      },
+    };
+    const plugin = await buildPlugin({ client }, zooConfig(), RAW_AGENTS);
+    await bindAgent(plugin, "dolphin");
+
+    await idle(plugin);
+
+    assert.equal(calls.length, 1, "the wake is dispatched once");
+    assert.equal(
+      loggedEvent("wake_injected"),
+      false,
+      "a rejected delivery is not reported as a wake",
+    );
+    assert.equal(
+      loggedEvent("wake_inject_failed"),
+      true,
+      "a rejected delivery is warned about",
+    );
   });
 });
 
@@ -991,5 +1026,233 @@ describe("session.idle — auto-debug end to end", () => {
     } finally {
       fixture.dispose();
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Settle cancellation (session or extension stop)
+// ---------------------------------------------------------------------------
+
+/** A promise plus its resolvers, used to hold a step mid-flight. */
+function deferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
+
+/**
+ * Run the pending microtasks so a parked promise can complete.
+ *
+ * Admission and stop are promise chains, so a bounded number of turns is
+ * enough to reach the point where a stop either completed or parked on the
+ * admitted work.
+ */
+async function flushMicrotasks(turns = 20): Promise<void> {
+  for (let i = 0; i < turns; i += 1) await Promise.resolve();
+}
+
+/** A workspace holding one discoverable Case directory. */
+function caseWorkspace(): string {
+  const workspace = makeTmpDir("zoo-loop-cancel");
+  mkdirSync(join(workspace, ".zoo", "debug", "CASE-1"), { recursive: true });
+  return workspace;
+}
+
+/** A `case status` report whose verify pointer is materialized. */
+const OPEN_CASE_REPORT = {
+  stdout: JSON.stringify({
+    ok: true,
+    result: {
+      case_id: "CASE-1",
+      lifecycle: "OPEN",
+      verify: { experiment: "EX-001", timeout_ms: 60_000 },
+    },
+  }),
+  stderr: "",
+  exitCode: 0,
+};
+
+/** Whether the log holds an entry named `event` since the last reset. */
+function loggedEvent(event: string): boolean {
+  return _getBufferForTesting().some((entry) => entry.event === event);
+}
+
+describe("session.idle — settle cancellation", () => {
+  let origDebug: string | undefined;
+
+  beforeEach(() => {
+    origDebug = saveEnv("ZOO_DEBUG");
+    process.env.ZOO_DEBUG = "1";
+  });
+  afterEach(() => {
+    restoreEnv("ZOO_DEBUG", origDebug);
+  });
+
+  it("drops the settle the session stop cancels mid-strategy", async () => {
+    const workspace = caseWorkspace();
+    try {
+      const { client, calls } = makeClient();
+      const entered = deferred<void>();
+      const gate = deferred<void>();
+      const execCalls: string[][] = [];
+      const exec: ZdebugExec = async (args) => {
+        execCalls.push([...args]);
+        entered.resolve();
+        await gate.promise;
+        return OPEN_CASE_REPORT;
+      };
+      const plugin = await buildPlugin(
+        { client, directory: workspace },
+        autoDebugZooConfig(),
+        RAW_AGENTS,
+        { zdebugExec: exec },
+      );
+      await bindAgent(plugin, "dolphin");
+
+      const settling = idle(plugin);
+      await entered.promise;
+
+      let stopped = false;
+      const stopping = plugin
+        .event({
+          event: {
+            type: "session.deleted",
+            properties: { info: { id: "s1" } },
+          },
+        })
+        .then(() => {
+          stopped = true;
+        });
+      await flushMicrotasks();
+      assert.equal(stopped, false, "the stop waits for the admitted settle");
+
+      gate.resolve();
+      await settling;
+      await stopping;
+
+      assert.equal(execCalls.length, 1, "the re-run never starts");
+      assert.equal(calls.length, 0, "no wake is delivered");
+      assert.equal(loggedEvent("wake_injected"), false);
+      assert.equal(loggedEvent("settle_cancelled"), true);
+    } finally {
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it("reports a delivery the host completed after the stop", async () => {
+    const { client, calls } = makeClient();
+    const entered = deferred<void>();
+    const gate = deferred<void>();
+    const gated = {
+      ...client,
+      session: {
+        ...client.session,
+        promptAsync: async (input: PromptCall) => {
+          calls.push(input);
+          entered.resolve();
+          await gate.promise;
+          return {};
+        },
+      },
+    };
+    const plugin = await buildPlugin(
+      { client: gated },
+      zooConfig(1),
+      RAW_AGENTS,
+    );
+    await bindAgent(plugin, "dolphin");
+
+    const settling = idle(plugin);
+    await entered.promise;
+
+    let stopped = false;
+    const stopping = plugin
+      .event({
+        event: { type: "session.deleted", properties: { info: { id: "s1" } } },
+      })
+      .then(() => {
+        stopped = true;
+      });
+    await flushMicrotasks();
+    assert.equal(stopped, false, "the stop waits for the started delivery");
+
+    gate.resolve();
+    await settling;
+    await stopping;
+
+    assert.equal(calls.length, 1, "the started delivery is not repeated");
+    assert.equal(
+      loggedEvent("wake_injected"),
+      true,
+      "the host completed the delivery, so the wake is reported",
+    );
+    const injected = _getBufferForTesting().find(
+      (entry) => entry.event === "wake_injected",
+    );
+    assert.equal(
+      injected?.used,
+      1,
+      "the interrupted delivery keeps its charge",
+    );
+  });
+
+  it("stays silent when the stop rejects the started delivery", async () => {
+    const { client, calls } = makeClient();
+    const entered = deferred<void>();
+    const gate = deferred<void>();
+    const gated = {
+      ...client,
+      session: {
+        ...client.session,
+        promptAsync: async (input: PromptCall) => {
+          calls.push(input);
+          entered.resolve();
+          await gate.promise;
+          const cancelled = new Error("the delivery was cancelled");
+          cancelled.name = "MessageAbortedError";
+          throw cancelled;
+        },
+      },
+    };
+    const plugin = await buildPlugin(
+      { client: gated },
+      zooConfig(1),
+      RAW_AGENTS,
+    );
+    await bindAgent(plugin, "dolphin");
+
+    const settling = idle(plugin);
+    await entered.promise;
+
+    let stopped = false;
+    const stopping = plugin
+      .event({
+        event: { type: "session.deleted", properties: { info: { id: "s1" } } },
+      })
+      .then(() => {
+        stopped = true;
+      });
+    await flushMicrotasks();
+    assert.equal(stopped, false, "the stop waits for the started delivery");
+
+    gate.reject(new Error("the delivery was cancelled"));
+    await settling;
+    await stopping;
+
+    assert.equal(calls.length, 1, "the cancelled delivery is not repeated");
+    assert.equal(
+      loggedEvent("wake_injected"),
+      false,
+      "a cancelled delivery is not reported as a wake",
+    );
+    assert.equal(
+      loggedEvent("wake_inject_failed"),
+      false,
+      "a cancelled delivery is not reported as a failure",
+    );
   });
 });

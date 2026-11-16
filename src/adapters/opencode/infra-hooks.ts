@@ -20,13 +20,16 @@
  * The loop settle path is role-gated: the session must resolve to the
  * orchestrator the assembly selected, which arrives as an input — this
  * module holds no agent name of its own, and an absent orchestrator keeps
- * the path inert (fail-closed).
+ * the path inert (fail-closed).  It runs under the event's permit, so a
+ * session or extension stop cancels the settle and commits nothing (see
+ * `commitSettle`).
  *
  * @module
  */
 
 import type { ContextRuntime } from "../../core/context/runtime.js";
 import type { WorkPermit } from "../../core/lifecycle/index.js";
+import { commitSettle } from "../../core/loop/index.js";
 import {
   applyModelVariant,
   type PromptVariantPair,
@@ -111,9 +114,12 @@ export function buildInfraHooks(deps: InfraHookDeps) {
   } = deps;
 
   return {
-    async event(input: {
-      event: { type: string; properties?: Record<string, unknown> };
-    }) {
+    async event(
+      input: {
+        event: { type: string; properties?: Record<string, unknown> };
+      },
+      permit?: WorkPermit,
+    ) {
       const { type, properties } = input.event;
 
       // Session lifetime belongs to the wiring: `session.created` is a real
@@ -190,6 +196,10 @@ export function buildInfraHooks(deps: InfraHookDeps) {
         if (typeof sessionID !== "string") return;
         if (orchestrator === undefined) return;
         if (resolveAgent(sessionID) !== orchestrator) return;
+        // The settle's cancellation: the permit the event was admitted
+        // under follows the session, so a stop cancels the settle.  No
+        // permit means no admitted session work, hence no settle.
+        if (permit === undefined) return;
         // The gates above read host facts only; the session's own state is
         // read below, so the scope is ensured here.
         const session = await sessions.sessionState(sessionID);
@@ -199,12 +209,6 @@ export function buildInfraHooks(deps: InfraHookDeps) {
         const outcome = await classifyStopCause(client, session, sessionID);
         if (outcome === null) return;
 
-        const decision = await loop.run({
-          cause: outcome.cause,
-          hadActivity: outcome.hadActivity,
-        });
-        if (decision === null) return;
-
         if (typeof client?.session?.promptAsync !== "function") {
           log.warn({
             hook: "loop",
@@ -213,40 +217,56 @@ export function buildInfraHooks(deps: InfraHookDeps) {
           });
           return;
         }
-        // Count the reminder before dispatch so a delivery failure
-        // cannot become an unbounded retry loop.
-        loop.record(decision.name);
-        // Tag the injected message so its echo is recognizable by
-        // `info.id` when the corresponding `message.updated` arrives.
-        const messageID = newInjectedMessageID();
-        session.expectEcho(messageID);
-        try {
-          await client.session.promptAsync({
-            path: { id: sessionID },
-            body: {
-              agent: orchestrator,
-              messageID,
-              parts: [{ type: "text", text: decision.text }],
-            },
-          });
-          log.info({
-            hook: "loop",
-            event: "wake_injected",
-            sessionId: sessionID,
-            handler: decision.name,
-            used: loop.used(decision.name),
+        // The commit gate charges the reminder before dispatch (so a
+        // delivery failure cannot become an unbounded retry loop) and
+        // commits nothing for a settle the stop cancelled.
+        await commitSettle(
+          loop,
+          {
             cause: outcome.cause,
             hadActivity: outcome.hadActivity,
-          });
-        } catch (err) {
-          session.clearEcho();
-          log.warn({
-            hook: "loop",
-            event: "wake_inject_failed",
-            sessionId: sessionID,
-            error: String(err),
-          });
-        }
+            signal: permit.signal,
+          },
+          async (wake, signal) => {
+            // Tag the injected message so its echo is recognizable by
+            // `info.id` when the corresponding `message.updated` arrives.
+            const messageID = newInjectedMessageID();
+            session.expectEcho(messageID);
+            try {
+              await client.session.promptAsync({
+                path: { id: sessionID },
+                body: {
+                  agent: orchestrator,
+                  messageID,
+                  parts: [{ type: "text", text: wake.text }],
+                },
+              });
+              // The host accepted the wake: the delivery is reported
+              // whatever the settle's signal did afterwards.
+              log.info({
+                hook: "loop",
+                event: "wake_injected",
+                sessionId: sessionID,
+                handler: wake.name,
+                used: loop.used(wake.name),
+                cause: outcome.cause,
+                hadActivity: outcome.hadActivity,
+              });
+            } catch (err) {
+              session.clearEcho();
+              // A stop rejects the delivery it cancelled: that rejection is
+              // the stop's silence, not a delivery failure.
+              if (!signal.aborted) {
+                log.warn({
+                  hook: "loop",
+                  event: "wake_inject_failed",
+                  sessionId: sessionID,
+                  error: String(err),
+                });
+              }
+            }
+          },
+        );
       }
     },
 

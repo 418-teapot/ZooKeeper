@@ -1089,6 +1089,27 @@ describe("session work around host events", () => {
     ]);
   });
 
+  it("hands the event body the permit whose signal the stop aborts", async () => {
+    const { wiring } = buildRecordingWiring();
+    let permit: WorkPermit | undefined;
+    const hooks = withSessionWork(
+      {
+        event: async (_input: EventInput, issued?: WorkPermit) => {
+          permit = issued;
+        },
+      },
+      wiring,
+    );
+
+    await hooks.event({
+      event: { type: "session.idle", properties: { sessionID: "s1" } },
+    });
+
+    assert.equal(permit?.sessionID, "s1");
+    assert.equal(permit?.signal.aborted, false);
+    assert.equal(permit?.isActive(), false, "the permit ends with the call");
+  });
+
   it("runs no work event that names no session", async () => {
     const { wiring, log } = buildRecordingWiring();
     let ran = 0;

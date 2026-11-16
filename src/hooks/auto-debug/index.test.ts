@@ -106,7 +106,11 @@ function makeDeps(partial: Record<string, unknown>): Partial<Capabilities> {
 async function settle(deps: Partial<Capabilities>) {
   const composed = unit.create(deps, facts());
   assert.equal(composed.onSettled.length, 1);
-  return composed.onSettled[0].handle({ sessionID: "s1", hadActivity: true });
+  return composed.onSettled[0].handle({
+    sessionID: "s1",
+    hadActivity: true,
+    signal: new AbortController().signal,
+  });
 }
 
 describe("auto-debug unit — descriptor", () => {

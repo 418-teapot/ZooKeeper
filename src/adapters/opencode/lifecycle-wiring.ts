@@ -371,8 +371,9 @@ function withSessionTools(tools: unknown, run: SessionWorkRunner): unknown {
  *
  * A creation and a deletion drive the lifecycle and take no permit: the
  * deletion of a stopped session still has to run.  A per-session event is
- * admitted under the session it names and runs nothing when it names none.
- * Every other event keeps the hook's own behavior.
+ * admitted under the session it names, receives the permit as its trailing
+ * argument, and runs nothing when it names none.  Every other event keeps
+ * the hook's own behavior.
  *
  * @param handler - The assembled event hook.
  * @param run - Admits the per-session work.
@@ -388,7 +389,11 @@ function withSessionEvents(
     if (typeof type !== "string" || !SESSION_EVENTS.has(type)) {
       return handler(...args);
     }
-    return run.runSession(eventSessionID(event), () => handler(...args));
+    // The permit's signal is the session's cancellation, so a body that
+    // outlives the event stops with the session (the loop settle does).
+    return run.runSession(eventSessionID(event), (permit) =>
+      handler(...args, permit),
+    );
   };
 }
 
