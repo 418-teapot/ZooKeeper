@@ -8,7 +8,7 @@
 
 import { describe, expect, test } from "bun:test";
 import { existsSync, readFileSync, rmSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { buildChildEnv, createIsolatedRoot } from "./isolation.js";
 
@@ -64,6 +64,34 @@ describe("createIsolatedRoot", () => {
     } finally {
       rmSync(first.root, { recursive: true, force: true });
       rmSync(second.root, { recursive: true, force: true });
+    }
+  });
+
+  test("copies ZooKeeper with an overridden subagent timeout", () => {
+    const repoConfig = readFileSync(join(REPO_ROOT, "config.toml"), "utf8");
+    const isolated = createIsolatedRoot({
+      repoRoot: REPO_ROOT,
+      scenario: "f",
+      subagentTimeoutSeconds: 2,
+    });
+    try {
+      expect(isolated.zooEntryPath.startsWith(isolated.root)).toBe(true);
+      expect(isolated.zooEntryPath.endsWith(join("src", "pi.ts"))).toBe(true);
+      expect(existsSync(isolated.zooEntryPath)).toBe(true);
+      const zooDir = dirname(dirname(isolated.zooEntryPath));
+      const config = readFileSync(join(zooDir, "config.toml"), "utf8");
+      const section = config.slice(config.indexOf("[zoo.subagent]"));
+      const body = section.slice(0, section.indexOf("\n[", 1));
+      expect(/^timeout\s*=\s*2$/m.test(body)).toBe(true);
+      // Shared read-only inputs resolve into the repository.
+      expect(existsSync(join(zooDir, "vendor", "smol-toml"))).toBe(true);
+      expect(existsSync(join(zooDir, "skills"))).toBe(true);
+      // The repository config.toml is never rewritten.
+      expect(readFileSync(join(REPO_ROOT, "config.toml"), "utf8")).toBe(
+        repoConfig,
+      );
+    } finally {
+      rmSync(isolated.root, { recursive: true, force: true });
     }
   });
 

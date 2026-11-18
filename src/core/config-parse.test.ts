@@ -49,6 +49,7 @@ import {
   parseContextConfig,
   parseContinuationConfig,
   parseLimits,
+  parseSubagentConfig,
 } from "./config-parse.js";
 
 afterEach(() => {
@@ -1761,6 +1762,101 @@ describe("parseAskConfig", () => {
       timeoutSeconds: 0.5,
     });
     assert.equal(warnCount("ask_config_invalid"), 0);
+  });
+});
+
+// =============================================================================
+// parseSubagentConfig — `[zoo.subagent]` (subagent run timeout, zero
+// defaults).
+//
+// Contract: absent section → undefined silently; malformed section
+// (non-object, unknown key, present-but-invalid timeout) → undefined +
+// exactly one `subagent_config_invalid` warn; valid section →
+// SubagentConfig with `timeoutSeconds` (undefined when the key is absent —
+// never a default).
+// =============================================================================
+
+describe("parseSubagentConfig", () => {
+  it("returns undefined without a warn when the section is absent", () => {
+    assert.equal(parseSubagentConfig({}), undefined);
+    assert.equal(parseSubagentConfig({ subagent: null }), undefined);
+    assert.equal(warnCount("subagent_config_invalid"), 0);
+  });
+
+  it("invalidates the whole section for a non-object subagent value", () => {
+    assert.equal(parseSubagentConfig({ subagent: "1800" }), undefined);
+    assert.equal(parseSubagentConfig({ subagent: [1800] }), undefined);
+    const warns = warnsOf("subagent_config_invalid");
+    assert.equal(warns.length, 2);
+    assert.equal(warns[0].key, "subagent");
+  });
+
+  it("invalidates the section for an unknown key", () => {
+    assert.equal(
+      parseSubagentConfig({ subagent: { timeout: 1800, typo: 1 } }),
+      undefined,
+    );
+    const warns = warnsOf("subagent_config_invalid");
+    assert.equal(warns.length, 1);
+    assert.equal(warns[0].key, "typo");
+  });
+
+  it("rejects a non-number timeout with one warn", () => {
+    assert.equal(
+      parseSubagentConfig({ subagent: { timeout: "1800" } }),
+      undefined,
+    );
+    const warns = warnsOf("subagent_config_invalid");
+    assert.equal(warns.length, 1);
+    assert.equal(warns[0].key, "timeout");
+    assert.equal(warns[0].value, "1800");
+  });
+
+  it("rejects zero, negative, and non-finite timeouts (no default invented)", () => {
+    assert.equal(parseSubagentConfig({ subagent: { timeout: 0 } }), undefined);
+    assert.equal(parseSubagentConfig({ subagent: { timeout: -5 } }), undefined);
+    assert.equal(
+      parseSubagentConfig({ subagent: { timeout: Number.POSITIVE_INFINITY } }),
+      undefined,
+    );
+    assert.equal(warnCount("subagent_config_invalid"), 3);
+  });
+
+  it("yields an undefined timeoutSeconds when the key is absent", () => {
+    const result = parseSubagentConfig({ subagent: {} });
+    assert.deepEqual(result, { timeoutSeconds: undefined });
+    assert.equal(warnCount("subagent_config_invalid"), 0);
+  });
+
+  it("accepts a positive finite timeout", () => {
+    assert.deepEqual(parseSubagentConfig({ subagent: { timeout: 1800 } }), {
+      timeoutSeconds: 1800,
+    });
+    assert.deepEqual(parseSubagentConfig({ subagent: { timeout: 0.5 } }), {
+      timeoutSeconds: 0.5,
+    });
+    assert.equal(warnCount("subagent_config_invalid"), 0);
+  });
+
+  // The timer limit is 2147483647 ms, so 2147483.647 s is the largest
+  // timeout whose millisecond budget still fits.
+  it("accepts the largest timeout the timer limit allows", () => {
+    assert.deepEqual(
+      parseSubagentConfig({ subagent: { timeout: 2147483.647 } }),
+      { timeoutSeconds: 2147483.647 },
+    );
+    assert.equal(warnCount("subagent_config_invalid"), 0);
+  });
+
+  it("rejects a timeout above the timer limit with one warn", () => {
+    assert.equal(
+      parseSubagentConfig({ subagent: { timeout: 2147483.648 } }),
+      undefined,
+    );
+    const warns = warnsOf("subagent_config_invalid");
+    assert.equal(warns.length, 1);
+    assert.equal(warns[0].key, "timeout");
+    assert.equal(warns[0].value, 2147483.648);
   });
 });
 

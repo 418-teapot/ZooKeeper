@@ -1,9 +1,9 @@
 /**
  * Core scenario registry, ordered by risk: the load/tool loop first, then
  * session isolation, reload idempotency, fork inheritance, the SDK
- * sub-session, the nested SDK delegations, ordered shutdown, the context
- * pipeline, the compression tools, the primary switch, and finally the ask
- * tool's visibility.
+ * sub-session, the nested SDK delegations, the subagent timeout, ordered
+ * shutdown, the context pipeline, the compression tools, the primary switch,
+ * and finally the ask tool's visibility.
  *
  * Any scenario can be selected on its own by id (`--scenario <id>`), which
  * is what makes a failure cheap to rerun.
@@ -21,6 +21,7 @@ import { sessionIsolation } from "./session-isolation.js";
 import { shutdown } from "./shutdown.js";
 import { startupTodo } from "./startup-todo.js";
 import { subagentSdk } from "./subagent-sdk.js";
+import { subagentTimeout } from "./subagent-timeout.js";
 
 /** Every core scenario, in run order. */
 export const SCENARIOS: ScenarioDefinition[] = [
@@ -30,6 +31,7 @@ export const SCENARIOS: ScenarioDefinition[] = [
   forkInheritance,
   subagentSdk,
   nestedSubagent,
+  subagentTimeout,
   shutdown,
   contextPipeline,
   compressionTools,

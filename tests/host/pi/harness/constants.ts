@@ -17,7 +17,35 @@ export const MARKERS = {
   subagent: "E2E-SUBAGENT: 委派给 lynx",
   /** Delegate to beaver, which delegates to spider in its own run. */
   nested: "E2E-NESTED: 嵌套委派 beaver 再委派 spider",
+  /** Delegate to lynx a task that hangs until the run is aborted. */
+  subagentTimeout: "E2E-SUBAGENT-TIMEOUT: 委派一个会挂起的子任务",
 } as const;
+
+/**
+ * Tag the hanging child prompt carries.
+ *
+ * Checked before the `E2E-CHILD` pattern of the confirmation child, so the
+ * hanging child never answers as that one.
+ */
+export const HANG_CHILD_TAG = "E2E-HANG-CHILD";
+
+/**
+ * Subagent timeout the timeout scenario runs with (`[zoo.subagent].timeout`
+ * of its isolated copy).
+ */
+export const SUBAGENT_TIMEOUT_SECONDS = 2;
+
+/** Product output of a run that exceeded its configured budget. */
+export const SUBAGENT_TIMEOUT_TEXT = "子 agent 运行超时，未在限定时间内完成。";
+
+/**
+ * Self-release deadline of the hanging tool, in milliseconds.
+ *
+ * The tool resolves on abort; this deadline only keeps a broken cancellation
+ * from hanging the whole suite.  It is far above the scenario timeout, so a
+ * run that ends at this deadline proves the timeout was not enforced.
+ */
+export const HANG_ESCAPE_MS = 15_000;
 
 /**
  * Prompt of the ask-visibility scenario: one plain turn with no tool call.

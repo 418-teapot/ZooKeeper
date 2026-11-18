@@ -55,4 +55,13 @@ export interface SubagentPort {
    * an actionable error naming agents.json).
    */
   subagentModels: Record<string, string>;
+  /**
+   * Subagent run timeout in seconds (`[zoo.subagent].timeout`).
+   *
+   * Absent when the section is absent or failed validation — a run then
+   * waits for the driver to settle without a time limit (no default timeout
+   * is ever invented).  The timeout is cooperative: it aborts the run, which
+   * then reports `timeout` once the driver settles.
+   */
+  subagentTimeoutSeconds: number;
 }

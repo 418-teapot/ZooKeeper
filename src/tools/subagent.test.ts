@@ -1185,3 +1185,65 @@ describe("subagent tool execute — run-registry writes", () => {
     });
   });
 });
+
+// ---------------------------------------------------------------------------
+// Run timeout
+// ---------------------------------------------------------------------------
+
+describe("subagent tool execute — run timeout", () => {
+  it("aborts the run and reports the timeout text when the budget elapses", async () => {
+    // The driver honors the signal cooperatively and reports the partial
+    // text it produced before the abort, like a host driver.
+    let observed: AbortSignal | undefined;
+    const driver: SubagentDriver = {
+      async run(_request, ctx): Promise<SubagentResult> {
+        observed = ctx.signal;
+        return new Promise<SubagentResult>((resolve) => {
+          ctx.signal.addEventListener(
+            "abort",
+            () => resolve({ kind: "aborted", text: "partial output" }),
+            { once: true },
+          );
+        });
+      },
+    };
+
+    const t = tool(
+      makeDeps({ subagentDriver: driver, subagentTimeoutSeconds: 0.02 }),
+    );
+    const { text } = await t.execute(
+      { agent: "beaver", description: "实现任务", prompt: "t" },
+      TOOL_CALL({ callID: "call-timeout" }),
+    );
+
+    assert.equal(observed?.aborted, true, "the budget must abort the run");
+    assert.ok(text.includes("partial output"), `missing partial text: ${text}`);
+    assert.ok(
+      text.includes("子 agent 运行超时，未在限定时间内完成。"),
+      `missing timeout reason: ${text}`,
+    );
+    assert.equal(runs.get("call-timeout")?.status, "error");
+    assert.equal(
+      runs.get("call-timeout")?.error,
+      "子 agent 运行超时，未在限定时间内完成。",
+    );
+  });
+
+  it("runs without a time limit when no timeout is configured", async () => {
+    const driver: SubagentDriver = {
+      async run(): Promise<SubagentResult> {
+        await new Promise((resolve) => setTimeout(resolve, 30));
+        return { kind: "ok", text: "done" };
+      },
+    };
+
+    const t = tool(makeDeps({ subagentDriver: driver }));
+    const { text } = await t.execute(
+      { agent: "beaver", description: "实现任务", prompt: "t" },
+      TOOL_CALL({ callID: "call-no-timeout" }),
+    );
+
+    assert.equal(text, "done");
+    assert.equal(runs.get("call-no-timeout")?.status, "done");
+  });
+});

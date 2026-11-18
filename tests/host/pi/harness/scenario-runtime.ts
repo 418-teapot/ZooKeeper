@@ -191,6 +191,17 @@ export interface ScenarioDefinition {
   title: string;
   /** Risk this scenario covers (printed in the report). */
   risk: string;
+  /**
+   * Optional overrides for this scenario's isolated ZooKeeper copy.
+   *
+   * A scenario that needs a config.toml value the repository does not
+   * carry runs against a copy.  Every other scenario loads the repository
+   * entry directly, so the repository config.toml stays the source of truth.
+   */
+  isolatedZoo?: {
+    /** `[zoo.subagent].timeout` of the copy, in seconds. */
+    subagentTimeoutSeconds: number;
+  };
   run(ctx: ScenarioContext): Promise<void>;
   /**
    * Optional assertions that need the process to be gone (ordered shutdown,
@@ -611,6 +622,11 @@ export async function runScenario(
     repoRoot: options.repoRoot,
     scenario: definition.id,
     baseDir: options.baseDir,
+    ...(definition.isolatedZoo === undefined
+      ? {}
+      : {
+          subagentTimeoutSeconds: definition.isolatedZoo.subagentTimeoutSeconds,
+        }),
   });
   const session = new PiSession(isolated, options.piBinary);
   let error: string | undefined;

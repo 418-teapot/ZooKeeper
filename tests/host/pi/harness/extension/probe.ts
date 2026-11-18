@@ -3,10 +3,14 @@
  *
  * Loaded as its own extension file (see `probe-entry.ts`) beside the real
  * ZooKeeper entry, it records real host events, registers the deterministic
- * provider and exposes one reload command.  It only observes: no event is
- * mutated, no result is returned, no tool is registered.  The behavioural
- * additions are the `e2e` provider (no network) and `/e2e-reload`, which
- * calls pi's real `ctx.reload()` because RPC has no reload command.
+ * provider and exposes one reload command.  It never mutates an event or
+ * returns a result.  The additions that are not observation are the `e2e`
+ * provider (no network), `/e2e-reload` (pi's real `ctx.reload()`, because RPC
+ * has no reload command) and the `e2e-hang` tool: a test-only tool that holds
+ * a run open until its abort signal arrives, so the suite can observe the
+ * timeout's cooperative cancellation.  The tool resolves itself after
+ * `HANG_ESCAPE_MS` and records that escape, so a broken cancellation fails
+ * the scenario instead of hanging the suite.
  *
  * A sub-session runtime loads this file too, so the probe also reports the
  * tool face the child ends up with.
@@ -25,7 +29,7 @@ import type {
   ToolCallEvent,
   ToolResultEvent,
 } from "@earendil-works/pi-coding-agent";
-import { REQUIRED_TOOLS } from "../constants.js";
+import { HANG_ESCAPE_MS, REQUIRED_TOOLS } from "../constants.js";
 import {
   MODEL_ID,
   PROVIDER_API,
@@ -95,6 +99,49 @@ export function probe(pi: ExtensionAPI): void {
       await ctx.reload();
     },
   });
+
+  pi.registerTool({
+    name: "e2e-hang",
+    label: "e2e-hang",
+    description: "E2E probe: hold the run open until it is aborted",
+    parameters: { type: "object", properties: {} },
+    execute: async (toolCallId, _params, signal, _onUpdate, ctx) => {
+      const sessionID = sessionIdOf(ctx);
+      rec("e2e_hang_started", { sessionID, toolCallId, child: subagentActive });
+      await new Promise<void>((resolve) => {
+        // One settle path for the abort signal and the escape deadline, so
+        // the timer and the listener are always released together.
+        const settle = (): void => {
+          clearTimeout(escapeTimer);
+          signal?.removeEventListener("abort", onAbort);
+          resolve();
+        };
+        const onAbort = (): void => {
+          rec("e2e_hang_aborted", {
+            sessionID,
+            toolCallId,
+            child: subagentActive,
+          });
+          settle();
+        };
+        const escapeTimer = setTimeout(() => {
+          rec("e2e_hang_escape", {
+            sessionID,
+            toolCallId,
+            child: subagentActive,
+          });
+          settle();
+        }, HANG_ESCAPE_MS);
+        signal?.addEventListener("abort", onAbort, { once: true });
+        if (signal?.aborted === true) onAbort();
+      });
+      return {
+        content: [{ type: "text" as const, text: "E2E-HANG: settled" }],
+        details: {},
+      };
+    },
+  });
+  rec("hang_tool_registered", { escapeMs: HANG_ESCAPE_MS });
 
   pi.on("session_start", (event: SessionStartEvent, ctx) => {
     const sessionID = sessionIdOf(ctx);

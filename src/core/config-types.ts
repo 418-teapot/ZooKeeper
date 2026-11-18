@@ -30,6 +30,25 @@ export interface AskConfig {
 }
 
 /**
+ * Subagent-run configuration (`[zoo.subagent]`).
+ *
+ * Pure type definition for the subagent run timeout, consumed by the config
+ * parser (`config-parse.ts`) and injected into `Capabilities` on the pi host
+ * only.  The section carries no on/off switch: a missing or invalidated
+ * section yields `undefined` from the parser (fail to skip), and a present
+ * section without a valid `timeout` leaves the field `undefined` (the run
+ * then waits without a time limit).
+ */
+export interface SubagentConfig {
+  /**
+   * Run timeout in seconds (positive finite number, at most 2147483.647 so
+   * the millisecond timer can hold it).  Undefined → no timeout enforced
+   * (the run waits for the driver to settle).
+   */
+  timeoutSeconds?: number;
+}
+
+/**
  * Auto-continuation configuration (`[zoo.continuation]`).
  *
  * Pure type definition for the reminder budget, consumed by the config

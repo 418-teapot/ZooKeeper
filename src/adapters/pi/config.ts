@@ -27,13 +27,18 @@ import {
   parseAgentColors,
   parseAskConfig,
   parseCommonConfig,
+  parseSubagentConfig,
 } from "../../core/config-parse.js";
 import {
   type ConfigSnapshot,
   createProcessScope,
   type ProcessScope,
 } from "../../core/config-snapshot.js";
-import type { AgentColorMap, AskConfig } from "../../core/config-types.js";
+import type {
+  AgentColorMap,
+  AskConfig,
+  SubagentConfig,
+} from "../../core/config-types.js";
 import {
   parseSkillPermissions,
   type SkillPermissionMap,
@@ -74,12 +79,16 @@ export function loadConfig(): any {
  * The static configuration of one pi configuration generation.
  *
  * Carries the host-independent snapshot plus the pi-only sections the
- * host parses (ask timeout, agent colors, skill permissions) and the
- * per-agent model map the installer materialised into agents.json.
+ * host parses (ask timeout, subagent timeout, agent colors, skill
+ * permissions) and the per-agent model map the installer materialised into
+ * agents.json.
  */
 export interface PiConfigSnapshot extends ConfigSnapshot {
   /** The ask-tool timeout (`[zoo.ask]`), or `undefined` (no timeout). */
   readonly askConfig: AskConfig | undefined;
+  /** The subagent run timeout (`[zoo.subagent]`), or `undefined` (no
+   * timeout). */
+  readonly subagentConfig: SubagentConfig | undefined;
   /** Per-agent status colors (`[agent.<name>].color`). */
   readonly agentColors: AgentColorMap;
   /** Per-agent skill rules (`[agent.<name>].permission.skill`). */
@@ -123,6 +132,7 @@ export function createPiScope(sources: PiScopeSources): PiProcessScope {
   return createProcessScope({
     ...parseCommonConfig(sources.zooConfig, sources.rawConfig),
     askConfig: parseAskConfig(sources.zooConfig),
+    subagentConfig: parseSubagentConfig(sources.zooConfig),
     agentColors: parseAgentColors(sources.rawConfig ?? {}),
     skillPermissions: parseSkillPermissions(sources.rawConfig ?? {}),
     subagentModels: sources.subagentModels,

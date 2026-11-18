@@ -51,7 +51,12 @@
  *    default fallback.
  * 5. Maps the run outcome onto the tool's text return: an `ok` result is
  *    the subagent text verbatim; every failure variant (`aborted`,
- *    `error`) returns the partial text plus a short Chinese reason line.
+ *    `timeout`, `error`) returns the partial text plus a short Chinese
+ *    reason line.
+ *
+ * The run budget comes from `[zoo.subagent].timeout`: when configured, the
+ * orchestration core aborts the run once it elapses and reports `timeout`
+ * after the driver settles; without it the run waits without a time limit.
  *
  * @module
  */
@@ -146,6 +151,9 @@ function appendReason(text: string, reason: string): string {
   return `${text}\n\n${reason}`;
 }
 
+/** The reason line of a run that exceeded its configured budget. */
+const TIMEOUT_REASON = "子 agent 运行超时，未在限定时间内完成。";
+
 /**
  * Map a `SubagentResult` onto the tool's text return.
  *
@@ -161,6 +169,8 @@ function formatSubagentResult(result: SubagentResult): string {
       return result.text;
     case "aborted":
       return appendReason(result.text, "子 agent 运行被中止。");
+    case "timeout":
+      return appendReason(result.text, TIMEOUT_REASON);
     case "error":
       return appendReason(
         result.text,
@@ -182,8 +192,9 @@ function formatSubagentResult(result: SubagentResult): string {
  * @param driver - The host driver that executes the subagent.
  * @param caps - The capability surfaces the tool needs: `resolveCallerAgent`
  *   for the calling session's agent, `runs` for the run records the
- *   delegation is written into, and `agentModes` for the declared
- *   subagent role of the target.
+ *   delegation is written into, `agentModes` for the declared
+ *   subagent role of the target, and `subagentTimeoutSeconds` for the run
+ *   budget (absent → no time limit).
  * @param selectedAgents - The agent names the active profile selects; a
  *   configured subagent outside this list is not a valid target.
  * @returns The subagent tool definition.
@@ -191,7 +202,12 @@ function formatSubagentResult(result: SubagentResult): string {
 export function createSubagentTool(
   driver: SubagentDriver,
   caps: Pick<Capabilities, "resolveCallerAgent" | "runs"> &
-    Partial<Pick<Capabilities, "agentModes" | "subagentModels">>,
+    Partial<
+      Pick<
+        Capabilities,
+        "agentModes" | "subagentModels" | "subagentTimeoutSeconds"
+      >
+    >,
   selectedAgents: readonly string[],
 ): ToolDefinition {
   const { runs } = caps;
@@ -317,6 +333,12 @@ export function createSubagentTool(
         },
         {
           signal,
+          // The configured budget reaches the framework-free core in
+          // milliseconds.  Absent → the core starts no timer and forwards
+          // the parent signal unchanged.
+          ...(caps.subagentTimeoutSeconds === undefined
+            ? {}
+            : { timeoutMs: caps.subagentTimeoutSeconds * 1000 }),
           log: handle.log,
           onProgress: (progress) => {
             // Patch the running run's progress fields — the current tool
@@ -370,10 +392,14 @@ export function createSubagentTool(
         status:
           result.kind === "ok"
             ? "done"
-            : result.kind === "error"
+            : result.kind === "error" || result.kind === "timeout"
               ? "error"
               : "aborted",
-        ...(result.kind === "error" ? { error: result.errorMessage } : {}),
+        ...(result.kind === "error"
+          ? { error: result.errorMessage }
+          : result.kind === "timeout"
+            ? { error: TIMEOUT_REASON }
+            : {}),
       });
 
       log.info({
@@ -403,7 +429,7 @@ export function createSubagentTool(
 export const unit = defineTool({
   name: "subagent",
   needs: ["subagentDriver", "resolveCallerAgent", "runs"],
-  wants: ["agentModes", "subagentModels"],
+  wants: ["agentModes", "subagentModels", "subagentTimeoutSeconds"],
   uses: ["agents"],
   create(caps, uses) {
     return createSubagentTool(caps.subagentDriver, caps, uses.agents);

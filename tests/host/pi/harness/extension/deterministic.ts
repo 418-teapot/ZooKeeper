@@ -44,6 +44,7 @@ import {
   CONTEXT_TARGET_PROMPT,
   CONTEXT_TARGET_REPLY_CHARS,
   CONTEXT_TARGET_TAGS,
+  HANG_CHILD_TAG,
   MARKERS,
   NEST_LEVEL2_TAG,
   NESTED_CHILD_TAG,
@@ -100,6 +101,14 @@ const SPIDER_NESTED_PROMPT = [
   "**CONTEXT:** 这是 ZooKeeper pi 端到端套件的第二层子会话，用于验证嵌套委派的工具权限继承。" +
     "子会话使用进程内确定性 provider，不需要读取文件、执行命令或访问网络。",
   `**ACCEPTANCE:** 回复中包含 "CHILD-OK:${NESTED_CHILD_TAG}"，且不发起任何工具调用。`,
+].join("\n\n");
+
+/** The timeout scenario's child prompt: call the hanging tool once. */
+const HANG_CHILD_PROMPT = [
+  `**SUMMARY:** ${HANG_CHILD_TAG} 调用 e2e-hang 并一直等到运行被中止。`,
+  "**CONTEXT:** 这是 ZooKeeper pi 端到端套件的一次真实子会话运行，用于验证子 agent 运行超时的协作取消。" +
+    "子会话使用进程内确定性 provider，不需要读取文件、执行命令或访问网络；父会话只等待这次运行结束。",
+  `**ACCEPTANCE:** 先调用一次 e2e-hang；该调用返回后若仍有模型 turn，则只回复一条文本。`,
 ].join("\n\n");
 
 /** One decision the model produces. */
@@ -318,6 +327,15 @@ export function decide(view: readonly ViewMessage[]): Decision {
   const lastResultText = results[results.length - 1]?.text ?? "";
 
   const childTag = CHILD_TAG_PATTERN.exec(userText);
+  // The hanging child owns its own tag: it must not fall into the
+  // confirmation child branch below.
+  if (userText.includes(HANG_CHILD_TAG)) {
+    if (results.length === 0) {
+      return { kind: "tool", name: "e2e-hang", argumentValue: {} };
+    }
+    return { kind: "text", text: `HANG-CHILD-DONE:${lastResultText}` };
+  }
+
   if (childTag !== null) {
     return { kind: "text", text: `CHILD-OK:${childTag[1]}` };
   }
@@ -364,6 +382,23 @@ export function decide(view: readonly ViewMessage[]): Decision {
       };
     }
     return { kind: "text", text: `NESTED:${lastResultText}` };
+  }
+
+  // The timeout marker carries the `E2E-SUBAGENT` prefix, so it is checked
+  // before that branch.
+  if (userText.includes(MARKERS.subagentTimeout)) {
+    if (results.length === 0) {
+      return {
+        kind: "tool",
+        name: "subagent",
+        argumentValue: {
+          agent: "lynx",
+          description: "e2e timeout run",
+          prompt: HANG_CHILD_PROMPT,
+        },
+      };
+    }
+    return { kind: "text", text: `TIMEOUT:${lastResultText}` };
   }
 
   if (userText.includes("E2E-SUBAGENT")) {

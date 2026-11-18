@@ -352,7 +352,8 @@ export function buildPiCapabilities(
     askQuestionChannel?: Partial<Capabilities>["askQuestionChannel"];
   },
 ): PiCapabilities {
-  const { modeProfile, askConfig, subagentModels } = scope.snapshot;
+  const { modeProfile, askConfig, subagentConfig, subagentModels } =
+    scope.snapshot;
 
   // The orchestrator the composition resolves, read lazily by the session
   // resolver: the resolver exists before the composition pass runs.
@@ -392,6 +393,9 @@ export function buildPiCapabilities(
   const values: Partial<Capabilities> = {
     ...configCapabilities(scope.snapshot),
     askTimeoutSeconds: askConfig?.timeoutSeconds,
+    // The subagent run budget.  Undefined when `[zoo.subagent]` is absent or
+    // invalid: the subagent tool then waits for the run without a time limit.
+    subagentTimeoutSeconds: subagentConfig?.timeoutSeconds,
     switchHost: hostDeps?.switchHost,
     // The pi subagent driver (in-process SDK session execution).  Only the
     // real pi entry point supplies one; unit tests and other hosts omit it

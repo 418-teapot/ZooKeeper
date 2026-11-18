@@ -3,8 +3,8 @@
  *
  * The scope is the pi host's one static configuration boundary: it
  * carries the host-independent snapshot plus the pi-only parse results
- * (ask timeout, agent colors, skill permissions, subagent models), all
- * immutable and parsed once per generation.
+ * (ask timeout, subagent timeout, agent colors, skill permissions, subagent
+ * models), all immutable and parsed once per generation.
  */
 import assert from "node:assert/strict";
 import { afterEach, describe, it } from "node:test";
@@ -16,6 +16,7 @@ afterEach(_resetForTesting);
 /** The `zoo` section of one pi generation. */
 const ZOO = {
   ask: { timeout: 1200 },
+  subagent: { timeout: 1800 },
   validation: { context_word_limit: 200, prompt_word_limit: 500 },
   mode: {
     poly: {
@@ -68,6 +69,7 @@ describe("createPiScope — pi configuration generation", () => {
       subagentModels: MODELS,
     });
     assert.deepEqual(snapshot.askConfig, { timeoutSeconds: 1200 });
+    assert.deepEqual(snapshot.subagentConfig, { timeoutSeconds: 1800 });
     assert.deepEqual(snapshot.agentColors, {
       dolphin: "#66CCFF",
       beaver: "#39C5BB",
@@ -86,6 +88,7 @@ describe("createPiScope — pi configuration generation", () => {
     });
     assert.equal(snapshot.modeProfile, null);
     assert.equal(snapshot.askConfig, undefined);
+    assert.equal(snapshot.subagentConfig, undefined);
     assert.deepEqual(snapshot.agentColors, {});
     assert.deepEqual(snapshot.skillPermissions, {});
     assert.deepEqual(snapshot.subagentModels, {});
@@ -99,6 +102,7 @@ describe("createPiScope — pi configuration generation", () => {
     });
     assert.equal(Object.isFrozen(snapshot), true);
     assert.equal(Object.isFrozen(snapshot.askConfig), true);
+    assert.equal(Object.isFrozen(snapshot.subagentConfig), true);
     assert.equal(Object.isFrozen(snapshot.agentColors), true);
     assert.equal(Object.isFrozen(snapshot.skillPermissions.dolphin), true);
     assert.equal(Object.isFrozen(snapshot.subagentModels), true);

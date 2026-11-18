@@ -8,9 +8,24 @@
  * settings and provider credentials never reach the pi process.  The only
  * inputs from outside the root are the pi installation, the ZooKeeper
  * sources and the repository's own config.toml.
+ *
+ * A scenario that needs a different value from config.toml runs against an
+ * isolated copy of ZooKeeper instead: the copy's real `src/` makes the
+ * production config lookup read the copy's config.toml, and every other
+ * repository input stays a symlink.  The repository config.toml itself is
+ * never rewritten.
  */
 
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import {
+  copyFileSync,
+  cpSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 
@@ -68,7 +83,8 @@ export interface IsolatedRoot {
   artifactsDir: string;
   /** Trace file this scenario's pi process appends to. */
   tracePath: string;
-  /** ZooKeeper's extension entry (the repository's real `src/pi.ts`). */
+  /** ZooKeeper's extension entry (the repository's real `src/pi.ts`, or the
+   * entry of this scenario's isolated copy). */
   zooEntryPath: string;
   /** The observation probe's extension entry. */
   probeEntryPath: string;
@@ -91,12 +107,15 @@ function writeJson(path: string, value: unknown): void {
  * @param options - Creation inputs.
  * @param options.repoRoot - Repository under test.
  * @param options.scenario - Scenario id (used in the directory name).
+ * @param options.subagentTimeoutSeconds - When given, ZooKeeper runs from an
+ *   isolated copy whose `[zoo.subagent].timeout` carries this value.
  * @returns The created root and its paths.
  */
 export function createIsolatedRoot(options: {
   repoRoot: string;
   scenario: string;
   baseDir?: string;
+  subagentTimeoutSeconds?: number;
 }): IsolatedRoot {
   const { repoRoot, scenario } = options;
   const parent = options.baseDir ?? tmpdir();
@@ -113,7 +132,10 @@ export function createIsolatedRoot(options: {
   // Two extension files, ZooKeeper first: the probe observes the runtime of
   // a sub-session that loads ZooKeeper from its inline factory, so both
   // must be loadable independently.
-  const zooEntryPath = join(repoRoot, "src", "pi.ts");
+  const zooEntryPath =
+    options.subagentTimeoutSeconds === undefined
+      ? join(repoRoot, "src", "pi.ts")
+      : createZooCopy(repoRoot, root, options.subagentTimeoutSeconds);
   const probeEntryPath = join(
     repoRoot,
     "tests",
@@ -190,6 +212,78 @@ export function createIsolatedRoot(options: {
     zooEntryPath,
     probeEntryPath,
   };
+}
+
+/**
+ * Repository inputs the isolated copy reads read-only through symlinks.
+ *
+ * The production code resolves these from its module location: the toml
+ * parser, the skill directories, the release artifacts, the zweb addon and
+ * the packages a sub-session imports dynamically.
+ */
+const SHARED_INPUTS = [
+  "node_modules",
+  "vendor",
+  "skills",
+  "release",
+  "tools",
+] as const;
+
+/**
+ * Replace the `timeout` of the `[zoo.subagent]` section.
+ *
+ * @param text - The config.toml text.
+ * @param seconds - Timeout to write.
+ * @returns The text with only that section's timeout changed.
+ */
+function withSubagentTimeout(text: string, seconds: number): string {
+  const header = "[zoo.subagent]";
+  const start = text.indexOf(header);
+  if (start < 0) return `${text}${header}\ntimeout = ${seconds}\n`;
+  const bodyStart = text.indexOf("\n", start) + 1;
+  const nextSection = text.indexOf("\n[", bodyStart);
+  const bodyEnd = nextSection < 0 ? text.length : nextSection;
+  const body = text.slice(bodyStart, bodyEnd);
+  const replaced = /^timeout\s*=.*$/m.test(body)
+    ? body.replace(/^timeout\s*=.*$/m, `timeout = ${seconds}`)
+    : `timeout = ${seconds}\n${body}`;
+  return `${text.slice(0, bodyStart)}${replaced}${text.slice(bodyEnd)}`;
+}
+
+/**
+ * Copy ZooKeeper into the scenario root with a different config.toml.
+ *
+ * The production config path resolves from this module's real location, so
+ * the copy keeps a real `src/`; everything else links back to the
+ * repository.  The copy lives under the scenario root and is removed with
+ * it.
+ *
+ * @param repoRoot - Repository under test.
+ * @param root - Scenario root.
+ * @param subagentTimeoutSeconds - Timeout the copied config.toml carries.
+ * @returns The copy's extension entry.
+ */
+function createZooCopy(
+  repoRoot: string,
+  root: string,
+  subagentTimeoutSeconds: number,
+): string {
+  const zooDir = join(root, "zoo");
+  mkdirSync(zooDir, { recursive: true });
+  cpSync(join(repoRoot, "src"), join(zooDir, "src"), { recursive: true });
+  copyFileSync(join(repoRoot, "package.json"), join(zooDir, "package.json"));
+  const config = readFileSync(join(repoRoot, "config.toml"), "utf8");
+  writeFileSync(
+    join(zooDir, "config.toml"),
+    withSubagentTimeout(config, subagentTimeoutSeconds),
+  );
+  for (const input of SHARED_INPUTS) {
+    const target = join(repoRoot, input);
+    if (existsSync(target)) {
+      symlinkSync(target, join(zooDir, input), "dir");
+    }
+  }
+  return join(zooDir, "src", "pi.ts");
 }
 
 /**

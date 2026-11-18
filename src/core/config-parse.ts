@@ -34,6 +34,7 @@ import type {
   ContinuationConfig,
   DecompressConfig,
   ModeProfile,
+  SubagentConfig,
 } from "./config-types.js";
 import { NUDGE_PERCENT_RE } from "./context/nudge.js";
 import type { AgentPermissionMap } from "./permissions/deny-tools.js";
@@ -312,6 +313,71 @@ export function parseAskConfig(zooConfig: any): AskConfig | undefined {
   const bad = findBadKey(keyChecks);
   if (bad) {
     warnSectionInvalid("ask", bad);
+    return undefined;
+  }
+
+  return { timeoutSeconds: table.timeout as number | undefined };
+}
+
+/**
+ * Largest delay `setTimeout` accepts, in milliseconds.
+ *
+ * A larger delay overflows the timer and fires after 1 ms instead.
+ */
+const TIMER_MAX_DELAY_MS = 2_147_483_647;
+
+/** Largest subagent timeout in seconds (the run multiplies it by 1000). */
+const MAX_SUBAGENT_TIMEOUT_SECONDS = TIMER_MAX_DELAY_MS / 1000;
+
+/** Accept `undefined` or a timeout the millisecond timer can hold. */
+const isOptionalSubagentTimeout = (v: unknown): boolean =>
+  v === undefined ||
+  (isOptionalPositiveNumber(v) &&
+    (v as number) <= MAX_SUBAGENT_TIMEOUT_SECONDS);
+
+/**
+ * Extract the subagent config from the `[zoo.subagent]` section.
+ *
+ * Fail to skip with zero invented defaults: an absent section yields
+ * `undefined` silently; a malformed section (non-object, unknown key, or
+ * a present-but-invalid `timeout` — non-number, non-finite, zero, negative,
+ * or above the timer limit) yields `undefined` and exactly one
+ * `subagent_config_invalid` warn.  A present section without a valid
+ * `timeout` key yields a `SubagentConfig` whose `timeoutSeconds` is
+ * `undefined` — a run then waits without a time limit (there is no default
+ * timeout seconds value).
+ *
+ * @param zooConfig - The `zoo` section of the parsed config.toml.
+ * @returns The parsed subagent config, or `undefined` when the section is
+ *   absent or invalid.
+ */
+export function parseSubagentConfig(
+  zooConfig: any,
+): SubagentConfig | undefined {
+  const s = zooConfig.subagent as unknown;
+  if (s == null) return undefined;
+  if (typeof s !== "object" || Array.isArray(s)) {
+    warnSectionInvalid("subagent", ["subagent", s, () => false]);
+    return undefined;
+  }
+
+  const table = s as Record<string, unknown>;
+  const unknownKey = Object.keys(table).find((key) => key !== "timeout");
+  if (unknownKey !== undefined) {
+    warnSectionInvalid("subagent", [
+      unknownKey,
+      table[unknownKey],
+      () => false,
+    ]);
+    return undefined;
+  }
+
+  const keyChecks: KeyCheck[] = [
+    ["timeout", table.timeout, isOptionalSubagentTimeout],
+  ];
+  const bad = findBadKey(keyChecks);
+  if (bad) {
+    warnSectionInvalid("subagent", bad);
     return undefined;
   }
 
