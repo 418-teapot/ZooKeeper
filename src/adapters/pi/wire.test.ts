@@ -1999,6 +1999,19 @@ const PERM_DENY_RAW = {
   },
 };
 
+/**
+ * The delegation target's own permission rules.
+ *
+ * lynx denies `bash` only: its config never denies `fetch`, so whether it
+ * runs with `fetch` depends on the target host's own initial active set.
+ */
+const TARGET_DENY_RAW = {
+  agent: {
+    ...MODES_RAW.agent,
+    lynx: { mode: "subagent", permission: { bash: "deny" } },
+  },
+};
+
 describe("startPi — primary tool-deny trim (main session)", () => {
   /** A reference tool set carrying the fetch tool the deny tests target. */
   const ALL_TOOLS = ["fetch", "edit", "bash"];
@@ -2079,11 +2092,12 @@ describe("startPi — primary tool-deny trim (main session)", () => {
     assert.deepEqual(api.activeTools, ALL_TOOLS);
   });
 
-  it("does not trim a subagent session's tool face", async () => {
-    // The driver already restricts a child session's tools via the
-    // capability allowlist; the primary denies are not its identity.
+  it("trims a subagent runtime's active tools by its own denies", async () => {
+    // A sub-session runtime takes the same permission path a bound session
+    // takes: its fixed agent's config denies trim its own baseline, and the
+    // registered directory keeps every tool.
     const api = mockApi();
-    api.activeTools.push(...ALL_TOOLS);
+    api.activeTools.push("fetch", "edit", "bash", "subagent");
     const { publication: handlers } = await startPiRuntime(
       piScope(POLY_ZOO, PERM_DENY_RAW),
       api as any,
@@ -2095,56 +2109,285 @@ describe("startPi — primary tool-deny trim (main session)", () => {
       { type: "session_start", reason: "startup" },
       SESSION_CTX,
     );
-    assert.deepEqual(api.activeTools, ALL_TOOLS);
+    assert.deepEqual(api.activeTools, ["edit", "bash", "subagent"]);
   });
 
-  it("computes subagent capabilities from the untrimmed baseline", async () => {
-    const api = mockApi();
-    api.activeTools.push("fetch", "edit", "bash", "subagent", "ask");
-    const requested: string[][] = [];
+  /**
+   * Delegate to lynx and let the driver start a real second pi runtime for
+   * the requested agent.
+   *
+   * The caller runtime's host already offers `callerTools`; the target
+   * runtime's host offers `targetTools`.  The observations are the tool
+   * faces the two hosts actually hold after the delegation, so the check
+   * reads the real permission boundary instead of the request shape.
+   *
+   * @param input - The two host tool sets and the tool-call id.
+   * @returns The observed caller face, target face, and request keys.
+   */
+  async function delegateToChildRuntime(input: {
+    callerTools: string[];
+    targetTools: string[];
+    callID: string;
+  }): Promise<{ caller: string[]; target: string[]; requestKeys: string[] }> {
+    const callerApi = mockApi();
+    callerApi.activeTools.push(...input.callerTools);
+    let observed:
+      | { caller: string[]; target: string[]; requestKeys: string[] }
+      | undefined;
     const driver: SubagentDriver = {
       async run(request) {
-        requested.push(request.tools);
+        const targetApi = mockApi();
+        targetApi.activeTools.push(...input.targetTools);
+        const { publication } = await startPiRuntime(
+          piScope(POLY_ZOO, TARGET_DENY_RAW),
+          targetApi as any,
+          undefined,
+          createPiProcessState(),
+          { kind: "subagent", agent: request.agent },
+        );
+        await publication.sessionStart(
+          { type: "session_start", reason: "startup" },
+          SESSION_CTX,
+        );
+        observed = {
+          caller: [...callerApi.activeTools],
+          target: [...targetApi.activeTools],
+          requestKeys: Object.keys(request).sort(),
+        };
         return { kind: "ok", text: "done" };
       },
     };
     const handlers = await startInstance(
       piScope(
-        {
-          mode: {
-            poly: { ...POLY_PROFILE, tools: ["subagent", "ask"], hooks: [] },
-          },
-        },
+        { mode: { poly: { ...POLY_PROFILE, tools: ["subagent"], hooks: [] } } },
         PERM_DENY_RAW,
       ),
-      api as any,
+      callerApi as any,
       { subagentDriver: driver },
     );
-    bindSession("beaver");
-    // The main session trims beaver's fetch, and its own context can ask, so
-    // the live face keeps ask.
     await handlers.sessionStart(
       { type: "session_start", reason: "startup" },
-      askCtx(true, "sess-1"),
+      SESSION_CTX,
     );
-    assert.deepEqual(api.activeTools, ["edit", "bash", "subagent", "ask"]);
 
-    const subagent = api.tools.find((tool: any) => tool.name === "subagent") as
-      | { execute: (...args: unknown[]) => Promise<unknown> }
-      | undefined;
+    const subagent = callerApi.tools.find(
+      (tool: any) => tool.name === "subagent",
+    ) as { execute: (...args: unknown[]) => Promise<unknown> } | undefined;
     assert.ok(subagent);
     await subagent.execute(
-      "call-capability",
+      input.callID,
       { agent: "lynx", description: "调研任务", prompt: "t" },
       undefined,
       undefined,
-      askCtx(true, "sess-1"),
+      SESSION_CTX,
+    );
+    assert.ok(observed);
+    return observed;
+  }
+
+  it("hands the subagent driver only the delegation facts", async () => {
+    // The delegation carries the task, the target identity, the model and
+    // the lineage.  A tool set computed by the caller would carry the
+    // caller's face into the target.
+    const observed = await delegateToChildRuntime({
+      callerTools: ["edit", "bash", "subagent"],
+      targetTools: ["fetch", "edit", "bash", "subagent"],
+      callID: "call-request",
+    });
+
+    assert.deepEqual(observed.requestKeys, [
+      "agent",
+      "model",
+      "parentSession",
+      "prompt",
+    ]);
+  });
+
+  it("keeps the target's own face when the caller's baseline lacks a tool", async () => {
+    // The caller's host already lost fetch before ZooKeeper captured its
+    // baseline; the target runtime's host still offers it.  The target keeps
+    // fetch and loses only its own deny (bash).
+    const observed = await delegateToChildRuntime({
+      callerTools: ["edit", "bash", "subagent"],
+      targetTools: ["fetch", "edit", "bash", "subagent"],
+      callID: "call-isolation",
+    });
+
+    assert.deepEqual(observed.target, ["fetch", "edit", "subagent"]);
+    assert.deepEqual(
+      observed.caller,
+      ["edit", "bash", "subagent"],
+      "the caller's face stays as its host offered it",
+    );
+  });
+
+  it("does not invent a tool the target host never offered", async () => {
+    // lynx's config allows fetch, but its own host never activated it, so
+    // the target runs without it: config never creates a capability.
+    const observed = await delegateToChildRuntime({
+      callerTools: ["fetch", "edit", "bash", "subagent"],
+      targetTools: ["edit", "bash", "subagent"],
+      callID: "call-no-invent",
+    });
+
+    assert.deepEqual(observed.target, ["edit", "subagent"]);
+  });
+
+  it("keeps a main session's live set when no baseline is available", async () => {
+    // The main session's fallback: without a baseline the trim cannot decide
+    // the face, so the live set stays as it is.
+    const api = mockApi();
+    api.activeTools.push("fetch", "edit");
+    (api as { getActiveTools?: unknown }).getActiveTools = undefined;
+    const handlers = await startInstance(
+      piScope(POLY_ZOO, PERM_DENY_RAW),
+      api as any,
+    );
+    bindSession("beaver");
+    await handlers.sessionStart(
+      { type: "session_start", reason: "startup" },
+      SESSION_CTX,
+    );
+    assert.deepEqual(api.activeTools, ["fetch", "edit"]);
+  });
+
+  it("serves no tools to a subagent runtime without a baseline", async () => {
+    // A sub-session runtime has no permission source besides this trim, so an
+    // unavailable baseline must not leave the host's live set running.
+    const api = mockApi();
+    api.activeTools.push("fetch", "edit");
+    (api as { getActiveTools?: unknown }).getActiveTools = undefined;
+    const { publication: handlers } = await startPiRuntime(
+      piScope(POLY_ZOO, PERM_DENY_RAW),
+      api as any,
+      undefined,
+      piProcess,
+      { kind: "subagent", agent: "beaver" },
+    );
+    await handlers.sessionStart(
+      { type: "session_start", reason: "startup" },
+      SESSION_CTX,
+    );
+    assert.deepEqual(api.activeTools, []);
+  });
+
+  it("drops a subagent runtime's tools once across repeated events", async () => {
+    // A sub-session runtime whose baseline stays unavailable clears the live
+    // set at bind time.  Every later bind-time event takes the same
+    // fail-closed path: the host must not be written again and the operator
+    // must not be warned again within this runtime.
+    const api = mockApi();
+    api.activeTools.push("fetch", "edit");
+    const writes: string[][] = [];
+    const writeTools = api.setActiveTools.bind(api);
+    api.setActiveTools = (names: string[]) => {
+      writes.push([...names]);
+      writeTools(names);
+    };
+    (api as { getActiveTools?: unknown }).getActiveTools = undefined;
+    const { publication: handlers } = await startPiRuntime(
+      piScope(POLY_ZOO, PERM_DENY_RAW),
+      api as any,
+      undefined,
+      piProcess,
+      { kind: "subagent", agent: "beaver" },
     );
 
-    // lynx denies nothing: its face is the untrimmed baseline minus ask.  The
-    // caller's fetch deny must not leak, and ask needs a channel a sub-session
-    // never has.
-    assert.deepEqual(requested[0], ["bash", "edit", "fetch", "subagent"]);
+    await handlers.sessionStart(
+      { type: "session_start", reason: "startup" },
+      SESSION_CTX,
+    );
+    await handlers.beforeAgentStart(
+      { messageType: "user", systemPrompt: "base" },
+      SESSION_CTX,
+    );
+    await handlers.sessionTree(undefined, SESSION_CTX);
+
+    assert.deepEqual(api.activeTools, [], "no tool stays active");
+    assert.equal(writes.length, 1, "one host write across three events");
+    const warnings = _getBufferForTesting().filter(
+      (entry) =>
+        entry.hook === "permissions" && entry.event === "baseline_unavailable",
+    );
+    assert.equal(warnings.length, 1, "one warning across three events");
+  });
+
+  it("resumes the trim when the baseline recovers", async () => {
+    // The clear is not terminal: once the host reports a baseline, the same
+    // runtime trims it by its fixed agent's config denies.
+    const api = mockApi();
+    api.activeTools.push("fetch", "edit", "bash");
+    (api as { getActiveTools?: unknown }).getActiveTools = undefined;
+    const { publication: handlers } = await startPiRuntime(
+      piScope(POLY_ZOO, PERM_DENY_RAW),
+      api as any,
+      undefined,
+      piProcess,
+      { kind: "subagent", agent: "beaver" },
+    );
+    await handlers.sessionStart(
+      { type: "session_start", reason: "startup" },
+      SESSION_CTX,
+    );
+    assert.deepEqual(api.activeTools, [], "cleared while unavailable");
+
+    // The host now reports its tool universe: the runtime's own deny decides
+    // the face again.
+    (api as { getActiveTools?: unknown }).getActiveTools = () => [
+      "fetch",
+      "edit",
+      "bash",
+    ];
+    await handlers.beforeAgentStart(
+      { messageType: "user", systemPrompt: "base" },
+      SESSION_CTX,
+    );
+
+    assert.deepEqual(api.activeTools, ["edit", "bash"]);
+    const warnings = _getBufferForTesting().filter(
+      (entry) =>
+        entry.hook === "permissions" && entry.event === "baseline_unavailable",
+    );
+    assert.equal(warnings.length, 1, "the recovery adds no warning");
+  });
+
+  it("retries the clear when the host write throws", async () => {
+    // A throwing host write is not a success: the runtime must not mark the
+    // clear as done, so the next event writes again.
+    const api = mockApi();
+    api.activeTools.push("fetch", "edit");
+    const writes: string[][] = [];
+    let fail = true;
+    const writeTools = api.setActiveTools.bind(api);
+    api.setActiveTools = (names: string[]) => {
+      writes.push([...names]);
+      if (fail) throw new Error("host refused the write");
+      writeTools(names);
+    };
+    (api as { getActiveTools?: unknown }).getActiveTools = undefined;
+    const { publication: handlers } = await startPiRuntime(
+      piScope(POLY_ZOO, PERM_DENY_RAW),
+      api as any,
+      undefined,
+      piProcess,
+      { kind: "subagent", agent: "beaver" },
+    );
+    await assert.rejects(
+      handlers.sessionStart(
+        { type: "session_start", reason: "startup" },
+        SESSION_CTX,
+      ),
+      /host refused the write/,
+    );
+
+    fail = false;
+    await handlers.beforeAgentStart(
+      { messageType: "user", systemPrompt: "base" },
+      SESSION_CTX,
+    );
+
+    assert.equal(writes.length, 2, "the failed write is retried");
+    assert.deepEqual(api.activeTools, []);
   });
 
   it("leaves the tool set untouched with no baseline (fail-closed)", async () => {

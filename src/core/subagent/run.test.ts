@@ -31,7 +31,6 @@ function request(agent = "worker") {
   return {
     agent,
     prompt: "do the thing",
-    tools: ["edit"],
     // Strict mode: a request always carries a configured model.
     model: "Provider/model",
   };

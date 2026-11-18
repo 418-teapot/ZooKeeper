@@ -44,6 +44,9 @@ import {
   CONTEXT_TARGET_PROMPT,
   CONTEXT_TARGET_REPLY_CHARS,
   CONTEXT_TARGET_TAGS,
+  MARKERS,
+  NEST_LEVEL2_TAG,
+  NESTED_CHILD_TAG,
   VIEW_TAGS,
 } from "../constants.js";
 import { excerpt, record } from "./trace.js";
@@ -81,6 +84,22 @@ const CHILD_PROMPT = [
   "**CONTEXT:** 这是 ZooKeeper pi 端到端套件的一次真实子会话运行，用于验证子会话的扩展发现与 SDK 生命周期桥。" +
     "子会话使用进程内确定性 provider，不需要读取文件、执行命令或访问网络；除回复文本外不要产生任何动作。父会话只等待这条确认文本。",
   `**ACCEPTANCE:** 回复中包含 "${CHILD_REPLY}"，且不发起任何工具调用。`,
+].join("\n\n");
+
+/** The nested scenario's beaver prompt: it delegates to spider. */
+const BEAVER_NESTED_PROMPT = [
+  `**SUMMARY:** ${NEST_LEVEL2_TAG} 嵌套场景的第二层，委派 spider 回一条确认文本。`,
+  "**CONTEXT:** 这是 ZooKeeper pi 端到端套件的一次真实嵌套委派：主会话委派 beaver，beaver 在自己的子会话里委派 spider。" +
+    "每一层都使用进程内确定性 provider，不需要读取文件、执行命令或访问网络。",
+  "**ACCEPTANCE:** 只发起一次 spider 委派，收到结果后回复文本。",
+].join("\n\n");
+
+/** The nested scenario's spider prompt: plain confirmation text. */
+const SPIDER_NESTED_PROMPT = [
+  `**SUMMARY:** E2E-CHILD ${NESTED_CHILD_TAG} 只回复一条确认文本，不调用任何工具。`,
+  "**CONTEXT:** 这是 ZooKeeper pi 端到端套件的第二层子会话，用于验证嵌套委派的工具权限继承。" +
+    "子会话使用进程内确定性 provider，不需要读取文件、执行命令或访问网络。",
+  `**ACCEPTANCE:** 回复中包含 "CHILD-OK:${NESTED_CHILD_TAG}"，且不发起任何工具调用。`,
 ].join("\n\n");
 
 /** One decision the model produces. */
@@ -166,6 +185,36 @@ export function analyzeView(messages: readonly Message[]): ViewMessage[] {
       tags: VIEW_TAGS.filter((tag) => text.includes(tag)),
     };
   });
+}
+
+/**
+ * Names of the tools a request declares to the model.
+ *
+ * pi folds the active tool set into the transcript's system messages, so the
+ * request itself says which tools the model may call.  The record is the
+ * evidence that a trimmed active set reached the model.
+ *
+ * @param messages - Provider-facing transcript.
+ * @returns The declared tool names, in declaration order.
+ */
+function requestToolNames(messages: readonly Message[]): string[] {
+  const names: string[] = [];
+  for (const message of messages) {
+    const delta = message as {
+      toolsAdded?: Array<{ name?: unknown }>;
+      toolsRemoved?: Array<{ name?: unknown }>;
+    };
+    for (const tool of delta.toolsRemoved ?? []) {
+      const index = names.indexOf(String(tool.name));
+      if (index >= 0) names.splice(index, 1);
+    }
+    for (const tool of delta.toolsAdded ?? []) {
+      if (typeof tool.name === "string" && !names.includes(tool.name)) {
+        names.push(tool.name);
+      }
+    }
+  }
+  return names;
 }
 
 /**
@@ -286,6 +335,37 @@ export function decide(view: readonly ViewMessage[]): Decision {
     return { kind: "text", text: `VIEW:${lastResultText}` };
   }
 
+  if (userText.includes(NEST_LEVEL2_TAG)) {
+    // Second level: the beaver child delegates to spider.
+    if (results.length === 0) {
+      return {
+        kind: "tool",
+        name: "subagent",
+        argumentValue: {
+          agent: "spider",
+          description: "e2e nested run",
+          prompt: SPIDER_NESTED_PROMPT,
+        },
+      };
+    }
+    return { kind: "text", text: `NEST-L2:${lastResultText}` };
+  }
+
+  if (userText.includes(MARKERS.nested)) {
+    if (results.length === 0) {
+      return {
+        kind: "tool",
+        name: "subagent",
+        argumentValue: {
+          agent: "beaver",
+          description: "e2e nested run",
+          prompt: BEAVER_NESTED_PROMPT,
+        },
+      };
+    }
+    return { kind: "text", text: `NESTED:${lastResultText}` };
+  }
+
   if (userText.includes("E2E-SUBAGENT")) {
     if (results.length === 0) {
       return {
@@ -392,6 +472,7 @@ export function streamSimple(
     api: model.api,
     decision: decision.kind === "tool" ? `tool:${decision.name}` : "text",
     requestMessages: messages.length,
+    tools: requestToolNames(messages),
     view: view.map(traceView),
   });
 

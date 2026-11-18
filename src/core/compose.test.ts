@@ -751,14 +751,14 @@ describe("assemble — capability matching", () => {
     ]);
   });
 
-  it("passes thunk capabilities through without ever invoking them", () => {
-    // Ports carry behavior, not values: the build stage must hand the thunk
-    // over by reference and never call it — the unit decides the timing
-    // (pi's tool baseline is forbidden during extension load).
+  it("passes function capabilities through without invoking them", () => {
+    // Ports carry behavior, not values: the build stage must hand a function
+    // capability over by reference and never call it — the unit decides the
+    // timing (pi's tool baseline is forbidden during extension load).
     let calls = 0;
-    const baseline = () => {
+    const resolveCallerAgent = (sessionID: string) => {
       calls++;
-      return ["x"];
+      return Promise.resolve(sessionID);
     };
     let seen: Partial<Capabilities> | undefined;
     const unit = mockUnit(
@@ -769,20 +769,24 @@ describe("assemble — capability matching", () => {
         return { kind: "tool", tools: [] };
       },
       ["toolHost"],
-      ["subagentBaseline"],
+      ["resolveCallerAgent"],
     );
 
     const { report } = run(toolProfile(["subagent"]), [unit], {
       ...BASE_CAPS,
       toolHost: TOOL_HOST,
-      subagentBaseline: baseline,
+      resolveCallerAgent,
     });
 
     assert.deepEqual(report.selected, ["subagent"]);
-    assert.equal(calls, 0, "the build stage must not invoke capability thunks");
-    assert.equal(seen?.subagentBaseline, baseline, "passed by reference");
-    assert.deepEqual(seen?.subagentBaseline?.(), ["x"]);
-    assert.equal(calls, 1);
+    assert.equal(
+      calls,
+      0,
+      "the build stage must not invoke capability functions",
+    );
+    assert.equal(seen?.resolveCallerAgent, resolveCallerAgent, "by reference");
+    void seen?.resolveCallerAgent?.("sess-1");
+    assert.equal(calls, 1, "the caller decides when the capability runs");
   });
 });
 

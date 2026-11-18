@@ -215,7 +215,7 @@ async function driveLive(): Promise<readonly RunFact[]> {
   });
   const log = createRunLog();
   await driver.run(
-    { agent: "beaver", prompt: ACTIVITY.prompt, tools: ["bash"], model: "p/m" },
+    { agent: "beaver", prompt: ACTIVITY.prompt, model: "p/m" },
     { signal: new AbortController().signal, log },
   );
   return log.facts();

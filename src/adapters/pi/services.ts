@@ -47,7 +47,6 @@
  * @module
  */
 
-import { ASK_TOOL_NAME } from "../../core/ask.js";
 import type { HostCapabilities } from "../../core/composition.js";
 import { defineCompositionService } from "../../core/composition.js";
 import type { ContextRuntime } from "../../core/context/runtime.js";
@@ -98,20 +97,18 @@ import { createPiToolHost, type PiAppendEntry } from "./tool-host.js";
 import type { ExtensionAPI } from "./types.js";
 
 /**
- * The untrimmed tool baselines shared by the trim paths.
+ * The untrimmed tool baseline shared by the trim paths.
  *
  * pi forbids calling action methods (`getActiveTools`) during extension
  * loading, so the baseline is captured on FIRST USE and then cached: the
- * session-start trim, the switch command and the subagent capability
- * computation all address the same fixed set, so tool denies never
- * accumulate.
+ * session-start trim and the switch command address the same fixed set, so
+ * tool denies never accumulate.
  *
- * Both faces read ONE capture.  The subagent face must not depend on the
- * moment of its first use: a separate capture would observe the
- * main-session face already trimmed by the primary's denies and ask
- * visibility, and the caller's denies would then leak into every
- * sub-session.  The subagent face further drops `ask`: an SDK sub-session
- * has no event context that yields a question channel.
+ * ONE capture serves every consumer.  The trim must not depend on the
+ * moment of its first use: a separate capture would observe the live face
+ * already trimmed by the session's denies and ask visibility, so denies
+ * would accumulate across repeated trims.  Each runtime trims its own
+ * capture by its own agent's rules.
  *
  * Once the extension stops, the port serves nothing: a stopped scope must
  * not hand out a baseline it captured earlier.
@@ -119,9 +116,7 @@ import type { ExtensionAPI } from "./types.js";
 export interface PiToolBaselines {
   /** The shared untrimmed baseline, captured on first use. */
   primary(): string[] | undefined;
-  /** The subagent capability baseline: the shared baseline minus `ask`. */
-  subagent(): string[] | undefined;
-  /** Drop the captures (the extension scope is stopping). */
+  /** Drop the capture (the extension scope is stopping). */
   release(): void;
 }
 
@@ -129,14 +124,13 @@ export interface PiToolBaselines {
  * Create the tool baseline port.
  *
  * @param piApi - The pi extension API, or undefined on a host without one
- *   (both faces then read as unavailable).
+ *   (the baseline then reads as unavailable).
  * @returns The baseline port.
  */
 export function createPiToolBaselines(
   piApi: ExtensionAPI | undefined,
 ): PiToolBaselines {
   let shared: string[] | undefined;
-  let subagent: string[] | undefined;
   let released = false;
 
   // Copy the reported names: the baseline must stay frozen even if the host
@@ -152,19 +146,9 @@ export function createPiToolBaselines(
     primary() {
       return released ? undefined : capture();
     },
-    subagent() {
-      if (released) return undefined;
-      if (subagent === undefined) {
-        const baseline = capture();
-        if (baseline === undefined) return undefined;
-        subagent = baseline.filter((tool) => tool !== ASK_TOOL_NAME);
-      }
-      return subagent;
-    },
     release() {
       released = true;
       shared = undefined;
-      subagent = undefined;
     },
   };
 }

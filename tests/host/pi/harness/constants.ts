@@ -15,6 +15,8 @@ export const MARKERS = {
   view: "E2E-VIEW: 读回当前计划",
   /** Delegate to the lynx subagent. */
   subagent: "E2E-SUBAGENT: 委派给 lynx",
+  /** Delegate to beaver, which delegates to spider in its own run. */
+  nested: "E2E-NESTED: 嵌套委派 beaver 再委派 spider",
 } as const;
 
 /**
@@ -36,6 +38,15 @@ export const CHILD_TAG = "run1";
 
 /** Text the child session produces. */
 export const CHILD_REPLY = `CHILD-OK:${CHILD_TAG}`;
+
+/** Tag the beaver prompt carries; that prompt delegates to spider. */
+export const NEST_LEVEL2_TAG = "E2E-NEST-L2";
+
+/** Tag the spider prompt carries (it is the child tag of the second level). */
+export const NESTED_CHILD_TAG = "spider";
+
+/** Text the second-level child session produces. */
+export const NESTED_CHILD_REPLY = `CHILD-OK:${NESTED_CHILD_TAG}`;
 
 /** Product output of `todo view` when the plan is fully completed. */
 export const PLAN_COMPLETE_TEXT = "Overall: 3/3 done, 0 open.";

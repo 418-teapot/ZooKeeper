@@ -515,7 +515,7 @@ export interface PiEventHandlerDeps {
    *
    * A sub-session runtime serves exactly one delegation, so this is its
    * session kind: its own settle must never be woken by the root
-   * extension, and its tool face stays driver-restricted.
+   * extension, and its own runtime trims its active tools.
    */
   fixedAgent?: string;
 }

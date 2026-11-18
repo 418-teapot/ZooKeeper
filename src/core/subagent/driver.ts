@@ -25,17 +25,18 @@ import type { RunLog } from "./run-log.js";
  *
  * `agent` is the target agent name; it is resolved by identity binding
  * before the driver runs, never resolved by the driver itself.  `prompt`
- * is the prompt text handed to the subagent.  `tools` is the capability
- * whitelist the driver must pass to the host session factory.  `model` is
- * the configured `"provider/model"` string (strict mode: agents.json is the
+ * is the prompt text handed to the subagent.  `model` is the configured
+ * `"provider/model"` string (strict mode: agents.json is the
  * sole source, so a request always carries one — the tool layer enforces
  * this before ever calling the driver).  `parentSession` is a pointer used
  * for session lineage on hosts that persist sessions.
+ *
+ * A request carries no tool set: the target runtime derives its own active
+ * tools from its host's initial set and the target's own config rules.
  */
 export interface SubagentRequest {
   agent: string;
   prompt: string;
-  tools: string[];
   model: string;
   parentSession?: string;
 }
@@ -122,7 +123,7 @@ export interface SubagentDriver {
   /**
    * Run the delegation to completion.
    *
-   * @param request - Agent, prompt, allowed tools, and model.
+   * @param request - Agent, prompt, and model.
    * @param ctx.signal - The parent abort signal, honored cooperatively.
    * @param ctx.onProgress - Optional progress report, called whenever the
    *   run advances (tool start, assistant message, terminal).  Hosts

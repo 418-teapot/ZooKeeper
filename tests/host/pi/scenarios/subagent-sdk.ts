@@ -116,8 +116,8 @@ export const subagentSdk: ScenarioDefinition = {
     // The child runtime loads ZooKeeper from the driver's inline factory, so
     // ZooKeeper's own tools register there.  `todo` belongs to ZooKeeper (pi
     // provides no such builtin), so its presence proves the inline extension
-    // ran in the child; the driver's capability allowlist decides the rest of
-    // the child's face.
+    // ran in the child; the child runtime's own config rules trim the rest of
+    // its face.
     const childTools: string[] = Array.isArray(childStart?.toolNames)
       ? (childStart.toolNames as string[])
       : [];

@@ -162,8 +162,15 @@ export function createIsolatedRoot(options: {
   });
 
   // Strict mode: the subagent tool reads the child model from agents.json.
+  // The nested scenario delegates two levels, so every target it names is
+  // listed here.
+  const childModel = { provider: PROVIDER_ID, model: MODEL_ID };
   writeJson(join(agentDir, "agents.json"), {
-    agents: { lynx: { provider: PROVIDER_ID, model: MODEL_ID } },
+    agents: {
+      lynx: childModel,
+      beaver: childModel,
+      spider: childModel,
+    },
   });
 
   // config.toml declares several [zoo.mode.*] profiles; the active one

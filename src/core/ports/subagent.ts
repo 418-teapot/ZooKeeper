@@ -1,9 +1,9 @@
 /**
  * Subagent-delegation capability port.
  *
- * Pure types: the host driver that executes a delegated run plus the
- * baseline and model inputs the `subagent` tool reads.  The file imports
- * types only — never an implementation.
+ * Pure types: the host driver that executes a delegated run plus the model
+ * input the `subagent` tool reads.  The file imports types only — never an
+ * implementation.
  *
  * @module
  */
@@ -42,23 +42,6 @@ export interface SubagentPort {
    * its native `task` tool).
    */
   subagentDriver: SubagentDriver;
-  /**
-   * The host's full untrimmed tool-name baseline for subagent capability
-   * computation, as a thunk.
-   *
-   * Ports carry BEHAVIOR, not data snapshots: a value-typed port would
-   * freeze the capture at assembly time, but computing the baseline calls
-   * a host action method that may not run while the host is still loading
-   * the extension (pi forbids it then).  The thunk makes the timing
-   * explicit — the unit invokes it inside `execute`, which is always
-   * post-load — and lets the supplier cache the result internally.
-   * Mirrors the switch command's baseline source.  The field describes the
-   * thunk the host binds; a host without one leaves the key unbound, so a
-   * unit wanting it runs with whatever `computeCapabilitySet` yields (an
-   * empty set, fail-closed; permissions are never invented).  A bound
-   * thunk may still return `undefined`.
-   */
-  subagentBaseline: () => string[] | undefined;
   /**
    * Per-agent model map for subagent sessions (`~/.pi/agent/agents.json`).
    *

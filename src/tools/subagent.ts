@@ -34,13 +34,7 @@
  *    target absent from it, a target declared with another mode, or a
  *    configured subagent the profile does not select returns a tool-level
  *    text explaining WHY (never throws, never runs the driver).
- * 3. Computes the TARGET agent's capability set as `baseline − deniedTools`
- *    via `computeCapabilitySet`, where the baseline is the host's full
- *    untrimmed tool list (`caps.subagentBaseline?.()`) and the denies come
- *    from the target's parsed `[agent.<name>].permission` tool-level
- *    denies.  A missing baseline yields an empty set — permissions are
- *    never invented (fail-closed).
- * 4. Hands the run's append-only fact log to the driver so every observed
+ * 3. Hands the run's append-only fact log to the driver so every observed
  *    fact is recorded there, patches the driver's progress reports' fields
  *    (current tool, context length, model, child session ids, session path)
  *    onto the registry run, asks the host for a card repaint per report
@@ -49,20 +43,19 @@
  *    cancellation signal.  The driver's terminal report (`done`) carries the
  *    last field values; those are committed with the finish write, so the
  *    run never publishes them on a still-running state.
- * 5. Resolves the sub-session model (strict mode): `caps.subagentModels`
+ * 4. Resolves the sub-session model (strict mode): `caps.subagentModels`
  *    (agents.json, whose mapped values are `"provider/model"` strings) is
  *    the SOLE source.  A missing entry for the target
  *    fails closed with an actionable Chinese error and never runs the
  *    driver — there is no inheritance from the parent model and no
  *    default fallback.
- * 6. Maps the run outcome onto the tool's text return: an `ok` result is
+ * 5. Maps the run outcome onto the tool's text return: an `ok` result is
  *    the subagent text verbatim; every failure variant (`aborted`,
  *    `error`) returns the partial text plus a short Chinese reason line.
  *
  * @module
  */
 
-import { computeCapabilitySet } from "../core/permissions/capability.js";
 import type { Capabilities } from "../core/ports/index.js";
 import type {
   SubagentDriver,
@@ -183,16 +176,14 @@ function formatSubagentResult(result: SubagentResult): string {
 /**
  * Create the subagent delegation tool.
  *
- * The driver, the host tool services, the tool baseline and the parsed
- * per-agent denies are captured by the closure so each `execute` call is
- * self-contained.
+ * The driver, the host tool services and the parsed per-agent modes are
+ * captured by the closure so each `execute` call is self-contained.
  *
  * @param driver - The host driver that executes the subagent.
  * @param caps - The capability surfaces the tool needs: `resolveCallerAgent`
  *   for the calling session's agent, `runs` for the run records the
- *   delegation is written into, `subagentBaseline` for the capability
- *   baseline, `agentModes` for the declared subagent role of the target,
- *   and `agentPermissions` for the target's tool-level denies.
+ *   delegation is written into, and `agentModes` for the declared
+ *   subagent role of the target.
  * @param selectedAgents - The agent names the active profile selects; a
  *   configured subagent outside this list is not a valid target.
  * @returns The subagent tool definition.
@@ -200,15 +191,7 @@ function formatSubagentResult(result: SubagentResult): string {
 export function createSubagentTool(
   driver: SubagentDriver,
   caps: Pick<Capabilities, "resolveCallerAgent" | "runs"> &
-    Partial<
-      Pick<
-        Capabilities,
-        | "subagentBaseline"
-        | "agentModes"
-        | "agentPermissions"
-        | "subagentModels"
-      >
-    >,
+    Partial<Pick<Capabilities, "agentModes" | "subagentModels">>,
   selectedAgents: readonly string[],
 ): ToolDefinition {
   const { runs } = caps;
@@ -269,19 +252,10 @@ export function createSubagentTool(
         return { text: verdict.reason };
       }
 
-      // 3. Capability set for the TARGET agent: `baseline − deniedTools`.
-      // A missing baseline yields an empty set (fail-closed — permissions
-      // are never invented).
-      const deniedTools = caps.agentPermissions?.[input.agent] ?? [];
-      const tools = computeCapabilitySet({
-        baseline: caps.subagentBaseline?.(),
-        deniedTools,
-      });
-
-      // 4. The cancellation signal of this call.
+      // 3. The cancellation signal of this call.
       const signal = call.signal;
 
-      // 5. Model resolution for the sub-session (strict mode): the target's
+      // 4. Model resolution for the sub-session (strict mode): the target's
       //    `[agent.<name>].model` from agents.json (`caps.subagentModels`,
       //    materialised by the installer as a `{provider, model}` pair whose
       //    mapped value is the concatenated `"provider/model"` string — the
@@ -305,7 +279,7 @@ export function createSubagentTool(
       }
       const model = configuredModel;
 
-      // 6. Registry write — the host forwards its tool-call id on the call
+      // 5. Registry write — the host forwards its tool-call id on the call
       // context, and it doubles as the run id in the host process's run
       // registry (the fleet widget's source of truth).  A run without one
       // (OpenCode, test invocations) is tracked with a synthetic id derived
@@ -326,7 +300,7 @@ export function createSubagentTool(
       // a run that is finishing anyway.
       let finalPatch: UpdateRunPatch = {};
 
-      // 7. Drive the delegation through the orchestration core.  The run's
+      // 6. Drive the delegation through the orchestration core.  The run's
       // progress reports are patched onto the registry run (see the
       // onProgress handler below) while the driver appends the full facts
       // to this run's log — the durable record views project from.
@@ -335,7 +309,6 @@ export function createSubagentTool(
         {
           agent: input.agent,
           prompt: input.prompt,
-          tools,
           parentSession: sessionID,
           // Strict mode: the agents.json model is always present (the
           // missing-entry guard above never lets the run reach the driver
@@ -389,7 +362,7 @@ export function createSubagentTool(
         },
       );
 
-      // 8. Finish the registry run (terminal state, immutable thereafter).
+      // 7. Finish the registry run (terminal state, immutable thereafter).
       //    The last progress batch lands in this same write, so the run
       //    publishes exactly one terminal event.
       runs.finish(runId, {
@@ -410,10 +383,9 @@ export function createSubagentTool(
         agent: input.agent,
         description: input.description,
         kind: result.kind,
-        tools: tools.length,
       });
 
-      // 9. Map the outcome onto the tool text.
+      // 8. Map the outcome onto the tool text.
       return { text: formatSubagentResult(result) };
     },
   };
@@ -431,12 +403,7 @@ export function createSubagentTool(
 export const unit = defineTool({
   name: "subagent",
   needs: ["subagentDriver", "resolveCallerAgent", "runs"],
-  wants: [
-    "subagentBaseline",
-    "agentModes",
-    "agentPermissions",
-    "subagentModels",
-  ],
+  wants: ["agentModes", "subagentModels"],
   uses: ["agents"],
   create(caps, uses) {
     return createSubagentTool(caps.subagentDriver, caps, uses.agents);

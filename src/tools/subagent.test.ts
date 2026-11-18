@@ -2,15 +2,14 @@
  * Tests for the subagent delegation tool unit (`src/tools/subagent.ts`).
  *
  * Covers the full delegation flow of the contributed tool's `execute`:
- * resolving the CALLER identity, capability-set computation for the
- * TARGET agent (baseline minus the target's config.toml tool-level
- * denies, fail-closed on a missing baseline), the `runSubagent` request
- * shape (agent / task / tools / parentSession), the `SubagentResult`
- * → tool-text mapping (ok → text verbatim; failure variants → text plus a
- * short reason line), and the run-registry write lifecycle (start /
- * update / finish with the forwarded tool-call id and the nested
- * parent-session pointer).  Also covers the fail-closed registration gate:
- * with no `subagentDriver` in deps the unit contributes zero tools.
+ * resolving the CALLER identity, the `runSubagent` request shape (agent /
+ * prompt / model / parentSession, with no tool set — the target runtime
+ * trims its own active tools), the `SubagentResult` → tool-text mapping
+ * (ok → text verbatim; failure variants → text plus a short reason line),
+ * and the run-registry write lifecycle (start / update / finish with the
+ * forwarded tool-call id and the nested parent-session pointer).  Also
+ * covers the fail-closed registration gate: with no `subagentDriver` in
+ * deps the unit contributes zero tools.
  *
  * The tool contains no delegation policy and no prompt-formatting policy —
  * the composed delegation gate and the subagent-prompt format hint are both
@@ -263,13 +262,7 @@ describe("subagent tool execute — successful delegation", () => {
       text: "beaver finished the implementation",
     });
 
-    const t = tool(
-      makeDeps({
-        subagentDriver: driver,
-        subagentBaseline: () => ["bash", "edit", "webfetch", "websearch"],
-        agentPermissions: { beaver: ["webfetch", "websearch"] },
-      }),
-    );
+    const t = tool(makeDeps({ subagentDriver: driver }));
 
     const { text: result } = await t.execute(
       {
@@ -285,51 +278,30 @@ describe("subagent tool execute — successful delegation", () => {
     assert.deepEqual(calls[0].request, {
       agent: "beaver",
       prompt: "Implement the feature",
-      tools: ["bash", "edit"],
       parentSession: "sess-subagent",
       // Strict mode: the agents.json configured model is the sole source.
       model: "Dummy/dummy-small",
     });
   });
 
-  it("computes the target capability set as baseline minus the target's denied tools", async () => {
+  it("hands the driver no tool set: the target runtime decides its own face", async () => {
+    // Delegation carries the task, the target identity, the model and the
+    // lineage only.  A capability list computed here would let the caller's
+    // trimmed face reach the target.
     const { driver, calls } = fakeDriver({ kind: "ok", text: "done" });
-
-    const t = tool(
-      makeDeps({
-        subagentDriver: driver,
-        subagentBaseline: () => ["edit", "webfetch", "bash", "subagent"],
-        agentPermissions: { beaver: ["webfetch", "websearch"] },
-      }),
-    );
+    const t = tool(makeDeps({ subagentDriver: driver }));
 
     await t.execute(
       { agent: "beaver", description: "实现任务", prompt: "task" },
       TOOL_CALL(),
     );
 
-    assert.deepEqual(calls[0].request.tools, ["bash", "edit", "subagent"]);
-  });
-
-  it("proceeds with an empty capability set when the baseline is missing (fail-closed)", async () => {
-    const { driver, calls } = fakeDriver({ kind: "ok", text: "done" });
-
-    const t = tool(
-      makeDeps({
-        subagentDriver: driver,
-        agentPermissions: { beaver: ["webfetch"] },
-      }),
-    );
-
-    await t.execute(
-      { agent: "beaver", description: "实现任务", prompt: "task" },
-      TOOL_CALL(),
-    );
-
-    // No baseline → computeCapabilitySet yields [] — the run still happens,
-    // but the driver receives no invented permissions.
-    assert.equal(calls.length, 1);
-    assert.deepEqual(calls[0].request.tools, []);
+    assert.deepEqual(Object.keys(calls[0].request).sort(), [
+      "agent",
+      "model",
+      "parentSession",
+      "prompt",
+    ]);
   });
 
   it("runs under the call's cancellation signal", async () => {

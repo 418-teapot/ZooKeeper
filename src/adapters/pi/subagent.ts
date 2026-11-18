@@ -3,7 +3,7 @@
  *
  * Implements the host-agnostic `SubagentDriver` contract against pi's SDK
  * factory (`createAgentSession`): a run creates a sub-session carrying the
- * request's tool allowlist and configured model, subscribes to its events,
+ * request's configured model, subscribes to its events,
  * appends every observed fact to the run's append-only log (`run-log.ts`)
  * untruncated, streams a running assistant message's partial content (text
  * and thinking) onto that log's transient (non-fact) partial as
@@ -167,17 +167,18 @@ export interface PiDuckMessage {
 /**
  * Options handed to the session factory.
  *
- * `tools` is the capability allowlist the driver must forward (it is how
- * the sub-session's tool face is restricted).  `model` / `modelRuntime`
- * carry the resolved configured model (strict mode: the request always
- * carries one).  `sessionManager` is the constructed session manager (with
- * the parent-session pointer).  `resourceLoader`, when present, is the
- * loader carrying the subagent's filtered ZooKeeper skill directories (its
- * absence is the machinery-off default: the SDK builds its own).
+ * No tool set is passed: the sub-session keeps pi's own registered tool
+ * directory and default active set, and its runtime trims the active set
+ * by the agent's config denies (the same path a bound session takes).
+ * `model` / `modelRuntime` carry the resolved configured model (strict
+ * mode: the request always carries one).  `sessionManager` is the
+ * constructed session manager (with the parent-session pointer).
+ * `resourceLoader`, when present, is the loader carrying the subagent's
+ * filtered ZooKeeper skill directories (its absence is the machinery-off
+ * default: the SDK builds its own).
  */
 export interface PiCreateSessionOptions {
   cwd: string;
-  tools: string[];
   sessionManager: PiSessionManager;
   model?: unknown;
   modelRuntime?: PiModelRuntimeLike;
@@ -961,7 +962,6 @@ export function createPiSubagentDriver(
             : undefined;
         const { session: created } = await createSession({
           cwd,
-          tools: request.tools,
           sessionManager,
           model: resolved.model,
           modelRuntime: resolved.modelRuntime,

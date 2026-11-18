@@ -321,13 +321,6 @@ export function buildPiCapabilities(
      */
     todoStore?: Partial<Capabilities>["todoStore"];
     /**
-     * Lazily supplies the host's full untrimmed tool-name baseline for
-     * subagent capability computation.  The baseline cannot be captured at
-     * extension-load time (pi forbids calling action methods then), so the
-     * supplier is invoked lazily on first subagent execution and cached.
-     */
-    subagentBaseline?: () => string[] | undefined;
-    /**
      * Test seam: workspace root the auto-debug strategy scans for Cases.
      * Defaults to the process working directory on the real host.
      */
@@ -424,12 +417,6 @@ export function buildPiCapabilities(
       hostDeps?.todoStore === undefined
         ? undefined
         : todoSourceFromStore(hostDeps.todoStore),
-    // The full untrimmed tool baseline for subagent capability
-    // computation, passed through as a thunk: the unit invokes it inside
-    // `execute`, which is always post-load, so the supplier (pi's
-    // `getActiveTools`, forbidden during extension loading) never runs at
-    // assembly time.
-    subagentBaseline: hostDeps?.subagentBaseline,
     // The per-agent model map for subagent sessions, materialised by the
     // installer into `~/.pi/agent/agents.json` as `{provider, model}`
     // pairs (mapped values are concatenated `"provider/model"` strings).
@@ -960,21 +947,6 @@ export function createPiRuntimeInstance(
         // `todo` never registers on a host that cannot restore its state
         // from the transcript.
         todoStore: piApi === undefined ? undefined : ports.todo,
-        // The subagent capability baseline: the shared untrimmed active
-        // tool set minus `ask` (a sub-session has no question channel),
-        // captured lazily on first use and cached.  Both faces read the
-        // same capture, so the main session's primary denies and ask
-        // visibility never reach a sub-session.  The capture is DEFERRED
-        // because pi forbids calling action methods (including
-        // `getActiveTools`) during extension loading; the first consumer
-        // always runs post-bind, so the capture is the real untrimmed
-        // universe.  `undefined` when unavailable (also after the
-        // extension stopped) → capability computation yields an empty set
-        // (fail-closed).
-        subagentBaseline:
-          piApi === undefined
-            ? undefined
-            : () => ports.toolBaselines.subagent(),
         // Native HTML→Markdown converter for the fetch tool.  Wired here
         // (the real pi entry point); the wrapper warns once when the addon
         // is unavailable, the assembly then declares no `htmlConverter`
@@ -1169,16 +1141,38 @@ export async function preparePiStart(
   // face per session.  The trim is computed from the SHARED untrimmed
   // baseline (`toolBaselines.primary`) minus the session's primary denies,
   // so it is idempotent and denies never accumulate across repeated calls
-  // or primary switches.  Without a baseline the trim cannot decide the
-  // tool face, so only the ask rule runs — on the live set, which leaves
-  // every other tool as it is.  A sub-session runtime is skipped: the
-  // driver already restricts its tool face by the capability allowlist.
+  // or primary switches.  A sub-session runtime takes the same path: its
+  // fixed agent is its primary, so its own config denies trim its own
+  // baseline while the registered directory stays whole.  Without a
+  // baseline the trim cannot decide the tool face, so only the ask rule
+  // runs — on the live set, which leaves every other tool as it is.
+  //
+  // `degraded` marks a sub-session runtime that already cleared its live set,
+  // so the repeated bind-time events of this runtime write and warn once.  A
+  // recovered baseline clears the mark and the trim resumes.
+  let degraded = false;
   const applyActiveTools = (sessionID: string, ctx: unknown): void => {
-    if (fixedAgent !== undefined) return;
     const primary = resolveAgent(sessionID);
     const baseline =
       primary === undefined ? undefined : toolBaselines.primary();
     if (baseline === undefined || baseline.length === 0) {
+      if (fixedAgent !== undefined) {
+        // A sub-session runtime derives its whole tool face from this trim,
+        // so an unavailable baseline leaves nothing to permit there.  The
+        // live set was never filtered by config, so it must not keep running
+        // (fail-closed).  A failed write stays unmarked, so a later event
+        // retries it instead of treating the clear as done.
+        if (degraded) return;
+        piApi?.setActiveTools?.([]);
+        degraded = true;
+        log.warn({
+          hook: "permissions",
+          event: "baseline_unavailable",
+          agent: fixedAgent,
+          sessionId: sessionID,
+        });
+        return;
+      }
       // No baseline to trim: correct ask on the live set.  An unresolvable
       // primary denies ask (fail-closed).  A host that reports no live set
       // leaves nothing to correct.
@@ -1186,6 +1180,7 @@ export async function preparePiStart(
       if (current !== undefined) applyToolSet(sessionID, ctx, current);
       return;
     }
+    degraded = false;
     const denied =
       primary === undefined ? [] : (snapshot.agentPermissions[primary] ?? []);
     const deniedSet = new Set(denied);

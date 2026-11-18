@@ -2,11 +2,14 @@
  * Tests for the pi subagent driver (`src/adapters/pi/subagent.ts`).
  *
  * Covers the driver's contract with injected mock factories (never loading
- * the real pi SDK): the tool allowlist is forwarded to the session factory,
- * the parent abort signal triggers `session.abort()`, `session.dispose()`
- * always runs in `finally` (on ok, abort, error, and SDK throw), outcome
- * classification from the final assistant stop reason, and the collapse of
- * every SDK exception into an `error` result (no throw escapes).
+ * the real pi SDK):
+ * - the request's tool set is NOT forwarded to the session factory;
+ * - the parent abort signal triggers `session.abort()`;
+ * - `session.dispose()` always runs in `finally` (on ok, abort, error, and
+ *   SDK throw);
+ * - the outcome is classified from the final assistant stop reason;
+ * - every SDK exception collapses into an `error` result (no throw
+ *   escapes).
  */
 import assert from "node:assert/strict";
 import fs from "node:fs";
@@ -252,21 +255,23 @@ function harness(options: { parentSession?: string; model?: string } = {}) {
 // ---------------------------------------------------------------------------
 
 describe("pi subagent driver — factory wiring", () => {
-  it("forwards the tool allowlist to the session factory", async () => {
+  it("does not forward the request's tool set to the session factory", async () => {
     const h = harness();
     h.s.setPromptBehavior({ kind: "resolves", emitOnPrompt: okEvents() });
     const result = await h.driver.run(
       {
         agent: "beaver",
         prompt: "do it",
-        tools: ["bash", "edit"],
         model: "p/m",
       },
       { signal: new AbortController().signal },
     );
     assert.equal(result.kind, "ok");
     assert.equal(h.factoryCalls.length, 1);
-    assert.deepEqual(h.factoryCalls[0].tools, ["bash", "edit"]);
+    // The sub-session keeps pi's own registered directory and default active
+    // set; the child runtime trims its active tools by the agent's config
+    // denies, so an SDK allowlist would trim the registry twice.
+    assert.equal((h.factoryCalls[0] as { tools?: unknown }).tools, undefined);
   });
 
   it("creates the session manager with cwd and the parent-session pointer", async () => {
@@ -276,7 +281,6 @@ describe("pi subagent driver — factory wiring", () => {
       {
         agent: "beaver",
         prompt: "do it",
-        tools: [],
         model: "p/m",
         parentSession: "parent-1",
       },
@@ -291,7 +295,7 @@ describe("pi subagent driver — factory wiring", () => {
     const h = harness({ model: "p/m" });
     h.s.setPromptBehavior({ kind: "resolves", emitOnPrompt: okEvents() });
     await h.driver.run(
-      { agent: "beaver", prompt: "t", tools: [], model: "p/m" },
+      { agent: "beaver", prompt: "t", model: "p/m" },
       { signal: new AbortController().signal },
     );
     assert.deepEqual(h.factoryCalls[0].model, { provider: "p", id: "m" });
@@ -331,7 +335,6 @@ describe("pi subagent driver — factory wiring", () => {
       {
         agent: "beaver",
         prompt: "t",
-        tools: [],
         model: "Dummy/dummy/prefixed-id",
       },
       { signal: new AbortController().signal },
@@ -350,7 +353,6 @@ describe("pi subagent driver — factory wiring", () => {
       {
         agent: "beaver",
         prompt: "t",
-        tools: [],
         model: "Dummy/dummy-small",
       },
       { signal: new AbortController().signal },
@@ -385,7 +387,7 @@ describe("pi subagent driver — prompt and outcome classification", () => {
     const h = harness();
     h.s.setPromptBehavior({ kind: "resolves", emitOnPrompt: okEvents() });
     await h.driver.run(
-      { agent: "beaver", prompt: "the task", tools: [], model: "p/m" },
+      { agent: "beaver", prompt: "the task", model: "p/m" },
       { signal: new AbortController().signal },
     );
     assert.equal(h.s.prompts.length, 1);
@@ -399,7 +401,7 @@ describe("pi subagent driver — prompt and outcome classification", () => {
       emitOnPrompt: okEvents("the answer"),
     });
     const result = await h.driver.run(
-      { agent: "beaver", prompt: "t", tools: [], model: "p/m" },
+      { agent: "beaver", prompt: "t", model: "p/m" },
       { signal: new AbortController().signal },
     );
     assert.deepEqual(result, { kind: "ok", text: "the answer" });
@@ -421,7 +423,7 @@ describe("pi subagent driver — prompt and outcome classification", () => {
       ],
     });
     const result = await h.driver.run(
-      { agent: "beaver", prompt: "t", tools: [], model: "p/m" },
+      { agent: "beaver", prompt: "t", model: "p/m" },
       { signal: new AbortController().signal },
     );
     assert.deepEqual(result, { kind: "aborted", text: "partial" });
@@ -452,7 +454,7 @@ describe("pi subagent driver — prompt and outcome classification", () => {
       ],
     });
     const result = await h.driver.run(
-      { agent: "beaver", prompt: "t", tools: [], model: "p/m" },
+      { agent: "beaver", prompt: "t", model: "p/m" },
       { signal: new AbortController().signal },
     );
     assert.equal(result.kind, "error");
@@ -473,7 +475,7 @@ describe("pi subagent driver — abort wiring", () => {
     h.s.setPromptBehavior({ kind: "hang", emitOnPrompt: [] });
     const controller = new AbortController();
     const runPromise = h.driver.run(
-      { agent: "beaver", prompt: "t", tools: [], model: "p/m" },
+      { agent: "beaver", prompt: "t", model: "p/m" },
       { signal: controller.signal },
     );
     // Let the run reach the hanging prompt, then abort the parent signal.
@@ -490,7 +492,7 @@ describe("pi subagent driver — abort wiring", () => {
     const controller = new AbortController();
     controller.abort();
     const result = await h.driver.run(
-      { agent: "beaver", prompt: "t", tools: [], model: "p/m" },
+      { agent: "beaver", prompt: "t", model: "p/m" },
       { signal: controller.signal },
     );
     assert.equal(h.s.prompts.length, 0, "prompt must be skipped");
@@ -502,7 +504,7 @@ describe("pi subagent driver — abort wiring", () => {
     h.s.setPromptBehavior({ kind: "resolves", emitOnPrompt: okEvents() });
     const controller = new AbortController();
     await h.driver.run(
-      { agent: "beaver", prompt: "t", tools: [], model: "p/m" },
+      { agent: "beaver", prompt: "t", model: "p/m" },
       { signal: controller.signal },
     );
     // Aborting after completion must not re-abort the disposed session.
@@ -520,7 +522,7 @@ describe("pi subagent driver — dispose in finally", () => {
     const h = harness();
     h.s.setPromptBehavior({ kind: "resolves", emitOnPrompt: okEvents() });
     await h.driver.run(
-      { agent: "beaver", prompt: "t", tools: [], model: "p/m" },
+      { agent: "beaver", prompt: "t", model: "p/m" },
       { signal: new AbortController().signal },
     );
     assert.equal(h.s.disposed, 1);
@@ -531,7 +533,7 @@ describe("pi subagent driver — dispose in finally", () => {
     h.s.setPromptBehavior({ kind: "hang", emitOnPrompt: [] });
     const controller = new AbortController();
     const runPromise = h.driver.run(
-      { agent: "beaver", prompt: "t", tools: [], model: "p/m" },
+      { agent: "beaver", prompt: "t", model: "p/m" },
       { signal: controller.signal },
     );
     await new Promise((resolve) => setTimeout(resolve, 20));
@@ -544,7 +546,7 @@ describe("pi subagent driver — dispose in finally", () => {
     const h = harness();
     h.s.setPromptBehavior({ kind: "throw", message: "prompt exploded" });
     const result = await h.driver.run(
-      { agent: "beaver", prompt: "t", tools: [], model: "p/m" },
+      { agent: "beaver", prompt: "t", model: "p/m" },
       { signal: new AbortController().signal },
     );
     assert.equal(result.kind, "error");
@@ -569,7 +571,7 @@ describe("pi subagent driver — SDK exception collapse", () => {
       }),
     });
     const result = await driver.run(
-      { agent: "beaver", prompt: "t", tools: [], model: "p/m" },
+      { agent: "beaver", prompt: "t", model: "p/m" },
       { signal: new AbortController().signal },
     );
     assert.equal(result.kind, "error");
@@ -592,7 +594,7 @@ describe("pi subagent driver — SDK exception collapse", () => {
       }),
     });
     const result = await driver.run(
-      { agent: "beaver", prompt: "t", tools: [], model: "p/m" },
+      { agent: "beaver", prompt: "t", model: "p/m" },
       { signal: new AbortController().signal },
     );
     assert.equal(result.kind, "error");
@@ -605,7 +607,7 @@ describe("pi subagent driver — SDK exception collapse", () => {
     const h = harness();
     h.s.setPromptBehavior({ kind: "throw", message: "prompt rejected" });
     const result = await h.driver.run(
-      { agent: "beaver", prompt: "t", tools: [], model: "p/m" },
+      { agent: "beaver", prompt: "t", model: "p/m" },
       { signal: new AbortController().signal },
     );
     assert.equal(result.kind, "error");
@@ -635,7 +637,7 @@ async function drive(
   const reports: SubagentProgress[] = [];
   h.s.setPromptBehavior({ kind: "resolves", emitOnPrompt: events });
   await h.driver.run(
-    { agent: "beaver", prompt: "t", tools: [], model: "p/m" },
+    { agent: "beaver", prompt: "t", model: "p/m" },
     {
       signal: new AbortController().signal,
       onProgress: (progress) => reports.push(progress),
@@ -781,7 +783,7 @@ describe("pi subagent driver — progress reports", () => {
     const reports: SubagentProgress[] = [];
     h.s.setPromptBehavior({ kind: "resolves", emitOnPrompt: okEvents() });
     await driver.run(
-      { agent: "beaver", prompt: "t", tools: [], model: "p/m" },
+      { agent: "beaver", prompt: "t", model: "p/m" },
       {
         signal: new AbortController().signal,
         onProgress: (p) => reports.push(p),
@@ -810,7 +812,7 @@ describe("pi subagent driver — progress reports", () => {
     const reports: SubagentProgress[] = [];
     h.s.setPromptBehavior({ kind: "resolves", emitOnPrompt: okEvents() });
     await driver.run(
-      { agent: "beaver", prompt: "t", tools: [], model: "p/m" },
+      { agent: "beaver", prompt: "t", model: "p/m" },
       {
         signal: new AbortController().signal,
         onProgress: (p) => reports.push(p),
@@ -874,7 +876,7 @@ describe("pi subagent driver — run fact log", () => {
       emitOnPrompt: okEvents("done"),
     });
     await h.driver.run(
-      { agent: "beaver", prompt, tools: [], model: "p/m" },
+      { agent: "beaver", prompt, model: "p/m" },
       { signal: new AbortController().signal, log },
     );
     const fact = log.facts()[0];
@@ -1116,7 +1118,7 @@ describe("pi subagent driver — run fact log", () => {
       ],
     });
     await h.driver.run(
-      { agent: "beaver", prompt: "t", tools: [], model: "p/m" },
+      { agent: "beaver", prompt: "t", model: "p/m" },
       { signal: new AbortController().signal, log },
     );
     assert.deepEqual(
@@ -1135,7 +1137,7 @@ describe("pi subagent driver — run fact log", () => {
     controller.abort();
     h.s.setPromptBehavior({ kind: "resolves", emitOnPrompt: okEvents() });
     await h.driver.run(
-      { agent: "beaver", prompt: "t", tools: [], model: "p/m" },
+      { agent: "beaver", prompt: "t", model: "p/m" },
       { signal: controller.signal, log },
     );
     assert.deepEqual(log.facts(), []);
@@ -1152,7 +1154,7 @@ describe("pi subagent driver — run fact log", () => {
       emitOnPrompt: okEvents("text"),
     });
     await h.driver.run(
-      { agent: "beaver", prompt: "t", tools: [], model: "p/m" },
+      { agent: "beaver", prompt: "t", model: "p/m" },
       { signal: new AbortController().signal, log },
     );
     assert.deepEqual(seen, ["user_message", "message_end"]);
@@ -1194,7 +1196,7 @@ describe("pi subagent driver — run fact log", () => {
       ],
     });
     const result = await h.driver.run(
-      { agent: "beaver", prompt: "t", tools: [], model: "p/m" },
+      { agent: "beaver", prompt: "t", model: "p/m" },
       { signal: new AbortController().signal, log },
     );
     assert.equal(result.kind, "ok", "the run must finish normally");
@@ -1291,7 +1293,7 @@ async function driveStreaming(
   log.subscribe((event) => delivered.push(event));
   h.s.setPromptBehavior({ kind: "resolves", emitOnPrompt: events });
   await h.driver.run(
-    { agent: "beaver", prompt: "t", tools: [], model: "p/m" },
+    { agent: "beaver", prompt: "t", model: "p/m" },
     { signal: new AbortController().signal, log },
   );
   return {
@@ -1387,7 +1389,7 @@ describe("pi subagent driver — streaming partials", () => {
       ],
     });
     await h.driver.run(
-      { agent: "beaver", prompt: "t", tools: [], model: "p/m" },
+      { agent: "beaver", prompt: "t", model: "p/m" },
       { signal: new AbortController().signal, log },
     );
     assert.deepEqual(
@@ -1561,7 +1563,7 @@ describe("pi subagent driver — subagent skill discovery", () => {
   ): Promise<SubagentResult> {
     h.s.setPromptBehavior({ kind: "resolves", emitOnPrompt: okEvents() });
     return h.driver.run(
-      { agent, prompt: "t", tools: [], model: "p/m" },
+      { agent, prompt: "t", model: "p/m" },
       { signal: new AbortController().signal },
     );
   }
@@ -1646,7 +1648,7 @@ describe("pi subagent driver — subagent skill discovery", () => {
     profile = ["grill"];
     h.s.setPromptBehavior({ kind: "resolves", emitOnPrompt: okEvents() });
     await h.driver.run(
-      { agent: "beaver", prompt: "t", tools: [], model: "p/m" },
+      { agent: "beaver", prompt: "t", model: "p/m" },
       { signal: new AbortController().signal },
     );
     assert.deepEqual(h.loaderCalls[1].skillPaths, ["/skills/grill"]);
@@ -1727,7 +1729,7 @@ describe("pi subagent driver — child extension identity", () => {
     });
 
     await driver.run(
-      { agent: "lynx", prompt: "do it", tools: [], model: "p/m" },
+      { agent: "lynx", prompt: "do it", model: "p/m" },
       { signal: new AbortController().signal },
     );
 
@@ -1792,7 +1794,7 @@ describe("pi subagent driver — sub-session cleanup", () => {
     signal: AbortSignal = new AbortController().signal,
   ): Promise<SubagentResult> {
     return h.driver.run(
-      { agent: "beaver", prompt: "do it", tools: [], model: "p/m" },
+      { agent: "beaver", prompt: "do it", model: "p/m" },
       { signal },
     );
   }
@@ -1885,7 +1887,7 @@ describe("pi subagent driver — sub-session cleanup", () => {
     s.setPromptBehavior({ kind: "resolves", emitOnPrompt: okEvents() });
 
     const result = await driver.run(
-      { agent: "beaver", prompt: "do it", tools: [], model: "p/m" },
+      { agent: "beaver", prompt: "do it", model: "p/m" },
       { signal: new AbortController().signal },
     );
 
@@ -1947,7 +1949,7 @@ describe("pi subagent driver — sub-session cleanup", () => {
     const signal = new AbortController().signal;
     const start = (): Promise<SubagentResult> =>
       driver.run(
-        { agent: "beaver", prompt: "do it", tools: [], model: "p/m" },
+        { agent: "beaver", prompt: "do it", model: "p/m" },
         { signal },
       );
 
@@ -2015,7 +2017,7 @@ describe("pi subagent driver — sub-session cleanup", () => {
     });
 
     const result = await driver.run(
-      { agent: "beaver", prompt: "do it", tools: [], model: "p/m" },
+      { agent: "beaver", prompt: "do it", model: "p/m" },
       { signal: new AbortController().signal },
     );
 
@@ -2050,7 +2052,7 @@ describe("pi subagent driver — inline extension loader", () => {
     s.setPromptBehavior({ kind: "resolves", emitOnPrompt: okEvents() });
 
     await driver.run(
-      { agent: "beaver", prompt: "do it", tools: [], model: "p/m" },
+      { agent: "beaver", prompt: "do it", model: "p/m" },
       { signal: new AbortController().signal },
     );
 
@@ -2200,7 +2202,7 @@ describe("pi subagent driver — default child loader", () => {
       s.setPromptBehavior({ kind: "resolves", emitOnPrompt: okEvents() });
 
       const result = await driver.run(
-        { agent: "beaver", prompt: "do it", tools: [], model: "p/m" },
+        { agent: "beaver", prompt: "do it", model: "p/m" },
         { signal: new AbortController().signal },
       );
 
