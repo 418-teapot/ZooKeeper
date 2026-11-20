@@ -200,7 +200,9 @@ function computeDelta(finalText: string, originalText: string): DeltaResult {
  * when it was rewritten entirely (including a prefix insertion), the
  * original text parts are replaced by the full final text and image
  * parts are kept.  When the final text equals the seed, `undefined`
- * is returned and the event is untouched.
+ * is returned and the event is untouched.  An empty final text is
+ * replaced by a placeholder text part unless the content carries an
+ * image, because providers reject an empty tool result body.
  *
  * @param afterExec - The composed `tool.execute.after` contributions.
  * @returns The `tool_result` event handler.
@@ -235,7 +237,14 @@ export function buildPiToolResultHandler(
     );
 
     const finalText = output.output;
-    if (finalText === undefined || finalText === originalText) {
+    if (finalText === undefined) {
+      return undefined;
+    }
+    const hasImage = originalParts.some((part) => part.type === "image");
+    if (finalText === "" && !hasImage) {
+      return { content: [{ type: "text", text: "(no tool output)" }] };
+    }
+    if (finalText === originalText) {
       return undefined;
     }
     const delta = computeDelta(finalText, originalText);

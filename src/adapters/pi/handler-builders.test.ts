@@ -157,6 +157,68 @@ describe("buildPiToolResultHandler", () => {
     assert.equal(result, undefined);
   });
 
+  it("replaces an empty text part with a placeholder", async () => {
+    const handler = buildPiToolResultHandler([]);
+    const result = await handler(
+      toolEvent([{ type: "text", text: "" }]),
+      SESSION_CTX,
+    );
+    assert.deepEqual(result, {
+      content: [{ type: "text", text: "(no tool output)" }],
+    });
+  });
+
+  it("replaces an empty content array with a placeholder", async () => {
+    const handler = buildPiToolResultHandler([]);
+    const result = await handler(toolEvent([]), SESSION_CTX);
+    assert.deepEqual(result, {
+      content: [{ type: "text", text: "(no tool output)" }],
+    });
+  });
+
+  it("replaces output a contribution cleared with a placeholder", async () => {
+    const handler = buildPiToolResultHandler([
+      {
+        name: "clear",
+        handle: (_input, output) => {
+          output.output = "";
+        },
+      },
+    ]);
+    const result = await handler(
+      toolEvent([{ type: "text", text: "hello" }]),
+      SESSION_CTX,
+    );
+    assert.deepEqual(result, {
+      content: [{ type: "text", text: "(no tool output)" }],
+    });
+  });
+
+  it("keeps whitespace-only output from a contribution", async () => {
+    const handler = buildPiToolResultHandler([
+      {
+        name: "blank",
+        handle: (_input, output) => {
+          output.output = "  ";
+        },
+      },
+    ]);
+    const result = await handler(
+      toolEvent([{ type: "text", text: "hello" }]),
+      SESSION_CTX,
+    );
+    assert.deepEqual(result, { content: [{ type: "text", text: "  " }] });
+  });
+
+  it("keeps image-only content untouched", async () => {
+    const handler = buildPiToolResultHandler([]);
+    const result = await handler(
+      toolEvent([{ type: "image", data: "aGVsbG8=", mimeType: "image/png" }]),
+      SESSION_CTX,
+    );
+    assert.equal(result, undefined);
+  });
+
   it("isolates a throwing contribution and still runs later ones", async () => {
     const handler = buildPiToolResultHandler([
       {
