@@ -4,7 +4,10 @@ description: 以 Karpathy 的 LLM Wiki gist 为例完整展示一次 wiki 蒸馏
 resource: https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f
 type: analysis
 timestamp: 2026-09-18T02:37:58Z
-tags: [distillation, example, methodology]
+tags:
+  - distillation
+  - example
+  - methodology
 sources:
   - wiki-system/sources/notes/llm-wiki-karpathy.md
 status: stable

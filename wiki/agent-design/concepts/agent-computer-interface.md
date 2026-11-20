@@ -3,7 +3,11 @@ title: Agent-Computer Interface
 description: 确定性软件与非确定性 agent 之间的行为契约——工具定义、参数 schema 与错误反馈共同构成的控制面。
 type: concept
 timestamp: 2026-09-16T00:00:00Z
-tags: [agent-design, aci, tool-use, tool-design]
+tags:
+  - agent-design
+  - aci
+  - tool-use
+  - tool-design
 status: stable
 last_validated: 2026-09-16T00:00:00Z
 timeliness: current

@@ -4,7 +4,11 @@ description: oh-my-pi 的 autoresearch 扩展完整设计文档，涵盖架构�
 type: source
 timestamp: 2026-09-18T02:37:58Z
 resource: raw/2026-06-19-autoresearch-design.md
-tags: [autoresearch, design, rfc, oh-my-pi]
+tags:
+  - autoresearch
+  - design
+  - rfc
+  - oh-my-pi
 status: stable
 last_validated: 2026-06-19T00:00:00Z
 timeliness: current

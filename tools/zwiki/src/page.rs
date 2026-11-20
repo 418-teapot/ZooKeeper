@@ -5,6 +5,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use regex::Regex;
+use zwiki::document::PageDocument;
 
 use crate::wiki;
 
@@ -63,29 +64,23 @@ fn type_to_dir(page_type: &str) -> Option<&'static str> {
 // Template application
 // ---------------------------------------------------------------------------
 
-/// Apply template substitutions: timestamp, status, title placeholders.
-fn apply_template(content: &str, title: &str) -> String {
-    let today = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
+/// Turn a template into a new page: fill the metadata fields, then the
+/// title heading of the body.
+fn apply_template(content: &str, title: &str) -> Result<String, String> {
+    let mut document =
+        PageDocument::parse(content).map_err(|e| format!("模板无效: {e}"))?;
+    document.metadata.title = title.to_string();
+    document.metadata.status = "draft".to_string();
+    document.metadata.timestamp =
+        Some(chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string());
 
-    // 1. Timestamp placeholder
-    let re_ts = Regex::new(r"(?m)^timestamp: YYYY-MM-DDTHH:mm:ssZ$")
-        .expect("valid regex");
-    let content =
-        re_ts.replace(content, format!("timestamp: {today}")).to_string();
+    let heading = Regex::new(r"(?m)^# <[^>]+>$").expect("valid regex");
+    let author = heading
+        .replace(document.body.author(), format!("# {title}"))
+        .to_string();
+    *document.body.author_mut() = author;
 
-    // 2. Default status → draft
-    let re_status =
-        Regex::new(r"(?m)^status: draft\|review\|stable\|deprecated$")
-            .expect("valid regex");
-    let content = re_status.replace(&content, "status: draft").to_string();
-
-    // 3. Title placeholders: `title: <...>` and `# <...>`
-    let re_title_fm = Regex::new(r"(?m)^title: <[^>]+>$").expect("valid regex");
-    let content =
-        re_title_fm.replace(&content, format!("title: {title}")).to_string();
-
-    let re_title_h1 = Regex::new(r"(?m)^# <[^>]+>$").expect("valid regex");
-    re_title_h1.replace(&content, format!("# {title}")).to_string()
+    document.render().map_err(|e| format!("模板渲染失败: {e}"))
 }
 
 // ---------------------------------------------------------------------------
@@ -199,8 +194,8 @@ pub fn create_page_at(
     let template = crate::assets::template(page_type)
         .ok_or_else(|| format!("未知的页面类型: {page_type}"))?;
 
-    // Apply substitutions
-    let processed = apply_template(template, title);
+    // Fill the template.
+    let processed = apply_template(template, title)?;
 
     // Compute output path
     let output_path = if page_type == "source" {
@@ -276,30 +271,22 @@ pub fn read_full(path: &Path) -> Result<String, String> {
     fs::read_to_string(path).map_err(|e| format!("无法读取文件: {e}"))
 }
 
-/// Extract a single frontmatter property value from a wiki page.
-///
-/// Returns `Ok(None)` if the property does not exist.
-pub fn read_property(
-    path: &Path,
-    name: &str,
-) -> Result<Option<String>, String> {
-    let content =
-        fs::read_to_string(path).map_err(|e| format!("无法读取文件: {e}"))?;
-    let fm = wiki::parse_frontmatter(&content);
-    Ok(fm.get(name).and_then(|v| v.as_str().map(ToString::to_string)))
-}
-
 /// Extract `## ` headings (outline) from a wiki page body.
 ///
 /// Returns each heading text on its own line, in document order.
+///
+/// # Errors
+///
+/// Fails when the page cannot be read or is not a valid page document.
 pub fn read_outline(path: &Path) -> Result<String, String> {
     let content =
         fs::read_to_string(path).map_err(|e| format!("无法读取文件: {e}"))?;
-    let body = wiki::strip_frontmatter(&content);
+    let document = PageDocument::parse(&content).map_err(|e| e.to_string())?;
+    let body = document.body.author();
 
     let re = Regex::new(r"(?m)^##\s+(.+)$").expect("valid regex");
     let headings: Vec<String> =
-        re.captures_iter(&body).map(|cap| cap[1].trim().to_string()).collect();
+        re.captures_iter(body).map(|cap| cap[1].trim().to_string()).collect();
 
     Ok(headings.join("\n"))
 }
@@ -486,6 +473,134 @@ mod tests {
                 "error should mention --source-type: {err}"
             );
         });
+    }
+
+    #[test]
+    fn test_create_page_writes_deterministic_frontmatter() {
+        let wiki = temp_dir("create_deterministic_frontmatter");
+        let path = create_page_at(
+            &wiki,
+            "autodesign",
+            "concept",
+            "Test Concept",
+            None,
+            None,
+        )
+        .expect("create page");
+        let content = fs::read_to_string(&path).unwrap();
+        let (frontmatter, body) =
+            content.split_once("\n---\n").expect("frontmatter block");
+        let timestamp = Regex::new(
+            r"(?m)^timestamp: \d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$",
+        )
+        .expect("valid regex");
+        let normalised = timestamp.replace(frontmatter, "timestamp: <now>");
+
+        assert_eq!(
+            normalised,
+            concat!(
+                "---\n",
+                "title: Test Concept\n",
+                "description: <一句话摘要>。\n",
+                "type: concept\n",
+                "timestamp: <now>\n",
+                "tags:\n",
+                "  - tag1\n",
+                "  - tag2\n",
+                "status: draft\n",
+                "last_validated: YYYY-MM-DDTHH:mm:ssZ\n",
+                "timeliness: current\n",
+                "# 可选生命周期字段（按需取消注释填写，详见 SCHEMA.md）：\n",
+                "# supersedes:\n",
+                "#   - path: <domain>/concepts/old.md\n",
+                "#     reason: \"新来源确认此结论已被推翻\"\n",
+                "# superseded_by:\n",
+                "#   - path: <domain>/concepts/new.md\n",
+                "#     reason: \"被新结论取代\"\n",
+                "# contradictions:\n",
+                "#   - path: <domain>/concepts/other.md\n",
+                "#     claims: [\"声明 A\", \"声明 B\"]\n",
+                "#     detected: YYYY-MM-DD\n",
+                "#     resolution: unresolved\n",
+                "# freshness_days: 90",
+            )
+        );
+        assert!(body.starts_with("\n# Test Concept\n"), "{body}");
+    }
+
+    #[test]
+    fn test_create_page_keeps_guidance_comments() {
+        for page_type in crate::assets::TEMPLATE_TYPES {
+            let wiki = temp_dir(&format!("create_guidance_{page_type}"));
+            let source_type = (*page_type == "source").then_some("adr");
+            let path = create_page_at(
+                &wiki,
+                "autodesign",
+                page_type,
+                "权限系统：从 deny 列表出发",
+                Some("deny-list"),
+                source_type,
+            )
+            .expect("create page");
+            let content = fs::read_to_string(&path).unwrap();
+
+            assert!(
+                content.contains("# supersedes:\n"),
+                "{page_type} lost the guidance comment: {content}"
+            );
+            assert!(
+                content.contains("# freshness_days: 90\n"),
+                "{page_type} lost the guidance comment: {content}"
+            );
+            let document = zwiki::document::PageDocument::parse(&content)
+                .expect("created page stays valid YAML");
+            assert_eq!(document.metadata.title, "权限系统：从 deny 列表出发");
+            assert_eq!(document.metadata.supersedes, None);
+            assert!(document.metadata.extensions.is_empty());
+            assert_eq!(document.render().expect("render"), content);
+        }
+    }
+
+    #[test]
+    fn test_create_page_keeps_body_template() {
+        let wiki = temp_dir("create_body_template");
+        let path = create_page_at(
+            &wiki,
+            "autodesign",
+            "concept",
+            "Test Concept",
+            None,
+            None,
+        )
+        .expect("create page");
+        let content = fs::read_to_string(&path).unwrap();
+
+        assert!(content.contains("# Test Concept\n"));
+        assert!(content.contains("## Overview\n"));
+        assert!(content.contains("## Backlinks\n"));
+        assert!(!content.contains("<概念名称>"), "{content}");
+    }
+
+    #[test]
+    fn test_create_page_output_is_a_valid_document() {
+        let wiki = temp_dir("create_valid_document");
+        let path = create_page_at(
+            &wiki,
+            "autodesign",
+            "entity",
+            "Coin: v2",
+            None,
+            None,
+        )
+        .expect("create page");
+        let content = fs::read_to_string(&path).unwrap();
+        let document = zwiki::document::PageDocument::parse(&content)
+            .expect("created page is a valid document");
+
+        assert_eq!(document.metadata.title, "Coin: v2");
+        assert_eq!(document.metadata.page_type, "entity");
+        assert_eq!(document.metadata.status, "draft");
+        assert!(document.metadata.timestamp.is_some());
     }
 
     #[test]
@@ -723,12 +838,12 @@ mod tests {
         fs::create_dir_all(domain.join("concepts")).unwrap();
         fs::write(
             domain.join("concepts/old-summary.md"),
-            "---\ntitle: Old Summary\ntype: concept\ndescription: Has a description\n---\n\n# Old Summary\n",
+            "---\ntitle: Old Summary\ntype: concept\ndescription: Has a description\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n\n# Old Summary\n",
         )
         .unwrap();
         fs::write(
             domain.join("concepts/old-plain.md"),
-            "---\ntitle: Old Plain\ntype: concept\n---\n\n# Old Plain\n",
+            "---\ntitle: Old Plain\ntype: concept\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n\n# Old Plain\n",
         )
         .unwrap();
 
@@ -798,7 +913,7 @@ mod tests {
     fn test_read_full_returns_content() {
         let dir = temp_dir("read_full");
         let path = dir.join("test.md");
-        fs::write(&path, "---\ntitle: Hello\n---\n\nBody.").unwrap();
+        fs::write(&path, "---\ntitle: Hello\ntype: concept\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n\nBody.").unwrap();
 
         let result = read_full(&path);
         assert!(result.is_ok());
@@ -816,44 +931,6 @@ mod tests {
     }
 
     // -------------------------------------------------------------------
-    // read_property
-    // -------------------------------------------------------------------
-
-    #[test]
-    fn test_read_property_existing_field() {
-        let dir = temp_dir("read_prop_existing");
-        let path = dir.join("test.md");
-        fs::write(&path, "---\ntitle: Hello\nstatus: draft\n---\n\nBody.")
-            .unwrap();
-
-        let result = read_property(&path, "status");
-        assert!(result.is_ok());
-        assert_eq!(result.unwrap(), Some("draft".to_string()));
-    }
-
-    #[test]
-    fn test_read_property_missing_field() {
-        let dir = temp_dir("read_prop_missing");
-        let path = dir.join("test.md");
-        fs::write(&path, "---\ntitle: Hello\n---\n\nBody.").unwrap();
-
-        let result = read_property(&path, "tags");
-        assert!(result.is_ok());
-        assert_eq!(result.unwrap(), None);
-    }
-
-    #[test]
-    fn test_read_property_no_frontmatter() {
-        let dir = temp_dir("read_prop_no_fm");
-        let path = dir.join("test.md");
-        fs::write(&path, "# Just body").unwrap();
-
-        let result = read_property(&path, "title");
-        assert!(result.is_ok());
-        assert_eq!(result.unwrap(), None);
-    }
-
-    // -------------------------------------------------------------------
     // read_outline
     // -------------------------------------------------------------------
 
@@ -863,7 +940,10 @@ mod tests {
         let path = dir.join("test.md");
         fs::write(
             &path,
-            "---\ntitle: Test\n---\n\n## First Heading\n\nSome text\n\n## Second Heading\n\n### Sub heading\n\n## Third Heading\n",
+            "---\ntitle: Test\ntype: concept\ntags: []\nstatus: draft\n\
+             last_validated: 2026-01-01\ntimeliness: current\n---\n\n\
+             ## First Heading\n\nSome text\n\n## Second Heading\n\n\
+             ### Sub heading\n\n## Third Heading\n",
         )
         .unwrap();
 
@@ -877,7 +957,7 @@ mod tests {
     fn test_read_outline_no_headings() {
         let dir = temp_dir("outline_none");
         let path = dir.join("test.md");
-        fs::write(&path, "---\ntitle: Test\n---\n\nJust text.").unwrap();
+        fs::write(&path, "---\ntitle: Test\ntype: concept\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n\nJust text.").unwrap();
 
         let result = read_outline(&path);
         assert!(result.is_ok());
@@ -890,7 +970,9 @@ mod tests {
         let path = dir.join("test.md");
         fs::write(
             &path,
-            "# Title\n\n## H2 Only\n\n### H3 ignored\n\n## Another H2\n",
+            "---\ntitle: Test\ntype: concept\ntags: []\nstatus: draft\n\
+             last_validated: 2026-01-01\ntimeliness: current\n---\n\n\
+             # Title\n\n## H2 Only\n\n### H3 ignored\n\n## Another H2\n",
         )
         .unwrap();
 

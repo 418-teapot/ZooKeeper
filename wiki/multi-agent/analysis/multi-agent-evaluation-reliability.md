@@ -3,7 +3,11 @@ title: 多 agent 系统的评估与生产可靠性
 description: 分析多 agent 系统为何必须以结果和合理过程评估，并通过状态恢复、观测和渐进部署控制生产风险。
 type: analysis
 timestamp: 2026-09-14T02:14:29Z
-tags: [multi-agent, evaluation, reliability, production]
+tags:
+  - multi-agent
+  - evaluation
+  - reliability
+  - production
 sources:
   - multi-agent/sources/notes/anthropic-multi-agent-research-system.md
 status: stable

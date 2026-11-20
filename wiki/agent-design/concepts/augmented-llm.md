@@ -3,7 +3,13 @@ title: 增强型 LLM
 description: 通过检索、工具和记忆扩展基础模型能力的 agentic system 构件，也是 agent 与外部世界交互的最小接口单元。
 type: concept
 timestamp: 2026-09-15T06:15:36Z
-tags: [agent-design, augmented-llm, tool-use, memory, retrieval, aci]
+tags:
+  - agent-design
+  - augmented-llm
+  - tool-use
+  - memory
+  - retrieval
+  - aci
 status: stable
 last_validated: 2026-09-16T01:55:38Z
 timeliness: current

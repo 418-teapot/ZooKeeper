@@ -4,7 +4,12 @@ description: 面向非确定性 agent 设计工具的原则——用清晰边界
 resource: https://www.anthropic.com/engineering/writing-tools-for-agents
 type: concept
 timestamp: 2026-09-16T00:00:00Z
-tags: [agent-design, tool-use, tool-design, context-engineering, evaluation]
+tags:
+  - agent-design
+  - tool-use
+  - tool-design
+  - context-engineering
+  - evaluation
 status: stable
 last_validated: 2026-09-16T00:00:00Z
 timeliness: current

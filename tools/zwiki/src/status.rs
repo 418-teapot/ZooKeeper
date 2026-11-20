@@ -54,16 +54,18 @@ pub struct StatusReport {
 /// pages matching **all** filters (AND semantics).  Filters are applied
 /// during iteration so the `total` count reflects the filtered set.
 ///
-/// Pages without a `status` or `timeliness` field do **not** contribute
-/// to those distributions.
+/// # Errors
+///
+/// Fails when any page cannot be loaded, naming its path.
 pub fn compute_status(
     wiki_dir: &Path,
     type_filter: Option<&str>,
     tag_filter: Option<&str>,
     domain_filter: Option<&str>,
     bundles: &wiki::BundleSet,
-) -> StatusReport {
-    let pages = wiki::discover_pages(wiki_dir);
+) -> Result<StatusReport, String> {
+    let set = wiki::PageSet::load(wiki_dir);
+    let pages = set.require_all()?;
 
     let mut by_type: BTreeMap<String, usize> = BTreeMap::new();
     let mut by_domain: BTreeMap<String, usize> = BTreeMap::new();
@@ -73,14 +75,10 @@ pub fn compute_status(
     let mut earliest_date: Option<NaiveDate> = None;
     let mut latest_date: Option<NaiveDate> = None;
 
-    for path in &pages {
-        let Some(page) = wiki::read_page_at(path, wiki_dir) else {
-            continue;
-        };
-
+    for page in pages {
         // Apply slice filters (AND semantics).
         if !wiki::page_matches_slice(
-            &page,
+            page,
             type_filter,
             tag_filter,
             domain_filter,
@@ -89,15 +87,14 @@ pub fn compute_status(
             continue;
         }
 
+        let metadata = &page.document.metadata;
+
         // --- Distribution counts ---
 
         total += 1;
 
-        // Type (only pages that have one).
-        if let Some(t) = page.frontmatter.get("type").and_then(|v| v.as_str())
-            && !t.is_empty()
-        {
-            *by_type.entry(t.to_string()).or_insert(0) += 1;
+        if !metadata.page_type.is_empty() {
+            *by_type.entry(metadata.page_type.clone()).or_insert(0) += 1;
         }
 
         // Domain (first path component; root-level files excluded to
@@ -107,26 +104,16 @@ pub fn compute_status(
             *by_domain.entry(domain).or_insert(0) += 1;
         }
 
-        // Status (only pages that have one).
-        if let Some(s) = page.frontmatter.get("status").and_then(|v| v.as_str())
-            && !s.is_empty()
-        {
-            *by_status.entry(s.to_string()).or_insert(0) += 1;
+        if !metadata.status.is_empty() {
+            *by_status.entry(metadata.status.clone()).or_insert(0) += 1;
         }
 
-        // Timeliness (only pages that have one).
-        if let Some(t) =
-            page.frontmatter.get("timeliness").and_then(|v| v.as_str())
-            && !t.is_empty()
-        {
-            *by_timeliness.entry(t.to_string()).or_insert(0) += 1;
+        if !metadata.timeliness.is_empty() {
+            *by_timeliness.entry(metadata.timeliness.clone()).or_insert(0) += 1;
         }
 
         // last_validated range.
-        if let Some(lv) =
-            page.frontmatter.get("last_validated").and_then(|v| v.as_str())
-            && let Some(date) = wiki::parse_date(lv)
-        {
+        if let Some(date) = wiki::parse_date(&metadata.last_validated) {
             if earliest_date.is_none_or(|e| date < e) {
                 earliest_date = Some(date);
             }
@@ -141,14 +128,14 @@ pub fn compute_status(
         latest: latest_date.map(|d| d.format("%Y-%m-%d").to_string()),
     };
 
-    StatusReport {
+    Ok(StatusReport {
         total,
         by_type,
         by_domain,
         by_status,
         by_timeliness,
         last_validated_range: date_range,
-    }
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -280,7 +267,8 @@ mod tests {
     #[test]
     fn test_empty_wiki() {
         let dir = temp_dir("empty");
-        let report = compute_status(&dir, None, None, None, &no_bundles());
+        let report = compute_status(&dir, None, None, None, &no_bundles())
+            .expect("valid pages");
         assert_eq!(report.total, 0);
         assert!(report.by_type.is_empty());
         assert!(report.by_domain.is_empty());
@@ -325,7 +313,8 @@ mod tests {
             &["research"],
         );
 
-        let report = compute_status(&dir, None, None, None, &no_bundles());
+        let report = compute_status(&dir, None, None, None, &no_bundles())
+            .expect("valid pages");
         assert_eq!(report.total, 3);
 
         // Type distribution: concept: 2, entity: 1
@@ -360,7 +349,7 @@ mod tests {
     // -------------------------------------------------------------------
 
     #[test]
-    fn test_status_missing_fields() {
+    fn test_status_invalid_page_fails() {
         let dir = temp_dir("missing_fields");
         // A page without status, timeliness, or last_validated.
         write_page(
@@ -369,35 +358,25 @@ mod tests {
             "---\ntitle: No Fields\ntype: concept\n---\n# No Fields\n",
         );
 
-        let report = compute_status(&dir, None, None, None, &no_bundles());
-        assert_eq!(report.total, 1);
-        assert_eq!(report.by_type.get("concept"), Some(&1_usize));
-        assert!(report.by_status.is_empty());
-        assert!(report.by_timeliness.is_empty());
-        assert!(report.last_validated_range.earliest.is_none());
-        assert!(report.last_validated_range.latest.is_none());
+        let error = compute_status(&dir, None, None, None, &no_bundles())
+            .expect_err("a page without required fields is invalid");
+        assert!(error.contains("shared/concepts/nofields.md"), "{error}");
     }
 
     #[test]
-    fn test_status_missing_type_excluded_from_by_type() {
+    fn test_status_missing_type_fails() {
         let dir = temp_dir("missing_type");
-        // Page without a type field — should count in total but not in
-        // by_type (consistent with by_status/by_timeliness skip-empty rule).
+        // A page without a type field cannot be loaded as a page.
         write_page(
             &dir,
             "shared/concepts/notype.md",
             "---\ntitle: No Type\nstatus: stable\n---\n# No Type\n",
         );
 
-        let report = compute_status(&dir, None, None, None, &no_bundles());
-        assert_eq!(report.total, 1);
-        assert!(report.by_type.is_empty());
-        assert_eq!(report.by_status.get("stable"), Some(&1_usize));
+        let error = compute_status(&dir, None, None, None, &no_bundles())
+            .expect_err("a page without type is invalid");
+        assert!(error.contains("shared/concepts/notype.md"), "{error}");
     }
-
-    // -------------------------------------------------------------------
-    // Slice: by type
-    // -------------------------------------------------------------------
 
     #[test]
     fn test_status_type_slice() {
@@ -422,7 +401,8 @@ mod tests {
         );
 
         let report =
-            compute_status(&dir, Some("concept"), None, None, &no_bundles());
+            compute_status(&dir, Some("concept"), None, None, &no_bundles())
+                .expect("valid pages");
         assert_eq!(report.total, 1);
         assert_eq!(report.by_type.get("concept"), Some(&1_usize));
         assert!(!report.by_type.contains_key("entity"));
@@ -455,7 +435,8 @@ mod tests {
         );
 
         let report =
-            compute_status(&dir, None, Some("access"), None, &no_bundles());
+            compute_status(&dir, None, Some("access"), None, &no_bundles())
+                .expect("valid pages");
         assert_eq!(report.total, 1);
     }
 
@@ -486,7 +467,8 @@ mod tests {
         );
 
         let report =
-            compute_status(&dir, None, None, Some("shared"), &no_bundles());
+            compute_status(&dir, None, None, Some("shared"), &no_bundles())
+                .expect("valid pages");
         assert_eq!(report.total, 1);
         assert!(report.by_domain.contains_key("shared"));
         assert!(!report.by_domain.contains_key("autoresearch"));
@@ -508,10 +490,11 @@ mod tests {
         write_page(
             &dir,
             "overview.md",
-            "---\ntitle: Overview\ntype: synthesis\n---\n# Overview\n",
+            "---\ntitle: Overview\ntype: synthesis\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n# Overview\n",
         );
 
-        let report = compute_status(&dir, None, None, None, &no_bundles());
+        let report = compute_status(&dir, None, None, None, &no_bundles())
+            .expect("valid pages");
         assert_eq!(report.total, 2);
         assert!(report.by_domain.contains_key("shared"));
         // Root-level files must not appear as domains.
@@ -529,9 +512,10 @@ mod tests {
             &dir,
             "shared/concepts/a.md",
             "---\ntitle: A\ntype: concept\nstatus: stable\n\
-             last_validated: not-a-date\n---\n# A\n",
+             last_validated: not-a-date\ntags: []\ntimeliness: current\n---\n# A\n",
         );
-        let report = compute_status(&dir, None, None, None, &no_bundles());
+        let report = compute_status(&dir, None, None, None, &no_bundles())
+            .expect("valid pages");
         assert!(report.last_validated_range.earliest.is_none());
         assert!(report.last_validated_range.latest.is_none());
     }
@@ -548,7 +532,8 @@ mod tests {
             "2025-06-15",
             &[],
         );
-        let report = compute_status(&dir, None, None, None, &no_bundles());
+        let report = compute_status(&dir, None, None, None, &no_bundles())
+            .expect("valid pages");
         assert_eq!(
             report.last_validated_range.earliest,
             Some("2025-06-15".to_string())

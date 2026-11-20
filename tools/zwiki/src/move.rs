@@ -9,7 +9,9 @@ use std::path::Path;
 
 use regex::Regex;
 
-use crate::{backlinks, wiki};
+use zwiki::document::PageDocument;
+
+use crate::{backlinks, document_io, wiki};
 
 // ---------------------------------------------------------------------------
 // Public API
@@ -69,11 +71,8 @@ pub fn execute_move(
     }
 
     // ---- Step 2: Build reverse-index BEFORE the move -----------------------
-    let all_paths = wiki::discover_pages(wiki_root);
-    let all_pages: Vec<wiki::Page> = all_paths
-        .iter()
-        .filter_map(|p| wiki::read_page_at(p, wiki_root))
-        .collect();
+    let set = wiki::PageSet::load(wiki_root);
+    let all_pages = set.require_all()?.to_vec();
     let bundles = wiki::BundleSet::discover(wiki_root);
     let rev_index =
         backlinks::build_reverse_index(wiki_root, &all_pages, &bundles);
@@ -97,7 +96,9 @@ pub fn execute_move(
             } else {
                 wiki_root.join(src_rel)
             };
-            if rewrite_page_references(&src_abs, old_rel, new_rel)? {
+            if rewrite_page_references(&src_abs, old_rel, new_rel)
+                .map_err(|e| format!("{src_rel}: {e}"))?
+            {
                 updated_refs.push(src_rel.clone());
             }
         }
@@ -129,7 +130,8 @@ pub fn execute_move(
     // sections.  Rescan the wiki now and run the same sync used by
     // `zwiki check` so pages whose only stale reference lived in their
     // Backlinks section are refreshed without waiting for the next check.
-    let backlinks_synced = rebuild_backlinks(wiki_root);
+    let backlinks_synced = rebuild_backlinks(wiki_root)
+        .map_err(|e| format!("反向链接同步失败: {e}"))?;
 
     Ok(MoveResult {
         moved: format!("{old_rel} → {new_rel_recorded}"),
@@ -149,23 +151,21 @@ pub fn execute_move(
 ///
 /// Returns the number of pages whose section changed.  Only pages whose
 /// inbound links actually changed are rewritten.
-fn rebuild_backlinks(wiki_root: &Path) -> usize {
-    let refreshed_paths = wiki::discover_pages(wiki_root);
-    let refreshed_pages: Vec<wiki::Page> = refreshed_paths
-        .iter()
-        .filter_map(|p| wiki::read_page_at(p, wiki_root))
-        .collect();
+fn rebuild_backlinks(wiki_root: &Path) -> Result<usize, String> {
+    let set = wiki::PageSet::load(wiki_root);
+    let refreshed_pages = set.require_all()?.to_vec();
     let bundles = wiki::BundleSet::discover(wiki_root);
     let index =
         backlinks::build_reverse_index(wiki_root, &refreshed_pages, &bundles);
     // The reverse index is built from all pages so bundle pages still
     // contribute outbound links, but only pages outside installed bundles
     // are rewritten.
+    let titles = backlinks::title_map(&refreshed_pages);
     let writable: Vec<wiki::Page> = refreshed_pages
         .into_iter()
         .filter(|p| wiki::bundle_on_path(wiki_root, &p.rel).is_none())
         .collect();
-    backlinks::update_backlinks(wiki_root, &index, &writable, &bundles, false)
+    backlinks::update_backlinks(&index, &titles, &writable, &bundles)
 }
 
 // ---------------------------------------------------------------------------
@@ -186,68 +186,6 @@ pub fn validate_rel_path(path_str: &str) -> Result<(), String> {
 // ---------------------------------------------------------------------------
 // Reference rewriting (per-page)
 // ---------------------------------------------------------------------------
-
-/// Frontmatter fields whose values carry wiki-relative page paths.
-const FRONTMATTER_PATH_FIELDS: &[&str] =
-    &["sources", "supersedes", "superseded_by", "contradictions"];
-
-/// Classification of a single frontmatter line for path-field scoping.
-enum FmLineKind {
-    /// A top-level `key:` line (its value may be inline).
-    Key,
-    /// A list item (`- value`), indented or not.
-    ListItem,
-    /// An indented continuation line (e.g. `reason:` under an object).
-    Continuation,
-    /// A blank or comment line.
-    Blank,
-}
-
-/// Classify a frontmatter line so the rewriter knows which field it belongs
-/// to.
-fn classify_fm_line(line: &str) -> FmLineKind {
-    let trimmed = line.trim();
-    if trimmed.is_empty() || trimmed.starts_with('#') {
-        return FmLineKind::Blank;
-    }
-    if trimmed.starts_with("- ") || trimmed == "-" {
-        return FmLineKind::ListItem;
-    }
-    if line.starts_with([' ', '\t']) {
-        return FmLineKind::Continuation;
-    }
-    if trimmed.contains(':') {
-        return FmLineKind::Key;
-    }
-    FmLineKind::Continuation
-}
-
-/// Extract the top-level key from a frontmatter `key:` line.
-fn frontmatter_key(line: &str) -> Option<String> {
-    let colon = line.find(':')?;
-    let key = line[..colon].trim();
-    if key.is_empty() { None } else { Some(key.to_string()) }
-}
-
-/// Whether a line inside `field` may carry a page path that must be
-/// rewritten.
-///
-/// `sources` holds bare paths, so its key and list-item lines are eligible.
-/// `supersedes`, `superseded_by`, and `contradictions` hold objects whose
-/// `path:` value is the reference, so only lines containing `path:` are
-/// eligible — this leaves sibling fields such as `reason:` or nested
-/// `claims:` untouched.
-fn line_carries_path(field: &str, category: &FmLineKind, line: &str) -> bool {
-    if !FRONTMATTER_PATH_FIELDS.contains(&field) {
-        return false;
-    }
-    match field {
-        "sources" => {
-            matches!(category, FmLineKind::Key | FmLineKind::ListItem)
-        }
-        _ => line.contains("path:"),
-    }
-}
 
 /// Rewrite every whole-token occurrence of `old_rel` in `text`.
 ///
@@ -280,41 +218,26 @@ const fn is_path_boundary(c: char) -> bool {
     !(c.is_ascii_alphanumeric() || c == '_' || c == '.' || c == '/' || c == '-')
 }
 
-/// Rewrite bare page paths inside each path-carrying frontmatter field.
-///
-/// Operates on the frontmatter's inner text only, tracking the current
-/// top-level field so that a `path: <old>`-shaped string in an unrelated
-/// field (or in the body) is never touched.
-fn rewrite_path_field_lines(
-    inner: &str,
-    old_rel: &str,
+/// Rewrite the path values of one typed metadata field.
+fn rewrite_paths<T>(
+    entries: &mut Option<Vec<T>>,
+    path: impl Fn(&mut T) -> &mut String,
+    re: &Regex,
     new_rel: &str,
-) -> Result<String, String> {
-    let re = Regex::new(&regex::escape(old_rel))
-        .map_err(|e| format!("正则编译失败: {e}"))?;
-
-    let mut out = String::with_capacity(inner.len());
-    let mut current: Option<String> = None;
-
-    for line in inner.split_inclusive('\n') {
-        let category = classify_fm_line(line);
-        match category {
-            FmLineKind::Key => current = frontmatter_key(line),
-            FmLineKind::Blank => current = None,
-            FmLineKind::ListItem | FmLineKind::Continuation => {}
-        }
-
-        let eligible = current
-            .as_deref()
-            .is_some_and(|field| line_carries_path(field, &category, line));
-        if eligible {
-            out.push_str(&rewrite_path_tokens(&re, line, new_rel));
-        } else {
-            out.push_str(line);
+) -> bool {
+    let Some(entries) = entries else {
+        return false;
+    };
+    let mut changed = false;
+    for entry in entries {
+        let value = path(entry);
+        let rewritten = rewrite_path_tokens(re, value, new_rel);
+        if rewritten != *value {
+            *value = rewritten;
+            changed = true;
         }
     }
-
-    Ok(out)
+    changed
 }
 
 /// Rewrite body references: markdown inline links and backtick paths.
@@ -324,14 +247,60 @@ fn rewrite_body_references(body: &str, old_rel: &str, new_rel: &str) -> String {
     replaced.replace(&format!("`{old_rel}`"), &format!("`{new_rel}`"))
 }
 
+/// Rewrite all references to `old_rel` in a parsed page.
+///
+/// Typed path fields keep their structure, so only their path values
+/// change.  The author body keeps the literal replacement of markdown
+/// inline links `[text](old_rel)` and backtick-wrapped `` `old_rel` ``.
+/// The generated backlinks region is left for the rebuild step.
+fn rewrite_document_references(
+    document: &mut PageDocument,
+    old_rel: &str,
+    new_rel: &str,
+) -> Result<bool, String> {
+    let re = Regex::new(&regex::escape(old_rel))
+        .map_err(|e| format!("正则编译失败: {e}"))?;
+
+    let mut changed = rewrite_paths(
+        &mut document.metadata.sources,
+        |value| value,
+        &re,
+        new_rel,
+    );
+    changed |= rewrite_paths(
+        &mut document.metadata.supersedes,
+        |relation| &mut relation.path,
+        &re,
+        new_rel,
+    );
+    changed |= rewrite_paths(
+        &mut document.metadata.superseded_by,
+        |relation| &mut relation.path,
+        &re,
+        new_rel,
+    );
+    changed |= rewrite_paths(
+        &mut document.metadata.contradictions,
+        |record| &mut record.path,
+        &re,
+        new_rel,
+    );
+
+    let author =
+        rewrite_body_references(document.body.author(), old_rel, new_rel);
+    if author != document.body.author() {
+        *document.body.author_mut() = author;
+        changed = true;
+    }
+
+    Ok(changed)
+}
+
 /// Rewrite all references to `old_rel` in a single page file.
 ///
-/// Body references keep the literal replacement of markdown inline links
-/// `[text](old_rel)` and backtick-wrapped `` `old_rel` ``.  Frontmatter
-/// references are rewritten field-by-field after locating the frontmatter
-/// block, so bare paths in `sources` and `path:` values in
-/// `supersedes`/`superseded_by`/`contradictions` are updated without
-/// touching a same-shaped string elsewhere.
+/// The page is parsed as a document, changed in memory, rendered and
+/// written atomically.  A page the model cannot parse fails the command
+/// instead of being rewritten as raw text.
 ///
 /// Returns `true` if the file was modified.
 fn rewrite_page_references(
@@ -339,34 +308,11 @@ fn rewrite_page_references(
     old_rel: &str,
     new_rel: &str,
 ) -> Result<bool, String> {
-    let content = fs::read_to_string(page_abs)
-        .map_err(|e| format!("无法读取文件: {e}"))?;
-    if content.is_empty() {
+    let mut document = document_io::load(page_abs)?;
+    if !rewrite_document_references(&mut document, old_rel, new_rel)? {
         return Ok(false);
     }
-
-    let new_content =
-        if let Some((start, end)) = wiki::frontmatter_inner_range(&content) {
-            let head = &content[..start];
-            let fm = &content[start..end];
-            let tail = &content[end..];
-            format!(
-                "{head}{}{}",
-                rewrite_path_field_lines(fm, old_rel, new_rel)?,
-                rewrite_body_references(tail, old_rel, new_rel),
-            )
-        } else {
-            rewrite_body_references(&content, old_rel, new_rel)
-        };
-
-    if new_content == content {
-        return Ok(false);
-    }
-
-    // Atomically write the modified content (temp file + rename).
-    zutil::fileio::write_atomic(page_abs, &new_content)
-        .map_err(|e| format!("写入文件失败: {e}"))?;
-
+    document_io::store(page_abs, &document)?;
     Ok(true)
 }
 
@@ -457,7 +403,7 @@ mod tests {
         body: &str,
     ) -> String {
         format!(
-            "---\ntitle: {title}\ntype: {page_type}\ntags: []\nstatus: draft\nlast_validated: 2025-01-01\n{extra}---\n\n{body}"
+            "---\ntitle: {title}\ntype: {page_type}\ntags: []\nstatus: draft\nlast_validated: 2025-01-01T00:00:00Z\ntimeliness: current\n{extra}---\n\n{body}"
         )
     }
 
@@ -687,6 +633,7 @@ supersedes:
     reason: outdated
 superseded_by:
   - path: concepts/foo.md
+    reason: newer
 contradictions:
   - path: concepts/foo.md
     claims:
@@ -1353,6 +1300,45 @@ contradictions:
     }
 
     // -------------------------------------------------------------------
+    // Backlinks rebuild
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn test_move_rebuilds_backlinks_through_documents() {
+        let wiki_root = temp_dir("move_backlinks");
+        let old_rel = "concepts/foo.md";
+        let new_rel = "concepts/bar.md";
+
+        make_page(&wiki_root, old_rel, &fm_page("Foo", "concept", "", "# Foo"));
+        make_page(
+            &wiki_root,
+            "concepts/ref.md",
+            &fm_page(
+                "Ref",
+                "concept",
+                "",
+                "See [Foo](concepts/foo.md) for details.\n",
+            ),
+        );
+
+        let result = execute_move(&wiki_root, old_rel, new_rel).unwrap();
+
+        assert_eq!(
+            result.backlinks_synced, 1,
+            "the moved page gains its referrer: {:?}",
+            result.updated_refs
+        );
+        let moved = read_file(&wiki_root.join(new_rel));
+        assert!(moved.contains("## Backlinks"), "{moved}");
+        assert!(moved.contains("- [Ref](concepts/ref.md)"), "{moved}");
+        assert!(
+            !read_file(&wiki_root.join("concepts/ref.md"))
+                .contains("## Backlinks"),
+            "a page without inbound links keeps no region"
+        );
+    }
+
+    // -------------------------------------------------------------------
     // Frontmatter-aware reference rewriting
     // -------------------------------------------------------------------
 
@@ -1553,5 +1539,145 @@ contradictions:
             !content.contains("concepts/foo.md"),
             "stale Backlinks reference must be gone:\n{content}"
         );
+    }
+
+    // -------------------------------------------------------------------
+    // Invalid document rejection
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn test_rewrite_rejects_invalid_document() {
+        let wiki_root = temp_dir("invalid_document");
+        let path = write(
+            &wiki_root.join("concepts/ref.md"),
+            "---\ntitle: Ref\n---\n\nSee [Foo](concepts/foo.md).\n",
+        );
+        let before = read_file(&path);
+
+        let error = rewrite_page_references(
+            &path,
+            "concepts/foo.md",
+            "concepts/bar.md",
+        )
+        .expect_err("page without required fields");
+
+        assert!(error.contains("缺少必需字段"), "unexpected error: {error}");
+        assert_eq!(read_file(&path), before);
+    }
+
+    // -------------------------------------------------------------------
+    // Typed path fields
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn test_move_updates_all_typed_path_fields() {
+        let wiki_root = temp_dir("typed_path_fields");
+        let old_rel = "concepts/foo.md";
+        let new_rel = "concepts/bar.md";
+
+        make_page(&wiki_root, old_rel, &fm_page("Foo", "concept", "", "# Foo"));
+
+        let ref_fm = "\
+sources: [concepts/foo.md]
+supersedes:
+  - path: concepts/foo.md
+    reason: outdated
+superseded_by:
+  - path: concepts/foo.md
+    reason: newer
+contradictions:
+  - path: concepts/foo.md
+    claims:
+      - claim
+    detected: 2025-01-01
+    resolution: unresolved
+owner: team-a
+";
+        let ref_path = make_page(
+            &wiki_root,
+            "concepts/ref.md",
+            &fm_page(
+                "Ref",
+                "concept",
+                ref_fm,
+                "# Ref\n\nSee [Foo](concepts/foo.md).\n",
+            ),
+        );
+
+        execute_move(&wiki_root, old_rel, new_rel).expect("move");
+
+        let text = read_file(&ref_path);
+        let document = PageDocument::parse(&text).expect("valid document");
+        assert_eq!(
+            document.metadata.sources,
+            Some(vec!["concepts/bar.md".to_string()])
+        );
+        assert_eq!(
+            document.metadata.supersedes.as_ref().map(|items| &items[0].path),
+            Some(&"concepts/bar.md".to_string())
+        );
+        assert_eq!(
+            document
+                .metadata
+                .superseded_by
+                .as_ref()
+                .map(|items| &items[0].path),
+            Some(&"concepts/bar.md".to_string())
+        );
+        assert_eq!(
+            document
+                .metadata
+                .contradictions
+                .as_ref()
+                .map(|items| &items[0].path),
+            Some(&"concepts/bar.md".to_string())
+        );
+        assert_eq!(
+            document
+                .metadata
+                .extensions
+                .get("owner")
+                .map(|value| (**value).clone()),
+            Some(zwiki::document::Value::from("team-a"))
+        );
+        assert_eq!(
+            document.body.author(),
+            "# Ref\n\nSee [Foo](concepts/bar.md)."
+        );
+        assert!(!text.contains("concepts/foo.md"), "{text}");
+    }
+
+    #[test]
+    fn test_rewrite_document_leaves_backlinks_for_rebuild() {
+        let text = concat!(
+            "---\n",
+            "title: Ref\n",
+            "type: concept\n",
+            "tags: []\n",
+            "status: draft\n",
+            "last_validated: 2025-01-01T00:00:00Z\n",
+            "timeliness: current\n",
+            "---\n",
+            "\n",
+            "# Ref\n",
+            "\n",
+            "Author text.\n",
+            "\n",
+            "## Backlinks\n",
+            "\n",
+            "- [Foo](concepts/foo.md)\n",
+        );
+        let mut document = PageDocument::parse(text).expect("valid document");
+
+        let changed = rewrite_document_references(
+            &mut document,
+            "concepts/foo.md",
+            "concepts/bar.md",
+        )
+        .expect("rewrite");
+
+        assert!(!changed, "backlinks must not count as author content");
+        assert_eq!(document.body.author(), "# Ref\n\nAuthor text.");
+        assert_eq!(document.body.backlinks(), Some("- [Foo](concepts/foo.md)"));
     }
 }

@@ -3,7 +3,13 @@ title: Agentic System 选择分析
 description: 在单次 LLM 调用、固定 workflow 和自主 agent 之间选择的复杂度阶梯与风险权衡。
 type: analysis
 timestamp: 2026-09-15T06:15:36Z
-tags: [agent-design, agentic-system, workflow, autonomy, simplicity, reliability]
+tags:
+  - agent-design
+  - agentic-system
+  - workflow
+  - autonomy
+  - simplicity
+  - reliability
 sources:
   - agent-design/sources/notes/anthropic-building-effective-agents.md
 status: stable

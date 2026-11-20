@@ -62,7 +62,8 @@ fn page_show_exits_cleanly_on_broken_pipe() {
     std::fs::create_dir_all(&concepts).unwrap();
     std::fs::write(
         concepts.join("foo.md"),
-        "---\ntitle: Foo\ntype: concept\n---\n\n# Foo\n",
+        "---\ntitle: Foo\ntype: concept\ntags: []\nstatus: draft\n\
+         last_validated: 2026-07-01T00:00:00Z\ntimeliness: current\n---\n\n# Foo\n",
     )
     .unwrap();
     assert_clean_broken_pipe(&[

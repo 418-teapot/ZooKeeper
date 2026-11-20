@@ -1,17 +1,15 @@
 //! Supersede linking — maintain `supersedes` / `superseded_by` relations
-//! between wiki pages via line-level frontmatter manipulation.
+//! between wiki pages.
 //!
-//! Deliberately avoids parsing the block list semantically; instead
-//! it finds the relevant field by scanning lines and inserts / replaces
-//! text at the row level, the same line-oriented approach used by
-//! `property.rs`.
+//! Both pages are read as documents, their relation fields change through
+//! the typed metadata, and each updated document renders back once.
 
-use std::fs;
 use std::path::Path;
 
 use chrono::Utc;
+use zwiki::document::Relation;
 
-use crate::property;
+use crate::document_io::{load, store};
 
 // ---------------------------------------------------------------------------
 // Public API
@@ -39,209 +37,30 @@ pub fn link_supersede_at(
         return Err(format!("页面不存在: {new_rel}"));
     }
 
+    let mut old_document =
+        load(&old_abs).map_err(|e| format!("{old_rel}: {e}"))?;
+    let mut new_document =
+        load(&new_abs).map_err(|e| format!("{new_rel}: {e}"))?;
+
     // New page (superseding) gets a `supersedes` entry pointing to the old
     // page.
-    append_frontmatter_block(&new_abs, "supersedes", old_rel, reason)?;
-
+    new_document.metadata.supersedes.get_or_insert_with(Vec::new).push(
+        Relation { path: old_rel.to_string(), reason: reason.to_string() },
+    );
     // Old page (superseded) gets a `superseded_by` entry pointing to the new
     // page.
-    append_frontmatter_block(&old_abs, "superseded_by", new_rel, reason)?;
+    old_document.metadata.superseded_by.get_or_insert_with(Vec::new).push(
+        Relation { path: new_rel.to_string(), reason: reason.to_string() },
+    );
 
     // Mark the old page as validated at the moment of supersedure so that
     // the unified freshness judgment can distinguish pages reviewed
     // post-supersedure from those that still need attention.
-    let now = Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
-    property::set(&old_abs, "last_validated", &now)
-        .map_err(|e| format!("写入 last_validated 失败: {e}"))?;
+    old_document.metadata.last_validated =
+        Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
 
-    Ok(())
-}
-
-// ---------------------------------------------------------------------------
-// Internal helpers
-// ---------------------------------------------------------------------------
-
-/// Result of locating a field inside frontmatter.
-struct FmFieldLoc {
-    /// Index of the opening `---`.
-    start: usize,
-    /// Index of the closing `---`.
-    end: usize,
-    /// Index of the `field_name:` line, or `None` if absent.
-    field_line: Option<usize>,
-    /// Whether the field value is `[]`.
-    empty_array: bool,
-    /// Index of the last indented block line, or `None`.
-    block_end: Option<usize>,
-}
-
-/// Locate frontmatter boundaries and scan for `field_name`.
-///
-/// Returns `None` when frontmatter is absent.
-fn locate_field_in_frontmatter(
-    lines: &[&str],
-    field_name: &str,
-) -> Option<FmFieldLoc> {
-    // Find frontmatter `---` … `---`.
-    let mut fm_start: Option<usize> = None;
-    let mut fm_end: Option<usize> = None;
-
-    for (i, line) in lines.iter().enumerate() {
-        if line.trim() == "---" {
-            if fm_start.is_none() {
-                fm_start = Some(i);
-            } else if fm_end.is_none() {
-                fm_end = Some(i);
-                break;
-            }
-        }
-    }
-
-    let (start, end) = (fm_start?, fm_end?);
-
-    // Scan body for the field.
-    let mut field_line_idx: Option<usize> = None;
-    let mut is_empty_array = false;
-    let mut block_end_idx: Option<usize> = None;
-
-    let mut scan = start + 1;
-    while scan < end {
-        let trimmed = lines[scan].trim();
-
-        if let Some(colon_idx) = trimmed.find(':') {
-            let key = trimmed[..colon_idx].trim();
-            if key == field_name {
-                field_line_idx = Some(scan);
-                let value_part = trimmed[colon_idx + 1..].trim();
-
-                if value_part == "[]" {
-                    is_empty_array = true;
-                    scan += 1;
-                    continue;
-                }
-
-                if value_part.is_empty() {
-                    let mut inner = scan + 1;
-                    while inner < end && lines[inner].starts_with(' ') {
-                        block_end_idx = Some(inner);
-                        inner += 1;
-                    }
-                    scan = inner;
-                    continue;
-                }
-
-                // Non-empty scalar value — treat as absent (defensive).
-                field_line_idx = None;
-            }
-        }
-
-        scan += 1;
-    }
-
-    Some(FmFieldLoc {
-        start,
-        end,
-        field_line: field_line_idx,
-        empty_array: is_empty_array,
-        block_end: block_end_idx,
-    })
-}
-
-/// Append (or create) a block-list entry for `field_name` in the frontmatter
-/// of the given page.
-///
-/// Handles three frontmatter states:
-///
-/// 1. **Field absent** — insert a new multiline block before closing `---`.
-/// 2. **Empty array** (`field: []`) — replace the line with a block.
-/// 3. **Existing entries** — append a new entry pair after the last one.
-///
-/// Writes atomically (temp file → rename).
-fn append_frontmatter_block(
-    page_abs: &Path,
-    field_name: &str,
-    path_value: &str,
-    reason: &str,
-) -> Result<(), String> {
-    let content = fs::read_to_string(page_abs)
-        .map_err(|e| format!("无法读取文件: {e}"))?;
-
-    let lines: Vec<&str> = content.lines().collect();
-
-    let Some(loc) = locate_field_in_frontmatter(&lines, field_name) else {
-        return Err("文件缺少有效的 frontmatter".to_string());
-    };
-    let FmFieldLoc {
-        start,
-        end,
-        field_line: field_line_idx,
-        empty_array: is_empty_array,
-        block_end: block_end_idx,
-    } = loc;
-
-    // --- Build new content ---
-
-    let new_entry: [String; 2] =
-        [format!("  - path: {path_value}"), format!("    reason: {reason}")];
-
-    let mut new_lines: Vec<String> = Vec::new();
-
-    // Lines before and including opening `---`.
-    for line in &lines[..=start] {
-        new_lines.push(line.to_string());
-    }
-
-    match field_line_idx {
-        None => {
-            // Case 1 — field absent: insert block before closing `---`.
-            for line in &lines[start + 1..end] {
-                new_lines.push(line.to_string());
-            }
-            new_lines.push(format!("{field_name}:"));
-            new_lines.extend_from_slice(&new_entry);
-        }
-        Some(fld_idx) if is_empty_array => {
-            // Case 2 — `field: []`: replace that line with a block.
-            for line in &lines[start + 1..fld_idx] {
-                new_lines.push(line.to_string());
-            }
-            new_lines.push(format!("{field_name}:"));
-            new_lines.extend_from_slice(&new_entry);
-            for line in &lines[fld_idx + 1..end] {
-                new_lines.push(line.to_string());
-            }
-        }
-        Some(fld_idx) => {
-            // Case 3 — existing block: append after the last entry.
-            let last = block_end_idx.unwrap_or(fld_idx);
-            for line in &lines[start + 1..=last] {
-                new_lines.push(line.to_string());
-            }
-            new_lines.extend_from_slice(&new_entry);
-            for line in &lines[last + 1..end] {
-                new_lines.push(line.to_string());
-            }
-        }
-    }
-
-    // Closing `---`.
-    new_lines.push(lines[end].to_string());
-
-    // Lines after frontmatter.
-    for line in &lines[end + 1..] {
-        new_lines.push(line.to_string());
-    }
-
-    let mut new_content = new_lines.join("\n");
-    // Preserve trailing newline if original had one.
-    if content.ends_with('\n') && !new_content.ends_with('\n') {
-        new_content.push('\n');
-    }
-
-    // --- Atomic write ---
-
-    zutil::fileio::write_atomic(page_abs, &new_content)
-        .map_err(|e| format!("写入文件失败: {e}"))?;
+    store(&new_abs, &new_document)?;
+    store(&old_abs, &old_document)?;
 
     Ok(())
 }
@@ -254,9 +73,8 @@ fn append_frontmatter_block(
 mod tests {
     use super::*;
     use crate::bundle::testutil::temp_dir;
-    use crate::wiki;
     use std::fs;
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
 
     fn make_page(dir: &Path, filename: &str, content: &str) -> PathBuf {
         let path = dir.join(filename);
@@ -264,234 +82,152 @@ mod tests {
         path
     }
 
-    fn read_content(path: &Path) -> String {
-        fs::read_to_string(path).expect("failed to read test page")
+    /// Valid page with every required field and extra frontmatter lines.
+    fn page(title: &str, extra: &str) -> String {
+        format!(
+            "---\ntitle: {title}\ntype: concept\ntags: []\nstatus: draft\n\
+             last_validated: 2026-07-01T00:00:00Z\ntimeliness: current\n\
+             {extra}---\n\n# {title}\n\nBody.\n"
+        )
     }
 
-    // -------------------------------------------------------------------
-    // append_frontmatter_block — absent field
-    // -------------------------------------------------------------------
+    #[test]
+    fn test_link_supersede_both_sides() {
+        let dir = temp_dir("both_sides");
+        let old_path = make_page(&dir, "old.md", &page("Old Page", ""));
+        let new_path = make_page(&dir, "new.md", &page("New Page", ""));
+
+        link_supersede_at("old.md", "new.md", "replaces old", &dir)
+            .expect("link supersede");
+
+        let new_document = load(&new_path).expect("new page");
+        assert_eq!(
+            new_document.metadata.supersedes,
+            Some(vec![Relation {
+                path: "old.md".to_string(),
+                reason: "replaces old".to_string(),
+            }])
+        );
+        assert_eq!(new_document.body.author(), "# New Page\n\nBody.");
+
+        let old_document = load(&old_path).expect("old page");
+        assert_eq!(
+            old_document.metadata.superseded_by,
+            Some(vec![Relation {
+                path: "new.md".to_string(),
+                reason: "replaces old".to_string(),
+            }])
+        );
+        assert_eq!(old_document.body.author(), "# Old Page\n\nBody.");
+    }
 
     #[test]
-    fn test_append_block_field_absent() {
-        let dir = temp_dir("field_absent");
-        let path = make_page(
+    fn test_link_supersede_appends_to_existing_relations() {
+        let dir = temp_dir("existing_relations");
+        let old_path = make_page(
             &dir,
-            "test.md",
-            "---\ntitle: Test\ntype: concept\n---\n\nBody.\n",
-        );
-
-        append_frontmatter_block(
-            &path,
-            "supersedes",
             "old.md",
-            "replaced by new",
-        )
-        .unwrap();
+            &page(
+                "Old Page",
+                "superseded_by:\n  - path: older.md\n    reason: first\n",
+            ),
+        );
+        make_page(&dir, "new.md", &page("New Page", ""));
 
-        let content = read_content(&path);
-        assert!(content.contains("supersedes:"));
-        assert!(content.contains("  - path: old.md"));
-        assert!(content.contains("    reason: replaced by new"));
-        assert!(content.contains("title: Test"));
-        assert!(content.contains("Body."));
+        link_supersede_at("old.md", "new.md", "replaces old", &dir)
+            .expect("link supersede");
+
+        let old_document = load(&old_path).expect("old page");
+        assert_eq!(
+            old_document.metadata.superseded_by,
+            Some(vec![
+                Relation {
+                    path: "older.md".to_string(),
+                    reason: "first".to_string(),
+                },
+                Relation {
+                    path: "new.md".to_string(),
+                    reason: "replaces old".to_string(),
+                },
+            ])
+        );
     }
 
-    // -------------------------------------------------------------------
-    // append_frontmatter_block — empty array
-    // -------------------------------------------------------------------
+    #[test]
+    fn test_link_supersede_updates_last_validated() {
+        let dir = temp_dir("last_validated");
+        let old_path = make_page(&dir, "old.md", &page("Old Page", ""));
+        let new_path = make_page(&dir, "new.md", &page("New Page", ""));
+
+        link_supersede_at("old.md", "new.md", "replaces old", &dir)
+            .expect("link supersede");
+
+        let old_document = load(&old_path).expect("old page");
+        assert_ne!(
+            old_document.metadata.last_validated,
+            "2026-07-01T00:00:00Z"
+        );
+        assert!(old_document.metadata.last_validated.ends_with('Z'));
+
+        let new_document = load(&new_path).expect("new page");
+        assert_eq!(
+            new_document.metadata.last_validated,
+            "2026-07-01T00:00:00Z"
+        );
+    }
 
     #[test]
-    fn test_append_block_empty_array() {
-        let dir = temp_dir("empty_array");
-        let path = make_page(
+    fn test_link_supersede_keeps_extensions_and_backlinks() {
+        let dir = temp_dir("keep_extensions");
+        let old_path = make_page(
             &dir,
-            "test.md",
-            "---\ntitle: Test\nsupersedes: []\ntype: concept\n---\n\nBody.\n",
-        );
-
-        append_frontmatter_block(
-            &path,
-            "supersedes",
             "old.md",
-            "replaced by new",
-        )
-        .unwrap();
-
-        let content = read_content(&path);
-        assert!(!content.contains("supersedes: []"));
-        assert!(content.contains("supersedes:"));
-        assert!(content.contains("  - path: old.md"));
-        assert!(content.contains("    reason: replaced by new"));
-        assert!(content.contains("title: Test"));
-        assert!(content.contains("type: concept"));
-        assert!(content.contains("Body."));
-    }
-
-    // -------------------------------------------------------------------
-    // append_frontmatter_block — existing entries
-    // -------------------------------------------------------------------
-
-    #[test]
-    fn test_append_block_existing_entries() {
-        let dir = temp_dir("existing_entries");
-        let path = make_page(
-            &dir,
-            "test.md",
-            "---\ntitle: Test\nsupersedes:\n  - path: old1.md\n    \
-             reason: first\n  - path: old2.md\n    \
-             reason: second\ntype: concept\n---\n\nBody.\n",
+            &page("Old Page", "owner: team-a\n").replace(
+                "Body.\n",
+                "Body.\n\n## Backlinks\n\n- [Other](other.md)\n",
+            ),
         );
+        make_page(&dir, "new.md", &page("New Page", ""));
 
-        append_frontmatter_block(
-            &path,
-            "supersedes",
-            "old3.md",
-            "third reason",
-        )
-        .unwrap();
+        link_supersede_at("old.md", "new.md", "replaces old", &dir)
+            .expect("link supersede");
 
-        let content = read_content(&path);
-        assert!(content.contains("  - path: old1.md"));
-        assert!(content.contains("    reason: first"));
-        assert!(content.contains("  - path: old2.md"));
-        assert!(content.contains("    reason: second"));
-        assert!(content.contains("  - path: old3.md"));
-        assert!(content.contains("    reason: third reason"));
-
-        let pos1 = content.find("old1.md").unwrap();
-        let pos2 = content.find("old2.md").unwrap();
-        let pos3 = content.find("old3.md").unwrap();
-        assert!(pos1 < pos2 && pos2 < pos3, "entries must be in order");
-
-        assert!(content.contains("title: Test"));
-        assert!(content.contains("type: concept"));
-        assert!(content.contains("Body."));
-    }
-
-    // -------------------------------------------------------------------
-    // append_frontmatter_block — header only (field with no entries yet)
-    // -------------------------------------------------------------------
-
-    #[test]
-    fn test_append_block_header_only() {
-        let dir = temp_dir("header_only");
-        let path = make_page(
-            &dir,
-            "test.md",
-            "---\nsupersedes:\ntype: concept\n---\n\nBody.\n",
+        let old_document = load(&old_path).expect("old page");
+        assert_eq!(
+            old_document
+                .metadata
+                .extensions
+                .get("owner")
+                .map(|v| (**v).clone()),
+            Some(zwiki::document::Value::from("team-a"))
         );
-
-        append_frontmatter_block(&path, "supersedes", "old.md", "just because")
-            .unwrap();
-
-        let content = read_content(&path);
-        assert!(content.contains("supersedes:"));
-        assert!(content.contains("  - path: old.md"));
-        assert!(content.contains("    reason: just because"));
-        assert!(content.contains("type: concept"));
-        assert!(content.contains("Body."));
+        assert_eq!(old_document.body.backlinks(), Some("- [Other](other.md)"));
+        assert_eq!(old_document.body.author(), "# Old Page\n\nBody.");
     }
-
-    // -------------------------------------------------------------------
-    // append_frontmatter_block — no frontmatter → error
-    // -------------------------------------------------------------------
 
     #[test]
-    fn test_append_block_no_frontmatter() {
-        let dir = temp_dir("no_frontmatter");
-        let path =
-            make_page(&dir, "test.md", "# Just body\n\nNo frontmatter.\n");
+    fn test_link_supersede_rejects_invalid_page() {
+        let dir = temp_dir("invalid_page");
+        make_page(&dir, "old.md", "---\ntitle: Old Page\n---\n\nBody.\n");
+        make_page(&dir, "new.md", &page("New Page", ""));
 
-        let result = append_frontmatter_block(&path, "supersedes", "x.md", "r");
-        assert!(result.is_err());
-        assert!(result.unwrap_err().contains("缺少有效的 frontmatter"));
+        let error = link_supersede_at("old.md", "new.md", "reason", &dir)
+            .expect_err("missing required fields");
+
+        assert!(error.contains("缺少必需字段"), "unexpected error: {error}");
     }
-
-    // -------------------------------------------------------------------
-    // append_frontmatter_block — empty file → error
-    // -------------------------------------------------------------------
 
     #[test]
-    fn test_append_block_empty_file() {
-        let dir = temp_dir("empty_file");
-        let path = make_page(&dir, "test.md", "");
+    fn test_link_supersede_rejects_missing_frontmatter() {
+        let dir = temp_dir("missing_frontmatter");
+        make_page(&dir, "old.md", "# Old Page\n");
+        make_page(&dir, "new.md", &page("New Page", ""));
 
-        let result = append_frontmatter_block(&path, "supersedes", "x.md", "r");
-        assert!(result.is_err());
+        let error = link_supersede_at("old.md", "new.md", "reason", &dir)
+            .expect_err("no frontmatter");
+
+        assert!(error.contains("frontmatter"), "unexpected error: {error}");
     }
-
-    // -------------------------------------------------------------------
-    // append_frontmatter_block — superseded_by variant
-    // -------------------------------------------------------------------
-
-    #[test]
-    fn test_append_block_superseded_by() {
-        let dir = temp_dir("superseded_by");
-        let path = make_page(
-            &dir,
-            "test.md",
-            "---\ntitle: Old\ntype: concept\n---\n\nBody.\n",
-        );
-
-        append_frontmatter_block(
-            &path,
-            "superseded_by",
-            "new.md",
-            "replaces old",
-        )
-        .unwrap();
-
-        let content = read_content(&path);
-        assert!(content.contains("superseded_by:"));
-        assert!(content.contains("  - path: new.md"));
-        assert!(content.contains("    reason: replaces old"));
-        assert!(content.contains("title: Old"));
-    }
-
-    // -------------------------------------------------------------------
-    // append_frontmatter_block — trailing newline preserved
-    // -------------------------------------------------------------------
-
-    #[test]
-    fn test_append_block_preserves_trailing_newline() {
-        let dir = temp_dir("trailing_newline");
-        let path =
-            make_page(&dir, "test.md", "---\ntitle: Test\n---\n\nBody.\n");
-
-        append_frontmatter_block(&path, "supersedes", "old.md", "reason")
-            .unwrap();
-
-        let content = read_content(&path);
-        assert!(content.ends_with('\n'), "trailing newline must be preserved");
-    }
-
-    // -------------------------------------------------------------------
-    // append_frontmatter_block — path_value with slashes
-    // -------------------------------------------------------------------
-
-    #[test]
-    fn test_append_block_path_with_domain() {
-        let dir = temp_dir("path_with_domain");
-        let path =
-            make_page(&dir, "test.md", "---\ntitle: Test\n---\n\nBody.\n");
-
-        append_frontmatter_block(
-            &path,
-            "supersedes",
-            "autoresearch/concepts/old.md",
-            "content merged",
-        )
-        .unwrap();
-
-        let content = read_content(&path);
-        assert!(content.contains("  - path: autoresearch/concepts/old.md"));
-        assert!(content.contains("    reason: content merged"));
-    }
-
-    // -------------------------------------------------------------------
-    // link_supersede — same path
-    // -------------------------------------------------------------------
 
     #[test]
     fn test_link_supersede_same_path() {
@@ -501,102 +237,44 @@ mod tests {
         assert!(result.unwrap_err().contains("不能指向同一个页面"));
     }
 
-    // -------------------------------------------------------------------
-    // link_supersede — missing pages
-    // -------------------------------------------------------------------
-
     #[test]
     fn test_link_supersede_missing_pages() {
         let dir = temp_dir("missing_pages");
-        let result = link_supersede_at(
-            "nonexistent.md",
-            "also-nonexistent.md",
-            "reason",
-            &dir,
-        );
-        assert!(result.is_err());
-    }
-
-    // -------------------------------------------------------------------
-    // link_supersede — both sides
-    // -------------------------------------------------------------------
-
-    #[test]
-    fn test_link_supersede_both_sides() {
-        let dir = temp_dir("both_sides");
-        let old_path =
-            make_page(&dir, "old.md", "---\ntitle: Old Page\n---\n\nBody.\n");
-        let new_path =
-            make_page(&dir, "new.md", "---\ntitle: New Page\n---\n\nBody.\n");
-
-        append_frontmatter_block(
-            &new_path,
-            "supersedes",
-            "old.md",
-            "replaces old",
-        )
-        .unwrap();
-        append_frontmatter_block(
-            &old_path,
-            "superseded_by",
-            "new.md",
-            "replaces old",
-        )
-        .unwrap();
-
-        let old_content = read_content(&old_path);
-        assert!(old_content.contains("superseded_by:"));
-        assert!(old_content.contains("  - path: new.md"));
-        assert!(old_content.contains("    reason: replaces old"));
-
-        let new_content = read_content(&new_path);
-        assert!(new_content.contains("supersedes:"));
-        assert!(new_content.contains("  - path: old.md"));
-        assert!(new_content.contains("    reason: replaces old"));
-    }
-
-    // -------------------------------------------------------------------
-    // link_supersede — writes last_validated (success path)
-    // -------------------------------------------------------------------
-
-    #[test]
-    fn test_link_supersede_writes_last_validated() {
-        // Use an isolated temp dir as the wiki root — never touches the
-        // real ~/.zoo/wiki/.
-        let wiki_root = temp_dir("lv_root");
-        let old_rel = "lv-old.md";
-        let new_rel = "lv-new.md";
-        let old_abs = wiki_root.join(old_rel);
-        let new_abs = wiki_root.join(new_rel);
-
-        // Create two test page files.
-        fs::write(&old_abs, "---\ntitle: Old Page\n---\n\nBody.\n")
-            .expect("failed to write test old page");
-        fs::write(&new_abs, "---\ntitle: New Page\n---\n\nBody.\n")
-            .expect("failed to write test new page");
-
-        // Run link_supersede_at — this is the success path under test.
         let result =
-            link_supersede_at(old_rel, new_rel, "successor", &wiki_root);
-        assert!(result.is_ok(), "link_supersede should succeed: {result:?}");
+            link_supersede_at("nonexistent.md", "other.md", "reason", &dir);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("页面不存在"));
+    }
 
-        // Read old file and verify last_validated was written.
-        let old_content = fs::read_to_string(&old_abs)
-            .expect("failed to read old page after supersedure");
-        assert!(
-            old_content.contains("last_validated:"),
-            "old page should have last_validated after supersedure"
-        );
+    #[test]
+    fn test_link_supersede_renders_schema_order() {
+        let dir = temp_dir("render_order");
+        make_page(&dir, "old.md", &page("Old Page", ""));
+        let new_path = make_page(&dir, "new.md", &page("New Page", ""));
 
-        // Extract and validate the timestamp is a sensible ISO 8601 value.
-        let fm = wiki::parse_frontmatter(&old_content);
-        let lv = fm
-            .get("last_validated")
-            .and_then(|v| v.as_str())
-            .expect("last_validated should be a string");
-        assert!(
-            lv.contains('T') || lv.contains('-'),
-            "last_validated should be an ISO 8601 timestamp, got: {lv}"
+        link_supersede_at("old.md", "new.md", "replaces old", &dir)
+            .expect("link supersede");
+
+        let text = fs::read_to_string(&new_path).expect("read new page");
+        assert_eq!(
+            text,
+            concat!(
+                "---\n",
+                "title: New Page\n",
+                "type: concept\n",
+                "tags: []\n",
+                "status: draft\n",
+                "last_validated: 2026-07-01T00:00:00Z\n",
+                "timeliness: current\n",
+                "supersedes:\n",
+                "  - path: old.md\n",
+                "    reason: replaces old\n",
+                "---\n",
+                "\n",
+                "# New Page\n",
+                "\n",
+                "Body.\n",
+            )
         );
     }
 }

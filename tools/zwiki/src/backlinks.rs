@@ -1,18 +1,18 @@
-//! Bidirectional backlinks — reverse index and automatic section maintenance.
+//! Bidirectional backlinks — reverse index and generated-region maintenance.
 //!
-//! Scans all wiki pages, extracts cross-references (inline markdown links
-//! `[text](path.md)`, backtick-wrapped paths `` `path.md` ``, and frontmatter
-//! reference fields), builds a reverse index, and optionally writes
-//! `## Backlinks` sections into each page.
+//! The module reads pages as documents, extracts cross-references (typed
+//! metadata paths, inline markdown links `[text](path.md)`, and
+//! backtick-wrapped paths `` `path.md` ``), builds a reverse index, and
+//! writes the generated `## Backlinks` region of each page through the page
+//! document model.
 
 use std::collections::HashMap;
-use std::fs;
 use std::path::Path;
 
 use regex::Regex;
-use serde_json::Value;
+use zwiki::document::{self, PageDocument};
 
-use crate::wiki;
+use crate::{document_io, wiki};
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -95,51 +95,16 @@ fn target_exists_in_any_bundle(
 }
 
 // ---------------------------------------------------------------------------
-// strip_derived_metadata_sections
-// ---------------------------------------------------------------------------
-
-/// Remove the generated `## Backlinks` section from `body`.
-///
-/// The `## Backlinks` section is a metadata declaration, not prose
-/// cross-references, so it must not feed back into link extraction.
-#[must_use]
-pub fn strip_derived_metadata_sections(body: &str) -> String {
-    strip_section(body, "Backlinks")
-}
-
-/// Remove a `## <heading>` section from `content`.
-fn strip_section(content: &str, heading: &str) -> String {
-    if let Some((start, end)) = find_section_pos(content, heading) {
-        let mut result = String::with_capacity(content.len() - (end - start));
-        result.push_str(&content[..start]);
-        result.push_str(&content[end..]);
-        result
-    } else {
-        content.to_string()
-    }
-}
-
-// ---------------------------------------------------------------------------
 // extract_links
 // ---------------------------------------------------------------------------
 
 /// Resolve a `sources` entry to a bare path.
 ///
-/// Entries come in two shapes: a plain path (`path/to.md`) or a markdown
-/// link (`[Name](path/to.md)`).  The block-list frontmatter parser keeps
-/// surrounding quotes, so a quoted markdown link is unquoted before the
-/// target is read.
+/// An entry is either a plain path (`path/to.md`) or a markdown link
+/// (`[Name](path/to.md)`).
 fn source_path(value: &str) -> &str {
     let trimmed = value.trim();
-    let unquoted = trimmed
-        .strip_prefix('"')
-        .and_then(|s| s.strip_suffix('"'))
-        .or_else(|| {
-            trimmed.strip_prefix('\'').and_then(|s| s.strip_suffix('\''))
-        })
-        .unwrap_or(trimmed);
-
-    if let Some(rest) = unquoted.strip_prefix('[')
+    if let Some(rest) = trimmed.strip_prefix('[')
         && let Some(close) = rest.find("](")
     {
         let after = &rest[close + 2..];
@@ -147,84 +112,57 @@ fn source_path(value: &str) -> &str {
             return after[..end].trim();
         }
     }
-    unquoted
+    trimmed
 }
 
-/// Extract cross-reference link targets from `content`, checking existence
-/// against `wiki_root`.
+/// Extract cross-reference link targets from `document`.
 ///
 /// Sources:
-/// - Frontmatter `sources` field (derived pages reference their sources)
-/// - Frontmatter `supersedes`/`superseded_by`/`contradictions` fields
-/// - Inline markdown links `[text](path.md)` in body text
-///   (excluding the `## Backlinks` section)
-/// - Backtick-wrapped paths `` `path.md` `` in body text
-///   (excluding the `## Backlinks` section)
+/// - Typed metadata paths: `sources`, `supersedes`, `superseded_by`, and
+///   `contradictions`.  A derived page names its source pages in `sources`,
+///   so a source page sees the derived pages as backlinks.
+/// - Inline markdown links `[text](path.md)` in the author body
+/// - Backtick-wrapped paths `` `path.md` `` in the author body
+///
+/// The generated `## Backlinks` region is not author text, so it never
+/// feeds back into extraction.
 ///
 /// Returns a sorted, deduplicated list of wiki-root-relative `.md` paths
 /// that pass [`is_valid_wiki_target`].
 #[must_use]
 pub fn extract_links(
     wiki_root: &Path,
-    content: &str,
+    document: &PageDocument,
     bundles: &wiki::BundleSet,
 ) -> Vec<String> {
     let mut links: Vec<String> = Vec::new();
 
-    let fm = wiki::parse_frontmatter(content);
-    let body = wiki::strip_frontmatter(content);
-    let clean_body = strip_derived_metadata_sections(&body);
+    let sources = document.metadata.sources.iter().flatten();
+    let relations = document
+        .metadata
+        .supersedes
+        .iter()
+        .chain(&document.metadata.superseded_by)
+        .flatten()
+        .map(|relation| relation.path.as_str());
+    let conflicts = document
+        .metadata
+        .contradictions
+        .iter()
+        .flatten()
+        .map(|record| record.path.as_str());
+    links.extend(
+        sources
+            .map(|source| source_path(source))
+            .chain(relations)
+            .chain(conflicts)
+            .map(str::to_string),
+    );
 
-    // Frontmatter sources field.  A derived page names its source
-    // pages here, so a source page must see the derived pages as backlinks
-    // (and a move must find those referrers).
-    if let Some(Value::Array(sources)) = fm.get("sources") {
-        for val in sources {
-            if let Some(s) = val.as_str() {
-                let bare = source_path(s);
-                if std::path::Path::new(bare)
-                    .extension()
-                    .is_some_and(|ext| ext.eq_ignore_ascii_case("md"))
-                {
-                    links.push(bare.to_string());
-                }
-            }
-        }
-    }
-
-    // 1b. Frontmatter supersedes / superseded_by / contradictions fields
-    for field in ["supersedes", "superseded_by", "contradictions"] {
-        if let Some(Value::Array(items)) = fm.get(field) {
-            for item in items {
-                // Current parser stores block-list items as flat strings
-                // like "path: <value>". Try object first for forward compat.
-                let path = item.as_object().map_or_else(
-                    || {
-                        item.as_str()
-                            .and_then(|s| s.strip_prefix("path: "))
-                            .map(str::to_string)
-                    },
-                    |obj| {
-                        obj.get("path")
-                            .and_then(|v| v.as_str())
-                            .map(str::to_string)
-                    },
-                );
-                if let Some(p) = path
-                    && std::path::Path::new(&p)
-                        .extension()
-                        .is_some_and(|ext| ext.eq_ignore_ascii_case("md"))
-                {
-                    links.push(p);
-                }
-            }
-        }
-    }
-
-    // Inline markdown links [text](path.md) in body
+    let author = document.body.author();
     let md_re =
         Regex::new(r"\[([^\]]+)\]\(([^)]+\.md)\)").expect("valid regex");
-    for cap in md_re.captures_iter(&clean_body) {
+    for cap in md_re.captures_iter(author) {
         let target = cap[2].trim();
         if !target.starts_with("http://")
             && !target.starts_with("https://")
@@ -234,9 +172,9 @@ pub fn extract_links(
         }
     }
 
-    // Backtick-wrapped paths `path.md` in body
+    // Backtick-wrapped paths `path.md` in the author body
     let bt_re = Regex::new(r"`([^\s`]+\.md)`").expect("valid regex");
-    for cap in bt_re.captures_iter(&clean_body) {
+    for cap in bt_re.captures_iter(author) {
         let target = cap[1].trim();
         if !target.starts_with("http://") && !target.starts_with("https://") {
             links.push(target.to_string());
@@ -252,65 +190,67 @@ pub fn extract_links(
         .collect()
 }
 
+/// Map each bundle-relative path to every matching `page.rel` value.
+///
+/// Bundles may share the same bundle-relative path, so one key maps to all
+/// matching pages.
+fn bundle_rel_map(
+    pages: &[wiki::Page],
+    bundles: &wiki::BundleSet,
+) -> HashMap<String, Vec<String>> {
+    let mut rel_map: HashMap<String, Vec<String>> = HashMap::new();
+    for page in pages {
+        if let Some(relative) = bundles.strip_prefix(&page.rel) {
+            rel_map
+                .entry(relative.to_string())
+                .or_default()
+                .push(page.rel.clone());
+        }
+    }
+    rel_map
+}
+
 // ---------------------------------------------------------------------------
 // build_reverse_index
 // ---------------------------------------------------------------------------
 
-/// Build reverse-link index from parsed pages, using `wiki_root` for
-/// existence validation.
+/// Build the reverse-link index from pages, using `wiki_root` for existence
+/// validation.
 ///
 /// Returns a map from each target page (wiki-root-relative path) to a
-/// sorted, deduplicated list of source pages (wiki-root-relative paths)
-/// that link to it.
+/// sorted, deduplicated list of source pages that link to it.
 ///
-/// For installed bundles, links are bundle-relative while
-/// page rels include the bundle-name prefix.  This function normalises the
-/// index keys to use the full `page.rel` form so that [`update_backlinks`]
-/// can look them up directly.
-#[must_use]
+/// For installed bundles, links are bundle-relative while page rels include
+/// the bundle-name prefix.  The index keys therefore use the full `page.rel`
+/// form, so [`update_backlinks`] can look them up directly.
 pub fn build_reverse_index(
     wiki_root: &Path,
     pages: &[wiki::Page],
     bundles: &wiki::BundleSet,
 ) -> HashMap<String, Vec<String>> {
-    // Build a map from bundle-relative path → all matching page.rel values.
-    // e.g. "shared/concepts/foo.md" → ["core/shared/concepts/foo.md", ...]
-    // Multiple bundles may share the same bundle-relative path, so we use
-    // a Vec to capture all matches.
-    let mut rel_map: HashMap<String, Vec<String>> = HashMap::new();
-    for p in pages {
-        if let Some(br) = bundles.strip_prefix(&p.rel) {
-            rel_map.entry(br.to_string()).or_default().push(p.rel.clone());
-        }
-    }
-
+    let rel_map = bundle_rel_map(pages, bundles);
     let mut reverse: HashMap<String, Vec<String>> = HashMap::new();
 
     for page in pages {
-        let content = wiki::read_file(&page.path);
-        if content.is_empty() {
-            continue;
-        }
-
-        let targets = extract_links(wiki_root, &content, bundles);
-        for target in targets {
-            // Resolve bundle-relative target to the full page.rel(s).
-            // Multiple bundles may share the same bundle-relative path,
-            // so we add all matching page.rel values as reverse-index keys.
-            if let Some(rels) = rel_map.get(&target) {
-                for rel in rels {
-                    reverse
-                        .entry(rel.clone())
-                        .or_default()
-                        .push(page.rel.clone());
+        for target in extract_links(wiki_root, &page.document, bundles) {
+            // Multiple bundles may share the same bundle-relative path, so
+            // every matching page.rel becomes a reverse-index key.
+            match rel_map.get(&target) {
+                Some(rels) => {
+                    for rel in rels {
+                        reverse
+                            .entry(rel.clone())
+                            .or_default()
+                            .push(page.rel.clone());
+                    }
                 }
-            } else {
-                reverse.entry(target).or_default().push(page.rel.clone());
+                None => {
+                    reverse.entry(target).or_default().push(page.rel.clone());
+                }
             }
         }
     }
 
-    // Sort source lists and deduplicate for deterministic output
     for sources in reverse.values_mut() {
         sources.sort();
         sources.dedup();
@@ -322,53 +262,35 @@ pub fn build_reverse_index(
     sorted.into_iter().collect()
 }
 
-/// Build a reverse-index for a single target page.
+/// Build a reverse index for a single target page.
 ///
 /// Scans all `pages` for outbound links and returns only those that
-/// reference `target`.  The returned map has at most one entry (the
-/// target → sorted, deduplicated list of source `page.rel` values).
+/// reference `target`.  The result holds at most one entry: the target
+/// mapped to its sorted, deduplicated source `page.rel` values.
 ///
-/// This is more efficient than [`build_reverse_index`] when only one
-/// target is needed — still does full I/O (every page must be read),
-/// but avoids constructing and sorting a global `HashMap`.
-///
-/// Bundle-relative paths (a leading bundle component) are resolved the
-/// same way as `build_reverse_index`.
-#[must_use]
+/// This is more efficient than [`build_reverse_index`] when only one target
+/// is needed — every page is still scanned, but no global index is built.
+/// Bundle-relative paths resolve the same way as [`build_reverse_index`].
 pub fn build_backlinks_for(
     target: &str,
     wiki_root: &Path,
     pages: &[wiki::Page],
     bundles: &wiki::BundleSet,
 ) -> HashMap<String, Vec<String>> {
-    // Build rel_map for bundle-relative resolution.
-    let mut rel_map: HashMap<String, Vec<String>> = HashMap::new();
-    for p in pages {
-        if let Some(br) = bundles.strip_prefix(&p.rel) {
-            rel_map.entry(br.to_string()).or_default().push(p.rel.clone());
-        }
-    }
-
+    let rel_map = bundle_rel_map(pages, bundles);
     let mut sources: Vec<String> = Vec::new();
 
     for page in pages {
-        let content = wiki::read_file(&page.path);
-        if content.is_empty() {
-            continue;
-        }
-
-        let links = extract_links(wiki_root, &content, bundles);
-        if links.iter().any(|ln| {
-            // Direct match.
-            if ln == target {
+        let links = extract_links(wiki_root, &page.document, bundles);
+        let refers_to_target = links.iter().any(|link| {
+            if link == target {
                 return true;
             }
-            // Bundle-relative resolution.
-            if let Some(rels) = rel_map.get(ln) {
-                return rels.iter().any(|r| r == target);
-            }
-            false
-        }) {
+            rel_map
+                .get(link)
+                .is_some_and(|rels| rels.iter().any(|rel| rel == target))
+        });
+        if refers_to_target {
             sources.push(page.rel.clone());
         }
     }
@@ -384,227 +306,122 @@ pub fn build_backlinks_for(
 }
 
 // ---------------------------------------------------------------------------
-// format_backlinks_section
+// format_backlinks_content
 // ---------------------------------------------------------------------------
 
-/// Format a `## Backlinks` section body for `_target_rel` with `sources`.
+/// Format the generated `## Backlinks` content for `sources`.
 ///
-/// Page titles are resolved against `wiki_root`. The `_target_rel` parameter
-/// identifies the page being updated (used for display context). The section
-/// lists each source page with its title and a wiki-relative link.
-///
-/// Source paths are converted to bundle-relative form (stripping a leading
-/// bundle component) since wiki links use bundle-relative paths.
+/// The model owns the heading, so the content is the maintenance note
+/// followed by one list entry per source page.  Titles come from `titles`,
+/// which maps each source rel to its page title.  Source paths become
+/// bundle-relative, because wiki links are bundle-relative.
 #[must_use]
-pub fn format_backlinks_section(
-    wiki_root: &Path,
-    _target_rel: &str,
+pub fn format_backlinks_content(
     sources: &[String],
     bundles: &wiki::BundleSet,
+    titles: &HashMap<String, String>,
 ) -> String {
-    let mut lines = vec![String::from("## Backlinks"), String::new()];
-    lines.push(String::from("> 此节由 zwiki 自动维护，请勿手动编辑。"));
-    lines.push(String::new());
-    for src in sources {
-        let title = page_title_from_path(&wiki_root.join(src));
-        // Use the bundle-relative path for the link.
-        let link_target = bundles.strip_prefix(src).unwrap_or(src).to_string();
+    let mut lines = vec![
+        String::from("> 此节由 zwiki 自动维护，请勿手动编辑。"),
+        String::new(),
+    ];
+    for source in sources {
+        let title = titles.get(source).map_or_else(
+            || source.rsplit('/').next().map(title_case).unwrap_or_default(),
+            Clone::clone,
+        );
+        let link_target = bundles.strip_prefix(source).unwrap_or(source);
         lines.push(format!("- [{title}]({link_target})"));
     }
-    lines.push(String::new());
     lines.join("\n")
 }
 
-// ---------------------------------------------------------------------------
-// find_insertion_point
-// ---------------------------------------------------------------------------
-
-/// Find the best offset to insert a new `## Backlinks` section.
-///
-/// The byte offsets returned by `find_section_pos` are safe for string
-/// slicing because `regex` guarantees UTF-8 boundary alignment in its
-/// match positions — all captured offsets are always on valid char
-/// boundaries.
-///
-/// Anchors, in priority order:
-/// - after the `## Details` section end
-/// - before the `## References` section start
-///
-/// Returns `None` if none of the anchors exist.
-#[must_use]
-pub fn find_insertion_point(content: &str) -> Option<usize> {
-    // Priority 1: after ## Details
-    if let Some((_, end)) = find_section_pos(content, "Details") {
-        return Some(end);
-    }
-
-    // Priority 2: before ## References
-    if let Some((start, _)) = find_section_pos(content, "References") {
-        return Some(start);
-    }
-
-    None
+/// Map each page rel to its title.
+pub fn title_map(pages: &[wiki::Page]) -> HashMap<String, String> {
+    pages
+        .iter()
+        .map(|page| (page.rel.clone(), page.document.metadata.title.clone()))
+        .collect()
 }
 
 // ---------------------------------------------------------------------------
 // update_backlinks
 // ---------------------------------------------------------------------------
 
-/// Write `## Backlinks` sections into each wiki page.
+/// Synchronize the generated `## Backlinks` region of every page.
 ///
-/// For each page that has inbound links, adds or updates a `## Backlinks`
-/// section. The section is placed after `## Details`, or before
-/// `## References` when no `## Details` section exists.
+/// A page with inbound links gets the formatted list; a page without inbound
+/// links loses the region.  The model places the region after the author
+/// content, or before `## References` when that heading exists.  Only a page
+/// whose generated content changes is written.
 ///
-/// Pages with no inbound links that still carry a `## Backlinks` section
-/// (e.g. from a previous run) will have it removed to keep pages clean.
+/// Returns the number of pages that were written.
 ///
-/// Returns the number of pages that were modified.  When
-/// `suppress_eprint` is true, warning messages are suppressed (used under
-/// `--json`).
+/// # Errors
+///
+/// Fails when a page cannot be read, parsed, or written.
 pub fn update_backlinks(
-    wiki_root: &Path,
     index: &HashMap<String, Vec<String>>,
+    titles: &HashMap<String, String>,
     pages: &[wiki::Page],
     bundles: &wiki::BundleSet,
-    suppress_eprint: bool,
-) -> usize {
+) -> Result<usize, String> {
     let mut updated_count = 0;
 
     for page in pages {
-        let sources: Vec<String> =
-            index.get(&page.rel).cloned().unwrap_or_default();
-        let has_backlinks = !sources.is_empty();
-
-        let content = wiki::read_file(&page.path);
-        if content.is_empty() {
-            continue;
-        }
-
-        let existing = find_section_pos(&content, "Backlinks");
-        let new_content: String;
-
-        if has_backlinks {
-            let backlinks_content = format_backlinks_section(
-                wiki_root, &page.rel, &sources, bundles,
-            );
-
-            if let Some((start, end)) = existing {
-                // Replace existing backlinks section.  Add a trailing
-                // newline to keep a blank line before the next section.
-                new_content = format!(
-                    "{}{}\n\n{}",
-                    &content[..start],
-                    backlinks_content.trim_end(),
-                    &content[end..].trim_start()
-                );
-            } else if let Some(ins_point) = find_insertion_point(&content) {
-                // Insert new backlinks section, preserving
-                // blank line separation from adjacent sections.
-                new_content = format!(
-                    "{}\n\n{}\n\n{}",
-                    &content[..ins_point].trim_end(),
-                    backlinks_content.trim(),
-                    &content[ins_point..].trim_start()
-                );
-            } else {
-                // Neither anchor exists, so there is nowhere to insert
-                // the section without disturbing the page.
-                if !suppress_eprint {
-                    eprintln!(
-                        "警告: {} 缺少 ## Details / ## References 锚点，跳过反向链接写入",
-                        page.rel
-                    );
-                }
-                continue;
-            }
-        } else if let Some((start, end)) = existing {
-            // No inbound links — remove stale Backlinks section
-            let pre = &content[..start];
-            let post = &content[end..];
-
-            // Clean up surrounding blank lines, then insert exactly one
-            // blank line to keep the separation before the next section
-            // (e.g. `## References`).
-            let pre = pre.trim_end_matches('\n');
-            let post = post
-                .strip_prefix("\n\n")
-                .or_else(|| post.strip_prefix('\n'))
-                .unwrap_or(post);
-
-            new_content = format!("{pre}\n\n{post}");
+        let sources = index.get(&page.rel).cloned().unwrap_or_default();
+        let content = if sources.is_empty() {
+            None
         } else {
+            Some(format_backlinks_content(&sources, bundles, titles))
+        };
+
+        let mut document = page.document.clone();
+        if document.body.backlinks() == content.as_deref() {
             continue;
         }
-
-        if new_content != content {
-            // Atomic write: temp file → rename (use PID suffix to avoid races)
-            let temp_path =
-                page.path.with_extension(format!("tmp-{}", std::process::id()));
-            if fs::write(&temp_path, &new_content).is_ok()
-                && fs::rename(&temp_path, &page.path).is_ok()
-            {
-                updated_count += 1;
-            } else {
-                let _ = fs::remove_file(&temp_path);
-            }
-        }
+        document.body.set_backlinks(content);
+        document_io::store(&page.path, &document)
+            .map_err(|e| format!("{}: {e}", page.rel))?;
+        updated_count += 1;
     }
 
-    updated_count
+    Ok(updated_count)
 }
 
 // ---------------------------------------------------------------------------
-// Internal helpers
+// Page titles
 // ---------------------------------------------------------------------------
 
-/// Find a `## <heading>` section in `content`.
+/// Read the page title, falling back to the title-cased file stem.
 ///
-/// Returns `(start_offset, end_offset)` where `start` is the offset of the
-/// `## <heading>` line and `end` is the offset of the next `## ` heading
-/// (or end of content).
-fn find_section_pos(content: &str, heading: &str) -> Option<(usize, usize)> {
-    let escaped = regex::escape(heading);
-    // Use [ \t]*$ instead of \s*$ to avoid consuming newlines.
-    let pattern = format!(r"(?m)^## {escaped}[ \t]*$");
-    let re = Regex::new(&pattern).ok()?;
-    let m = re.find(content)?;
-    let start = m.start();
-    let after_end = m.end();
-    let rest = &content[after_end..];
-    let next_re = Regex::new(r"(?m)^## ").ok()?;
-    let end = next_re
-        .find(rest)
-        .map_or(content.len(), |next_m| after_end + next_m.start());
-    Some((start, end))
-}
-
-/// Get page title from a wiki page file.
+/// # Errors
 ///
-/// Returns the `title` field from frontmatter if present, otherwise
-/// title-cases the filename stem.
-fn page_title_from_path(page_path: &Path) -> String {
-    let content = wiki::read_file(page_path);
-    if !content.is_empty() {
-        let fm = wiki::parse_frontmatter(&content);
-        if let Some(Value::String(title)) = fm.get("title") {
-            return title.clone();
-        }
+/// Fails when the page cannot be read, or when its frontmatter is not valid
+/// YAML.
+fn page_title_from_path(page_path: &Path) -> Result<String, String> {
+    let text = std::fs::read_to_string(page_path)
+        .map_err(|e| format!("无法读取文件: {e}"))?;
+    match document::read_field(&text, "title").map_err(|e| e.to_string())? {
+        Some(document::Value::String(title)) => Ok(title),
+        _ => Ok(page_path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .map(title_case)
+            .unwrap_or_default()),
     }
-    // Fallback: filename stem title-cased
-    page_path
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .map(title_case)
-        .unwrap_or_default()
 }
 
-/// Get page title from a wiki-root-relative path.
+/// Read the title of a page given its wiki-relative path.
 ///
-/// Returns the `title` field from frontmatter if present, otherwise
-/// title-cases the filename stem.
-#[must_use]
-pub fn page_title_from_rel(rel_path: &str, root: &Path) -> String {
+/// # Errors
+///
+/// Fails when the page cannot be read, or when its frontmatter is not valid
+/// YAML.
+pub fn page_title_from_rel(
+    rel_path: &str,
+    root: &Path,
+) -> Result<String, String> {
     page_title_from_path(&root.join(rel_path))
 }
 
@@ -645,19 +462,29 @@ mod tests {
         path.to_path_buf()
     }
 
-    /// Create a `Page` struct from a file path inside a wiki root.
-    fn make_page(wiki_root: &Path, rel: &str, content: &str) -> wiki::Page {
-        let path = write(&wiki_root.join(rel), content);
-        let rel_str = rel.to_string();
-        let frontmatter = wiki::parse_frontmatter(content);
-        let body = wiki::strip_frontmatter(content);
-        wiki::Page {
-            path,
-            rel: rel_str,
-            frontmatter,
-            body,
-            raw: content.to_string(),
-        }
+    /// Page text with every required field and `extra` frontmatter lines.
+    fn page_text(title: &str, extra: &str, body: &str) -> String {
+        format!(
+            "---\ntitle: {title}\ntype: concept\ntags: []\nstatus: draft\n\
+             last_validated: 2026-07-01T00:00:00Z\ntimeliness: current\n\
+             {extra}---\n\n{body}\n"
+        )
+    }
+
+    /// Parse `text` as a page document.
+    fn document(text: &str) -> PageDocument {
+        PageDocument::parse(text).expect("valid page document")
+    }
+
+    /// Write a page file and return its legacy `Page` record.
+    fn make_page(wiki_root: &Path, rel: &str, text: &str) -> wiki::Page {
+        let path = write(&wiki_root.join(rel), text);
+        wiki::read_page_at(&path, wiki_root).expect("page record")
+    }
+
+    /// Write a page file that only serves as a link target.
+    fn write_page(wiki_root: &Path, rel: &str, title: &str) {
+        write(&wiki_root.join(rel), &page_text(title, "", "Body."));
     }
 
     /// An empty bundle set for tests that use a plain (non-aggregated) root.
@@ -668,6 +495,16 @@ mod tests {
     /// Write `dir/<bundle>/bundle.toml` so the bundle is discoverable.
     fn write_bundle_manifest(dir: &Path, bundle: &str) {
         write(&dir.join(bundle).join("bundle.toml"), ".");
+    }
+
+    /// Titles of the pages currently on disk, keyed by rel.
+    fn titles_of(dir: &Path) -> HashMap<String, String> {
+        title_map(wiki::PageSet::load(dir).pages())
+    }
+
+    /// Extract links from `text` parsed as a document.
+    fn links_of(wiki_root: &Path, text: &str) -> Vec<String> {
+        extract_links(wiki_root, &document(text), &no_bundles())
     }
 
     // -------------------------------------------------------------------
@@ -734,184 +571,130 @@ mod tests {
     }
 
     // -------------------------------------------------------------------
-    // strip_derived_metadata_sections
-    // -------------------------------------------------------------------
-
-    #[test]
-    fn test_strip_backlinks_section_removes_section() {
-        let body =
-            "Some text.\n\n## Backlinks\n\n- [Foo](foo.md)\n\nOther text.";
-        let result = strip_derived_metadata_sections(body);
-        // Section extends to EOF since there is no next ## heading.
-        assert_eq!(result, "Some text.\n\n");
-    }
-
-    #[test]
-    fn test_strip_backlinks_section_removes_till_next_heading() {
-        let body =
-            "Before.\n\n## Backlinks\n\n- [Foo](foo.md)\n\n## Next\n\nAfter.";
-        let result = strip_derived_metadata_sections(body);
-        // Section removed completely (blank line before ## Next is part of the section).
-        assert_eq!(result, "Before.\n\n## Next\n\nAfter.");
-    }
-
-    #[test]
-    fn test_strip_backlinks_section_no_section() {
-        let body = "Just text.";
-        assert_eq!(strip_derived_metadata_sections(body), "Just text.");
-    }
-
-    #[test]
-    fn test_strip_backlinks_section_empty() {
-        assert_eq!(strip_derived_metadata_sections(""), "");
-    }
-
-    #[test]
-    fn test_strip_backlinks_section_at_end() {
-        let body = "Body here.\n\n## Backlinks\n\n- [A](a.md)";
-        assert_eq!(strip_derived_metadata_sections(body), "Body here.\n\n");
-    }
-
-    // -------------------------------------------------------------------
-    // extract_links
+    // extract_links — body text
     // -------------------------------------------------------------------
 
     #[test]
     fn test_extract_links_from_markdown_links() {
-        let content = "See [Foo](foo.md) and [Bar](bar.md).";
         let dir = temp_dir("extract_mdlinks");
-        write(&dir.join("foo.md"), "# Foo");
-        write(&dir.join("bar.md"), "# Bar");
-        let result = extract_links(&dir, content, &no_bundles());
-        assert_eq!(result, vec!["bar.md", "foo.md"]);
+        write_page(&dir, "foo.md", "Foo");
+        write_page(&dir, "bar.md", "Bar");
+        let text =
+            page_text("Page", "", "See [Foo](foo.md) and [Bar](bar.md).");
+        assert_eq!(links_of(&dir, &text), vec!["bar.md", "foo.md"]);
     }
 
     #[test]
     fn test_extract_links_from_backtick() {
-        let content = "See: `foo.md`, `bar.md`";
         let dir = temp_dir("extract_backtick");
-        write(&dir.join("foo.md"), "# Foo");
-        write(&dir.join("bar.md"), "# Bar");
-        let result = extract_links(&dir, content, &no_bundles());
-        assert_eq!(result, vec!["bar.md", "foo.md"]);
+        write_page(&dir, "foo.md", "Foo");
+        write_page(&dir, "bar.md", "Bar");
+        let text = page_text("Page", "", "See: `foo.md`, `bar.md`");
+        assert_eq!(links_of(&dir, &text), vec!["bar.md", "foo.md"]);
     }
 
     #[test]
-    fn test_extract_links_excludes_backlinks_section() {
-        let content =
-            "Intro.\n\n## Backlinks\n\n- [Foo](foo.md)\n- `bar.md`\n\nOutro.";
+    fn test_extract_links_excludes_backlinks_region() {
         let dir = temp_dir("extract_excludes_bl");
-        write(&dir.join("foo.md"), "# Foo");
-        write(&dir.join("bar.md"), "# Bar");
-        let result = extract_links(&dir, content, &no_bundles());
-        // Only 'Intro.' text — no links in backlinks section should be extracted.
-        // Also 'Outro.' has no links.
-        let empty: Vec<String> = vec![];
-        assert_eq!(result, empty);
+        write_page(&dir, "foo.md", "Foo");
+        write_page(&dir, "bar.md", "Bar");
+        let text = page_text(
+            "Page",
+            "",
+            "Intro.\n\n## Backlinks\n\n- [Foo](foo.md)\n- `bar.md`",
+        );
+        assert!(
+            links_of(&dir, &text).is_empty(),
+            "generated region must not feed link extraction"
+        );
     }
 
     #[test]
     fn test_extract_links_excludes_http() {
-        let content = "See [Example](https://example.com).";
         let dir = temp_dir("extract_http");
-        // No files exist, so even if links were extracted they'd be filtered out.
-        let result = extract_links(&dir, content, &no_bundles());
-        let empty: Vec<String> = vec![];
-        assert_eq!(result, empty);
+        let text = page_text("Page", "", "See [Example](https://e.com/x.md).");
+        assert!(links_of(&dir, &text).is_empty());
     }
 
     #[test]
     fn test_extract_links_deduplicates() {
-        let content = "See [Foo](foo.md) and `foo.md`.";
         let dir = temp_dir("extract_dedup");
-        write(&dir.join("foo.md"), "# Foo");
-        let result = extract_links(&dir, content, &no_bundles());
-        assert_eq!(result, vec!["foo.md"]);
+        write_page(&dir, "foo.md", "Foo");
+        let text = page_text("Page", "", "See [Foo](foo.md) and `foo.md`.");
+        assert_eq!(links_of(&dir, &text), vec!["foo.md"]);
     }
 
     #[test]
     fn test_extract_links_sorted() {
-        let content = "See [Zed](z.md), [Alpha](a.md).";
         let dir = temp_dir("extract_sorted");
-        write(&dir.join("a.md"), "# A");
-        write(&dir.join("z.md"), "# Z");
-        let result = extract_links(&dir, content, &no_bundles());
-        assert_eq!(result, vec!["a.md", "z.md"]);
+        write_page(&dir, "a.md", "A");
+        write_page(&dir, "z.md", "Z");
+        let text = page_text("Page", "", "See [Zed](z.md), [Alpha](a.md).");
+        assert_eq!(links_of(&dir, &text), vec!["a.md", "z.md"]);
     }
 
     // -------------------------------------------------------------------
-    // 3a. extract_links from sources field
+    // extract_links — typed metadata
     // -------------------------------------------------------------------
 
     #[test]
-    fn test_extract_links_from_sources_bare_paths() {
-        let content = "---\nsources:\n  - alpha.md\n  - beta.md\n---\n\nBody.";
-        let dir = temp_dir("extract_sources_bare");
-        write(&dir.join("alpha.md"), "# Alpha");
-        write(&dir.join("beta.md"), "# Beta");
-        let result = extract_links(&dir, content, &no_bundles());
-        assert_eq!(result, vec!["alpha.md", "beta.md"]);
+    fn test_extract_links_from_sources() {
+        let dir = temp_dir("extract_sources");
+        write_page(&dir, "alpha.md", "Alpha");
+        write_page(&dir, "beta.md", "Beta");
+        let extra = "sources:\n  - alpha.md\n  - \"[Beta](beta.md)\"\n";
+        let text = page_text("Page", extra, "Body.");
+        assert_eq!(links_of(&dir, &text), vec!["alpha.md", "beta.md"]);
     }
 
     #[test]
-    fn test_extract_links_from_sources_markdown_links() {
-        let content = "---\nsources:\n  - \"[Alpha](alpha.md)\"\n  - \"[Beta](beta.md)\"\n---\n\nBody.";
-        let dir = temp_dir("extract_sources_mdlink");
-        write(&dir.join("alpha.md"), "# Alpha");
-        write(&dir.join("beta.md"), "# Beta");
-        let result = extract_links(&dir, content, &no_bundles());
-        assert_eq!(result, vec!["alpha.md", "beta.md"]);
-    }
-
-    // -------------------------------------------------------------------
-    // 3b. extract_links from supersedes / superseded_by / contradictions
-    // -------------------------------------------------------------------
-
-    #[test]
-    fn test_extract_links_from_supersedes_fields() {
-        let content = "\
----\n\
-supersedes:\n\
-  - path: old.md\n\
-    reason: replaced by newer\n\
-superseded_by:\n\
-  - path: newer.md\n\
-    reason: successor\n\
-contradictions:\n\
-  - path: other.md\n\
-    claims:\n\
-      - something\n\
-    detected: 2026-07-01\n\
-    resolution: unresolved\n\
----\n\n\
-Body.";
-        let dir = temp_dir("extract_supersedes");
-        write(&dir.join("old.md"), "# Old");
-        write(&dir.join("newer.md"), "# Newer");
-        write(&dir.join("other.md"), "# Other");
-        let result = extract_links(&dir, content, &no_bundles());
-        assert_eq!(result, vec!["newer.md", "old.md", "other.md"]);
+    fn test_extract_links_from_nested_relation_fields() {
+        let dir = temp_dir("extract_relations");
+        write_page(&dir, "old.md", "Old");
+        write_page(&dir, "newer.md", "Newer");
+        write_page(&dir, "other.md", "Other");
+        let extra = "\
+supersedes:
+  - path: old.md
+    reason: replaced by newer
+superseded_by:
+  - path: newer.md
+    reason: successor
+contradictions:
+  - path: other.md
+    claims:
+      - something
+    detected: 2026-07-01
+    resolution: unresolved
+";
+        let text = page_text("Page", extra, "Body.");
+        assert_eq!(
+            links_of(&dir, &text),
+            vec!["newer.md", "old.md", "other.md"]
+        );
     }
 
     #[test]
-    fn test_extract_links_from_supersedes_missing_target_filtered() {
-        // Use inline-list syntax to test filtering of nonexistent targets.
-        // The parser stores each `path: <value>` string as-is.
-        let content = "---\nsupersedes: [path: existing.md, path: missing.md]\n---\n\nBody.";
-        let dir = temp_dir("extract_supersedes_filtered");
-        write(&dir.join("existing.md"), "# Existing");
-        let result = extract_links(&dir, content, &no_bundles());
-        assert_eq!(result, vec!["existing.md"]);
+    fn test_extract_links_from_relations_filters_missing_target() {
+        let dir = temp_dir("extract_relations_missing");
+        write_page(&dir, "existing.md", "Existing");
+        let extra = "supersedes:\n  - path: existing.md\n    reason: r\n  - path: missing.md\n    reason: r\n";
+        let text = page_text("Page", extra, "Body.");
+        assert_eq!(links_of(&dir, &text), vec!["existing.md"]);
     }
 
     #[test]
-    fn test_extract_links_from_supersedes_empty() {
-        let content = "---\nsupersedes: []\nsuperseded_by: []\ncontradictions: []\n---\n\nBody.";
-        let dir = temp_dir("extract_supersedes_empty");
-        write(&dir.join("dummy.md"), "# Dummy");
-        let result = extract_links(&dir, content, &no_bundles());
-        let empty: Vec<String> = vec![];
-        assert_eq!(result, empty);
+    fn test_extract_links_from_empty_relations() {
+        let dir = temp_dir("extract_relations_empty");
+        write_page(&dir, "dummy.md", "Dummy");
+        let extra = "\
+sources: []
+supersedes: []
+superseded_by: []
+contradictions: []
+";
+        let text = page_text("Page", extra, "Body.");
+        assert!(links_of(&dir, &text).is_empty());
     }
 
     // -------------------------------------------------------------------
@@ -921,29 +704,31 @@ Body.";
     #[test]
     fn test_build_reverse_index_simple() {
         let dir = temp_dir("rev_simple");
+        write_page(&dir, "b.md", "B");
         let pages = vec![
             make_page(
                 &dir,
                 "concepts/a.md",
-                "---\n---\n\n# A\n\nSee [B](b.md).",
+                &page_text("A", "", "See [B](b.md)."),
             ),
-            make_page(&dir, "concepts/b.md", "# B\n\nNo links."),
+            make_page(&dir, "concepts/b.md", &page_text("B", "", "No links.")),
         ];
-        write(&dir.join("b.md"), "# B"); // b.md at root for target validation
         let index = build_reverse_index(&dir, &pages, &no_bundles());
-        assert_eq!(index.len(), 1);
-        assert!(index.contains_key("b.md"));
-        let sources = &index["b.md"];
-        assert_eq!(sources.len(), 1);
-        assert_eq!(sources[0], "concepts/a.md");
+        assert_eq!(
+            index,
+            HashMap::from([(
+                "b.md".to_string(),
+                vec!["concepts/a.md".to_string()]
+            )])
+        );
     }
 
     #[test]
     fn test_build_reverse_index_no_links() {
         let dir = temp_dir("rev_no_links");
         let pages = vec![
-            make_page(&dir, "a.md", "# A"),
-            make_page(&dir, "b.md", "# B"),
+            make_page(&dir, "a.md", &page_text("A", "", "No links.")),
+            make_page(&dir, "b.md", &page_text("B", "", "No links.")),
         ];
         let index = build_reverse_index(&dir, &pages, &no_bundles());
         assert!(index.is_empty());
@@ -952,199 +737,303 @@ Body.";
     #[test]
     fn test_build_reverse_index_self_links_ignored() {
         let dir = temp_dir("rev_self");
-        write(&dir.join("a.md"), "# A");
-        let a_content = "See [A](a.md).";
-        let pages = vec![make_page(&dir, "a.md", a_content)];
+        let pages = vec![make_page(
+            &dir,
+            "a.md",
+            &page_text("A", "", "See [A](a.md)."),
+        )];
         let index = build_reverse_index(&dir, &pages, &no_bundles());
-        // Self-links are still valid — a.md links to itself
-        assert_eq!(index.len(), 1);
-        assert!(index.contains_key("a.md"));
+        assert_eq!(
+            index,
+            HashMap::from([("a.md".to_string(), vec!["a.md".to_string()])])
+        );
     }
 
     #[test]
     fn test_build_reverse_index_bidirectional() {
         let dir = temp_dir("rev_bi");
-        write(&dir.join("a.md"), "# A");
-        write(&dir.join("b.md"), "# B");
         let pages = vec![
-            make_page(&dir, "a.md", "See [B](b.md)."),
-            make_page(&dir, "b.md", "See [A](a.md)."),
+            make_page(&dir, "a.md", &page_text("A", "", "See [B](b.md).")),
+            make_page(&dir, "b.md", &page_text("B", "", "See [A](a.md).")),
         ];
         let index = build_reverse_index(&dir, &pages, &no_bundles());
-        assert_eq!(index.len(), 2);
-        assert!(index.contains_key("a.md"));
-        assert!(index.contains_key("b.md"));
         assert_eq!(index["a.md"], vec!["b.md"]);
         assert_eq!(index["b.md"], vec!["a.md"]);
     }
 
+    #[test]
+    fn test_build_reverse_index_uses_loaded_document() {
+        let dir = temp_dir("rev_loaded_doc");
+        write_page(&dir, "target.md", "Target");
+        // The file on disk has no links; the loaded document does.  The
+        // index must follow the document instead of reading the file again.
+        let mut page =
+            make_page(&dir, "a.md", &page_text("A", "", "No links."));
+        page.document = document(&page_text("A", "", "See [T](target.md)."));
+
+        let index = build_reverse_index(&dir, &[page], &no_bundles());
+        assert_eq!(index["target.md"], vec!["a.md"]);
+    }
+
     // -------------------------------------------------------------------
-    // format_backlinks_section
+    // format_backlinks_content
     // -------------------------------------------------------------------
 
     #[test]
-    fn test_format_backlinks_section_basic() {
+    fn test_format_backlinks_content_lists_sources() {
         let dir = temp_dir("fmt_basic");
-        write(&dir.join("src.md"), "---\ntitle: Source Page\n---\n\nBody.");
+        write_page(&dir, "src.md", "Source Page");
+        let pages = vec![make_page(
+            &dir,
+            "src.md",
+            &page_text("Source Page", "", "Body."),
+        )];
         let sources = vec![String::from("src.md")];
-        let result = format_backlinks_section(
-            &dir,
-            "target.md",
+        let content = format_backlinks_content(
             &sources,
             &no_bundles(),
+            &title_map(&pages),
         );
-        assert!(result.starts_with("## Backlinks"));
-        assert!(result.contains("> 此节由 zwiki 自动维护，请勿手动编辑。"));
-        assert!(result.contains("Source Page"));
-        assert!(result.contains("(src.md)"));
+        assert_eq!(
+            content,
+            "> 此节由 zwiki 自动维护，请勿手动编辑。\n\n- [Source Page](src.md)"
+        );
     }
 
     #[test]
-    fn test_format_backlinks_section_multiple_sources() {
-        let dir = temp_dir("fmt_multiple");
-        write(&dir.join("a.md"), "---\ntitle: Page A\n---\n\nBody.");
-        write(&dir.join("b.md"), "---\ntitle: Page B\n---\n\nBody.");
-        let sources = vec![String::from("a.md"), String::from("b.md")];
-        let result = format_backlinks_section(
+    fn test_format_backlinks_content_uses_bundle_relative_link() {
+        let dir = temp_dir("fmt_bundle");
+        write_bundle_manifest(&dir, "core");
+        write_page(&dir, "core/docs/a.md", "Page A");
+        let bundles = wiki::BundleSet::discover(&dir);
+        let pages = vec![make_page(
             &dir,
-            "target.md",
-            &sources,
-            &no_bundles(),
-        );
-        assert!(result.contains("Page A"));
-        assert!(result.contains("Page B"));
-        assert!(result.contains("(a.md)"));
-        assert!(result.contains("(b.md)"));
-    }
-
-    // -------------------------------------------------------------------
-    // find_insertion_point
-    // -------------------------------------------------------------------
-
-    #[test]
-    fn test_find_insertion_point_after_details() {
+            "core/docs/a.md",
+            &page_text("Page A", "", "Body."),
+        )];
+        let sources = vec![String::from("core/docs/a.md")];
         let content =
-            "# Title\n\n## Details\n\nStuff.\n\n## References\n\n- bar.md";
-        let point = find_insertion_point(content);
-        assert!(point.is_some());
-        let pos = point.unwrap();
-        assert!(pos > content.find("## Details").unwrap());
-        assert!(pos <= content.find("## References").unwrap_or(content.len()));
-    }
-
-    #[test]
-    fn test_find_insertion_point_before_references() {
-        let content = "# Title\n\n## References\n\n- bar.md";
-        let point = find_insertion_point(content);
-        assert!(point.is_some());
-        let pos = point.unwrap();
-        assert_eq!(pos, content.find("## References").unwrap());
-    }
-
-    #[test]
-    fn test_find_insertion_point_no_anchor() {
-        let content = "# Title\n\nJust text.";
-        assert!(find_insertion_point(content).is_none());
+            format_backlinks_content(&sources, &bundles, &title_map(&pages));
+        assert!(
+            content.ends_with("- [Page A](docs/a.md)"),
+            "link must be bundle-relative: {content}"
+        );
     }
 
     // -------------------------------------------------------------------
     // update_backlinks
     // -------------------------------------------------------------------
 
-    #[test]
-    fn test_update_backlinks_adds_new_section() {
-        let dir = temp_dir("update_add");
-        let page = make_page(
-            &dir,
-            "target.md",
-            "---\ntitle: Target\n---\n\n# Target\n\n## Details\n\nBody.",
-        );
-        write(&dir.join("foo.md"), "# Foo");
-        let pages = vec![page];
-        let mut index = HashMap::new();
-        index.insert("target.md".to_string(), vec!["foo.md".to_string()]);
-        let updated =
-            update_backlinks(&dir, &index, &pages, &no_bundles(), false);
-        assert_eq!(updated, 1);
-
-        let content = fs::read_to_string(dir.join("target.md")).unwrap();
-        assert!(content.contains("## Backlinks"));
-        assert!(content.contains("> 此节由 zwiki 自动维护，请勿手动编辑。"));
-        assert!(content.contains("Foo"));
+    fn index_of(rel: &str, sources: &[&str]) -> HashMap<String, Vec<String>> {
+        HashMap::from([(
+            rel.to_string(),
+            sources.iter().map(|s| (*s).to_string()).collect(),
+        )])
     }
 
     #[test]
-    fn test_update_backlinks_no_anchor_skips_page() {
+    fn test_update_backlinks_places_region_without_anchors() {
         let dir = temp_dir("update_no_anchor");
-        let original = "---\ntitle: Target\n---\n\n# Target\n\nBody.";
-        let page = make_page(&dir, "target.md", original);
-        write(&dir.join("foo.md"), "# Foo");
-        let pages = vec![page];
-        let mut index = HashMap::new();
-        index.insert("target.md".to_string(), vec!["foo.md".to_string()]);
-
-        let updated =
-            update_backlinks(&dir, &index, &pages, &no_bundles(), false);
-
-        assert_eq!(updated, 0);
-        let content = fs::read_to_string(dir.join("target.md")).unwrap();
-        assert_eq!(content, original);
-        assert!(!content.contains("## Backlinks"));
-    }
-
-    #[test]
-    fn test_update_backlinks_updates_existing_section() {
-        let dir = temp_dir("update_existing");
+        write_page(&dir, "foo.md", "Foo");
         let page = make_page(
             &dir,
             "target.md",
-            "---\ntitle: Target\n---\n\n# Target\n\n## Details\n\nBody.\n\n\
-             ## Backlinks\n\n- [Old](old.md)\n\nOutro.",
+            &page_text("Target", "", "# Target\n\nBody."),
         );
-        write(&dir.join("foo.md"), "# Foo");
-        write(&dir.join("new.md"), "---\ntitle: New Source\n---\n\nBody.");
-        let pages = vec![page];
-        let mut index = HashMap::new();
-        index.insert(
-            "target.md".to_string(),
-            vec!["foo.md".to_string(), "new.md".to_string()],
-        );
-        let updated =
-            update_backlinks(&dir, &index, &pages, &no_bundles(), false);
+        let updated = update_backlinks(
+            &index_of("target.md", &["foo.md"]),
+            &titles_of(&dir),
+            &[page],
+            &no_bundles(),
+        )
+        .expect("update");
         assert_eq!(updated, 1);
 
-        let content = fs::read_to_string(dir.join("target.md")).unwrap();
-        assert!(content.contains("New Source"));
-        assert!(!content.contains("Old"));
+        let text = fs::read_to_string(dir.join("target.md")).unwrap();
+        let stored = document(&text);
+        assert_eq!(
+            stored.body.author(),
+            "# Target\n\nBody.",
+            "author text stays untouched"
+        );
+        assert_eq!(
+            stored.body.backlinks().unwrap(),
+            "> 此节由 zwiki 自动维护，请勿手动编辑。\n\n- [Foo](foo.md)"
+        );
     }
 
     #[test]
-    fn test_update_backlinks_removes_stale_section() {
+    fn test_update_backlinks_places_region_before_references() {
+        let dir = temp_dir("update_before_refs");
+        write_page(&dir, "foo.md", "Foo");
+        let page = make_page(
+            &dir,
+            "target.md",
+            &page_text(
+                "Target",
+                "",
+                "# Target\n\nIntro.\n\n## References\n\n- `bar.md`",
+            ),
+        );
+        let updated = update_backlinks(
+            &index_of("target.md", &["foo.md"]),
+            &titles_of(&dir),
+            &[page],
+            &no_bundles(),
+        )
+        .expect("update");
+        assert_eq!(updated, 1);
+
+        let text = fs::read_to_string(dir.join("target.md")).unwrap();
+        let stored = document(&text);
+        assert!(stored.body.backlinks().is_some());
+        assert_eq!(
+            stored.body.author(),
+            "# Target\n\nIntro.\n\n## References\n\n- `bar.md`"
+        );
+        let backlinks_at = text.find("## Backlinks").unwrap();
+        let references_at = text.find("## References").unwrap();
+        assert!(backlinks_at < references_at);
+    }
+
+    #[test]
+    fn test_update_backlinks_replaces_existing_region() {
+        let dir = temp_dir("update_existing");
+        write_page(&dir, "foo.md", "Foo");
+        write_page(&dir, "new.md", "New Source");
+        let page = make_page(
+            &dir,
+            "target.md",
+            &page_text(
+                "Target",
+                "",
+                "# Target\n\n## Backlinks\n\n- [Old](old.md)",
+            ),
+        );
+        let updated = update_backlinks(
+            &index_of("target.md", &["foo.md", "new.md"]),
+            &titles_of(&dir),
+            &[page],
+            &no_bundles(),
+        )
+        .expect("update");
+        assert_eq!(updated, 1);
+
+        let text = fs::read_to_string(dir.join("target.md")).unwrap();
+        let stored = document(&text);
+        assert_eq!(
+            stored.body.author(),
+            "# Target",
+            "the old region belongs to the model, not the author"
+        );
+        assert_eq!(
+            stored.body.backlinks().unwrap(),
+            "> 此节由 zwiki 自动维护，请勿手动编辑。\n\n\
+             - [Foo](foo.md)\n- [New Source](new.md)"
+        );
+    }
+
+    #[test]
+    fn test_update_backlinks_removes_stale_region() {
         let dir = temp_dir("update_remove");
         let page = make_page(
             &dir,
             "target.md",
-            "---\ntitle: Target\n---\n\n# Target\n\n## Backlinks\n\n- [Old](old.md)\n\nBody.",
+            &page_text(
+                "Target",
+                "",
+                "# Target\n\n## Backlinks\n\n- [Old](old.md)",
+            ),
         );
-        let pages = vec![page];
-        let index: HashMap<String, Vec<String>> = HashMap::new();
-        let updated =
-            update_backlinks(&dir, &index, &pages, &no_bundles(), false);
+        let updated = update_backlinks(
+            &HashMap::new(),
+            &titles_of(&dir),
+            &[page],
+            &no_bundles(),
+        )
+        .expect("update");
         assert_eq!(updated, 1);
 
-        let content = fs::read_to_string(dir.join("target.md")).unwrap();
-        assert!(!content.contains("## Backlinks"));
+        let text = fs::read_to_string(dir.join("target.md")).unwrap();
+        assert!(!text.contains("## Backlinks"));
+        assert_eq!(document(&text).body.author(), "# Target");
     }
 
     #[test]
-    fn test_update_backlinks_no_inbound_no_section_noop() {
+    fn test_update_backlinks_skips_page_without_changes() {
         let dir = temp_dir("update_noop");
-        let page = make_page(&dir, "target.md", "# Target\n\nBody.");
-        let pages = vec![page];
-        let index: HashMap<String, Vec<String>> = HashMap::new();
-        let updated =
-            update_backlinks(&dir, &index, &pages, &no_bundles(), false);
+        // A rewrite must not touch a page that needs no change.
+        let text = "---\nstatus: draft\ntimeliness: current\ntitle: Target\n\
+                    type: concept\ntags: []\n\
+                    last_validated: 2026-07-01T00:00:00Z\n---\n\n\
+                    # Target\n\nBody.\n";
+        let page = make_page(&dir, "target.md", text);
+        let updated = update_backlinks(
+            &HashMap::new(),
+            &titles_of(&dir),
+            &[page],
+            &no_bundles(),
+        )
+        .expect("update");
         assert_eq!(updated, 0);
+        assert_eq!(
+            fs::read_to_string(dir.join("target.md")).unwrap(),
+            text,
+            "a page without changes must not be written"
+        );
+    }
+
+    #[test]
+    fn test_update_backlinks_is_idempotent() {
+        let dir = temp_dir("update_idempotent");
+        write_page(&dir, "foo.md", "Foo");
+        let text = page_text("Target", "", "# Target\n\nBody.");
+        make_page(&dir, "target.md", &text);
+        let index = index_of("target.md", &["foo.md"]);
+
+        let first = {
+            let pages = vec![make_page(&dir, "target.md", &text)];
+            update_backlinks(&index, &titles_of(&dir), &pages, &no_bundles())
+                .expect("first update")
+        };
+        assert_eq!(first, 1);
+        let after_first = fs::read_to_string(dir.join("target.md")).unwrap();
+
+        let pages = vec![make_page(&dir, "target.md", &after_first)];
+        let second =
+            update_backlinks(&index, &titles_of(&dir), &pages, &no_bundles())
+                .expect("second update");
+        assert_eq!(second, 0);
+        assert_eq!(
+            fs::read_to_string(dir.join("target.md")).unwrap(),
+            after_first
+        );
+    }
+
+    #[test]
+    fn test_update_backlinks_reports_write_error() {
+        let dir = temp_dir("update_write_error");
+        write_page(&dir, "foo.md", "Foo");
+        let page = make_page(
+            &dir,
+            "target.md",
+            &page_text("Target", "", "# Target\n\nBody."),
+        );
+        // The atomic writer stores through a `target.md.tmp` sibling; a
+        // directory at that path rejects the write.
+        fs::create_dir(dir.join("target.md.tmp")).unwrap();
+
+        let error = update_backlinks(
+            &index_of("target.md", &["foo.md"]),
+            &titles_of(&dir),
+            &[page],
+            &no_bundles(),
+        )
+        .expect_err("a rejected write must fail the update");
+        assert!(
+            error.contains("target.md"),
+            "error must name the page: {error}"
+        );
     }
 
     // -------------------------------------------------------------------
@@ -1153,7 +1042,6 @@ Body.";
 
     #[test]
     fn test_is_valid_wiki_target_finds_bundle_file() {
-        // Simulate a bundle structure: wiki_root/core/shared/concepts/foo.md
         let dir = temp_dir("bundle_valid");
         write_bundle_manifest(&dir, "core");
         write(
@@ -1161,7 +1049,6 @@ Body.";
             "# Foo",
         );
         let bundles = wiki::BundleSet::discover(&dir);
-        // Target is bundle-relative: "shared/concepts/foo.md"
         assert!(is_valid_wiki_target(&dir, "shared/concepts/foo.md", &bundles));
     }
 
@@ -1186,7 +1073,6 @@ Body.";
     #[test]
     fn test_is_valid_wiki_target_bundle_nonexistent_rejected() {
         let dir = temp_dir("bundle_nonexistent");
-        // No files at all
         let bundles = wiki::BundleSet::discover(&dir);
         assert!(!is_valid_wiki_target(
             &dir,
@@ -1198,8 +1084,6 @@ Body.";
     #[test]
     fn test_is_valid_wiki_target_ignores_manifest_dir_without_manifest() {
         let dir = temp_dir("bundle_no_manifest");
-        // A directory without bundle.toml is not a bundle, so a target that
-        // only exists there is invalid.
         write(&dir.join("core").join("shared").join("foo.md"), "# Foo");
         let bundles = wiki::BundleSet::discover(&dir);
         assert_eq!(bundles.names().count(), 0);
@@ -1214,32 +1098,28 @@ Body.";
     fn test_build_reverse_index_bundle_structure() {
         let dir = temp_dir("rev_bundle");
         write_bundle_manifest(&dir, "core");
-        // Create pages inside the core bundle
-        let page_a = make_page(
-            &dir,
-            "core/shared/concepts/a.md",
-            "---\ntitle: Page A\n---\n# A\n\nSee [B](shared/concepts/b.md).",
-        );
-        let page_b =
-            make_page(&dir, "core/shared/concepts/b.md", "# B\n\nNo links.");
-        let pages = vec![page_a, page_b];
+        let pages = vec![
+            make_page(
+                &dir,
+                "core/shared/concepts/a.md",
+                &page_text("Page A", "", "See [B](shared/concepts/b.md)."),
+            ),
+            make_page(
+                &dir,
+                "core/shared/concepts/b.md",
+                &page_text("Page B", "", "No links."),
+            ),
+        ];
         let bundles = wiki::BundleSet::discover(&dir);
         let index = build_reverse_index(&dir, &pages, &bundles);
-        // Key should be the full page.rel, not the bundle-relative path.
         assert_eq!(
-            index.len(),
-            1,
-            "reverse index should have 1 entry (page b has 1 backlink from a)"
+            index,
+            HashMap::from([(
+                "core/shared/concepts/b.md".to_string(),
+                vec!["core/shared/concepts/a.md".to_string()]
+            )]),
+            "keys use the full page.rel form"
         );
-        let key = "core/shared/concepts/b.md";
-        assert!(
-            index.contains_key(key),
-            "reverse index key should be full page.rel '{key}', got keys: {:?}",
-            index.keys().collect::<Vec<_>>(),
-        );
-        let sources = &index[key];
-        assert_eq!(sources.len(), 1);
-        assert_eq!(sources[0], "core/shared/concepts/a.md");
     }
 
     // -------------------------------------------------------------------
@@ -1277,116 +1157,44 @@ Body.";
 
     #[test]
     fn test_build_reverse_index_multi_bundle_collision() {
-        // Two bundles with the same bundle-relative path:
-        //   core/shared/concepts/target.md
-        //   other/shared/concepts/target.md
-        // Both target.md pages are included in `pages`, so their
-        // bundle-relative paths are in rel_map.
-        // A page linking to "shared/concepts/target.md" should produce
-        // backlinks for BOTH full page.rel values.
         let dir = temp_dir("rev_multi_bundle");
         write_bundle_manifest(&dir, "core");
         write_bundle_manifest(&dir, "other");
-        // Two target pages sharing the same bundle-relative path
-        let target_core = make_page(
-            &dir,
-            "core/shared/concepts/target.md",
-            "# Target Core\n\nNo links.",
-        );
-        let target_other = make_page(
-            &dir,
-            "other/shared/concepts/target.md",
-            "# Target Other\n\nNo links.",
-        );
-        // A linking page that references the shared path
-        let link_source = make_page(
-            &dir,
-            "core/docs/link_source.md",
-            "---\ntitle: Link Source\n---\n\n# Link Source\n\nLinks to [target](shared/concepts/target.md).",
-        );
-        let pages = vec![target_core, target_other, link_source];
+        let pages = vec![
+            make_page(
+                &dir,
+                "core/shared/concepts/target.md",
+                &page_text("Target Core", "", "No links."),
+            ),
+            make_page(
+                &dir,
+                "other/shared/concepts/target.md",
+                &page_text("Target Other", "", "No links."),
+            ),
+            make_page(
+                &dir,
+                "core/docs/link_source.md",
+                &page_text(
+                    "Link Source",
+                    "",
+                    "Links to [target](shared/concepts/target.md).",
+                ),
+            ),
+        ];
         let bundles = wiki::BundleSet::discover(&dir);
         let index = build_reverse_index(&dir, &pages, &bundles);
 
-        // Both bundle-specific targets should have a backlink from link_source
-        let key_core = "core/shared/concepts/target.md";
-        let key_other = "other/shared/concepts/target.md";
-
-        assert!(
-            index.contains_key(key_core),
-            "expected key '{key_core}' in reverse index, got keys: {:?}",
-            index.keys().collect::<Vec<_>>(),
-        );
-        assert!(
-            index.contains_key(key_other),
-            "expected key '{key_other}' in reverse index, got keys: {:?}",
-            index.keys().collect::<Vec<_>>(),
-        );
-
-        let source_rel = "core/docs/link_source.md";
-        assert!(
-            index[key_core].contains(&source_rel.to_string()),
-            "expected {key_core} backlinks to include {source_rel}, got: {:?}",
-            index[key_core],
-        );
-        assert!(
-            index[key_other].contains(&source_rel.to_string()),
-            "expected {key_other} backlinks to include {source_rel}, got: {:?}",
-            index[key_other],
-        );
-
-        // Also verify neither target backlinks to itself
+        let source = "core/docs/link_source.md".to_string();
         assert_eq!(
-            index[key_core].len(),
-            1,
-            "target_core should have 1 backlink"
-        );
-        assert_eq!(
-            index[key_other].len(),
-            1,
-            "target_other should have 1 backlink"
-        );
-    }
-
-    // -------------------------------------------------------------------
-    // update_backlinks — single newline edge case
-    // -------------------------------------------------------------------
-
-    #[test]
-    fn test_update_backlinks_remove_single_newline_pre() {
-        // When the content before ## Backlinks ends with a single \n
-        // (no blank line separator), the removal should still produce
-        // exactly 2 \n (1 blank line) before the next section — not 3 \n.
-        let dir = temp_dir("update_single_nl");
-        let page = make_page(
-            &dir,
-            "target.md",
-            "---\ntitle: Target\n---\n\
-             # Target\n\n\
-             ## Details\n\nContent here.\n\
-             ## Backlinks\n\n- [Old](old.md)\n\n\
-             ## References\n\n- bar.md",
-        );
-        let pages = vec![page];
-        let index: HashMap<String, Vec<String>> = HashMap::new();
-        let updated =
-            update_backlinks(&dir, &index, &pages, &no_bundles(), false);
-        assert_eq!(updated, 1);
-
-        let content = fs::read_to_string(dir.join("target.md")).unwrap();
-        assert!(!content.contains("## Backlinks"));
-        // There should be exactly one blank line before ## References
-        // Content before Backlinks: "# Target\n\n## Details\n\nContent here.\n"
-        // After removal + trim: "# Target\n\n## Details\n\nContent here.\n\n## References\n\n- bar.md"
-        // That means 2 \n between "Content here." and "## References"
-        assert!(
-            content.contains("\n\n## References"),
-            "Expected single blank line before ## References, got content: {content:?}",
-        );
-        // Verify there are NOT 3 \n before ## References
-        assert!(
-            !content.contains("\n\n\n## References"),
-            "Expected NO double blank line before ## References, got content: {content:?}",
+            index,
+            HashMap::from([
+                (
+                    "core/shared/concepts/target.md".to_string(),
+                    vec![source.clone()]
+                ),
+                ("other/shared/concepts/target.md".to_string(), vec![source]),
+            ]),
+            "both bundle-specific targets get the referrer"
         );
     }
 
@@ -1415,142 +1223,62 @@ Body.";
     }
 
     // -------------------------------------------------------------------
-    // build_backlinks_for — equivalence with build_reverse_index + filter
+    // page_title_from_rel
     // -------------------------------------------------------------------
 
-    fn setup_backlinks_pages(dir: &Path) -> Vec<PathBuf> {
-        // Page A links to target.md via an inline link.
-        write(
-            &dir.join("page_a.md"),
-            "---
-title: Page A
-type: concept
-timestamp: 2026-07-01T00:00:00Z
-tags: []
-status: draft
-last_validated: 2026-07-01T00:00:00Z
-timeliness: current
----
-
-# Page A
-
-See also [Target](target.md) for details.",
+    #[test]
+    fn test_page_title_from_rel_reads_frontmatter_title() {
+        let dir = temp_dir("title_frontmatter");
+        write_page(&dir, "page.md", "Frontmatter Title");
+        assert_eq!(
+            page_title_from_rel("page.md", &dir).expect("title"),
+            "Frontmatter Title"
         );
-        // Page B links to target.md via backtick.
-        write(
-            &dir.join("page_b.md"),
-            "---
-title: Page B
-type: concept
-timestamp: 2026-07-01T00:00:00Z
-tags: []
-status: draft
-last_validated: 2026-07-01T00:00:00Z
-timeliness: current
----
-
-# Page B
-
-Refer to `target.md` for the canonical definition.",
-        );
-        // Page C links to other.md (not target).
-        write(
-            &dir.join("page_c.md"),
-            "---
-title: Page C
-type: concept
-timestamp: 2026-07-01T00:00:00Z
-tags: []
-status: draft
-last_validated: 2026-07-01T00:00:00Z
-timeliness: current
----
-
-# Page C
-
-See [Other](other.md).",
-        );
-        // target.md itself.
-        write(
-            &dir.join("target.md"),
-            "---
-title: Target
-type: concept
-timestamp: 2026-07-01T00:00:00Z
-tags: []
-status: draft
-last_validated: 2026-07-01T00:00:00Z
-timeliness: current
----
-
-# Target
-
-Body.",
-        );
-        // other.md — referenced but no one links to target.
-        write(
-            &dir.join("other.md"),
-            "---
-title: Other
-type: concept
-timestamp: 2026-07-01T00:00:00Z
-tags: []
-status: draft
-last_validated: 2026-07-01T00:00:00Z
-timeliness: current
----
-
-# Other
-
-Body.",
-        );
-
-        vec![
-            dir.join("page_a.md"),
-            dir.join("page_b.md"),
-            dir.join("page_c.md"),
-            dir.join("target.md"),
-            dir.join("other.md"),
-        ]
     }
 
     #[test]
-    fn test_build_backlinks_for_matches_full_index() {
-        let dir = temp_dir("backlinks_for");
-        setup_backlinks_pages(&dir);
-        let paths = discover_pages_backlinks(&dir);
-        let pages: Vec<wiki::Page> =
-            paths.iter().filter_map(|p| wiki::read_page_at(p, &dir)).collect();
-
-        // Full reverse index.
-        let full = build_reverse_index(&dir, &pages, &no_bundles());
-
-        // Filtered: target.md
-        let filtered = {
-            let mut m = HashMap::new();
-            if let Some(srcs) = full.get("target.md") {
-                m.insert("target.md".to_string(), srcs.clone());
-            }
-            m
-        };
-
-        // Single-target function.
-        let single =
-            build_backlinks_for("target.md", &dir, &pages, &no_bundles());
-
+    fn test_page_title_from_rel_falls_back_to_stem() {
+        let dir = temp_dir("title_stem");
+        write(&dir.join("no-title.md"), "---\ntype: concept\n---\n\nBody.\n");
         assert_eq!(
-            filtered, single,
-            "build_backlinks_for should match filtered full index"
+            page_title_from_rel("no-title.md", &dir).expect("title"),
+            "No Title"
         );
+    }
 
-        // Verify page C and other.md do NOT appear.
-        let sources = single.get("target.md");
-        assert!(sources.is_some(), "target.md should have sources");
-        let srcs = sources.unwrap();
-        assert!(srcs.contains(&"page_a.md".to_string()));
-        assert!(srcs.contains(&"page_b.md".to_string()));
-        assert!(!srcs.contains(&"page_c.md".to_string()));
-        assert!(!srcs.contains(&"other.md".to_string()));
+    #[test]
+    fn test_page_title_from_rel_reports_missing_file() {
+        let dir = temp_dir("title_missing");
+        assert!(page_title_from_rel("missing.md", &dir).is_err());
+    }
+
+    // -------------------------------------------------------------------
+    // build_backlinks_for — equivalence with build_reverse_index + filter
+    // -------------------------------------------------------------------
+
+    fn setup_backlinks_pages(dir: &Path) {
+        write_page(dir, "target.md", "Target");
+        write_page(dir, "other.md", "Other");
+        write(
+            &dir.join("page_a.md"),
+            &page_text(
+                "Page A",
+                "",
+                "See also [Target](target.md) for details.",
+            ),
+        );
+        write(
+            &dir.join("page_b.md"),
+            &page_text(
+                "Page B",
+                "",
+                "Refer to `target.md` for the definition.",
+            ),
+        );
+        write(
+            &dir.join("page_c.md"),
+            &page_text("Page C", "", "See [Other](other.md)."),
+        );
     }
 
     fn discover_pages_backlinks(base: &Path) -> Vec<PathBuf> {
@@ -1568,40 +1296,61 @@ Body.",
     }
 
     #[test]
+    fn test_build_backlinks_for_matches_full_index() {
+        let dir = temp_dir("backlinks_for");
+        setup_backlinks_pages(&dir);
+        let paths = discover_pages_backlinks(&dir);
+        let pages: Vec<wiki::Page> = paths
+            .iter()
+            .map(|p| wiki::read_page_at(p, &dir).expect("valid page"))
+            .collect();
+
+        let full = build_reverse_index(&dir, &pages, &no_bundles());
+        let single =
+            build_backlinks_for("target.md", &dir, &pages, &no_bundles());
+
+        assert_eq!(
+            HashMap::from([(
+                "target.md".to_string(),
+                full["target.md"].clone()
+            )]),
+            single
+        );
+        assert_eq!(
+            single["target.md"],
+            vec!["page_a.md".to_string(), "page_b.md".to_string()]
+        );
+    }
+
+    #[test]
     fn test_build_backlinks_for_nonexistent_target() {
         let dir = temp_dir("backlinks_for_nonexist");
         setup_backlinks_pages(&dir);
         let paths = discover_pages_backlinks(&dir);
-        let pages: Vec<wiki::Page> =
-            paths.iter().filter_map(|p| wiki::read_page_at(p, &dir)).collect();
-
+        let pages: Vec<wiki::Page> = paths
+            .iter()
+            .map(|p| wiki::read_page_at(p, &dir).expect("valid page"))
+            .collect();
         let result =
             build_backlinks_for("nonexistent.md", &dir, &pages, &no_bundles());
-        assert!(
-            result.is_empty(),
-            "nonexistent target should have no backlinks"
-        );
+        assert!(result.is_empty());
     }
 
     #[test]
     fn test_build_backlinks_for_no_references() {
         let dir = temp_dir("backlinks_for_noref");
-        // Page A links to target.md; the query asks about other.md.
         write(
             &dir.join("page_a.md"),
-            "---
-title: Page A
-type: concept
----
-
-See [Target](target.md).",
+            &page_text("Page A", "", "See [Target](target.md)."),
         );
+        write_page(&dir, "target.md", "Target");
         let paths = discover_pages_backlinks(&dir);
-        let pages: Vec<wiki::Page> =
-            paths.iter().filter_map(|p| wiki::read_page_at(p, &dir)).collect();
-
+        let pages: Vec<wiki::Page> = paths
+            .iter()
+            .map(|p| wiki::read_page_at(p, &dir).expect("valid page"))
+            .collect();
         let result =
-            build_backlinks_for("other.md", &dir, &pages, &no_bundles());
-        assert!(result.is_empty(), "other.md has no references");
+            build_backlinks_for("target.md", &dir, &pages, &no_bundles());
+        assert_eq!(result["target.md"], vec!["page_a.md".to_string()]);
     }
 }

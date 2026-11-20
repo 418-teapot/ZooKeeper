@@ -5,16 +5,15 @@
 //! body = 1.
 
 use std::cmp::Reverse;
-use std::path::{Path, PathBuf};
+use std::collections::HashSet;
+use std::path::PathBuf;
 use std::process;
 
 use std::fmt::Write;
 
-use serde::Serialize;
-use serde_json::Value;
-
-use crate::contradictions::{self, ContradictionEntry};
+use crate::contradictions::ContradictionEntry;
 use crate::wiki;
+use serde::Serialize;
 
 // ---------------------------------------------------------------------------
 // Data structures
@@ -62,28 +61,41 @@ impl SearchEngine {
     /// to in-process scanning if `rg` is unavailable or fails unexpectedly.
     /// rg exit code 1 (no matches) is handled as an empty candidate set,
     /// not an error.
+    ///
+    /// # Errors
+    ///
+    /// Fails when any page cannot be loaded, naming its path.
     pub fn search(
         &self,
         query: &str,
         type_filter: Option<&str>,
         tag_filter: Option<&str>,
         domain_filter: Option<&str>,
-    ) -> Vec<SearchResult> {
+    ) -> Result<Vec<SearchResult>, String> {
         if query.is_empty() {
-            return Vec::new();
+            return Ok(Vec::new());
         }
+
+        let set = wiki::PageSet::load(&self.wiki_root);
+        let pages = set.require_all()?;
 
         // Attempt rg-based candidate detection.
         let candidates = match self.try_rg_candidates(query) {
             Ok(paths) => paths,
             Err(()) => self.in_process_candidates(query),
         };
-
-        // Score and filter candidates.
-        let mut results: Vec<SearchResult> = candidates
+        let candidate_rels: HashSet<String> = candidates
             .iter()
-            .filter_map(|path| score_page(path, &self.wiki_root, query))
-            .filter(|r| r.score > 0)
+            .filter_map(|path| path.strip_prefix(&self.wiki_root).ok())
+            .map(|rel| rel.to_string_lossy().to_string())
+            .collect();
+
+        // Score and filter the candidate pages of the snapshot.
+        let mut results: Vec<SearchResult> = pages
+            .iter()
+            .filter(|page| candidate_rels.contains(&page.rel))
+            .map(|page| score_page(page, query))
+            .filter(|result| result.score > 0)
             .collect();
 
         // Apply post-score filters (on frontmatter fields that require
@@ -108,7 +120,7 @@ impl SearchEngine {
         // Sort by score descending.  Stable sort preserves doc-order for
         // ties (alphabetical by rel path from page iteration).
         results.sort_by_key(|r| Reverse(r.score));
-        results
+        Ok(results)
     }
 
     /// Attempt to find candidate files using `rg`.
@@ -169,47 +181,27 @@ impl SearchEngine {
 // ---------------------------------------------------------------------------
 
 /// Score a single page for the given query.
-///
-/// Returns `None` if the page cannot be read.
-fn score_page(
-    path: &Path,
-    wiki_root: &Path,
-    query: &str,
-) -> Option<SearchResult> {
-    let page = wiki::read_page_at(path, wiki_root)?;
+fn score_page(page: &wiki::Page, query: &str) -> SearchResult {
     let query_lower = query.to_lowercase();
+    let metadata = &page.document.metadata;
+    let body = page.document.body.author();
 
     let mut score: usize = 0;
 
     // 1. Title match (weight 4).
-    if let Some(title_val) =
-        page.frontmatter.get("title").and_then(|v| v.as_str())
-        && title_val.to_lowercase().contains(&query_lower)
-    {
+    if metadata.title.to_lowercase().contains(&query_lower) {
         score += 4;
     }
 
     // 2. Tags match (weight 3 per matching tag).
-    if let Some(tags_val) = page.frontmatter.get("tags") {
-        match tags_val {
-            Value::Array(arr) => {
-                for v in arr {
-                    if let Some(tag) = v.as_str()
-                        && tag.to_lowercase().contains(&query_lower)
-                    {
-                        score += 3;
-                    }
-                }
-            }
-            Value::String(s) if s.to_lowercase().contains(&query_lower) => {
-                score += 3;
-            }
-            _ => {}
+    for tag in &metadata.tags {
+        if tag.to_lowercase().contains(&query_lower) {
+            score += 3;
         }
     }
 
     // 3. Heading match (weight 2 per heading line).
-    for line in page.body.lines() {
+    for line in body.lines() {
         let trimmed = line.trim();
         if trimmed.starts_with('#')
             && line.to_lowercase().contains(&query_lower)
@@ -219,42 +211,26 @@ fn score_page(
     }
 
     // 4. Body match (weight 1 per occurrence).
-    let body_lower = page.body.to_lowercase();
+    let body_lower = body.to_lowercase();
     let body_count = count_substrings(&body_lower, &query_lower);
     score += body_count;
 
-    // Extract contradiction entries from the already-read raw content.
-    let contradictions = contradictions::parse_contradictions(&page.raw);
+    let contradictions = metadata
+        .contradictions
+        .clone()
+        .unwrap_or_default()
+        .into_iter()
+        .map(ContradictionEntry::from)
+        .collect();
 
-    // Extract display fields.
-    let title =
-        page.frontmatter.get("title").and_then(|v| v.as_str()).map_or_else(
-            || {
-                // Fallback: filename stem.
-                page.path
-                    .file_stem()
-                    .and_then(|s| s.to_str())
-                    .unwrap_or("")
-                    .to_string()
-            },
-            ToString::to_string,
-        );
-    let page_type = page
-        .frontmatter
-        .get("type")
-        .and_then(|v| v.as_str())
-        .unwrap_or("")
-        .to_string();
-    let tags = wiki::extract_tags(&page.frontmatter);
-
-    Some(SearchResult {
-        path: page.rel,
-        title,
+    SearchResult {
+        path: page.rel.clone(),
+        title: metadata.title.clone(),
         score,
-        page_type,
-        tags,
+        page_type: metadata.page_type.clone(),
+        tags: metadata.tags.clone(),
         contradictions,
-    })
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -375,11 +351,12 @@ mod tests {
             "score_title",
             &[(
                 "concepts/test.md",
-                "---\ntitle: Permission System\ntype: concept\ntags: [auth]\n---\n\n# Test\n\nBody about foo.",
+                "---\ntitle: Permission System\ntype: concept\ntags: [auth]\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n\n# Test\n\nBody about foo.",
             )],
         );
         // "Permission" matches title -> +4, nothing else.
-        let results = engine.search("Permission", None, None, None);
+        let results =
+            engine.search("Permission", None, None, None).expect("valid pages");
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].score, 4);
     }
@@ -390,11 +367,12 @@ mod tests {
             "score_tag",
             &[(
                 "concepts/test.md",
-                "---\ntitle: Foo\ntype: concept\ntags: [auth, permission, access]\n---\n\n# Test\n\nBody.",
+                "---\ntitle: Foo\ntype: concept\ntags: [auth, permission, access]\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n\n# Test\n\nBody.",
             )],
         );
         // "mission" matches "permission" tag -> +3.
-        let results = engine.search("mission", None, None, None);
+        let results =
+            engine.search("mission", None, None, None).expect("valid pages");
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].score, 3);
     }
@@ -405,11 +383,12 @@ mod tests {
             "score_tag_multi",
             &[(
                 "concepts/test.md",
-                "---\ntitle: Foo\ntype: concept\ntags: [auth-tag, perm-tag]\n---\n\n# Test\n\nBody.",
+                "---\ntitle: Foo\ntype: concept\ntags: [auth-tag, perm-tag]\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n\n# Test\n\nBody.",
             )],
         );
         // "tag" matches both tags -> +3 +3 = +6.
-        let results = engine.search("tag", None, None, None);
+        let results =
+            engine.search("tag", None, None, None).expect("valid pages");
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].score, 6);
     }
@@ -420,12 +399,13 @@ mod tests {
             "score_heading",
             &[(
                 "concepts/test.md",
-                "---\ntitle: Foo\ntype: concept\ntags: []\n---\n\n# Intro\n\n## Permission Overview\n\nBody.",
+                "---\ntitle: Foo\ntype: concept\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n\n# Intro\n\n## Permission Overview\n\nBody.",
             )],
         );
         // "Permission" matches heading -> +2.  The heading text is also
         // part of body, so body count adds +1.  Total: 3.
-        let results = engine.search("Permission", None, None, None);
+        let results =
+            engine.search("Permission", None, None, None).expect("valid pages");
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].score, 3);
     }
@@ -436,12 +416,13 @@ mod tests {
             "score_heading_multi",
             &[(
                 "concepts/test.md",
-                "---\ntitle: Foo\ntype: concept\ntags: []\n---\n\n# Intro\n\n## Permission One\n\n## Permission Two\n\nBody.",
+                "---\ntitle: Foo\ntype: concept\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n\n# Intro\n\n## Permission One\n\n## Permission Two\n\nBody.",
             )],
         );
         // Two headings match -> +2 +2 = +4.  Each heading line is also
         // in the body, so body count adds +2.  Total: 6.
-        let results = engine.search("Permission", None, None, None);
+        let results =
+            engine.search("Permission", None, None, None).expect("valid pages");
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].score, 6);
     }
@@ -452,11 +433,12 @@ mod tests {
             "score_body",
             &[(
                 "concepts/test.md",
-                "---\ntitle: Foo\ntype: concept\ntags: []\n---\n\n# Test\n\nThe permission system handles access control.",
+                "---\ntitle: Foo\ntype: concept\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n\n# Test\n\nThe permission system handles access control.",
             )],
         );
         // "permission" appears once in body -> +1.
-        let results = engine.search("permission", None, None, None);
+        let results =
+            engine.search("permission", None, None, None).expect("valid pages");
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].score, 1);
     }
@@ -467,11 +449,12 @@ mod tests {
             "score_body_multi",
             &[(
                 "concepts/test.md",
-                "---\ntitle: Foo\ntype: concept\ntags: []\n---\n\n# Test\n\npermission one. permission two. permission three.",
+                "---\ntitle: Foo\ntype: concept\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n\n# Test\n\npermission one. permission two. permission three.",
             )],
         );
         // "permission" appears three times -> +3.
-        let results = engine.search("permission", None, None, None);
+        let results =
+            engine.search("permission", None, None, None).expect("valid pages");
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].score, 3);
     }
@@ -482,7 +465,7 @@ mod tests {
             "score_all",
             &[(
                 "concepts/test.md",
-                "---\ntitle: Permission System\ntype: concept\ntags: [permissions, auth]\n---\n\n# Intro\n\n## Permission Overview\n\nThis page describes the permission system.",
+                "---\ntitle: Permission System\ntype: concept\ntags: [permissions, auth]\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n\n# Intro\n\n## Permission Overview\n\nThis page describes the permission system.",
             )],
         );
         // title "Permission" -> +4
@@ -490,7 +473,8 @@ mod tests {
         // heading: "## Permission Overview" -> +2
         // body: "permission" appears in heading (1) and body (1) -> +2
         // Total: 4 + 3 + 2 + 2 = 11
-        let results = engine.search("mission", None, None, None);
+        let results =
+            engine.search("mission", None, None, None).expect("valid pages");
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].score, 11);
     }
@@ -505,10 +489,11 @@ mod tests {
             "ci_title",
             &[(
                 "concepts/test.md",
-                "---\ntitle: Permission System\ntype: concept\ntags: []\n---\n\nBody.",
+                "---\ntitle: Permission System\ntype: concept\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n\nBody.",
             )],
         );
-        let results = engine.search("permission", None, None, None);
+        let results =
+            engine.search("permission", None, None, None).expect("valid pages");
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].score, 4);
     }
@@ -519,10 +504,11 @@ mod tests {
             "ci_tags",
             &[(
                 "concepts/test.md",
-                "---\ntitle: Foo\ntype: concept\ntags: [AuthZ]\n---\n\nBody.",
+                "---\ntitle: Foo\ntype: concept\ntags: [AuthZ]\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n\nBody.",
             )],
         );
-        let results = engine.search("authz", None, None, None);
+        let results =
+            engine.search("authz", None, None, None).expect("valid pages");
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].score, 3);
     }
@@ -533,10 +519,11 @@ mod tests {
             "ci_body",
             &[(
                 "concepts/test.md",
-                "---\ntitle: Foo\ntype: concept\ntags: []\n---\n\nPERMISSION is IMPORTANT.",
+                "---\ntitle: Foo\ntype: concept\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n\nPERMISSION is IMPORTANT.",
             )],
         );
-        let results = engine.search("permission", None, None, None);
+        let results =
+            engine.search("permission", None, None, None).expect("valid pages");
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].score, 1);
     }
@@ -551,14 +538,15 @@ mod tests {
             "accum_tag_body",
             &[(
                 "concepts/test.md",
-                "---\ntitle: Foo\ntype: concept\ntags: [test-tag]\n---\n\n# Test\n\ntest-tag is mentioned. Also test-tag again.",
+                "---\ntitle: Foo\ntype: concept\ntags: [test-tag]\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n\n# Test\n\ntest-tag is mentioned. Also test-tag again.",
             )],
         );
         // tags: "test-tag" matches "test" -> +3
         // heading: "# Test" matches "test" -> +2
         // body: "test" appears in heading (1) + "test-tag" (2) -> +3
         // Total: 3 + 2 + 3 = 8
-        let results = engine.search("test", None, None, None);
+        let results =
+            engine.search("test", None, None, None).expect("valid pages");
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].score, 8);
     }
@@ -574,15 +562,17 @@ mod tests {
             &[
                 (
                     "concepts/perm.md",
-                    "---\ntitle: Permission\ntype: concept\ntags: []\n---\n\nBody about permission.",
+                    "---\ntitle: Permission\ntype: concept\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n\nBody about permission.",
                 ),
                 (
                     "entities/perm.md",
-                    "---\ntitle: Permission Entity\ntype: entity\ntags: []\n---\n\nBody.",
+                    "---\ntitle: Permission Entity\ntype: entity\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n\nBody.",
                 ),
             ],
         );
-        let results = engine.search("permission", Some("concept"), None, None);
+        let results = engine
+            .search("permission", Some("concept"), None, None)
+            .expect("valid pages");
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].page_type, "concept");
     }
@@ -593,10 +583,12 @@ mod tests {
             "type_ci",
             &[(
                 "concepts/perm.md",
-                "---\ntitle: Permission\ntype: concept\ntags: []\n---\n\nBody.",
+                "---\ntitle: Permission\ntype: concept\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n\nBody.",
             )],
         );
-        let results = engine.search("permission", Some("Concept"), None, None);
+        let results = engine
+            .search("permission", Some("Concept"), None, None)
+            .expect("valid pages");
         assert_eq!(results.len(), 1);
     }
 
@@ -606,10 +598,12 @@ mod tests {
             "type_no_match",
             &[(
                 "concepts/perm.md",
-                "---\ntitle: Permission\ntype: concept\ntags: []\n---\n\nBody.",
+                "---\ntitle: Permission\ntype: concept\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n\nBody.",
             )],
         );
-        let results = engine.search("permission", Some("entity"), None, None);
+        let results = engine
+            .search("permission", Some("entity"), None, None)
+            .expect("valid pages");
         assert_eq!(results.len(), 0);
     }
 
@@ -624,15 +618,17 @@ mod tests {
             &[
                 (
                     "concepts/perm.md",
-                    "---\ntitle: Permission\ntype: concept\ntags: [auth, access]\n---\n\nBody.",
+                    "---\ntitle: Permission\ntype: concept\ntags: [auth, access]\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n\nBody.",
                 ),
                 (
                     "concepts/foo.md",
-                    "---\ntitle: Foo\ntype: concept\ntags: [misc]\n---\n\nBody.",
+                    "---\ntitle: Foo\ntype: concept\ntags: [misc]\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n\nBody.",
                 ),
             ],
         );
-        let results = engine.search("permission", None, Some("auth"), None);
+        let results = engine
+            .search("permission", None, Some("auth"), None)
+            .expect("valid pages");
         assert_eq!(results.len(), 1);
     }
 
@@ -642,10 +638,12 @@ mod tests {
             "tag_substr",
             &[(
                 "concepts/perm.md",
-                "---\ntitle: Permission\ntype: concept\ntags: [access-control]\n---\n\nBody.",
+                "---\ntitle: Permission\ntype: concept\ntags: [access-control]\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n\nBody.",
             )],
         );
-        let results = engine.search("permission", None, Some("access"), None);
+        let results = engine
+            .search("permission", None, Some("access"), None)
+            .expect("valid pages");
         assert_eq!(results.len(), 1);
     }
 
@@ -655,10 +653,12 @@ mod tests {
             "tag_no_match",
             &[(
                 "concepts/perm.md",
-                "---\ntitle: Permission\ntype: concept\ntags: [auth]\n---\n\nBody.",
+                "---\ntitle: Permission\ntype: concept\ntags: [auth]\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n\nBody.",
             )],
         );
-        let results = engine.search("permission", None, Some("database"), None);
+        let results = engine
+            .search("permission", None, Some("database"), None)
+            .expect("valid pages");
         assert_eq!(results.len(), 0);
     }
 
@@ -668,10 +668,12 @@ mod tests {
             "tag_ci",
             &[(
                 "concepts/perm.md",
-                "---\ntitle: Permission\ntype: concept\ntags: [Access]\n---\n\nBody.",
+                "---\ntitle: Permission\ntype: concept\ntags: [Access]\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n\nBody.",
             )],
         );
-        let results = engine.search("permission", None, Some("access"), None);
+        let results = engine
+            .search("permission", None, Some("access"), None)
+            .expect("valid pages");
         assert_eq!(results.len(), 1);
     }
 
@@ -686,21 +688,22 @@ mod tests {
             &[
                 (
                     "concepts/perm.md",
-                    "---\ntitle: Permission\ntype: concept\ntags: [auth]\n---\n\nBody.",
+                    "---\ntitle: Permission\ntype: concept\ntags: [auth]\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n\nBody.",
                 ),
                 (
                     "entities/perm.md",
-                    "---\ntitle: Permission Entity\ntype: entity\ntags: [auth]\n---\n\nBody.",
+                    "---\ntitle: Permission Entity\ntype: entity\ntags: [auth]\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n\nBody.",
                 ),
                 (
                     "concepts/noauth.md",
-                    "---\ntitle: No Auth\ntype: concept\ntags: [misc]\n---\n\nBody.",
+                    "---\ntitle: No Auth\ntype: concept\ntags: [misc]\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n\nBody.",
                 ),
             ],
         );
         // Only concept pages with auth tag.
-        let results =
-            engine.search("permission", Some("concept"), Some("auth"), None);
+        let results = engine
+            .search("permission", Some("concept"), Some("auth"), None)
+            .expect("valid pages");
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].page_type, "concept");
     }
@@ -716,15 +719,17 @@ mod tests {
             &[
                 (
                     "shared/concepts/perm.md",
-                    "---\ntitle: Permission\ntype: concept\ntags: []\n---\n\nBody.",
+                    "---\ntitle: Permission\ntype: concept\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n\nBody.",
                 ),
                 (
                     "autoresearch/concepts/perm.md",
-                    "---\ntitle: Permission\ntype: concept\ntags: []\n---\n\nBody.",
+                    "---\ntitle: Permission\ntype: concept\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n\nBody.",
                 ),
             ],
         );
-        let results = engine.search("permission", None, None, Some("shared"));
+        let results = engine
+            .search("permission", None, None, Some("shared"))
+            .expect("valid pages");
         assert_eq!(results.len(), 1);
         assert!(results[0].path.starts_with("shared/"));
     }
@@ -735,10 +740,12 @@ mod tests {
             "domain_ci",
             &[(
                 "Shared/concepts/perm.md",
-                "---\ntitle: Permission\ntype: concept\ntags: []\n---\n\nBody.",
+                "---\ntitle: Permission\ntype: concept\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n\nBody.",
             )],
         );
-        let results = engine.search("permission", None, None, Some("shared"));
+        let results = engine
+            .search("permission", None, None, Some("shared"))
+            .expect("valid pages");
         assert_eq!(results.len(), 1);
     }
 
@@ -748,11 +755,12 @@ mod tests {
             "domain_no_match",
             &[(
                 "shared/concepts/perm.md",
-                "---\ntitle: Permission\ntype: concept\ntags: []\n---\n\nBody.",
+                "---\ntitle: Permission\ntype: concept\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n\nBody.",
             )],
         );
-        let results =
-            engine.search("permission", None, None, Some("autoresearch"));
+        let results = engine
+            .search("permission", None, None, Some("autoresearch"))
+            .expect("valid pages");
         assert_eq!(results.len(), 0);
     }
 
@@ -766,10 +774,11 @@ mod tests {
             "result_fields",
             &[(
                 "concepts/test.md",
-                "---\ntitle: My Page\ntype: analysis\ntags: [tag1, tag2]\n---\n\nBody.",
+                "---\ntitle: My Page\ntype: analysis\ntags: [tag1, tag2]\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n\nBody.",
             )],
         );
-        let results = engine.search("Body", None, None, None);
+        let results =
+            engine.search("Body", None, None, None).expect("valid pages");
         assert_eq!(results.len(), 1);
         assert!(results[0].path.ends_with("concepts/test.md"));
         assert_eq!(results[0].title, "My Page");
@@ -787,11 +796,12 @@ mod tests {
             "no_match",
             &[(
                 "concepts/foo.md",
-                "---\ntitle: Foo\ntype: concept\ntags: []\n---\n\nNothing here.",
+                "---\ntitle: Foo\ntype: concept\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n\nNothing here.",
             )],
         );
-        let results =
-            engine.search("nonexistent_query_xyz123", None, None, None);
+        let results = engine
+            .search("nonexistent_query_xyz123", None, None, None)
+            .expect("valid pages");
         assert!(results.is_empty());
     }
 
@@ -801,10 +811,10 @@ mod tests {
             "empty_query",
             &[(
                 "concepts/foo.md",
-                "---\ntitle: Foo\ntype: concept\ntags: []\n---\n\nBody.",
+                "---\ntitle: Foo\ntype: concept\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n\nBody.",
             )],
         );
-        let results = engine.search("", None, None, None);
+        let results = engine.search("", None, None, None).expect("valid pages");
         assert!(results.is_empty());
     }
 
@@ -873,15 +883,16 @@ mod tests {
             &[
                 (
                     "low.md",
-                    "---\ntitle: Low Match\ntype: concept\ntags: []\n---\n\npermission appears once in body only.",
+                    "---\ntitle: Low Match\ntype: concept\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n\npermission appears once in body only.",
                 ),
                 (
                     "high.md",
-                    "---\ntitle: Permission Title\ntype: concept\ntags: [permission]\n---\n\npermission body.",
+                    "---\ntitle: Permission Title\ntype: concept\ntags: [permission]\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n\npermission body.",
                 ),
             ],
         );
-        let results = engine.search("permission", None, None, None);
+        let results =
+            engine.search("permission", None, None, None).expect("valid pages");
         assert_eq!(results.len(), 2);
         // high.md: title(4) + tag(3) + body(1) = 8
         // low.md: body(1) = 1
@@ -901,15 +912,16 @@ mod tests {
             &[
                 (
                     "concepts/a.md",
-                    "---\ntitle: Alpha\ntype: concept\ntags: []\n---\n\nTarget word here.",
+                    "---\ntitle: Alpha\ntype: concept\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n\nTarget word here.",
                 ),
                 (
                     "concepts/b.md",
-                    "---\ntitle: Beta\ntype: concept\ntags: []\n---\n\nNothing.",
+                    "---\ntitle: Beta\ntype: concept\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n\nNothing.",
                 ),
             ],
         );
-        let results = engine.search("Target", None, None, None);
+        let results =
+            engine.search("Target", None, None, None).expect("valid pages");
         assert_eq!(results.len(), 1);
         assert!(results[0].path.ends_with("concepts/a.md"));
     }
@@ -927,6 +939,9 @@ mod tests {
             "title: Page A\n",
             "type: concept\n",
             "tags: []\n",
+            "status: draft\n",
+            "last_validated: 2026-07-01T00:00:00Z\n",
+            "timeliness: current\n",
             "contradictions:\n",
             "  - path: shared/page-b.md\n",
             "    claims:\n",
@@ -935,27 +950,18 @@ mod tests {
             "    resolution: unresolved\n",
             "---\n\nBody of page A."
         );
-        // Verify parse_contradictions works on this content.
-        let parsed = contradictions::parse_contradictions(page_a_content);
-        assert_eq!(
-            parsed.len(),
-            1,
-            "parse_contradictions should find 1 entry, got {}. Content: {:?}",
-            parsed.len(),
-            page_a_content
-        );
-
         let (engine, _) = setup_engine(
             "search_contradictions",
             &[
                 ("shared/page-a.md", page_a_content),
                 (
                     "shared/page-b.md",
-                    "---\ntitle: Page B\ntype: concept\ntags: []\n---\n\nBody about page B.",
+                    "---\ntitle: Page B\ntype: concept\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n\nBody about page B.",
                 ),
             ],
         );
-        let results = engine.search("Body", None, None, None);
+        let results =
+            engine.search("Body", None, None, None).expect("valid pages");
         // Both pages match "Body".
         assert_eq!(results.len(), 2);
 

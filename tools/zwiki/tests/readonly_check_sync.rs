@@ -198,12 +198,11 @@ fn walk(
 }
 
 #[test]
-fn test_check_json_suppresses_sync_warnings() {
-    let root = temp_dir("check_json_no_warnings");
+fn test_check_places_backlinks_without_old_anchors() {
+    let root = temp_dir("check_backlinks_no_anchors");
     common::write_bundle_manifest(&root);
     std::fs::create_dir_all(root.join("concepts")).unwrap();
-    // The link target has no `## Details` / `## References` anchor, so a
-    // plain check warns that the Backlinks section cannot be inserted.
+    // Neither page carries a `## Details` / `## References` anchor.
     std::fs::write(
         root.join("concepts/target.md"),
         page("Target", "Some body text."),
@@ -215,25 +214,57 @@ fn test_check_json_suppresses_sync_warnings() {
     )
     .unwrap();
 
-    // Plain run surfaces the warning on stderr.
     let plain = Command::new(env!("CARGO_BIN_EXE_zwiki"))
         .args(["--root", root.to_string_lossy().as_ref(), "check"])
         .output()
         .expect("run zwiki check");
     let plain_stderr = String::from_utf8_lossy(&plain.stderr);
     assert!(
-        plain_stderr.contains("警告"),
-        "plain check should warn about the missing anchor: {plain_stderr}"
+        plain_stderr.contains("已同步 1 个页面的反向链接"),
+        "plain check should report the sync: {plain_stderr}"
     );
 
-    // JSON run suppresses the warning on stderr.
+    // The generated region sits at the end of the body, with no invented
+    // anchor section.
+    let synced = std::fs::read_to_string(root.join("concepts/target.md"))
+        .expect("read target");
+    assert!(
+        synced.contains("## Backlinks"),
+        "backlinks region should be written: {synced}"
+    );
+    assert!(
+        synced.contains("- [Linker](concepts/linker.md)"),
+        "backlinks region should list the referrer: {synced}"
+    );
+    assert!(
+        !synced.contains("## Details") && !synced.contains("## References"),
+        "check must not invent an anchor section: {synced}"
+    );
+
+    // A second run finds nothing to write.
+    let again = Command::new(env!("CARGO_BIN_EXE_zwiki"))
+        .args(["--root", root.to_string_lossy().as_ref(), "check"])
+        .output()
+        .expect("run zwiki check again");
+    let again_stderr = String::from_utf8_lossy(&again.stderr);
+    assert!(
+        !again_stderr.contains("已同步"),
+        "an unchanged sync must not rewrite pages: {again_stderr}"
+    );
+
+    // JSON mode keeps the informational sync messages off stderr.
     let json = Command::new(env!("CARGO_BIN_EXE_zwiki"))
         .args(["--root", root.to_string_lossy().as_ref(), "check", "--json"])
         .output()
         .expect("run zwiki check --json");
     let json_stderr = String::from_utf8_lossy(&json.stderr);
     assert!(
-        !json_stderr.contains("警告"),
-        "json check must not emit warnings on stderr: {json_stderr}"
+        !json_stderr.contains("已同步"),
+        "json check must not emit sync messages on stderr: {json_stderr}"
+    );
+    let json_stdout = String::from_utf8_lossy(&json.stdout);
+    assert!(
+        json_stdout.contains("\"derived_metadata_sync\": \"synced\""),
+        "json check should report the sync state: {json_stdout}"
     );
 }

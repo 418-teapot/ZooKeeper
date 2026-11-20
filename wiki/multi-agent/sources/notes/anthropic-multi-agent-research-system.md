@@ -4,7 +4,12 @@ description: Anthropic 关于 Research 多 agent 架构、协作 prompt、评估
 type: source
 timestamp: 2026-09-14T02:14:29Z
 resource: https://www.anthropic.com/engineering/multi-agent-research-system
-tags: [multi-agent, agent-orchestration, prompt-engineering, evaluation, anthropic]
+tags:
+  - multi-agent
+  - agent-orchestration
+  - prompt-engineering
+  - evaluation
+  - anthropic
 status: stable
 last_validated: 2026-09-14T02:14:29Z
 timeliness: current

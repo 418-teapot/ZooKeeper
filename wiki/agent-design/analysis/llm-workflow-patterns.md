@@ -3,7 +3,14 @@ title: LLM Workflow 模式
 description: Prompt chaining、routing、parallelization、orchestrator-workers 和 evaluator-optimizer 五种可组合的 LLM workflow 控制结构。
 type: analysis
 timestamp: 2026-09-15T06:15:36Z
-tags: [agent-design, llm-workflow, prompt-chaining, routing, parallelization, orchestration, evaluation]
+tags:
+  - agent-design
+  - llm-workflow
+  - prompt-chaining
+  - routing
+  - parallelization
+  - orchestration
+  - evaluation
 sources:
   - agent-design/sources/notes/anthropic-building-effective-agents.md
 status: stable

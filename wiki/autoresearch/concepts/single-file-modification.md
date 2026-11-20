@@ -4,7 +4,10 @@ description: 在自主实验框架中 agent 只能修改单一文件 train.py，
 resource: https://github.com/karpathy/autoresearch
 type: concept
 timestamp: 2026-09-18T02:37:58Z
-tags: [autoresearch, scope-management, agent-constraint]
+tags:
+  - autoresearch
+  - scope-management
+  - agent-constraint
 status: stable
 last_validated: 2026-06-19T00:00:00Z
 timeliness: current

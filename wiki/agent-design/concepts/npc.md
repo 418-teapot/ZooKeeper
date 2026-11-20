@@ -4,7 +4,10 @@ description: 人类扮演"游戏设计师"编写 NPC 行为脚本，AI agent 扮
 resource: https://github.com/karpathy/autoresearch
 type: concept
 timestamp: 2026-09-18T02:37:58Z
-tags: [autoresearch, human-agent-division, skill-pattern]
+tags:
+  - autoresearch
+  - human-agent-division
+  - skill-pattern
 status: stable
 last_validated: 2026-06-19T00:00:00Z
 timeliness: current

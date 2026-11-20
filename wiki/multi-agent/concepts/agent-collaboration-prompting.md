@@ -3,7 +3,12 @@ title: Agent 协作的 prompt 与工具设计
 description: 通过明确委派契约、按复杂度分配工作量、工具启发式和反馈循环控制多 agent 协作行为。
 type: concept
 timestamp: 2026-09-14T02:14:29Z
-tags: [multi-agent, prompt-engineering, tool-design, delegation, evaluation]
+tags:
+  - multi-agent
+  - prompt-engineering
+  - tool-design
+  - delegation
+  - evaluation
 status: stable
 last_validated: 2026-09-16T01:55:38Z
 timeliness: current

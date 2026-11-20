@@ -4,7 +4,11 @@ description: Andrej Karpathy 发布的让 AI agent 在单 GPU 上自主进行 LL
 type: source
 timestamp: 2026-09-18T02:37:58Z
 resource: https://github.com/karpathy/autoresearch
-tags: [autoresearch, ai-agent, llm-training, research-automation]
+tags:
+  - autoresearch
+  - ai-agent
+  - llm-training
+  - research-automation
 status: stable
 last_validated: 2026-06-19T00:00:00Z
 timeliness: current

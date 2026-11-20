@@ -4,7 +4,10 @@ description: 定期让 LLM 扫描 wiki 结构并建议修正，检测矛盾、�
 resource: https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f
 type: concept
 timestamp: 2026-09-18T02:37:58Z
-tags: [wiki, maintenance, quality]
+tags:
+  - wiki
+  - maintenance
+  - quality
 status: stable
 last_validated: 2026-06-18T00:00:00Z
 timeliness: current

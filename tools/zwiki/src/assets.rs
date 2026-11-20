@@ -27,6 +27,7 @@ pub fn template(page_type: &str) -> Option<&'static str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use zwiki::document::PageDocument;
 
     #[test]
     fn test_template_covers_every_declared_type() {
@@ -38,9 +39,75 @@ mod tests {
         }
     }
 
+    /// Every template is a complete page, and rendering it changes no byte,
+    /// so `template` shows the same text `page create` writes.
+    #[test]
+    fn test_template_renders_unchanged() {
+        for page_type in TEMPLATE_TYPES {
+            let content = template(page_type).expect("template");
+            let document = PageDocument::parse(content)
+                .unwrap_or_else(|e| panic!("{page_type}: {e}"));
+            assert_eq!(document.metadata.page_type, *page_type);
+            let rendered = document
+                .render()
+                .unwrap_or_else(|e| panic!("{page_type}: {e}"));
+            assert_eq!(rendered, content, "{page_type} drifts from the model");
+        }
+    }
+
+    #[test]
+    fn test_template_round_trip_is_idempotent() {
+        for page_type in TEMPLATE_TYPES {
+            let content = template(page_type).expect("template");
+            let once = PageDocument::parse(content)
+                .expect("parse")
+                .render()
+                .expect("render");
+            let twice = PageDocument::parse(&once)
+                .expect("reparse")
+                .render()
+                .expect("rerender");
+            assert_eq!(once, twice, "{page_type} is not idempotent");
+        }
+    }
+
     #[test]
     fn test_template_unknown_type_is_none() {
         assert!(template("nope").is_none());
+    }
+
+    /// The lifecycle guidance block belongs to the template contract:
+    /// `page create` fills the fields and keeps the guidance as written.
+    #[test]
+    fn test_template_keeps_the_lifecycle_guidance() {
+        for page_type in TEMPLATE_TYPES {
+            let content = template(page_type).expect("template");
+            assert!(
+                content.contains(
+                    "# 可选生命周期字段（按需取消注释填写，详见 SCHEMA.md）："
+                ),
+                "{page_type} lost the guidance comment"
+            );
+            assert!(content.contains("# supersedes:\n"), "{page_type}");
+            assert!(content.contains("# freshness_days: 90\n"), "{page_type}");
+        }
+    }
+
+    /// Guidance lines are comments, so they never become page fields.
+    #[test]
+    fn test_template_guidance_is_not_parsed_as_fields() {
+        for page_type in TEMPLATE_TYPES {
+            let content = template(page_type).expect("template");
+            let document =
+                PageDocument::parse(content).expect("template is a page");
+            let metadata = &document.metadata;
+
+            assert_eq!(metadata.supersedes, None, "{page_type}");
+            assert_eq!(metadata.superseded_by, None, "{page_type}");
+            assert_eq!(metadata.contradictions, None, "{page_type}");
+            assert_eq!(metadata.freshness_days, None, "{page_type}");
+            assert!(metadata.extensions.is_empty(), "{page_type}");
+        }
     }
 
     #[test]

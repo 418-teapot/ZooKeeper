@@ -57,6 +57,10 @@ impl AggregateField {
 ///
 /// All filters are optional and use AND semantics.  When a filter is
 /// provided, only pages matching that filter contribute to the counts.
+///
+/// # Errors
+///
+/// Fails when any page cannot be loaded, naming its path.
 pub fn aggregate_field(
     wiki_dir: &Path,
     field: AggregateField,
@@ -64,18 +68,15 @@ pub fn aggregate_field(
     tag_filter: Option<&str>,
     domain_filter: Option<&str>,
     bundles: &wiki::BundleSet,
-) -> BTreeMap<String, usize> {
-    let pages = wiki::discover_pages(wiki_dir);
+) -> Result<BTreeMap<String, usize>, String> {
+    let set = wiki::PageSet::load(wiki_dir);
+    let pages = set.require_all()?;
     let mut counts: BTreeMap<String, usize> = BTreeMap::new();
 
-    for path in &pages {
-        let Some(page) = wiki::read_page_at(path, wiki_dir) else {
-            continue;
-        };
-
+    for page in pages {
         // Apply slice filters (AND semantics).
         if !wiki::page_matches_slice(
-            &page,
+            page,
             type_filter,
             tag_filter,
             domain_filter,
@@ -84,23 +85,17 @@ pub fn aggregate_field(
             continue;
         }
 
-        // --- Aggregate target field ---
+        let metadata = &page.document.metadata;
 
         match field {
             AggregateField::Tags => {
-                let tags = wiki::extract_tags(&page.frontmatter);
-                for tag in tags {
-                    *counts.entry(tag).or_insert(0) += 1;
+                for tag in &metadata.tags {
+                    *counts.entry(tag.clone()).or_insert(0) += 1;
                 }
             }
             AggregateField::Types => {
-                // Skip pages without a type (consistent with status
-                // by_type skip-empty rule).
-                if let Some(t) =
-                    page.frontmatter.get("type").and_then(|v| v.as_str())
-                    && !t.is_empty()
-                {
-                    *counts.entry(t.to_string()).or_insert(0) += 1;
+                if !metadata.page_type.is_empty() {
+                    *counts.entry(metadata.page_type.clone()).or_insert(0) += 1;
                 }
             }
             AggregateField::Domains => {
@@ -114,7 +109,7 @@ pub fn aggregate_field(
         }
     }
 
-    counts
+    Ok(counts)
 }
 
 // ---------------------------------------------------------------------------
@@ -188,7 +183,8 @@ mod tests {
             None,
             None,
             &no_bundles(),
-        );
+        )
+        .expect("valid pages");
         assert!(counts.is_empty());
     }
 
@@ -202,17 +198,17 @@ mod tests {
         write_page(
             &dir,
             "shared/concepts/a.md",
-            "---\ntitle: A\ntype: concept\ntags: [auth]\n---\n",
+            "---\ntitle: A\ntype: concept\ntags: [auth]\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n",
         );
         write_page(
             &dir,
             "shared/concepts/b.md",
-            "---\ntitle: B\ntype: concept\ntags: [auth, access]\n---\n",
+            "---\ntitle: B\ntype: concept\ntags: [auth, access]\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n",
         );
         write_page(
             &dir,
             "shared/concepts/c.md",
-            "---\ntitle: C\ntype: entity\ntags: [database, access]\n---\n",
+            "---\ntitle: C\ntype: entity\ntags: [database, access]\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n",
         );
 
         let counts = aggregate_field(
@@ -222,7 +218,8 @@ mod tests {
             None,
             None,
             &no_bundles(),
-        );
+        )
+        .expect("valid pages");
         assert_eq!(counts.len(), 3);
         assert_eq!(counts.get("auth"), Some(&2_usize));
         assert_eq!(counts.get("access"), Some(&2_usize));
@@ -237,65 +234,47 @@ mod tests {
     // -------------------------------------------------------------------
 
     #[test]
-    fn test_tags_single_string_field() {
+    fn test_tags_single_string_field_fails() {
         let dir = temp_dir("tags_single_str");
         write_page(
             &dir,
             "shared/a.md",
-            "---\ntitle: A\ntype: concept\ntags: single-tag\n---\n",
+            "---\ntitle: A\ntype: concept\ntags: single-tag\n\
+             status: draft\nlast_validated: 2026-01-01\n\
+             timeliness: current\n---\n",
         );
-        write_page(
-            &dir,
-            "shared/b.md",
-            "---\ntitle: B\ntype: concept\ntags: [multi, tags]\n---\n",
-        );
-
-        let counts = aggregate_field(
+        let error = aggregate_field(
             &dir,
             AggregateField::Tags,
             None,
             None,
             None,
             &no_bundles(),
-        );
-        assert_eq!(counts.len(), 3);
-        assert_eq!(counts.get("single-tag"), Some(&1_usize));
-        assert_eq!(counts.get("multi"), Some(&1_usize));
-        assert_eq!(counts.get("tags"), Some(&1_usize));
+        )
+        .expect_err("a string tags field is not a string list");
+        assert!(error.contains("shared/a.md"), "{error}");
     }
 
-    // -------------------------------------------------------------------
-    // Tags: empty / missing tags field
-    // -------------------------------------------------------------------
-
     #[test]
-    fn test_tags_empty_field() {
+    fn test_tags_missing_field_fails() {
         let dir = temp_dir("tags_empty_field");
         write_page(
             &dir,
             "shared/a.md",
-            "---\ntitle: A\ntype: concept\ntags: []\n---\n",
+            "---\ntitle: A\ntype: concept\nstatus: draft\n\
+             last_validated: 2026-01-01\ntimeliness: current\n---\n",
         );
-        write_page(
-            &dir,
-            "shared/b.md",
-            "---\ntitle: B\ntype: entity\n---\n", // no tags field
-        );
-
-        let counts = aggregate_field(
+        let error = aggregate_field(
             &dir,
             AggregateField::Tags,
             None,
             None,
             None,
             &no_bundles(),
-        );
-        assert!(counts.is_empty());
+        )
+        .expect_err("a page without tags is not a valid page");
+        assert!(error.contains("shared/a.md"), "{error}");
     }
-
-    // -------------------------------------------------------------------
-    // Tags: type filter
-    // -------------------------------------------------------------------
 
     #[test]
     fn test_tags_type_filter() {
@@ -303,12 +282,12 @@ mod tests {
         write_page(
             &dir,
             "shared/concepts/a.md",
-            "---\ntitle: A\ntype: concept\ntags: [auth]\n---\n",
+            "---\ntitle: A\ntype: concept\ntags: [auth]\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n",
         );
         write_page(
             &dir,
             "shared/entities/b.md",
-            "---\ntitle: B\ntype: entity\ntags: [auth]\n---\n",
+            "---\ntitle: B\ntype: entity\ntags: [auth]\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n",
         );
 
         let counts = aggregate_field(
@@ -318,7 +297,8 @@ mod tests {
             None,
             None,
             &no_bundles(),
-        );
+        )
+        .expect("valid pages");
         assert_eq!(counts.len(), 1);
         assert_eq!(counts.get("auth"), Some(&1_usize));
     }
@@ -333,12 +313,12 @@ mod tests {
         write_page(
             &dir,
             "shared/concepts/a.md",
-            "---\ntitle: A\ntype: concept\ntags: [auth]\n---\n",
+            "---\ntitle: A\ntype: concept\ntags: [auth]\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n",
         );
         write_page(
             &dir,
             "autoresearch/concepts/b.md",
-            "---\ntitle: B\ntype: concept\ntags: [auth]\n---\n",
+            "---\ntitle: B\ntype: concept\ntags: [auth]\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n",
         );
 
         let counts = aggregate_field(
@@ -348,7 +328,8 @@ mod tests {
             None,
             Some("shared"),
             &no_bundles(),
-        );
+        )
+        .expect("valid pages");
         assert_eq!(counts.len(), 1);
         assert_eq!(counts.get("auth"), Some(&1_usize));
     }
@@ -363,17 +344,17 @@ mod tests {
         write_page(
             &dir,
             "shared/concepts/a.md",
-            "---\ntitle: A\ntype: concept\ntags: [auth]\n---\n",
+            "---\ntitle: A\ntype: concept\ntags: [auth]\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n",
         );
         write_page(
             &dir,
             "shared/entities/b.md",
-            "---\ntitle: B\ntype: entity\ntags: [auth]\n---\n",
+            "---\ntitle: B\ntype: entity\ntags: [auth]\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n",
         );
         write_page(
             &dir,
             "autoresearch/concepts/c.md",
-            "---\ntitle: C\ntype: concept\ntags: [auth]\n---\n",
+            "---\ntitle: C\ntype: concept\ntags: [auth]\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n",
         );
 
         // concept + shared: only page a should match.
@@ -384,7 +365,8 @@ mod tests {
             None,
             Some("shared"),
             &no_bundles(),
-        );
+        )
+        .expect("valid pages");
         assert_eq!(counts.len(), 1);
         assert_eq!(counts.get("auth"), Some(&1_usize));
     }
@@ -399,7 +381,7 @@ mod tests {
         write_page(
             &dir,
             "shared/a.md",
-            "---\ntitle: A\ntype: Concept\ntags: [auth]\n---\n",
+            "---\ntitle: A\ntype: Concept\ntags: [auth]\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n",
         );
         let counts = aggregate_field(
             &dir,
@@ -408,7 +390,8 @@ mod tests {
             None,
             None,
             &no_bundles(),
-        );
+        )
+        .expect("valid pages");
         assert_eq!(counts.len(), 1);
     }
 
@@ -418,7 +401,7 @@ mod tests {
         write_page(
             &dir,
             "shared/a.md",
-            "---\ntitle: A\ntype: concept\ntags: [Auth]\n---\n",
+            "---\ntitle: A\ntype: concept\ntags: [Auth]\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n",
         );
         let counts = aggregate_field(
             &dir,
@@ -427,7 +410,8 @@ mod tests {
             Some("auth"),
             None,
             &no_bundles(),
-        );
+        )
+        .expect("valid pages");
         assert_eq!(counts.len(), 1);
         assert_eq!(counts.get("Auth"), Some(&1_usize));
     }
@@ -442,17 +426,17 @@ mod tests {
         write_page(
             &dir,
             "shared/concepts/a.md",
-            "---\ntitle: A\ntype: concept\ntags: []\n---\n",
+            "---\ntitle: A\ntype: concept\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n",
         );
         write_page(
             &dir,
             "shared/concepts/b.md",
-            "---\ntitle: B\ntype: concept\ntags: []\n---\n",
+            "---\ntitle: B\ntype: concept\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n",
         );
         write_page(
             &dir,
             "shared/entities/c.md",
-            "---\ntitle: C\ntype: entity\ntags: []\n---\n",
+            "---\ntitle: C\ntype: entity\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n",
         );
 
         let counts = aggregate_field(
@@ -462,7 +446,8 @@ mod tests {
             None,
             None,
             &no_bundles(),
-        );
+        )
+        .expect("valid pages");
         assert_eq!(counts.len(), 2);
         assert_eq!(counts.get("concept"), Some(&2_usize));
         assert_eq!(counts.get("entity"), Some(&1_usize));
@@ -473,24 +458,25 @@ mod tests {
     // -------------------------------------------------------------------
 
     #[test]
-    fn test_types_no_type_field() {
+    fn test_types_no_type_field_fails() {
         let dir = temp_dir("types_no_type");
-        write_page(&dir, "shared/a.md", "---\ntitle: A\ntags: []\n---\n");
-        let counts = aggregate_field(
+        write_page(
+            &dir,
+            "shared/a.md",
+            "---\ntitle: A\ntags: []\nstatus: draft\n\
+             last_validated: 2026-01-01\ntimeliness: current\n---\n",
+        );
+        let error = aggregate_field(
             &dir,
             AggregateField::Types,
             None,
             None,
             None,
             &no_bundles(),
-        );
-        // Missing type is skipped (consistent with status by_type).
-        assert!(counts.is_empty());
+        )
+        .expect_err("a page without type is not a valid page");
+        assert!(error.contains("shared/a.md"), "{error}");
     }
-
-    // -------------------------------------------------------------------
-    // Types: tag filter
-    // -------------------------------------------------------------------
 
     #[test]
     fn test_types_tag_filter() {
@@ -498,12 +484,12 @@ mod tests {
         write_page(
             &dir,
             "shared/a.md",
-            "---\ntitle: A\ntype: concept\ntags: [auth]\n---\n",
+            "---\ntitle: A\ntype: concept\ntags: [auth]\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n",
         );
         write_page(
             &dir,
             "shared/b.md",
-            "---\ntitle: B\ntype: concept\ntags: [misc]\n---\n",
+            "---\ntitle: B\ntype: concept\ntags: [misc]\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n",
         );
 
         let counts = aggregate_field(
@@ -513,7 +499,8 @@ mod tests {
             Some("auth"),
             None,
             &no_bundles(),
-        );
+        )
+        .expect("valid pages");
         assert_eq!(counts.len(), 1);
         assert_eq!(counts.get("concept"), Some(&1_usize));
     }
@@ -528,12 +515,12 @@ mod tests {
         write_page(
             &dir,
             "shared/a.md",
-            "---\ntitle: A\ntype: concept\ntags: []\n---\n",
+            "---\ntitle: A\ntype: concept\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n",
         );
         write_page(
             &dir,
             "autoresearch/b.md",
-            "---\ntitle: B\ntype: entity\ntags: []\n---\n",
+            "---\ntitle: B\ntype: entity\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n",
         );
 
         let counts = aggregate_field(
@@ -543,7 +530,8 @@ mod tests {
             None,
             Some("shared"),
             &no_bundles(),
-        );
+        )
+        .expect("valid pages");
         assert_eq!(counts.len(), 1);
         assert_eq!(counts.get("concept"), Some(&1_usize));
     }
@@ -558,17 +546,17 @@ mod tests {
         write_page(
             &dir,
             "shared/concepts/a.md",
-            "---\ntitle: A\ntype: concept\ntags: []\n---\n",
+            "---\ntitle: A\ntype: concept\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n",
         );
         write_page(
             &dir,
             "shared/entities/b.md",
-            "---\ntitle: B\ntype: entity\ntags: []\n---\n",
+            "---\ntitle: B\ntype: entity\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n",
         );
         write_page(
             &dir,
             "autoresearch/concepts/c.md",
-            "---\ntitle: C\ntype: concept\ntags: []\n---\n",
+            "---\ntitle: C\ntype: concept\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n",
         );
 
         let counts = aggregate_field(
@@ -578,7 +566,8 @@ mod tests {
             None,
             None,
             &no_bundles(),
-        );
+        )
+        .expect("valid pages");
         assert_eq!(counts.len(), 2);
         assert_eq!(counts.get("shared"), Some(&2_usize));
         assert_eq!(counts.get("autoresearch"), Some(&1_usize));
@@ -594,13 +583,13 @@ mod tests {
         write_page(
             &dir,
             "shared/concepts/a.md",
-            "---\ntitle: A\ntype: concept\ntags: []\n---\n",
+            "---\ntitle: A\ntype: concept\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n",
         );
         // Root-level file (no directory component).
         write_page(
             &dir,
             "overview.md",
-            "---\ntitle: Overview\ntype: synthesis\ntags: []\n---\n",
+            "---\ntitle: Overview\ntype: synthesis\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n",
         );
 
         let counts = aggregate_field(
@@ -610,7 +599,8 @@ mod tests {
             None,
             None,
             &no_bundles(),
-        );
+        )
+        .expect("valid pages");
         assert_eq!(counts.len(), 1);
         assert_eq!(counts.get("shared"), Some(&1_usize));
         assert!(!counts.contains_key("overview"));
@@ -626,17 +616,17 @@ mod tests {
         write_page(
             &dir,
             "shared/concepts/a.md",
-            "---\ntitle: A\ntype: concept\ntags: []\n---\n",
+            "---\ntitle: A\ntype: concept\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n",
         );
         write_page(
             &dir,
             "shared/entities/b.md",
-            "---\ntitle: B\ntype: entity\ntags: []\n---\n",
+            "---\ntitle: B\ntype: entity\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n",
         );
         write_page(
             &dir,
             "autoresearch/concepts/c.md",
-            "---\ntitle: C\ntype: concept\ntags: []\n---\n",
+            "---\ntitle: C\ntype: concept\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n",
         );
 
         let counts = aggregate_field(
@@ -646,7 +636,8 @@ mod tests {
             None,
             None,
             &no_bundles(),
-        );
+        )
+        .expect("valid pages");
         assert_eq!(counts.len(), 1);
         assert_eq!(counts.get("shared"), Some(&1_usize));
     }
@@ -657,17 +648,17 @@ mod tests {
         write_page(
             &dir,
             "shared/a.md",
-            "---\ntitle: A\ntype: concept\ntags: [auth]\n---\n",
+            "---\ntitle: A\ntype: concept\ntags: [auth]\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n",
         );
         write_page(
             &dir,
             "shared/b.md",
-            "---\ntitle: B\ntype: concept\ntags: [misc]\n---\n",
+            "---\ntitle: B\ntype: concept\ntags: [misc]\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n",
         );
         write_page(
             &dir,
             "autoresearch/c.md",
-            "---\ntitle: C\ntype: concept\ntags: [auth]\n---\n",
+            "---\ntitle: C\ntype: concept\ntags: [auth]\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n",
         );
 
         let counts = aggregate_field(
@@ -677,7 +668,8 @@ mod tests {
             Some("auth"),
             None,
             &no_bundles(),
-        );
+        )
+        .expect("valid pages");
         assert_eq!(counts.len(), 2);
         assert_eq!(counts.get("shared"), Some(&1_usize));
         assert_eq!(counts.get("autoresearch"), Some(&1_usize));

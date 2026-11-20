@@ -4,7 +4,11 @@ description: 以固定 wall-clock 时间（5 分钟）作为实验控制变量�
 resource: https://github.com/karpathy/autoresearch
 type: concept
 timestamp: 2026-09-18T02:37:58Z
-tags: [autoresearch, evaluation, metric, fair-comparison]
+tags:
+  - autoresearch
+  - evaluation
+  - metric
+  - fair-comparison
 status: stable
 last_validated: 2026-06-19T00:00:00Z
 timeliness: current

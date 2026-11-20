@@ -4,7 +4,10 @@ description: Anthropic 关于 AI agent 有效上下文工程的工程博客—�
 type: source
 timestamp: 2026-07-21T00:00:00Z
 resource: https://www.anthropic.com/engineering/effective-context-engineering-for-ai-agents
-tags: [context-engineering, agent-design, anthropic]
+tags:
+  - context-engineering
+  - agent-design
+  - anthropic
 status: stable
 last_validated: 2026-07-21T00:00:00Z
 timeliness: current

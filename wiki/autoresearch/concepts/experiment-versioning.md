@@ -4,7 +4,11 @@ description: 使用 git 分支和 commit 作为自主实验的版本控制系统
 resource: https://github.com/karpathy/autoresearch
 type: concept
 timestamp: 2026-09-18T02:37:58Z
-tags: [autoresearch, versioning, git, experiment-tracking]
+tags:
+  - autoresearch
+  - versioning
+  - git
+  - experiment-tracking
 status: stable
 last_validated: 2026-06-19T00:00:00Z
 timeliness: current

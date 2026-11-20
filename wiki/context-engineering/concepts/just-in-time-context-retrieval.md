@@ -4,7 +4,11 @@ description: Agent 维护轻量标识符并在运行时按需加载数据的检�
 resource: https://www.anthropic.com/engineering/effective-context-engineering-for-ai-agents
 type: concept
 timestamp: 2026-07-21T00:00:00Z
-tags: [context-engineering, retrieval, agentic-search, progressive-disclosure]
+tags:
+  - context-engineering
+  - retrieval
+  - agentic-search
+  - progressive-disclosure
 status: stable
 last_validated: 2026-09-16T01:55:38Z
 timeliness: current

@@ -1,188 +1,73 @@
-//! Frontmatter property read/write/delete — structural YAML field ops.
+//! Page properties: typed frontmatter reads and writes.
+//!
+//! Every operation works on the page document model, so a write always
+//! produces a complete frontmatter block that keeps the field order of the
+//! page, and an edit that the model cannot express fails instead of writing
+//! a broken page.
 
 use std::fs;
 use std::path::Path;
 
-use crate::wiki;
+use zwiki::document::{self, Value};
 
-/// Read the value of a frontmatter property.
+use crate::document_io::{load, store};
+
+/// Read the value of a frontmatter property as YAML text.
 ///
-/// Returns `Ok(None)` if the field does not exist.
+/// Returns `Ok(None)` if the page has no such field.
 pub fn get(page: &Path, name: &str) -> Result<Option<String>, String> {
-    let content =
-        fs::read_to_string(page).map_err(|e| format!("无法读取文件: {e}"))?;
-    let fm = wiki::parse_frontmatter(&content);
-    Ok(fm.get(name).and_then(|v| v.as_str().map(ToString::to_string)))
+    let text = read_text(page)?;
+    let value = document::read_field(&text, name).map_err(|e| e.to_string())?;
+    value.as_ref().map(render).transpose()
 }
 
-/// Set (add or update) a frontmatter property.
+/// Set a frontmatter property.
 ///
-/// If the field already exists, its value is replaced.  If not, a new
-/// line is inserted before the closing `---`.
+/// A string property takes the value as written, so a colon or a number
+/// stays part of it.  Every other property decodes the value as YAML, so
+/// numbers and lists keep their type.  A schema field rejects a value of the
+/// wrong type; an unknown name becomes a flat extension field.
 ///
 /// Writes atomically (temp file → rename).
+///
+/// # Errors
+///
+/// Fails when the page cannot be read or parsed, when the value is not valid
+/// YAML, when a schema field rejects the value, or when the write fails.
 pub fn set(page: &Path, name: &str, value: &str) -> Result<(), String> {
-    let content =
-        fs::read_to_string(page).map_err(|e| format!("无法读取文件: {e}"))?;
-
-    let lines: Vec<&str> = content.lines().collect();
-
-    // Find frontmatter boundaries: first `---` to second `---`
-    let mut fm_start: Option<usize> = None;
-    let mut fm_end: Option<usize> = None;
-
-    for (i, line) in lines.iter().enumerate() {
-        if line.trim() == "---" {
-            if fm_start.is_none() {
-                fm_start = Some(i);
-            } else if fm_end.is_none() {
-                fm_end = Some(i);
-                break;
-            }
-        }
-    }
-
-    let (Some(start), Some(end)) = (fm_start, fm_end) else {
-        return Err("文件缺少有效的 frontmatter".to_string());
-    };
-
-    let mut new_lines: Vec<String> = Vec::new();
-    let mut found = false;
-
-    // Lines before frontmatter (including opening `---`)
-    for line in &lines[..=start] {
-        new_lines.push(line.to_string());
-    }
-
-    // Frontmatter body
-    for line in &lines[start + 1..end] {
-        if let Some((key, _)) = line.split_once(':') {
-            if key.trim() == name {
-                new_lines.push(format!("{name}: {value}"));
-                found = true;
-            } else {
-                new_lines.push(line.to_string());
-            }
-        } else {
-            new_lines.push(line.to_string());
-        }
-    }
-
-    // If field was not found, insert before closing `---`
-    if !found {
-        new_lines.push(format!("{name}: {value}"));
-    }
-
-    // Closing `---`
-    new_lines.push(lines[end].to_string());
-
-    // Lines after frontmatter
-    for line in &lines[end + 1..] {
-        new_lines.push(line.to_string());
-    }
-
-    let mut new_content = new_lines.join("\n");
-    // Preserve trailing newline if original content had one
-    if content.ends_with('\n') && !new_content.ends_with('\n') {
-        new_content.push('\n');
-    }
-
-    // Atomic write
-    zutil::fileio::write_atomic(page, &new_content)
-        .map_err(|e| format!("写入文件失败: {e}"))?;
-
-    Ok(())
+    let mut document = load(page)?;
+    document.metadata.set_field_text(name, value).map_err(|e| e.to_string())?;
+    store(page, &document)
 }
 
-/// Delete a frontmatter property together with its indented continuation
-/// lines.
+/// Delete a frontmatter property.
 ///
-/// The field's own line is removed, as are the directly following indented
-/// lines that belong to it (block list items such as `  - value`, or nested
-/// mappings) and blank lines between them.  Scanning stops at the first
-/// non-indented, non-empty line, which begins either the next field or the
-/// closing `---`.  Inline values
-/// (`key: value`, `key: [a, b]`) have no continuation lines and their own
-/// line is removed on its own.
+/// Deleting a field the schema requires fails, because a page without it is
+/// not a valid document.
 ///
 /// Writes atomically (temp file → rename).
 pub fn delete(page: &Path, name: &str) -> Result<(), String> {
-    let content =
-        fs::read_to_string(page).map_err(|e| format!("无法读取文件: {e}"))?;
+    let mut document = load(page)?;
+    document.metadata.remove_field(name).map_err(|e| e.to_string())?;
+    store(page, &document)
+}
 
-    let lines: Vec<&str> = content.lines().collect();
+/// Read the page text.
+fn read_text(page: &Path) -> Result<String, String> {
+    fs::read_to_string(page).map_err(|e| format!("无法读取文件: {e}"))
+}
 
-    // Find frontmatter boundaries
-    let mut fm_start: Option<usize> = None;
-    let mut fm_end: Option<usize> = None;
-
-    for (i, line) in lines.iter().enumerate() {
-        if line.trim() == "---" {
-            if fm_start.is_none() {
-                fm_start = Some(i);
-            } else if fm_end.is_none() {
-                fm_end = Some(i);
-                break;
-            }
-        }
-    }
-
-    let (Some(start), Some(end)) = (fm_start, fm_end) else {
-        return Err("文件缺少有效的 frontmatter".to_string());
+/// Render a property value as text.
+///
+/// A string prints as itself; every other value prints as YAML, so lists and
+/// numbers stay readable.
+fn render(value: &Value) -> Result<String, String> {
+    let Value::String(text) = value else {
+        let yaml = serde_yaml::to_string(value)
+            .map_err(|e| format!("无法呈现属性值: {e}"))?;
+        return Ok(yaml.trim_end_matches('\n').to_string());
     };
-
-    let mut new_lines: Vec<String> = Vec::new();
-
-    // Lines before and including opening `---`
-    for line in &lines[..=start] {
-        new_lines.push(line.to_string());
-    }
-
-    // Frontmatter body — drop the line matching `name:` and, when that line
-    // is a top-level field, its indented continuation lines as well.  The
-    // closing `---` lies outside this slice, so the scan cannot cross it.
-    let mut in_continuation = false;
-    for line in &lines[start + 1..end] {
-        let indented = line.starts_with(' ') || line.starts_with('\t');
-        if in_continuation {
-            // Blank lines belong to the field too: YAML allows them
-            // between block-list items, so skip until a non-indented,
-            // non-empty line ends the field.
-            if indented || line.trim().is_empty() {
-                continue;
-            }
-            in_continuation = false;
-        }
-
-        let should_skip =
-            line.split_once(':').is_some_and(|(key, _)| key.trim() == name);
-        if should_skip {
-            // Only a top-level field owns the indented lines that follow it.
-            in_continuation = !indented;
-            continue;
-        }
-        new_lines.push(line.to_string());
-    }
-
-    // Closing `---`
-    new_lines.push(lines[end].to_string());
-
-    // Lines after frontmatter
-    for line in &lines[end + 1..] {
-        new_lines.push(line.to_string());
-    }
-
-    let mut new_content = new_lines.join("\n");
-    // Preserve trailing newline if original content had one
-    if content.ends_with('\n') && !new_content.ends_with('\n') {
-        new_content.push('\n');
-    }
-
-    // Atomic write
-    zutil::fileio::write_atomic(page, &new_content)
-        .map_err(|e| format!("写入文件失败: {e}"))?;
-
-    Ok(())
+    Ok(text.clone())
 }
 
 // ---------------------------------------------------------------------------
@@ -211,21 +96,32 @@ pub fn downgrade_status(status: &str) -> &str {
 mod tests {
     use super::*;
     use crate::bundle::testutil::temp_dir;
-    use serde_json::Value;
     use std::fs;
     use std::path::PathBuf;
+    /// Page with every required field and two optional fields.
+    const SAMPLE: &str = concat!(
+        "---\n",
+        "title: Test Page\n",
+        "type: concept\n",
+        "description: 摘要\n",
+        "tags: [a, b]\n",
+        "status: draft\n",
+        "last_validated: 2026-07-01T00:00:00Z\n",
+        "timeliness: current\n",
+        "---\n",
+        "\n",
+        "Body content.\n",
+    );
 
-    fn make_page(dir: &Path, filename: &str, frontmatter: &str) -> PathBuf {
+    fn make_page(dir: &Path, filename: &str, text: &str) -> PathBuf {
         let path = dir.join(filename);
-        fs::write(&path, frontmatter).expect("failed to write test page");
+        fs::write(&path, text).expect("failed to write test page");
         path
     }
 
-    const SAMPLE: &str = "---\ntitle: Test Page\nstatus: draft\ntags: [a, b]\n---\n\nBody content.\n";
-
-    // -------------------------------------------------------------------
-    // get
-    // -------------------------------------------------------------------
+    fn read(path: &Path) -> String {
+        fs::read_to_string(path).expect("failed to read test page")
+    }
 
     // -------------------------------------------------------------------
     // downgrade_status
@@ -256,6 +152,10 @@ mod tests {
         assert_eq!(downgrade_status("unknown"), "unknown");
     }
 
+    // -------------------------------------------------------------------
+    // get
+    // -------------------------------------------------------------------
+
     #[test]
     fn test_get_existing_field() {
         let dir = temp_dir("get_existing");
@@ -269,7 +169,7 @@ mod tests {
     fn test_get_missing_field() {
         let dir = temp_dir("get_missing");
         let path = make_page(&dir, "test.md", SAMPLE);
-        let result = get(&path, "timeliness");
+        let result = get(&path, "resource");
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), None);
     }
@@ -283,22 +183,84 @@ mod tests {
         assert_eq!(result.unwrap(), None);
     }
 
+    #[test]
+    fn test_get_field_on_partial_page() {
+        let dir = temp_dir("get_partial");
+        let path =
+            make_page(&dir, "test.md", "---\ntitle: Hello\n---\n\nBody.");
+        assert_eq!(get(&path, "title").unwrap(), Some("Hello".to_string()));
+        assert_eq!(get(&path, "tags").unwrap(), None);
+    }
+
+    #[test]
+    fn test_get_list_field() {
+        let dir = temp_dir("get_list");
+        let path = make_page(&dir, "test.md", SAMPLE);
+        assert_eq!(get(&path, "tags").unwrap(), Some("- a\n- b".to_string()));
+    }
+
+    #[test]
+    fn test_get_integer_field() {
+        let dir = temp_dir("get_integer");
+        let page = SAMPLE.replace(
+            "timeliness: current\n",
+            "timeliness: current\nfreshness_days: 90\n",
+        );
+        let path = make_page(&dir, "test.md", &page);
+        assert_eq!(
+            get(&path, "freshness_days").unwrap(),
+            Some("90".to_string())
+        );
+    }
+
+    #[test]
+    fn test_get_extension_field() {
+        let dir = temp_dir("get_extension");
+        let page = SAMPLE.replace(
+            "timeliness: current\n",
+            "timeliness: current\nokf_version: \"0.1\"\n",
+        );
+        let path = make_page(&dir, "test.md", &page);
+        assert_eq!(get(&path, "okf_version").unwrap(), Some("0.1".to_string()));
+    }
+
+    #[test]
+    fn test_get_rejects_broken_yaml() {
+        let dir = temp_dir("get_broken_yaml");
+        let path = make_page(&dir, "test.md", "---\ntitle: [\n---\n");
+        let error = get(&path, "title").expect_err("broken yaml");
+        assert!(error.contains("frontmatter"), "unexpected error: {error}");
+    }
+
     // -------------------------------------------------------------------
     // set
     // -------------------------------------------------------------------
 
     #[test]
-    fn test_set_new_field() {
-        let dir = temp_dir("set_new");
+    fn test_set_writes_deterministic_frontmatter() {
+        let dir = temp_dir("set_deterministic");
         let path = make_page(&dir, "test.md", SAMPLE);
-        set(&path, "timeliness", "stale").unwrap();
+        set(&path, "resource", "https://example.com/a").unwrap();
 
-        let result = get(&path, "timeliness").unwrap();
-        assert_eq!(result, Some("stale".to_string()));
-
-        // Verify other fields preserved
-        let result = get(&path, "title").unwrap();
-        assert_eq!(result, Some("Test Page".to_string()));
+        assert_eq!(
+            read(&path),
+            concat!(
+                "---\n",
+                "title: Test Page\n",
+                "type: concept\n",
+                "description: 摘要\n",
+                "tags:\n",
+                "  - a\n",
+                "  - b\n",
+                "status: draft\n",
+                "last_validated: 2026-07-01T00:00:00Z\n",
+                "timeliness: current\n",
+                "resource: https://example.com/a\n",
+                "---\n",
+                "\n",
+                "Body content.\n",
+            )
+        );
     }
 
     #[test]
@@ -307,20 +269,132 @@ mod tests {
         let path = make_page(&dir, "test.md", SAMPLE);
         set(&path, "status", "stable").unwrap();
 
-        let result = get(&path, "status").unwrap();
-        assert_eq!(result, Some("stable".to_string()));
-
-        // Body should still be intact
-        let content = fs::read_to_string(&path).unwrap();
-        assert!(content.contains("Body content."));
+        assert_eq!(get(&path, "status").unwrap(), Some("stable".to_string()));
+        assert_eq!(get(&path, "title").unwrap(), Some("Test Page".to_string()));
+        assert!(read(&path).contains("Body content."));
     }
 
     #[test]
     fn test_set_field_no_frontmatter() {
         let dir = temp_dir("set_no_fm");
         let path = make_page(&dir, "test.md", "# Just body\n");
-        let result = set(&path, "title", "Hello");
-        assert!(result.is_err());
+        assert!(set(&path, "title", "Hello").is_err());
+    }
+
+    #[test]
+    fn test_set_list_field() {
+        let dir = temp_dir("set_list");
+        let path = make_page(&dir, "test.md", SAMPLE);
+        set(&path, "sources", "[shared/a.md, shared/b.md]").unwrap();
+
+        assert_eq!(
+            get(&path, "sources").unwrap(),
+            Some("- shared/a.md\n- shared/b.md".to_string())
+        );
+        let text = read(&path);
+        assert!(text.contains("sources:\n  - shared/a.md\n  - shared/b.md\n"));
+        assert!(text.contains("tags:\n  - a\n  - b\n"), "{text}");
+    }
+
+    #[test]
+    fn test_set_integer_field() {
+        let dir = temp_dir("set_integer");
+        let path = make_page(&dir, "test.md", SAMPLE);
+        set(&path, "freshness_days", "90").unwrap();
+
+        assert_eq!(
+            get(&path, "freshness_days").unwrap(),
+            Some("90".to_string())
+        );
+        assert!(read(&path).contains("freshness_days: 90\n"));
+    }
+
+    #[test]
+    fn test_set_extension_field() {
+        let dir = temp_dir("set_extension");
+        let path = make_page(&dir, "test.md", SAMPLE);
+        set(&path, "owner", "team-a").unwrap();
+
+        assert_eq!(get(&path, "owner").unwrap(), Some("team-a".to_string()));
+        let text = read(&path);
+        assert!(text.contains("\nowner: team-a\n"), "{text}");
+        assert_eq!(get(&path, "title").unwrap(), Some("Test Page".to_string()));
+    }
+
+    #[test]
+    fn test_set_rejects_wrong_type() {
+        let dir = temp_dir("set_wrong_type");
+        let path = make_page(&dir, "test.md", SAMPLE);
+        let error = set(&path, "tags", "permission").expect_err("scalar tags");
+
+        assert!(error.contains("tags"), "unexpected error: {error}");
+        assert_eq!(read(&path), SAMPLE);
+    }
+
+    #[test]
+    fn test_set_rejects_invalid_yaml() {
+        let dir = temp_dir("set_invalid_yaml");
+        let path = make_page(&dir, "test.md", SAMPLE);
+        let error = set(&path, "owner", "[unclosed").expect_err("invalid yaml");
+
+        assert!(error.contains("无法解析属性值"), "unexpected error: {error}");
+        assert_eq!(read(&path), SAMPLE);
+    }
+
+    #[test]
+    fn test_set_keeps_body_and_backlinks() {
+        let dir = temp_dir("set_backlinks");
+        let page = concat!(
+            "---\n",
+            "title: Test Page\n",
+            "type: concept\n",
+            "tags: [a]\n",
+            "status: draft\n",
+            "last_validated: 2026-07-01T00:00:00Z\n",
+            "timeliness: current\n",
+            "---\n",
+            "\n",
+            "# Test Page\n",
+            "\n",
+            "正文。\n",
+            "\n",
+            "## Backlinks\n",
+            "\n",
+            "- [Linker](concepts/linker.md)\n",
+            "\n",
+            "## References\n",
+            "\n",
+            "- 来源\n",
+        );
+        let path = make_page(&dir, "test.md", page);
+        set(&path, "status", "stable").unwrap();
+
+        assert_eq!(
+            read(&path),
+            concat!(
+                "---\n",
+                "title: Test Page\n",
+                "type: concept\n",
+                "tags:\n",
+                "  - a\n",
+                "status: stable\n",
+                "last_validated: 2026-07-01T00:00:00Z\n",
+                "timeliness: current\n",
+                "---\n",
+                "\n",
+                "# Test Page\n",
+                "\n",
+                "正文。\n",
+                "\n",
+                "## Backlinks\n",
+                "\n",
+                "- [Linker](concepts/linker.md)\n",
+                "\n",
+                "## References\n",
+                "\n",
+                "- 来源\n",
+            )
+        );
     }
 
     // -------------------------------------------------------------------
@@ -331,124 +405,92 @@ mod tests {
     fn test_delete_field() {
         let dir = temp_dir("delete_field");
         let path = make_page(&dir, "test.md", SAMPLE);
-        delete(&path, "status").unwrap();
+        delete(&path, "description").unwrap();
 
-        let result = get(&path, "status").unwrap();
-        assert_eq!(result, None);
-
-        // Other fields preserved
-        let result = get(&path, "title").unwrap();
-        assert_eq!(result, Some("Test Page".to_string()));
+        assert_eq!(get(&path, "description").unwrap(), None);
+        assert_eq!(get(&path, "title").unwrap(), Some("Test Page".to_string()));
+        assert!(read(&path).contains("Body content."));
     }
 
     #[test]
     fn test_delete_nonexistent_field() {
         let dir = temp_dir("delete_nonexistent");
         let path = make_page(&dir, "test.md", SAMPLE);
-        // Should not error; just no-op
-        let result = delete(&path, "timeliness");
-        assert!(result.is_ok());
+        delete(&path, "resource").unwrap();
 
-        // Body intact
-        let content = fs::read_to_string(&path).unwrap();
-        assert!(content.contains("Body content."));
+        assert_eq!(
+            read(&path),
+            SAMPLE.replace("tags: [a, b]", "tags:\n  - a\n  - b")
+        );
     }
 
     #[test]
     fn test_delete_field_no_frontmatter() {
         let dir = temp_dir("delete_no_fm");
         let path = make_page(&dir, "test.md", "# Just body\n");
-        let result = delete(&path, "title");
-        assert!(result.is_err());
+        assert!(delete(&path, "title").is_err());
     }
 
     #[test]
-    fn test_delete_block_list_field_removes_continuation_lines() {
-        let dir = temp_dir("delete_block_list");
-        let content = concat!(
+    fn test_delete_required_field_rejected() {
+        let dir = temp_dir("delete_required");
+        let path = make_page(&dir, "test.md", SAMPLE);
+        let error = delete(&path, "timeliness").expect_err("required field");
+
+        assert!(error.contains("timeliness"), "unexpected error: {error}");
+        assert_eq!(read(&path), SAMPLE);
+    }
+
+    #[test]
+    fn test_delete_structured_field_removes_nested_lines() {
+        let dir = temp_dir("delete_structured");
+        let page = concat!(
             "---\n",
             "title: Test Page\n",
-            "tags:\n",
-            "  - old\n",
-            "sources:\n",
-            "  - a\n",
-            "  - b\n",
+            "type: concept\n",
+            "supersedes:\n",
+            "- path: shared/a.md\n",
+            "  reason: 覆盖旧模型\n",
+            "tags: [a]\n",
             "status: draft\n",
+            "last_validated: 2026-07-01T00:00:00Z\n",
+            "timeliness: current\n",
             "---\n",
             "\n",
             "Body content.\n",
         );
-        let path = make_page(&dir, "test.md", content);
+        let path = make_page(&dir, "test.md", page);
+        delete(&path, "supersedes").unwrap();
 
-        delete(&path, "sources").unwrap();
-
-        let after = fs::read_to_string(&path).unwrap();
-        assert!(
-            !after.contains("- a") && !after.contains("- b"),
-            "orphan block list items leaked:\n{after}"
-        );
-
-        // Neighbouring fields are untouched; the deleted field is gone.
-        let fm = wiki::parse_frontmatter(&after);
-        let tags = fm.get("tags").and_then(Value::as_array);
-        assert_eq!(tags.map(Vec::len), Some(1));
-        assert_eq!(
-            tags.and_then(|v| v.first()).and_then(Value::as_str),
-            Some("old")
-        );
-        assert_eq!(fm.get("title").and_then(Value::as_str), Some("Test Page"));
-        assert_eq!(fm.get("status").and_then(Value::as_str), Some("draft"));
-        assert!(!fm.contains_key("sources"));
+        let text = read(&path);
+        assert!(!text.contains("path:"), "nested line leaked:\n{text}");
+        assert!(!text.contains("reason:"), "nested line leaked:\n{text}");
+        assert_eq!(get(&path, "title").unwrap(), Some("Test Page".to_string()));
     }
 
     #[test]
-    fn test_delete_block_list_field_with_blank_line() {
-        let dir = temp_dir("delete_block_list_blank");
-        let content = concat!(
+    fn test_set_dotted_name_does_not_edit_nested_field() {
+        let dir = temp_dir("set_dotted");
+        let page = concat!(
             "---\n",
             "title: Test Page\n",
-            "sources:\n",
-            "  - a\n",
-            "\n",
-            "  - b\n",
+            "type: concept\n",
+            "supersedes:\n",
+            "- path: shared/a.md\n",
+            "  reason: 覆盖旧模型\n",
+            "tags: [a]\n",
             "status: draft\n",
+            "last_validated: 2026-07-01T00:00:00Z\n",
+            "timeliness: current\n",
             "---\n",
             "\n",
             "Body content.\n",
         );
-        let path = make_page(&dir, "test.md", content);
+        let path = make_page(&dir, "test.md", page);
+        set(&path, "path", "shared/b.md").unwrap();
 
-        delete(&path, "sources").unwrap();
-
-        let after = fs::read_to_string(&path).unwrap();
-        assert!(
-            !after.contains("- a") && !after.contains("- b"),
-            "orphan block list items leaked:\n{after}"
-        );
-        assert_eq!(
-            after,
-            "---\ntitle: Test Page\nstatus: draft\n---\n\nBody content.\n"
-        );
-    }
-
-    #[test]
-    fn test_delete_block_list_field_at_frontmatter_end() {
-        let dir = temp_dir("delete_block_list_end");
-        let content = concat!(
-            "---\n",
-            "title: Test Page\n",
-            "sources:\n",
-            "  - a\n",
-            "  - b\n",
-            "---\n",
-            "\n",
-            "Body content.\n",
-        );
-        let path = make_page(&dir, "test.md", content);
-
-        delete(&path, "sources").unwrap();
-
-        let after = fs::read_to_string(&path).unwrap();
-        assert_eq!(after, "---\ntitle: Test Page\n---\n\nBody content.\n");
+        let text = read(&path);
+        assert!(text.contains("- path: shared/a.md\n"), "{text}");
+        assert!(text.contains("\npath: shared/b.md\n"), "{text}");
     }
 }

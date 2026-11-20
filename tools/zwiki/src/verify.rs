@@ -26,7 +26,13 @@ pub struct StalePair {
 /// When `domain` is `Some`, only pages within that top-level directory are
 /// checked.
 pub fn cmd_verify(root: &Path, json: bool, domain: Option<&str>) {
-    let stale = collect_stale_pairs(root, domain);
+    let stale = match collect_stale_pairs(root, domain) {
+        Ok(stale) => stale,
+        Err(error) => {
+            eprintln!("{error}");
+            std::process::exit(1);
+        }
+    };
 
     if json {
         let output: Vec<serde_json::Value> = stale
@@ -65,18 +71,22 @@ pub fn cmd_verify(root: &Path, json: bool, domain: Option<&str>) {
 /// them so tests can exercise the logic without capturing stdout.
 /// The per-page stale-source scan is delegated to
 /// [`freshness::stale_sources`].
+///
+/// # Errors
+///
+/// Fails when any page cannot be loaded, naming its path.
 pub fn collect_stale_pairs(
     root: &Path,
     domain: Option<&str>,
-) -> Vec<StalePair> {
-    let paths = wiki::discover_pages(root);
-    let cache = wiki::page_cache_at(&paths, root);
+) -> Result<Vec<StalePair>, String> {
+    let set = wiki::PageSet::load(root);
+    let pages = set.require_all()?;
     let by_rel: HashMap<&str, &wiki::Page> =
-        cache.iter().map(|(k, v)| (k.as_str(), v)).collect();
+        pages.iter().map(|page| (page.rel.as_str(), page)).collect();
 
     let mut stale: Vec<StalePair> = Vec::new();
 
-    for page in cache.values() {
+    for page in pages {
         // Domain filter: skip pages whose top-level directory doesn't match.
         if let Some(df) = domain {
             let df_lower = df.to_lowercase();
@@ -88,18 +98,11 @@ pub fn collect_stale_pairs(
 
         let pairs = freshness::stale_sources(page, &by_rel);
         for (source_rel, _) in pairs {
-            let lv_str = page
-                .frontmatter
-                .get("last_validated")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string();
+            let lv_str = page.document.metadata.last_validated.clone();
             let ts_str = by_rel
                 .get(source_rel.as_str())
-                .and_then(|p| p.frontmatter.get("timestamp"))
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string();
+                .and_then(|p| p.document.metadata.timestamp.clone())
+                .unwrap_or_default();
             stale.push(StalePair {
                 derived_page: page.rel.clone(),
                 source_page: source_rel,
@@ -116,7 +119,7 @@ pub fn collect_stale_pairs(
             .then_with(|| a.source_page.cmp(&b.source_page))
     });
 
-    stale
+    Ok(stale)
 }
 
 // ===========================================================================
@@ -155,18 +158,19 @@ mod tests {
         let dir = temp_dir("stale_detected");
         write(
             &dir.join("shared/sources/bar.md"),
-            "---\ntitle: Bar\ntype: source\ntimestamp: 2024-06-01\n---\nBody.\n",
+            "---\ntitle: Bar\ntype: source\ntimestamp: 2024-06-01\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\nBody.\n",
         );
         write(
             &dir.join("shared/analysis/foo.md"),
             "---\ntitle: Foo\ntype: analysis\n\
              sources: [shared/sources/bar.md]\n\
-             last_validated: 2024-01-01\n---\nBody.\n",
+             last_validated: 2024-01-01\ntags: []\nstatus: draft\ntimeliness: current\n---\nBody.\n",
         );
 
-        let paths = wiki::discover_pages(&dir);
-        let cache = wiki::page_cache_at(&paths, &dir);
-        let pages: Vec<wiki::Page> = cache.into_values().collect();
+        let pages = wiki::PageSet::load(&dir)
+            .require_all()
+            .expect("valid pages")
+            .to_vec();
 
         let updates = health::invalidate_by_source(&pages);
         assert_eq!(updates.len(), 1, "should detect one stale pair");
@@ -180,18 +184,19 @@ mod tests {
         let dir = temp_dir("no_stale_match");
         write(
             &dir.join("shared/sources/bar.md"),
-            "---\ntitle: Bar\ntype: source\ntimestamp: 2024-01-01\n---\nBody.\n",
+            "---\ntitle: Bar\ntype: source\ntimestamp: 2024-01-01\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\nBody.\n",
         );
         write(
             &dir.join("shared/analysis/foo.md"),
             "---\ntitle: Foo\ntype: analysis\n\
              sources: [shared/sources/bar.md]\n\
-             last_validated: 2024-01-01\n---\nBody.\n",
+             last_validated: 2024-01-01\ntags: []\nstatus: draft\ntimeliness: current\n---\nBody.\n",
         );
 
-        let paths = wiki::discover_pages(&dir);
-        let cache = wiki::page_cache_at(&paths, &dir);
-        let pages: Vec<wiki::Page> = cache.into_values().collect();
+        let pages = wiki::PageSet::load(&dir)
+            .require_all()
+            .expect("valid pages")
+            .to_vec();
 
         let updates = health::invalidate_by_source(&pages);
         assert!(
@@ -210,16 +215,16 @@ mod tests {
         let dir = temp_dir("collect_basic");
         write(
             &dir.join("shared/sources/bar.md"),
-            "---\ntitle: Bar\ntype: source\ntimestamp: 2024-06-01\n---\nBody.\n",
+            "---\ntitle: Bar\ntype: source\ntimestamp: 2024-06-01\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\nBody.\n",
         );
         write(
             &dir.join("shared/analysis/foo.md"),
             "---\ntitle: Foo\ntype: analysis\n\
              sources: [shared/sources/bar.md]\n\
-             last_validated: 2024-01-01\n---\nBody.\n",
+             last_validated: 2024-01-01\ntags: []\nstatus: draft\ntimeliness: current\n---\nBody.\n",
         );
 
-        let stale = collect_stale_pairs(&dir, None);
+        let stale = collect_stale_pairs(&dir, None).expect("valid pages");
         assert_eq!(stale.len(), 1, "should detect one stale pair");
         assert_eq!(stale[0].derived_page, "shared/analysis/foo.md");
         assert_eq!(stale[0].source_page, "shared/sources/bar.md");
@@ -233,32 +238,33 @@ mod tests {
         let dir = temp_dir("collect_domain");
         write(
             &dir.join("domain1/sources/bar.md"),
-            "---\ntitle: Bar\ntype: source\ntimestamp: 2024-06-01\n---\nBody.\n",
+            "---\ntitle: Bar\ntype: source\ntimestamp: 2024-06-01\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\nBody.\n",
         );
         write(
             &dir.join("domain1/analysis/foo.md"),
             "---\ntitle: Foo\ntype: analysis\n\
              sources: [domain1/sources/bar.md]\n\
-             last_validated: 2024-01-01\n---\nBody.\n",
+             last_validated: 2024-01-01\ntags: []\nstatus: draft\ntimeliness: current\n---\nBody.\n",
         );
         write(
             &dir.join("domain2/sources/baz.md"),
-            "---\ntitle: Baz\ntype: source\ntimestamp: 2024-06-01\n---\nBody.\n",
+            "---\ntitle: Baz\ntype: source\ntimestamp: 2024-06-01\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\nBody.\n",
         );
         write(
             &dir.join("domain2/analysis/qux.md"),
             "---\ntitle: Qux\ntype: analysis\n\
              sources: [domain2/sources/baz.md]\n\
-             last_validated: 2024-01-01\n---\nBody.\n",
+             last_validated: 2024-01-01\ntags: []\nstatus: draft\ntimeliness: current\n---\nBody.\n",
         );
 
         // Only domain1 should be included.
-        let stale = collect_stale_pairs(&dir, Some("domain1"));
+        let stale =
+            collect_stale_pairs(&dir, Some("domain1")).expect("valid pages");
         assert_eq!(stale.len(), 1, "domain filter should exclude domain2");
         assert_eq!(stale[0].derived_page, "domain1/analysis/foo.md");
 
         // No domain filter → both domains.
-        let stale_all = collect_stale_pairs(&dir, None);
+        let stale_all = collect_stale_pairs(&dir, None).expect("valid pages");
         assert_eq!(stale_all.len(), 2, "no domain filter should include both");
     }
 
@@ -268,16 +274,16 @@ mod tests {
         let dir = temp_dir("collect_none");
         write(
             &dir.join("shared/sources/bar.md"),
-            "---\ntitle: Bar\ntype: source\ntimestamp: 2024-01-01\n---\nBody.\n",
+            "---\ntitle: Bar\ntype: source\ntimestamp: 2024-01-01\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\nBody.\n",
         );
         write(
             &dir.join("shared/analysis/foo.md"),
             "---\ntitle: Foo\ntype: analysis\n\
              sources: [shared/sources/bar.md]\n\
-             last_validated: 2024-06-01\n---\nBody.\n",
+             last_validated: 2024-06-01\ntags: []\nstatus: draft\ntimeliness: current\n---\nBody.\n",
         );
 
-        let stale = collect_stale_pairs(&dir, None);
+        let stale = collect_stale_pairs(&dir, None).expect("valid pages");
         assert!(stale.is_empty(), "no stale when source is older");
     }
 
@@ -287,16 +293,16 @@ mod tests {
         let dir = temp_dir("collect_json");
         write(
             &dir.join("shared/sources/bar.md"),
-            "---\ntitle: Bar\ntype: source\ntimestamp: 2024-06-01\n---\nBody.\n",
+            "---\ntitle: Bar\ntype: source\ntimestamp: 2024-06-01\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\nBody.\n",
         );
         write(
             &dir.join("shared/analysis/foo.md"),
             "---\ntitle: Foo\ntype: analysis\n\
              sources: [shared/sources/bar.md]\n\
-             last_validated: 2024-01-01\n---\nBody.\n",
+             last_validated: 2024-01-01\ntags: []\nstatus: draft\ntimeliness: current\n---\nBody.\n",
         );
 
-        let stale = collect_stale_pairs(&dir, None);
+        let stale = collect_stale_pairs(&dir, None).expect("valid pages");
         let json_output: Vec<serde_json::Value> = stale
             .iter()
             .map(|s| {

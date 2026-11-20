@@ -4,7 +4,12 @@ description: Anthropic 关于 workflow、agent、增强型 LLM 和可靠 agent �
 type: source
 timestamp: 2026-09-15T06:15:36Z
 resource: https://www.anthropic.com/engineering/building-effective-agents
-tags: [agent-design, workflow, agent, anthropic, tool-design]
+tags:
+  - agent-design
+  - workflow
+  - agent
+  - anthropic
+  - tool-design
 status: stable
 last_validated: 2026-09-16T01:55:38Z
 timeliness: current

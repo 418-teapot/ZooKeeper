@@ -4,7 +4,12 @@ description: Anthropic 关于为 AI agent 选择、命名、描述、实现和�
 type: source
 timestamp: 2026-09-16T00:00:00Z
 resource: https://www.anthropic.com/engineering/writing-tools-for-agents
-tags: [agent-design, tool-use, tool-design, evaluation, anthropic]
+tags:
+  - agent-design
+  - tool-use
+  - tool-design
+  - evaluation
+  - anthropic
 status: stable
 last_validated: 2026-09-16T00:00:00Z
 timeliness: current

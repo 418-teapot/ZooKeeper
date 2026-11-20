@@ -4,7 +4,12 @@ description: 三种应对上下文窗口限制的技术——压缩、结构化�
 resource: https://www.anthropic.com/engineering/effective-context-engineering-for-ai-agents
 type: analysis
 timestamp: 2026-07-21T00:00:00Z
-tags: [context-engineering, long-horizon, compaction, agentic-memory, multi-agent]
+tags:
+  - context-engineering
+  - long-horizon
+  - compaction
+  - agentic-memory
+  - multi-agent
 sources:
   - context-engineering/sources/notes/anthropic-context-engineering.md
 status: stable

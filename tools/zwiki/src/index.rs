@@ -8,13 +8,12 @@
 //! Regeneration preserves the authored frontmatter verbatim and replaces
 //! only the body, so the operation is idempotent.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::path::Path;
 use std::sync::OnceLock;
 
 use regex::Regex;
-use serde_json::Value;
 
 use crate::wiki;
 
@@ -63,36 +62,17 @@ fn with_generated_body(existing: &str, body: &str) -> String {
 // Frontmatter helpers
 // ---------------------------------------------------------------------------
 
-/// Read a non-empty string frontmatter field.
-fn fm_string(
-    frontmatter: &HashMap<String, Value>,
-    key: &str,
-) -> Option<String> {
-    frontmatter
-        .get(key)
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .map(ToString::to_string)
-}
-
-/// Map a page's first path component to its canonical type name.
-fn type_from_dir(rel: &str) -> String {
-    let first = rel.split('/').next().unwrap_or("");
-    match first {
-        "concepts" => "concept".to_string(),
-        "entities" => "entity".to_string(),
-        "sources" => "source".to_string(),
-        "analysis" => "analysis".to_string(),
-        "syntheses" => "synthesis".to_string(),
-        other => other.to_string(),
-    }
-}
-
-/// Resolve a page's type, falling back to its directory when frontmatter
-/// carries no `type` field.
-fn page_type(frontmatter: &HashMap<String, Value>, rel: &str) -> String {
-    fm_string(frontmatter, "type").unwrap_or_else(|| type_from_dir(rel))
+/// Read a non-empty string field from authored frontmatter text.
+///
+/// Index files keep authored frontmatter, so this reads one field leniently
+/// instead of parsing a full page document.
+fn fm_string(text: &str, key: &str) -> Option<String> {
+    zwiki::document::read_field(text, key)
+        .ok()
+        .flatten()
+        .and_then(|value| value.as_str().map(str::to_string))
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
 }
 
 /// Render the ` — description` suffix for an index entry.
@@ -113,26 +93,33 @@ struct PageEntry {
 
 /// Build the generated body of a domain index from the domain's pages.
 ///
-/// Pages are grouped by type under `## <type>` headings in canonical order
-/// and each group is sorted alphabetically by title.
-fn build_domain_body(domain_dir: &Path) -> String {
+/// Pages are grouped by their document type and each group is sorted
+/// alphabetically by title.
+///
+/// # Errors
+///
+/// Fails when a page cannot be loaded, so a broken page never drops out of
+/// the index silently.
+fn build_domain_body(domain_dir: &Path) -> Result<String, String> {
     let mut groups: BTreeMap<String, Vec<PageEntry>> = BTreeMap::new();
 
     for path in wiki::discover_pages(domain_dir) {
-        let Some(page) = wiki::read_page_at(&path, domain_dir) else {
-            continue;
-        };
+        let page = wiki::read_page_at(&path, domain_dir)
+            .map_err(|e| format!("无法加载页面: {e}"))?;
         let rel = path
             .strip_prefix(domain_dir)
             .unwrap_or(&path)
             .to_string_lossy()
             .to_string();
-        let title = fm_string(&page.frontmatter, "title")
-            .unwrap_or_else(|| "Untitled".to_string());
-        let description = fm_string(&page.frontmatter, "description");
-        let page_type = page_type(&page.frontmatter, &rel);
-        groups.entry(page_type).or_default().push(PageEntry {
-            title,
+        let metadata = &page.document.metadata;
+        let description = metadata
+            .description
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(ToString::to_string);
+        groups.entry(metadata.page_type.clone()).or_default().push(PageEntry {
+            title: metadata.title.clone(),
             rel,
             description,
         });
@@ -168,7 +155,7 @@ fn build_domain_body(domain_dir: &Path) -> String {
         sections.push(section);
     }
 
-    sections.join("\n\n")
+    Ok(sections.join("\n\n"))
 }
 
 /// Regenerate `<domain_dir>/index.md` from the domain's pages.
@@ -186,7 +173,8 @@ pub fn regenerate_domain_index(domain_dir: &Path) -> Result<bool, String> {
         domain_dir.file_name().and_then(|n| n.to_str()).unwrap_or_default();
     let existing = std::fs::read_to_string(&index_path).ok();
     let base = existing.clone().unwrap_or_else(|| default_frontmatter(domain));
-    let updated = with_generated_body(&base, &build_domain_body(domain_dir));
+    let body = build_domain_body(domain_dir)?;
+    let updated = with_generated_body(&base, &body);
 
     if existing.as_deref() == Some(updated.as_str()) {
         return Ok(false);
@@ -248,8 +236,7 @@ fn page_title_description(path: &Path) -> (Option<String>, Option<String>) {
     let Ok(content) = std::fs::read_to_string(path) else {
         return (None, None);
     };
-    let frontmatter = wiki::parse_frontmatter(&content);
-    (fm_string(&frontmatter, "title"), fm_string(&frontmatter, "description"))
+    (fm_string(&content, "title"), fm_string(&content, "description"))
 }
 
 /// Build the generated body of a bundle root index from its domains and
@@ -358,15 +345,15 @@ mod tests {
         let dir = temp_dir("domain_generated");
         write(
             &dir.join("concepts/beta.md"),
-            "---\ntitle: Beta\ntype: concept\ndescription: Beta description\n---\n\n# Beta\n",
+            "---\ntitle: Beta\ntype: concept\ndescription: Beta description\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n\n# Beta\n",
         );
         write(
             &dir.join("concepts/alpha.md"),
-            "---\ntitle: Alpha\ntype: concept\n---\n\n# Alpha\n",
+            "---\ntitle: Alpha\ntype: concept\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n\n# Alpha\n",
         );
         write(
             &dir.join("entities/ent.md"),
-            "---\ntitle: Entity One\ntype: entity\n---\n\n# Entity One\n",
+            "---\ntitle: Entity One\ntype: entity\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n\n# Entity One\n",
         );
 
         assert!(regenerate_domain_index(&dir).unwrap());
@@ -391,7 +378,7 @@ mod tests {
     #[test]
     fn test_domain_index_preserves_authored_frontmatter() {
         let dir = temp_dir("domain_preserve");
-        let frontmatter = "---\ntitle: Custom Title\ndescription: Domain description\ncustom: keep-me\n---\n";
+        let frontmatter = "---\ntitle: Custom Title\ndescription: Domain description\ncustom: keep-me\ntype: concept\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n";
         write(
             &dir.join("index.md"),
             &format!(
@@ -400,7 +387,7 @@ mod tests {
         );
         write(
             &dir.join("concepts/live.md"),
-            "---\ntitle: Live\ntype: concept\n---\n\n# Live\n",
+            "---\ntitle: Live\ntype: concept\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n\n# Live\n",
         );
 
         assert!(regenerate_domain_index(&dir).unwrap());
@@ -422,7 +409,7 @@ mod tests {
         let dir = temp_dir("domain_idempotent");
         write(
             &dir.join("concepts/one.md"),
-            "---\ntitle: One\ntype: concept\n---\n\n# One\n",
+            "---\ntitle: One\ntype: concept\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n\n# One\n",
         );
         assert!(regenerate_domain_index(&dir).unwrap());
         assert!(
@@ -436,7 +423,7 @@ mod tests {
         let dir = temp_dir("domain_unknown_type");
         write(
             &dir.join("misc/odd.md"),
-            "---\ntitle: Odd\ntype: custom\n---\n\n# Odd\n",
+            "---\ntitle: Odd\ntype: custom\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n\n# Odd\n",
         );
         regenerate_domain_index(&dir).unwrap();
         let content = read(&dir.join("index.md"));
@@ -445,16 +432,16 @@ mod tests {
     }
 
     #[test]
-    fn test_domain_index_missing_type_derives_from_dir() {
-        let dir = temp_dir("domain_missing_type");
+    fn test_domain_index_invalid_page_fails() {
+        let dir = temp_dir("domain_invalid_page");
         write(
             &dir.join("sources/adr/adr-1.md"),
             "---\ntitle: ADR One\n---\n\n# ADR One\n",
         );
-        regenerate_domain_index(&dir).unwrap();
-        let content = read(&dir.join("index.md"));
-        assert!(content.contains("## source"));
-        assert!(content.contains("- [ADR One](sources/adr/adr-1.md)"));
+        let error =
+            regenerate_domain_index(&dir).expect_err("invalid page must fail");
+        assert!(error.contains("sources/adr/adr-1.md"), "{error}");
+        assert!(!dir.join("index.md").exists(), "no index written");
     }
 
     // -------------------------------------------------------------------
@@ -466,9 +453,12 @@ mod tests {
         let dir = temp_dir("root_domains");
         write(
             &dir.join("alpha/index.md"),
-            "---\ntitle: Alpha Domain\ndescription: First domain\n---\n",
+            "---\ntitle: Alpha Domain\ndescription: First domain\ntype: concept\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n",
         );
-        write(&dir.join("beta/index.md"), "---\ntitle: Beta Domain\n---\n");
+        write(
+            &dir.join("beta/index.md"),
+            "---\ntitle: Beta Domain\ntype: concept\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n",
+        );
         // Reserved, hidden, and bundle directories are not domains.
         fs::create_dir_all(dir.join("logs")).unwrap();
         fs::create_dir_all(dir.join(".cache")).unwrap();
@@ -490,13 +480,15 @@ mod tests {
     #[test]
     fn test_bundle_root_preserves_authored_frontmatter() {
         let dir = temp_dir("root_preserve");
-        let frontmatter =
-            "---\ntitle: My Bundle\ndescription: Bundle description\n---\n";
+        let frontmatter = "---\ntitle: My Bundle\ndescription: Bundle description\ntype: concept\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n";
         write(
             &dir.join("index.md"),
             &format!("{frontmatter}\n- [stale](stale/index.md)\n"),
         );
-        write(&dir.join("real/index.md"), "---\ntitle: Real\n---\n");
+        write(
+            &dir.join("real/index.md"),
+            "---\ntitle: Real\ntype: concept\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n",
+        );
 
         regenerate_bundle_root_index(&dir).unwrap();
         let content = read(&dir.join("index.md"));
@@ -508,14 +500,23 @@ mod tests {
     #[test]
     fn test_bundle_root_lists_root_level_pages() {
         let dir = temp_dir("root_pages");
-        write(&dir.join("alpha/index.md"), "---\ntitle: Alpha Domain\n---\n");
+        write(
+            &dir.join("alpha/index.md"),
+            "---\ntitle: Alpha Domain\ntype: concept\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n",
+        );
         write(
             &dir.join("overview.md"),
-            "---\ntitle: Overview\ndescription: High-level map\n---\n\nBody.\n",
+            "---\ntitle: Overview\ndescription: High-level map\ntype: concept\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n\nBody.\n",
         );
-        write(&dir.join("notes.md"), "---\ntitle: Notes\n---\n\nBody.\n");
+        write(
+            &dir.join("notes.md"),
+            "---\ntitle: Notes\ntype: concept\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n\nBody.\n",
+        );
         // Meta files must never be listed.
-        write(&dir.join("SCHEMA.md"), "---\ntitle: Schema\n---\n");
+        write(
+            &dir.join("SCHEMA.md"),
+            "---\ntitle: Schema\ntype: concept\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n",
+        );
 
         assert!(regenerate_bundle_root_index(&dir).unwrap());
         let content = read(&dir.join("index.md"));
@@ -549,7 +550,7 @@ mod tests {
         let dir = temp_dir("all_indexes");
         write(
             &dir.join("alpha/concepts/one.md"),
-            "---\ntitle: One\ntype: concept\n---\n\n# One\n",
+            "---\ntitle: One\ntype: concept\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n\n# One\n",
         );
         regenerate_all_indexes(&dir, false);
 
@@ -564,7 +565,7 @@ mod tests {
         let dir = temp_dir("all_indexes_store");
         write(
             &dir.join("alpha/concepts/one.md"),
-            "---\ntitle: One\ntype: concept\n---\n\n# One\n",
+            "---\ntitle: One\ntype: concept\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n\n# One\n",
         );
         fs::write(dir.join("zwiki.lock"), "").unwrap();
         regenerate_all_indexes(&dir, false);

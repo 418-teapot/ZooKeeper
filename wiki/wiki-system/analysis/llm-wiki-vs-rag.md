@@ -4,7 +4,11 @@ description: LLM Wiki 与 RAG 两种知识管理哲学在知识状态、增长�
 resource: https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f
 type: analysis
 timestamp: 2026-09-18T02:37:58Z
-tags: [wiki, rag, comparison, knowledge-management]
+tags:
+  - wiki
+  - rag
+  - comparison
+  - knowledge-management
 sources:
   - wiki-system/sources/notes/llm-wiki-karpathy.md
 status: stable

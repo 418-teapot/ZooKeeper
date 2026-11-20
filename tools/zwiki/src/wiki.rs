@@ -1,13 +1,14 @@
-//! Core wiki library — path resolution, page discovery, frontmatter parsing.
+//! Core wiki library — path resolution, page discovery, page loading.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
+use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
 use regex::Regex;
-use serde_json::Value;
 use walkdir::WalkDir;
+use zwiki::document::PageDocument;
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -94,168 +95,6 @@ pub fn all_wiki_pages_at(root: &Path) -> Vec<PathBuf> {
 }
 
 // ---------------------------------------------------------------------------
-// Frontmatter utilities
-// ---------------------------------------------------------------------------
-
-/// Remove YAML frontmatter (`---` … `---`) from `content`.
-#[must_use]
-pub fn strip_frontmatter(content: &str) -> String {
-    if let Some(rest) = content.strip_prefix("---")
-        && let Some(end) = rest.find("---")
-    {
-        return rest[end + 3..].trim().to_string();
-    }
-    content.trim().to_string()
-}
-
-/// Lazily-compiled regex matching a YAML frontmatter delimiter line.
-fn frontmatter_re() -> &'static Regex {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| Regex::new(r"(?m)^---\s*$").unwrap())
-}
-
-/// Return the byte range of the frontmatter's inner content, i.e. between
-/// the opening and closing `---` delimiter lines (delimiters excluded).
-///
-/// Returns `None` when the content has no frontmatter block, when the
-/// opening delimiter is not the very first line, or when the block is not
-/// closed.
-#[must_use]
-pub fn frontmatter_inner_range(content: &str) -> Option<(usize, usize)> {
-    let mut delimiters = frontmatter_re().find_iter(content);
-    let opening = delimiters.next()?;
-    if opening.start() != 0 {
-        return None;
-    }
-    let closing = delimiters.next()?;
-    Some((opening.end(), closing.start()))
-}
-
-/// Minimal YAML frontmatter parser.
-///
-/// Handles `key: value` pairs and YAML list syntax (both inline `[a, b]`
-/// and block `- a\n- b`).  Returns a map with `Value::String` / `Value::Array`
-/// values.
-///
-/// NOT use `serde_yaml` because pages have arbitrary field order and comments.
-#[must_use]
-pub fn parse_frontmatter(content: &str) -> HashMap<String, Value> {
-    let mut fm: HashMap<String, Value> = HashMap::new();
-
-    // Opening delimiter must be at the very start of the content.
-    let Some(opening) = frontmatter_re().find(content) else {
-        return fm;
-    };
-    if opening.start() != 0 {
-        return fm;
-    }
-    let after_opening = opening.end();
-    let rest = &content[after_opening..];
-
-    // Find closing delimiter.
-    let Some(closing) = frontmatter_re().find(rest) else {
-        return fm;
-    };
-
-    let raw = rest[..closing.start()].trim();
-    if raw.is_empty() {
-        return fm;
-    }
-
-    let mut current_key: Option<String> = None;
-    let mut list_accum: Vec<String> = Vec::new();
-
-    for line in raw.lines() {
-        let stripped = line.trim();
-
-        // Block list item: `- value`
-        if let Some(val) = stripped.strip_prefix("- ")
-            && current_key.is_some()
-        {
-            list_accum.push(val.trim().to_string());
-            continue;
-        }
-
-        // Flush accumulated block list before handling the next line.
-        if let Some(ref key) = current_key
-            && !list_accum.is_empty()
-        {
-            let arr: Vec<Value> =
-                list_accum.iter().map(|s| Value::String(s.clone())).collect();
-            fm.insert(key.clone(), Value::Array(arr));
-            list_accum.clear();
-        }
-
-        // Empty or comment line.
-        if stripped.is_empty() || stripped.starts_with('#') {
-            if stripped.is_empty() {
-                current_key = None;
-            }
-            continue;
-        }
-
-        // Line containing a colon (potential key: value pair).
-        if let Some(colon_idx) = stripped.find(':')
-            && !stripped.starts_with('-')
-        {
-            let key = stripped[..colon_idx].trim().to_string();
-            let value_part = stripped[colon_idx + 1..].trim();
-
-            if value_part.starts_with('[') && value_part.ends_with(']') {
-                // Inline list: [a, b]
-                let inner = &value_part[1..value_part.len() - 1];
-                let items: Vec<Value> = inner
-                    .split(',')
-                    .map(|item| {
-                        Value::String(
-                            item.trim()
-                                .trim_matches('"')
-                                .trim_matches('\'')
-                                .to_string(),
-                        )
-                    })
-                    .filter(|v| match v {
-                        Value::String(s) => !s.is_empty(),
-                        _ => true,
-                    })
-                    .collect();
-                fm.insert(key, Value::Array(items));
-                list_accum.clear();
-                continue;
-            }
-
-            if !value_part.is_empty() {
-                // Scalar value.
-                let val =
-                    value_part.trim_matches('"').trim_matches('\'').to_string();
-                fm.insert(key, Value::String(val));
-                list_accum.clear();
-                continue;
-            }
-
-            // Empty value after colon → start of a block list.
-            current_key = Some(key);
-            list_accum.clear();
-            continue;
-        }
-
-        // Line without colon → reset current_key.
-        current_key = None;
-    }
-
-    // Final flush of any remaining block list.
-    if let Some(ref key) = current_key
-        && !list_accum.is_empty()
-    {
-        let arr: Vec<Value> =
-            list_accum.iter().map(|s| Value::String(s.clone())).collect();
-        fm.insert(key.clone(), Value::Array(arr));
-    }
-
-    fm
-}
-
-// ---------------------------------------------------------------------------
 // Path helpers
 // ---------------------------------------------------------------------------
 
@@ -268,58 +107,114 @@ fn relative_to(base: &Path, path: &Path) -> String {
 }
 
 // ---------------------------------------------------------------------------
-// Page struct & read_page
+// Page loading
 // ---------------------------------------------------------------------------
-/// A parsed wiki page.
+
+/// A wiki page: its file identity plus the page document.
 #[derive(Debug, Clone)]
 pub struct Page {
     /// Absolute filesystem path.
     pub path: PathBuf,
-    /// Path relative to `WIKI_DIR`.
+    /// Path relative to the wiki root.
     pub rel: String,
-    /// Parsed frontmatter (key → string or array of strings).
-    pub frontmatter: HashMap<String, Value>,
-    /// Body content with frontmatter removed.
-    pub body: String,
-    /// Raw file content including frontmatter (for consumers that need
-    /// the full text, e.g. contradiction parsing).
-    pub raw: String,
+    /// Typed metadata and author body.
+    pub document: PageDocument,
 }
 
-/// Read and parse a wiki page given an explicit wiki base dir.
-pub fn read_page_at(path: &Path, wiki_base: &Path) -> Option<Page> {
-    let content = read_file(path);
-    if content.is_empty() {
-        return None;
+/// A page that failed to load, with the location that failed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PageError {
+    /// Path relative to the wiki root.
+    pub rel: String,
+    /// Failure details.
+    pub message: String,
+}
+
+impl fmt::Display for PageError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}: {}", self.rel, self.message)
     }
+}
+
+/// Load one page and parse its document.
+///
+/// # Errors
+///
+/// Fails when the file cannot be read or when it is not a valid page
+/// document.  The error names `rel` so the caller can report the location.
+pub fn read_page_at(path: &Path, wiki_base: &Path) -> Result<Page, PageError> {
     let rel = relative_to(wiki_base, path);
-    let frontmatter = parse_frontmatter(&content);
-    let body = strip_frontmatter(&content);
-    Some(Page {
-        path: path.to_path_buf(),
-        rel,
-        frontmatter,
-        body,
-        raw: content,
-    })
+    load_page(path, rel)
 }
 
-// ---------------------------------------------------------------------------
-// Page cache
-// ---------------------------------------------------------------------------
+/// Read `path` and parse it as a page document reported as `rel`.
+fn load_page(path: &Path, rel: String) -> Result<Page, PageError> {
+    let error = |message: String| PageError { rel: rel.clone(), message };
+    let text = fs::read_to_string(path)
+        .map_err(|e| error(format!("无法读取文件: {e}")))?;
+    let document =
+        PageDocument::parse(&text).map_err(|e| error(e.to_string()))?;
+    Ok(Page { path: path.to_path_buf(), rel, document })
+}
 
-/// Internal: build a page cache keyed by relative path.
-pub fn page_cache_at(
-    pages: &[PathBuf],
-    wiki_base: &Path,
-) -> HashMap<String, Page> {
-    let mut cache = HashMap::new();
-    for path in pages {
-        if let Some(page) = read_page_at(path, wiki_base) {
-            cache.insert(page.rel.clone(), page);
+/// Every page under one wiki root, with the pages that failed to load.
+///
+/// The set is the single snapshot a command uses: valid pages feed the
+/// rules, failures stay available for the report.  A command that cannot
+/// work with a partial set calls [`PageSet::require_all`].
+#[derive(Debug, Default)]
+pub struct PageSet {
+    pages: Vec<Page>,
+    errors: Vec<PageError>,
+}
+
+impl PageSet {
+    /// Load every page under `root`.
+    #[must_use]
+    pub fn load(root: &Path) -> Self {
+        let mut pages = Vec::new();
+        let mut errors = Vec::new();
+        for path in all_wiki_pages_at(root) {
+            let rel = relative_to(root, &path);
+            match load_page(&path, rel) {
+                Ok(page) => pages.push(page),
+                Err(error) => errors.push(error),
+            }
         }
+        Self { pages, errors }
     }
-    cache
+
+    /// The pages that loaded, sorted by relative path.
+    #[must_use]
+    pub fn pages(&self) -> &[Page] {
+        &self.pages
+    }
+
+    /// The pages that failed to load, sorted by relative path.
+    #[must_use]
+    pub fn errors(&self) -> &[PageError] {
+        &self.errors
+    }
+
+    /// Whether a page at `rel` loaded.
+    #[must_use]
+    pub fn contains(&self, rel: &str) -> bool {
+        self.pages.iter().any(|page| page.rel == rel)
+    }
+
+    /// Every page, or one error naming every page that failed to load.
+    ///
+    /// # Errors
+    ///
+    /// Fails when at least one page could not be read or parsed.
+    pub fn require_all(&self) -> Result<&[Page], String> {
+        if self.errors.is_empty() {
+            return Ok(&self.pages);
+        }
+        let locations: Vec<String> =
+            self.errors.iter().map(ToString::to_string).collect();
+        Err(format!("无法加载页面: {}", locations.join("; ")))
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -585,11 +480,9 @@ pub fn collect_index_entries(root: &Path) -> Vec<HashSet<String>> {
 /// Check whether a page matches all provided slice filters (AND semantics).
 ///
 /// - `type_filter`: case-insensitive substring match on the `type`
-///   frontmatter field.
-/// - `tag_filter`: case-insensitive substring match on any element of
-///   the `tags` frontmatter field (handles both array and string).
-/// - `domain_filter`: case-insensitive exact match on the first path
-///   component of `page.rel`.
+///   metadata field.
+/// - `tag_filter`: case-insensitive substring match on any `tags` entry.
+/// - `domain_filter`: case-insensitive exact match on the page's domain.
 ///
 /// Returns `true` when the page passes all provided filters (or all
 /// filters are `None`).
@@ -601,62 +494,34 @@ pub fn page_matches_slice(
     domain_filter: Option<&str>,
     bundles: &BundleSet,
 ) -> bool {
-    // Type filter (case-insensitive substring).
+    let metadata = &page.document.metadata;
+
     if let Some(tf) = type_filter {
         let tf_lower = tf.to_lowercase();
-        let page_type =
-            page.frontmatter.get("type").and_then(|v| v.as_str()).unwrap_or("");
-        if !page_type.to_lowercase().contains(&tf_lower) {
+        if !metadata.page_type.to_lowercase().contains(&tf_lower) {
             return false;
         }
     }
 
-    // Tag filter (case-insensitive substring on any tag).
     if let Some(tf) = tag_filter {
         let tf_lower = tf.to_lowercase();
-        let matches = match page.frontmatter.get("tags") {
-            Some(Value::Array(arr)) => arr
-                .iter()
-                .filter_map(|v| v.as_str())
-                .any(|t| t.to_lowercase().contains(&tf_lower)),
-            Some(Value::String(s)) => s.to_lowercase().contains(&tf_lower),
-            _ => false,
-        };
-        if !matches {
+        if !metadata
+            .tags
+            .iter()
+            .any(|tag| tag.to_lowercase().contains(&tf_lower))
+        {
             return false;
         }
     }
 
-    // Domain filter (case-insensitive exact match against the domain).
     if let Some(df) = domain_filter {
         let df_lower = df.to_lowercase();
-        let domain = bundles.domain_of(&page.rel);
-        if domain.to_lowercase() != df_lower {
+        if bundles.domain_of(&page.rel).to_lowercase() != df_lower {
             return false;
         }
     }
 
     true
-}
-
-// ---------------------------------------------------------------------------
-// Tag extraction (shared by aggregate, list, search)
-// ---------------------------------------------------------------------------
-
-/// Extract tag strings from parsed frontmatter.
-///
-/// Handles both `Value::Array` (inline `[a, b]` or block list) and
-/// `Value::String` (single non-empty tag).  Returns an empty vec for
-/// missing or empty fields.
-#[must_use]
-pub fn extract_tags(frontmatter: &HashMap<String, Value>) -> Vec<String> {
-    match frontmatter.get("tags") {
-        Some(Value::Array(arr)) => {
-            arr.iter().filter_map(|v| v.as_str().map(String::from)).collect()
-        }
-        Some(Value::String(s)) if !s.is_empty() => vec![s.clone()],
-        _ => Vec::new(),
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -837,228 +702,7 @@ mod tests {
     }
 
     // -------------------------------------------------------------------
-    // 3. strip_frontmatter
-    // -------------------------------------------------------------------
-
-    #[test]
-    fn test_strip_frontmatter_empty_string() {
-        assert_eq!(strip_frontmatter(""), "");
-    }
-
-    #[test]
-    fn test_strip_frontmatter_no_frontmatter() {
-        assert_eq!(strip_frontmatter("  just text  "), "just text");
-    }
-
-    #[test]
-    fn test_strip_frontmatter_frontmatter_only() {
-        let content = "---\ntitle: only frontmatter\n---";
-        assert_eq!(strip_frontmatter(content), "");
-    }
-
-    #[test]
-    fn test_strip_frontmatter_trailing_content() {
-        let content = "---\ntitle: hello\n---\n\nreal content here";
-        assert_eq!(strip_frontmatter(content), "real content here");
-    }
-
-    #[test]
-    fn test_strip_frontmatter_leading_and_trailing_whitespace() {
-        let content = "---\ntitle: foo\n---\n  \nbody\n  ";
-        assert_eq!(strip_frontmatter(content), "body");
-    }
-
-    #[test]
-    fn test_strip_frontmatter_multiple_markers() {
-        let content = "---\ntitle: foo\n---\n\n---\nnot frontmatter\n---";
-        assert_eq!(strip_frontmatter(content), "---\nnot frontmatter\n---");
-    }
-
-    #[test]
-    fn test_strip_frontmatter_no_closing_marker() {
-        let content = "---\ntitle: no close";
-        assert_eq!(strip_frontmatter(content), "---\ntitle: no close");
-    }
-
-    // -------------------------------------------------------------------
-    // 4. parse_frontmatter
-    // -------------------------------------------------------------------
-
-    #[test]
-    fn test_parse_frontmatter_scalar_values() {
-        let content = "---\ntitle: Hello\ntype: concept\nstatus: draft\n---\n";
-        let result = parse_frontmatter(content);
-        assert_eq!(
-            result.get("title"),
-            Some(&Value::String("Hello".to_string()))
-        );
-        assert_eq!(
-            result.get("type"),
-            Some(&Value::String("concept".to_string()))
-        );
-        assert_eq!(
-            result.get("status"),
-            Some(&Value::String("draft".to_string()))
-        );
-        assert_eq!(result.len(), 3);
-    }
-
-    #[test]
-    fn test_parse_frontmatter_inline_list() {
-        let content =
-            "---\ntags: [python, test]\nsources: [foo.md, bar.md]\n---\n";
-        let result = parse_frontmatter(content);
-        assert_eq!(
-            result.get("tags"),
-            Some(&Value::Array(vec![
-                Value::String("python".to_string()),
-                Value::String("test".to_string()),
-            ]))
-        );
-        assert_eq!(
-            result.get("sources"),
-            Some(&Value::Array(vec![
-                Value::String("foo.md".to_string()),
-                Value::String("bar.md".to_string()),
-            ]))
-        );
-    }
-
-    #[test]
-    fn test_parse_frontmatter_block_list() {
-        let content = "---\ntags:\n- python\n- test\n---\n";
-        let result = parse_frontmatter(content);
-        assert_eq!(result.len(), 1);
-        assert_eq!(
-            result.get("tags"),
-            Some(&Value::Array(vec![
-                Value::String("python".to_string()),
-                Value::String("test".to_string()),
-            ]))
-        );
-    }
-
-    #[test]
-    fn test_parse_frontmatter_empty_frontmatter() {
-        let content = "---\n---\nBody here.";
-        let result = parse_frontmatter(content);
-        assert!(result.is_empty());
-    }
-
-    #[test]
-    fn test_parse_frontmatter_no_frontmatter() {
-        let content = "# Just a heading\n\nNo frontmatter here.\n";
-        let result = parse_frontmatter(content);
-        assert!(result.is_empty());
-    }
-
-    #[test]
-    fn test_parse_frontmatter_mixed_types() {
-        let content = "---\ntitle: Mixed\ntype: concept\n\
-                        tags: [foo, bar]\nsources:\n- a.md\n- b.md\n---\n";
-        let result = parse_frontmatter(content);
-        assert_eq!(
-            result.get("title"),
-            Some(&Value::String("Mixed".to_string()))
-        );
-        assert_eq!(
-            result.get("type"),
-            Some(&Value::String("concept".to_string()))
-        );
-        assert_eq!(
-            result.get("tags"),
-            Some(&Value::Array(vec![
-                Value::String("foo".to_string()),
-                Value::String("bar".to_string()),
-            ]))
-        );
-        assert_eq!(
-            result.get("sources"),
-            Some(&Value::Array(vec![
-                Value::String("a.md".to_string()),
-                Value::String("b.md".to_string()),
-            ]))
-        );
-    }
-
-    #[test]
-    fn test_parse_frontmatter_quoted_values_stripped() {
-        let content = "---\ntitle: \"Hello World\"\n---\n";
-        let result = parse_frontmatter(content);
-        assert_eq!(
-            result.get("title"),
-            Some(&Value::String("Hello World".to_string()))
-        );
-    }
-
-    #[test]
-    fn test_parse_frontmatter_single_quoted_values_stripped() {
-        let content = "---\ntitle: 'Hello World'\n---\n";
-        let result = parse_frontmatter(content);
-        assert_eq!(
-            result.get("title"),
-            Some(&Value::String("Hello World".to_string()))
-        );
-    }
-
-    #[test]
-    fn test_parse_frontmatter_commented_lines_ignored() {
-        let content =
-            "---\ntitle: Hello\n# this is a comment\ntype: concept\n---\n";
-        let result = parse_frontmatter(content);
-        assert_eq!(
-            result.get("title"),
-            Some(&Value::String("Hello".to_string()))
-        );
-        assert_eq!(
-            result.get("type"),
-            Some(&Value::String("concept".to_string()))
-        );
-        assert_eq!(result.len(), 2);
-    }
-
-    #[test]
-    fn test_parse_frontmatter_no_closing_marker() {
-        let content = "---\ntitle: Hello\ntype: concept\n";
-        let result = parse_frontmatter(content);
-        assert!(result.is_empty());
-    }
-
-    #[test]
-    fn test_parse_frontmatter_block_list_flush_on_new_key() {
-        let content =
-            "---\ntags:\n- python\n- test\ntitle: After List\n---\nBody.";
-        let result = parse_frontmatter(content);
-        assert_eq!(
-            result.get("tags"),
-            Some(&Value::Array(vec![
-                Value::String("python".to_string()),
-                Value::String("test".to_string()),
-            ]))
-        );
-        assert_eq!(
-            result.get("title"),
-            Some(&Value::String("After List".to_string()))
-        );
-    }
-
-    #[test]
-    fn test_parse_frontmatter_non_key_line_sets_current_key_to_none() {
-        let content = "---\ntitle: Hello\nunknown_line\ntype: concept\n---\n";
-        let result = parse_frontmatter(content);
-        assert_eq!(
-            result.get("title"),
-            Some(&Value::String("Hello".to_string()))
-        );
-        assert_eq!(
-            result.get("type"),
-            Some(&Value::String("concept".to_string()))
-        );
-        assert_eq!(result.len(), 2);
-    }
-
-    // -------------------------------------------------------------------
-    // 5. parse_date
+    // 3. parse_date
     // -------------------------------------------------------------------
 
     #[test]
@@ -1101,7 +745,7 @@ mod tests {
     }
 
     // -------------------------------------------------------------------
-    // 6. validate_domain
+    // 4. validate_domain
     // -------------------------------------------------------------------
 
     #[test]
@@ -1146,7 +790,7 @@ mod tests {
     }
 
     // -------------------------------------------------------------------
-    // 8. BundleSet::domain_of
+    // 5. BundleSet::domain_of
     // -------------------------------------------------------------------
 
     /// Build a `BundleSet` from explicit bundle names.
@@ -1187,26 +831,74 @@ mod tests {
     }
 
     // -------------------------------------------------------------------
-    // 9. page_matches_slice
+    // 6. page_matches_slice
     // -------------------------------------------------------------------
+
+    /// Page text carrying every required field.
+    fn page_text(page_type: &str, tags: &str) -> String {
+        format!(
+            "---\ntitle: T\ntype: {page_type}\ntags: {tags}\n\
+             status: draft\nlast_validated: 2026-01-01T00:00:00Z\n\
+             timeliness: current\n---\n"
+        )
+    }
+
+    // -------------------------------------------------------------------
+    // 7. PageSet
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn test_page_set_keeps_valid_pages_and_errors() {
+        let dir = temp_dir("page_set_mixed");
+        write(&dir.join("a.md"), &page_text("concept", "[]"));
+        write(&dir.join("broken.md"), "# No frontmatter\n");
+
+        let set = PageSet::load(&dir);
+
+        assert_eq!(set.pages().len(), 1);
+        assert!(set.contains("a.md"));
+        assert!(!set.contains("broken.md"));
+        assert_eq!(set.errors().len(), 1);
+        assert_eq!(set.errors()[0].rel, "broken.md");
+        assert!(
+            set.errors()[0].message.contains("frontmatter"),
+            "the error carries the parse failure: {}",
+            set.errors()[0]
+        );
+    }
+
+    #[test]
+    fn test_page_set_requires_every_page() {
+        let dir = temp_dir("page_set_require_all");
+        write(&dir.join("a.md"), &page_text("concept", "[]"));
+        write(&dir.join("bad.md"), "---\ntitle: Bad\n---\n");
+        let set = PageSet::load(&dir);
+
+        let error = set.require_all().expect_err("an invalid page fails");
+        assert!(error.contains("bad.md"), "{error}");
+
+        let clean = temp_dir("page_set_require_ok");
+        write(&clean.join("a.md"), &page_text("concept", "[]"));
+        assert!(PageSet::load(&clean).require_all().is_ok());
+    }
 
     #[test]
     fn test_page_matches_slice_no_filters() {
         let dir = temp_dir("slice_no_filters");
         write(
             &dir.join("shared").join("a.md"),
-            "---\ntype: concept\ntags: [auth]\n---\n",
+            &page_text("concept", "[auth]"),
         );
         let pages = discover_pages(&dir);
-        let page = read_page_at(&pages[0], &dir).unwrap();
+        let page = read_page_at(&pages[0], &dir).expect("valid page");
         assert!(page_matches_slice(&page, None, None, None, &bundles(&[])));
     }
 
     #[test]
     fn test_page_matches_slice_type_substring() {
         let dir = temp_dir("slice_type");
-        write(&dir.join("a.md"), "---\ntype: concept\ntags: []\n---\n");
-        let page = read_page_at(&dir.join("a.md"), &dir).unwrap();
+        write(&dir.join("a.md"), &page_text("concept", "[]"));
+        let page = read_page_at(&dir.join("a.md"), &dir).expect("valid page");
         assert!(page_matches_slice(
             &page,
             Some("conc"),
@@ -1226,11 +918,8 @@ mod tests {
     #[test]
     fn test_page_matches_slice_tag_substring() {
         let dir = temp_dir("slice_tag");
-        write(
-            &dir.join("a.md"),
-            "---\ntype: concept\ntags: [access-control]\n---\n",
-        );
-        let page = read_page_at(&dir.join("a.md"), &dir).unwrap();
+        write(&dir.join("a.md"), &page_text("concept", "[access-control]"));
+        let page = read_page_at(&dir.join("a.md"), &dir).expect("valid page");
         assert!(page_matches_slice(
             &page,
             None,
@@ -1250,12 +939,9 @@ mod tests {
     #[test]
     fn test_page_matches_slice_domain_exact() {
         let dir = temp_dir("slice_domain");
-        write(
-            &dir.join("shared").join("a.md"),
-            "---\ntype: concept\ntags: []\n---\n",
-        );
-        let page =
-            read_page_at(&dir.join("shared").join("a.md"), &dir).unwrap();
+        write(&dir.join("shared").join("a.md"), &page_text("concept", "[]"));
+        let page = read_page_at(&dir.join("shared").join("a.md"), &dir)
+            .expect("valid page");
         assert!(page_matches_slice(
             &page,
             None,
@@ -1277,16 +963,13 @@ mod tests {
         let dir = temp_dir("slice_combined");
         write(
             &dir.join("shared").join("a.md"),
-            "---\ntype: concept\ntags: [auth]\n---\n",
+            &page_text("concept", "[auth]"),
         );
-        write(
-            &dir.join("shared").join("b.md"),
-            "---\ntype: entity\ntags: [auth]\n---\n",
-        );
-        let page_a =
-            read_page_at(&dir.join("shared").join("a.md"), &dir).unwrap();
-        let page_b =
-            read_page_at(&dir.join("shared").join("b.md"), &dir).unwrap();
+        write(&dir.join("shared").join("b.md"), &page_text("entity", "[auth]"));
+        let page_a = read_page_at(&dir.join("shared").join("a.md"), &dir)
+            .expect("valid page");
+        let page_b = read_page_at(&dir.join("shared").join("b.md"), &dir)
+            .expect("valid page");
         // Both match domain+tag, only a matches type.
         assert!(page_matches_slice(
             &page_a,

@@ -19,12 +19,12 @@ use crate::wiki;
 pub struct ListEntry {
     /// Wiki-relative path.
     pub path: String,
-    /// Page title from frontmatter (or filename stem fallback).
+    /// Page title.
     pub title: String,
-    /// Page type from frontmatter.
+    /// Page type.
     #[serde(rename = "type")]
     pub page_type: String,
-    /// Tags from frontmatter.
+    /// Page tags.
     pub tags: Vec<String>,
 }
 
@@ -36,61 +36,45 @@ pub struct ListEntry {
 ///
 /// All filters are optional.  When none are provided, all pages are listed.
 /// When multiple filters are given, pages must match **all** of them (AND).
+///
+/// # Errors
+///
+/// Fails when any page cannot be loaded, naming its path.
 pub fn list_pages(
     wiki_dir: &Path,
     type_filter: Option<&str>,
     tag_filter: Option<&str>,
     domain_filter: Option<&str>,
     bundles: &wiki::BundleSet,
-) -> Vec<ListEntry> {
-    let pages = wiki::discover_pages(wiki_dir);
+) -> Result<Vec<ListEntry>, String> {
+    let set = wiki::PageSet::load(wiki_dir);
+    let pages = set.require_all()?;
 
     let mut entries: Vec<ListEntry> = pages
         .iter()
-        .filter_map(|path| {
-            let page = wiki::read_page_at(path, wiki_dir)?;
-
-            // Apply slice filters via shared function (AND semantics).
-            if !wiki::page_matches_slice(
-                &page,
+        .filter(|page| {
+            wiki::page_matches_slice(
+                page,
                 type_filter,
                 tag_filter,
                 domain_filter,
                 bundles,
-            ) {
-                return None;
+            )
+        })
+        .map(|page| {
+            let metadata = &page.document.metadata;
+            ListEntry {
+                path: page.rel.clone(),
+                title: metadata.title.clone(),
+                page_type: metadata.page_type.clone(),
+                tags: metadata.tags.clone(),
             }
-
-            let title = page
-                .frontmatter
-                .get("title")
-                .and_then(|v| v.as_str())
-                .map_or_else(
-                    || {
-                        path.file_stem()
-                            .and_then(|s| s.to_str())
-                            .unwrap_or("")
-                            .to_string()
-                    },
-                    ToString::to_string,
-                );
-
-            let page_type = page
-                .frontmatter
-                .get("type")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string();
-
-            let tags = wiki::extract_tags(&page.frontmatter);
-
-            Some(ListEntry { path: page.rel, title, page_type, tags })
         })
         .collect();
 
     // Sort by path ascending.
     entries.sort_by(|a, b| a.path.cmp(&b.path));
-    entries
+    Ok(entries)
 }
 
 // ---------------------------------------------------------------------------
@@ -141,7 +125,8 @@ mod tests {
     #[test]
     fn test_empty_wiki() {
         let dir = temp_dir("empty");
-        let entries = list_pages(&dir, None, None, None, &no_bundles());
+        let entries = list_pages(&dir, None, None, None, &no_bundles())
+            .expect("valid pages");
         assert!(entries.is_empty());
     }
 
@@ -155,20 +140,21 @@ mod tests {
         write_page(
             &dir,
             "concepts/npc.md",
-            "---\ntitle: NPC\ntype: concept\ntags: [rpg]\n---\n# NPC\n",
+            "---\ntitle: NPC\ntype: concept\ntags: [rpg]\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n# NPC\n",
         );
         write_page(
             &dir,
             "entities/weapon.md",
-            "---\ntitle: Weapon\ntype: entity\ntags: [item]\n---\n# Weapon\n",
+            "---\ntitle: Weapon\ntype: entity\ntags: [item]\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n# Weapon\n",
         );
         write_page(
             &dir,
             "shared/overview.md",
-            "---\ntitle: Shared\ntype: concept\ntags: []\n---\n# Shared\n",
+            "---\ntitle: Shared\ntype: concept\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n# Shared\n",
         );
 
-        let entries = list_pages(&dir, None, None, None, &no_bundles());
+        let entries = list_pages(&dir, None, None, None, &no_bundles())
+            .expect("valid pages");
         assert_eq!(entries.len(), 3);
         // Sorted by path.
         assert_eq!(entries[0].path, "concepts/npc.md");
@@ -186,16 +172,17 @@ mod tests {
         write_page(
             &dir,
             "concepts/one.md",
-            "---\ntitle: One\ntype: concept\ntags: []\n---\n",
+            "---\ntitle: One\ntype: concept\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n",
         );
         write_page(
             &dir,
             "entities/one.md",
-            "---\ntitle: Entity One\ntype: entity\ntags: []\n---\n",
+            "---\ntitle: Entity One\ntype: entity\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n",
         );
 
         let entries =
-            list_pages(&dir, Some("concept"), None, None, &no_bundles());
+            list_pages(&dir, Some("concept"), None, None, &no_bundles())
+                .expect("valid pages");
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].page_type, "concept");
     }
@@ -206,10 +193,11 @@ mod tests {
         write_page(
             &dir,
             "concepts/one.md",
-            "---\ntitle: One\ntype: concept\ntags: []\n---\n",
+            "---\ntitle: One\ntype: concept\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n",
         );
         let entries =
-            list_pages(&dir, Some("Concept"), None, None, &no_bundles());
+            list_pages(&dir, Some("Concept"), None, None, &no_bundles())
+                .expect("valid pages");
         assert_eq!(entries.len(), 1);
     }
 
@@ -219,14 +207,15 @@ mod tests {
         write_page(
             &dir,
             "concepts/one.md",
-            "---\ntitle: One\ntype: concept\ntags: []\n---\n",
+            "---\ntitle: One\ntype: concept\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n",
         );
         write_page(
             &dir,
             "analysis/two.md",
-            "---\ntitle: Two\ntype: analysis\ntags: []\n---\n",
+            "---\ntitle: Two\ntype: analysis\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n",
         );
-        let entries = list_pages(&dir, Some("ana"), None, None, &no_bundles());
+        let entries = list_pages(&dir, Some("ana"), None, None, &no_bundles())
+            .expect("valid pages");
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].page_type, "analysis");
     }
@@ -241,16 +230,17 @@ mod tests {
         write_page(
             &dir,
             "concepts/auth.md",
-            "---\ntitle: Auth\ntype: concept\ntags: [access-control]\n---\n",
+            "---\ntitle: Auth\ntype: concept\ntags: [access-control]\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n",
         );
         write_page(
             &dir,
             "concepts/misc.md",
-            "---\ntitle: Misc\ntype: concept\ntags: [other]\n---\n",
+            "---\ntitle: Misc\ntype: concept\ntags: [other]\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n",
         );
 
         let entries =
-            list_pages(&dir, None, Some("access"), None, &no_bundles());
+            list_pages(&dir, None, Some("access"), None, &no_bundles())
+                .expect("valid pages");
         assert_eq!(entries.len(), 1);
     }
 
@@ -260,10 +250,11 @@ mod tests {
         write_page(
             &dir,
             "concepts/auth.md",
-            "---\ntitle: Auth\ntype: concept\ntags: [access-control]\n---\n",
+            "---\ntitle: Auth\ntype: concept\ntags: [access-control]\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n",
         );
         let entries =
-            list_pages(&dir, None, Some("control"), None, &no_bundles());
+            list_pages(&dir, None, Some("control"), None, &no_bundles())
+                .expect("valid pages");
         assert_eq!(entries.len(), 1);
     }
 
@@ -273,10 +264,11 @@ mod tests {
         write_page(
             &dir,
             "concepts/auth.md",
-            "---\ntitle: Auth\ntype: concept\ntags: [Access]\n---\n",
+            "---\ntitle: Auth\ntype: concept\ntags: [Access]\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n",
         );
         let entries =
-            list_pages(&dir, None, Some("access"), None, &no_bundles());
+            list_pages(&dir, None, Some("access"), None, &no_bundles())
+                .expect("valid pages");
         assert_eq!(entries.len(), 1);
     }
 
@@ -290,16 +282,17 @@ mod tests {
         write_page(
             &dir,
             "shared/concepts/a.md",
-            "---\ntitle: A\ntype: concept\ntags: []\n---\n",
+            "---\ntitle: A\ntype: concept\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n",
         );
         write_page(
             &dir,
             "autoresearch/concepts/b.md",
-            "---\ntitle: B\ntype: concept\ntags: []\n---\n",
+            "---\ntitle: B\ntype: concept\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n",
         );
 
         let entries =
-            list_pages(&dir, None, None, Some("shared"), &no_bundles());
+            list_pages(&dir, None, None, Some("shared"), &no_bundles())
+                .expect("valid pages");
         assert_eq!(entries.len(), 1);
         assert!(entries[0].path.starts_with("shared/"));
     }
@@ -310,10 +303,11 @@ mod tests {
         write_page(
             &dir,
             "Shared/concepts/a.md",
-            "---\ntitle: A\ntype: concept\ntags: []\n---\n",
+            "---\ntitle: A\ntype: concept\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n",
         );
         let entries =
-            list_pages(&dir, None, None, Some("shared"), &no_bundles());
+            list_pages(&dir, None, None, Some("shared"), &no_bundles())
+                .expect("valid pages");
         assert_eq!(entries.len(), 1);
     }
 
@@ -327,17 +321,17 @@ mod tests {
         write_page(
             &dir,
             "shared/concepts/a.md",
-            "---\ntitle: A\ntype: concept\ntags: [access]\n---\n",
+            "---\ntitle: A\ntype: concept\ntags: [access]\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n",
         );
         write_page(
             &dir,
             "shared/entities/b.md",
-            "---\ntitle: B\ntype: entity\ntags: [access]\n---\n",
+            "---\ntitle: B\ntype: entity\ntags: [access]\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n",
         );
         write_page(
             &dir,
             "shared/concepts/c.md",
-            "---\ntitle: C\ntype: concept\ntags: [misc]\n---\n",
+            "---\ntitle: C\ntype: concept\ntags: [misc]\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n",
         );
 
         // Only concept pages in shared domain with "access" tag.
@@ -347,7 +341,8 @@ mod tests {
             Some("access"),
             Some("shared"),
             &no_bundles(),
-        );
+        )
+        .expect("valid pages");
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].path, "shared/concepts/a.md");
     }
@@ -362,10 +357,11 @@ mod tests {
         write_page(
             &dir,
             "concepts/one.md",
-            "---\ntitle: One\ntype: concept\ntags: []\n---\n",
+            "---\ntitle: One\ntype: concept\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n",
         );
         let entries =
-            list_pages(&dir, Some("entity"), None, None, &no_bundles());
+            list_pages(&dir, Some("entity"), None, None, &no_bundles())
+                .expect("valid pages");
         assert!(entries.is_empty());
     }
 
@@ -379,9 +375,10 @@ mod tests {
         write_page(
             &dir,
             "concepts/test.md",
-            "---\ntitle: My Page\ntype: analysis\ntags: [tag1, tag2]\n---\nBody.",
+            "---\ntitle: My Page\ntype: analysis\ntags: [tag1, tag2]\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\nBody.",
         );
-        let entries = list_pages(&dir, None, None, None, &no_bundles());
+        let entries = list_pages(&dir, None, None, None, &no_bundles())
+            .expect("valid pages");
         assert_eq!(entries.len(), 1);
         assert!(entries[0].path.ends_with("concepts/test.md"));
         assert_eq!(entries[0].title, "My Page");
@@ -390,12 +387,15 @@ mod tests {
     }
 
     #[test]
-    fn test_list_entry_title_fallback() {
-        let dir = temp_dir("title_fallback");
+    fn test_list_invalid_page_fails() {
+        let dir = temp_dir("invalid_page");
         write_page(&dir, "concepts/nofrontmatter.md", "# No Frontmatter\n");
-        let entries = list_pages(&dir, None, None, None, &no_bundles());
-        assert_eq!(entries.len(), 1);
-        assert_eq!(entries[0].title, "nofrontmatter");
+        let error = list_pages(&dir, None, None, None, &no_bundles())
+            .expect_err("invalid page must fail the listing");
+        assert!(
+            error.contains("concepts/nofrontmatter.md"),
+            "error must name the page: {error}"
+        );
     }
 
     // -------------------------------------------------------------------
@@ -462,20 +462,21 @@ mod tests {
         write_page(
             &dir,
             "z/concepts/a.md",
-            "---\ntitle: Z-A\ntype: concept\ntags: []\n---\n",
+            "---\ntitle: Z-A\ntype: concept\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n",
         );
         write_page(
             &dir,
             "a/concepts/b.md",
-            "---\ntitle: A-B\ntype: concept\ntags: []\n---\n",
+            "---\ntitle: A-B\ntype: concept\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n",
         );
         write_page(
             &dir,
             "m/concepts/c.md",
-            "---\ntitle: M-C\ntype: concept\ntags: []\n---\n",
+            "---\ntitle: M-C\ntype: concept\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n",
         );
 
-        let entries = list_pages(&dir, None, None, None, &no_bundles());
+        let entries = list_pages(&dir, None, None, None, &no_bundles())
+            .expect("valid pages");
         assert_eq!(entries.len(), 3);
         assert_eq!(entries[0].path, "a/concepts/b.md");
         assert_eq!(entries[1].path, "m/concepts/c.md");

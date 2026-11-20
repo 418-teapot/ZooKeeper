@@ -1,7 +1,7 @@
 //! Contradiction tracking — list, detect, and apply contradiction
 //! resolutions across wiki pages.
 //!
-//! The `contradictions` frontmatter field stores an array of objects:
+//! Records live in the typed `contradictions` metadata field:
 //!
 //! ```yaml
 //! contradictions:
@@ -13,27 +13,28 @@
 //! ```
 
 use std::fmt::Write;
-use std::fs;
 use std::io::{self, Read};
 use std::path::Path;
 
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
+use zwiki::document::Contradiction;
 
-use crate::{property, wiki};
+use crate::document_io::{load, store};
+use crate::wiki;
 
 // ---------------------------------------------------------------------------
 // Data structures
 // ---------------------------------------------------------------------------
 
-/// A single contradiction entry as stored in frontmatter.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// A single contradiction entry in list output.
+///
+/// The stored field is `path`; JSON output names it `target` to match the
+/// command contract.
+#[derive(Debug, Clone, Serialize)]
 pub struct ContradictionEntry {
     /// Wiki-relative path of the conflicting page.
-    ///
-    /// Deserialized from frontmatter `path` field, serialized as `target`
-    /// in JSON output to match the expected API contract.
-    #[serde(rename(serialize = "target", deserialize = "path"))]
+    #[serde(rename = "target")]
     pub path: String,
     /// List of contradictory claims.
     pub claims: Vec<String>,
@@ -41,6 +42,17 @@ pub struct ContradictionEntry {
     pub detected: String,
     /// Resolution status (`unresolved` or free-text description).
     pub resolution: String,
+}
+
+impl From<Contradiction> for ContradictionEntry {
+    fn from(record: Contradiction) -> Self {
+        Self {
+            path: record.path,
+            claims: record.claims,
+            detected: record.detected,
+            resolution: record.resolution,
+        }
+    }
 }
 
 /// Contradictions found on a single wiki page (output struct).
@@ -54,84 +66,36 @@ pub struct PageContradictions {
 }
 
 // ---------------------------------------------------------------------------
-// Frontmatter extraction
-// ---------------------------------------------------------------------------
-
-/// Extract the raw YAML frontmatter block (between `---` … `---`).
-fn extract_frontmatter_block(content: &str) -> Option<&str> {
-    let trimmed = content.trim();
-    if !trimmed.starts_with("---") {
-        return None;
-    }
-    let after_opening = &trimmed[3..];
-    let end = after_opening.find("---")?;
-    Some(after_opening[..end].trim())
-}
-
-// ---------------------------------------------------------------------------
-// Contradiction parsing with proper YAML support
-// ---------------------------------------------------------------------------
-
-/// Parse the `contradictions` field from raw page content using
-/// `serde_yaml` (handles nested YAML structures that the flat
-/// `wiki::parse_frontmatter` cannot).
-#[must_use]
-pub fn parse_contradictions(content: &str) -> Vec<ContradictionEntry> {
-    let fm_block = match extract_frontmatter_block(content) {
-        Some(block) if !block.is_empty() => block,
-        _ => return Vec::new(),
-    };
-
-    let yaml_value: serde_yaml::Value = match serde_yaml::from_str(fm_block) {
-        Ok(v) => v,
-        Err(_) => return Vec::new(),
-    };
-
-    let Some(contradictions) = yaml_value.get("contradictions") else {
-        return Vec::new();
-    };
-    let Some(seq) = contradictions.as_sequence() else {
-        return Vec::new();
-    };
-
-    seq.iter()
-        .filter_map(|item| {
-            serde_yaml::from_value::<ContradictionEntry>(item.clone()).ok()
-        })
-        .collect()
-}
-
-// ---------------------------------------------------------------------------
-// Collection
+// Reading
 // ---------------------------------------------------------------------------
 
 /// Iterate all wiki pages and collect those with `contradictions` entries.
-#[must_use]
-pub fn collect_all(root: &Path) -> Vec<PageContradictions> {
-    let wiki_root = root.to_path_buf();
-    let paths = wiki::all_wiki_pages_at(root);
+///
+/// # Errors
+///
+/// Fails when any page cannot be loaded, naming its path.
+pub fn collect_all(root: &Path) -> Result<Vec<PageContradictions>, String> {
+    let set = wiki::PageSet::load(root);
     let mut results: Vec<PageContradictions> = Vec::new();
 
-    for path in &paths {
-        let content = wiki::read_file(path);
-        let entries = parse_contradictions(&content);
-        if entries.is_empty() {
+    for page in set.require_all()? {
+        let entries = page.document.metadata.contradictions.as_deref();
+        let Some(entries) = entries.filter(|entries| !entries.is_empty())
+        else {
             continue;
-        }
+        };
 
-        let rel = path
-            .strip_prefix(&wiki_root)
-            .ok()
-            .and_then(|p| p.to_str())
-            .map_or_else(
-                || path.to_string_lossy().to_string(),
-                ToString::to_string,
-            );
-
-        results.push(PageContradictions { page: rel, entries });
+        results.push(PageContradictions {
+            page: page.rel.clone(),
+            entries: entries
+                .iter()
+                .cloned()
+                .map(ContradictionEntry::from)
+                .collect(),
+        });
     }
 
-    results
+    Ok(results)
 }
 
 // ---------------------------------------------------------------------------
@@ -192,7 +156,13 @@ pub fn dispatch(cmd: &crate::ContradictionsCommand, root: &Path, json: bool) {
 /// Collects all contradictions from every wiki page and prints them
 /// as JSON (with `--json`) or as a human-readable table.
 pub fn cmd_list(root: &Path, json: bool) {
-    let results = collect_all(root);
+    let results = match collect_all(root) {
+        Ok(results) => results,
+        Err(error) => {
+            eprintln!("{error}");
+            std::process::exit(1);
+        }
+    };
 
     if json {
         crate::print_stdout_line(format_json(&results));
@@ -204,10 +174,6 @@ pub fn cmd_list(root: &Path, json: bool) {
 // ===========================================================================
 // Apply (record contradictions from stdin)
 // ===========================================================================
-
-// ---------------------------------------------------------------------------
-// Data structures
-// ---------------------------------------------------------------------------
 
 /// A single contradiction pair from stdin JSON.
 #[derive(Debug, Deserialize)]
@@ -235,10 +201,6 @@ struct ApplyEntry {
     claims: Vec<String>,
 }
 
-// ---------------------------------------------------------------------------
-// Input parsing
-// ---------------------------------------------------------------------------
-
 /// Read and parse the contradiction input from stdin.
 fn input_from_stdin() -> Result<Vec<ContradictionInput>, String> {
     let mut buffer = String::new();
@@ -249,328 +211,84 @@ fn input_from_stdin() -> Result<Vec<ContradictionInput>, String> {
         .map_err(|e| format!("JSON 解析失败: {e}"))
 }
 
-// ---------------------------------------------------------------------------
-// Duplicate detection
-// ---------------------------------------------------------------------------
-
-/// Check whether two pages already have mutual contradiction entries
-/// pointing to each other.
+/// Check whether two pages already point at each other.
 ///
-/// Returns `true` when both pages contain at least one contradictions
-/// entry referencing the other page.
+/// Returns `true` when both pages contain at least one contradiction entry
+/// referencing the other page.
 fn has_mutual_contradiction(
-    content_a: &str,
-    content_b: &str,
+    entries_a: &[Contradiction],
+    entries_b: &[Contradiction],
     a_look_for_b: &str,
     b_look_for_a: &str,
 ) -> bool {
-    let entries_a = parse_contradictions(content_a);
-    let entries_b = parse_contradictions(content_b);
     entries_a.iter().any(|e| e.path == a_look_for_b)
         && entries_b.iter().any(|e| e.path == b_look_for_a)
 }
 
-// ---------------------------------------------------------------------------
-// Status downgrade
-// ---------------------------------------------------------------------------
-
-// The canonical `downgrade_status` implementation lives in `property::downgrade_status`.
-
-// ---------------------------------------------------------------------------
-// Frontmatter block manipulation
-// ---------------------------------------------------------------------------
-
-/// Result of locating the `contradictions` field inside frontmatter.
-struct CFieldLoc {
-    /// Index of the opening `---`.
-    start: usize,
-    /// Index of the closing `---`.
-    end: usize,
-    /// Index of the `contradictions:` line, or `None` if absent.
-    field_line: Option<usize>,
-    /// Whether the field value is `[]`.
-    empty_array: bool,
-    /// Index of the last indented block line, or `None`.
-    block_end: Option<usize>,
+/// Build one record for the page at `path`.
+fn record(path: &str, input: &ContradictionInput) -> Contradiction {
+    Contradiction {
+        path: path.to_string(),
+        claims: input.claims.clone(),
+        detected: input.detected.clone(),
+        resolution: input.resolution.clone(),
+    }
 }
 
-/// Locate frontmatter boundaries and scan for `contradictions` field.
-///
-/// Returns `None` when frontmatter is absent.
-fn locate_contradictions_field(lines: &[&str]) -> Option<CFieldLoc> {
-    // Find frontmatter `---` … `---`.
-    let mut fm_start: Option<usize> = None;
-    let mut fm_end: Option<usize> = None;
-
-    for (i, line) in lines.iter().enumerate() {
-        if line.trim() == "---" {
-            if fm_start.is_none() {
-                fm_start = Some(i);
-            } else if fm_end.is_none() {
-                fm_end = Some(i);
-                break;
-            }
-        }
-    }
-
-    let (start, end) = (fm_start?, fm_end?);
-
-    // Scan body for the field.
-    let mut field_line_idx: Option<usize> = None;
-    let mut is_empty_array = false;
-    let mut block_end_idx: Option<usize> = None;
-
-    let mut scan = start + 1;
-    while scan < end {
-        let trimmed = lines[scan].trim();
-
-        if let Some(colon_idx) = trimmed.find(':') {
-            let key = trimmed[..colon_idx].trim();
-            if key == "contradictions" {
-                field_line_idx = Some(scan);
-                let value_part = trimmed[colon_idx + 1..].trim();
-
-                if value_part == "[]" {
-                    is_empty_array = true;
-                    scan += 1;
-                    continue;
-                }
-
-                if value_part.is_empty() {
-                    let mut inner = scan + 1;
-                    while inner < end && lines[inner].starts_with(' ') {
-                        block_end_idx = Some(inner);
-                        inner += 1;
-                    }
-                    scan = inner;
-                    continue;
-                }
-
-                // Non-empty scalar value — treat as absent (defensive).
-                field_line_idx = None;
-            }
-        }
-
-        scan += 1;
-    }
-
-    Some(CFieldLoc {
-        start,
-        end,
-        field_line: field_line_idx,
-        empty_array: is_empty_array,
-        block_end: block_end_idx,
-    })
-}
-
-/// Build the YAML entry lines for a new contradiction entry.
-///
-/// Returns lines like:
-///
-/// ```text
-///   - path: domain/page-b.md
-///     claims:
-///       - "Page A states X=1 but Page B states X=2"
-///     detected: 2026-07-04
-///     resolution: unresolved
-/// ```
-fn build_contradiction_entry(
-    path_value: &str,
-    claims: &[String],
-    detected: &str,
-    resolution: &str,
-) -> Vec<String> {
-    let mut entry = Vec::new();
-    entry.push(format!("  - path: {path_value}"));
-    entry.push("    claims:".to_string());
-    for claim in claims {
-        let escaped = claim.replace('\\', "\\\\").replace('"', "\\\"");
-        entry.push(format!("      - \"{escaped}\""));
-    }
-    let escaped_detected = detected.replace('\\', "\\\\").replace('"', "\\\"");
-    entry.push(format!("    detected: {escaped_detected}"));
-    let escaped_resolution =
-        resolution.replace('\\', "\\\\").replace('"', "\\\"");
-    entry.push(format!("    resolution: {escaped_resolution}"));
-    entry
-}
-
-/// Append a `contradictions` entry to the frontmatter of the given page.
-///
-/// Handles three frontmatter states:
-///
-/// 1. **Field absent** — insert a new multiline block before closing `---`.
-/// 2. **Empty array** (`contradictions: []`) — replace the line with a block.
-/// 3. **Existing entries** — append a new entry after the last one.
-///
-/// Writes atomically (temp file → rename).
-fn append_contradictions_block(
-    page_abs: &Path,
-    path_value: &str,
-    claims: &[String],
-    detected: &str,
-    resolution: &str,
-) -> Result<(), String> {
-    let content = fs::read_to_string(page_abs)
-        .map_err(|e| format!("无法读取文件: {e}"))?;
-
-    let lines: Vec<&str> = content.lines().collect();
-
-    let Some(loc) = locate_contradictions_field(&lines) else {
-        return Err("文件缺少有效的 frontmatter".to_string());
-    };
-    let CFieldLoc {
-        start,
-        end,
-        field_line: field_line_idx,
-        empty_array: is_empty_array,
-        block_end: block_end_idx,
-    } = loc;
-
-    // Build the new entry lines.
-    let new_entry =
-        build_contradiction_entry(path_value, claims, detected, resolution);
-
-    let mut new_lines: Vec<String> = Vec::new();
-
-    // Lines before and including opening `---`.
-    for line in &lines[..=start] {
-        new_lines.push(line.to_string());
-    }
-
-    match field_line_idx {
-        None => {
-            // Case 1 — field absent: insert block before closing `---`.
-            for line in &lines[start + 1..end] {
-                new_lines.push(line.to_string());
-            }
-            new_lines.push("contradictions:".to_string());
-            new_lines.extend_from_slice(&new_entry);
-        }
-        Some(fld_idx) if is_empty_array => {
-            // Case 2 — `contradictions: []`: replace that line with a block.
-            for line in &lines[start + 1..fld_idx] {
-                new_lines.push(line.to_string());
-            }
-            new_lines.push("contradictions:".to_string());
-            new_lines.extend_from_slice(&new_entry);
-            for line in &lines[fld_idx + 1..end] {
-                new_lines.push(line.to_string());
-            }
-        }
-        Some(fld_idx) => {
-            // Case 3 — existing block: append after the last entry.
-            let last = block_end_idx.unwrap_or(fld_idx);
-            for line in &lines[start + 1..=last] {
-                new_lines.push(line.to_string());
-            }
-            new_lines.extend_from_slice(&new_entry);
-            for line in &lines[last + 1..end] {
-                new_lines.push(line.to_string());
-            }
-        }
-    }
-
-    // Closing `---`.
-    new_lines.push(lines[end].to_string());
-
-    // Lines after frontmatter.
-    for line in &lines[end + 1..] {
-        new_lines.push(line.to_string());
-    }
-
-    let mut new_content = new_lines.join("\n");
-    // Preserve trailing newline if original had one.
-    if content.ends_with('\n') && !new_content.ends_with('\n') {
-        new_content.push('\n');
-    }
-
-    // --- Atomic write ---
-
-    let temp_path =
-        page_abs.with_extension(format!("tmp-{}", std::process::id()));
-    fs::write(&temp_path, &new_content)
-        .map_err(|e| format!("写入临时文件失败: {e}"))?;
-    fs::rename(&temp_path, page_abs)
-        .inspect_err(|_| {
-            let _ = fs::remove_file(&temp_path);
-        })
-        .map_err(|e| format!("重命名文件失败: {e}"))?;
-
-    Ok(())
-}
-
-// ---------------------------------------------------------------------------
-// CLI entry point
-// ---------------------------------------------------------------------------
-
-/// Process a single contradiction pair: write blocks, downgrade status,
-/// set `last_validated`. Returns `None` (skip) if mutual contradiction
-/// already exists, or `Some(ApplyEntry)` on success.
+/// Process a single contradiction pair: append the record to both pages and
+/// set `last_validated`.  Returns `None` (skip) when the mutual contradiction
+/// already exists.
 fn apply_one_pair(
     input: &ContradictionInput,
-    wiki_root: &std::path::Path,
+    wiki_root: &Path,
     today: &str,
-) -> Option<ApplyEntry> {
+) -> Result<Option<ApplyEntry>, String> {
     let abs_a = wiki_root.join(&input.page_a);
     let abs_b = wiki_root.join(&input.page_b);
 
-    // Check for existing mutual contradiction — skip if already present.
-    let content_a = wiki::read_file(&abs_a);
-    let content_b = wiki::read_file(&abs_b);
+    let mut document_a =
+        load(&abs_a).map_err(|e| format!("{}: {e}", input.page_a))?;
+    let mut document_b =
+        load(&abs_b).map_err(|e| format!("{}: {e}", input.page_b))?;
+
     if has_mutual_contradiction(
-        &content_a,
-        &content_b,
+        document_a.metadata.contradictions.as_deref().unwrap_or(&[]),
+        document_b.metadata.contradictions.as_deref().unwrap_or(&[]),
         &input.page_b,
         &input.page_a,
     ) {
-        return None;
+        return Ok(None);
     }
 
-    // Append contradiction frontmatter blocks.
-    if let Err(e) = append_contradictions_block(
-        &abs_a,
-        &input.page_b,
-        &input.claims,
-        &input.detected,
-        &input.resolution,
-    ) {
-        eprintln!("{e}");
-        std::process::exit(1);
-    }
-    if let Err(e) = append_contradictions_block(
-        &abs_b,
-        &input.page_a,
-        &input.claims,
-        &input.detected,
-        &input.resolution,
-    ) {
-        eprintln!("{e}");
-        std::process::exit(1);
-    }
+    document_a
+        .metadata
+        .contradictions
+        .get_or_insert_with(Vec::new)
+        .push(record(&input.page_b, input));
+    document_b
+        .metadata
+        .contradictions
+        .get_or_insert_with(Vec::new)
+        .push(record(&input.page_a, input));
 
-    // Update last_validated on both pages.
-    if let Err(e) = property::set(&abs_a, "last_validated", today) {
-        eprintln!("写入 last_validated 失败 {}: {e}", input.page_a);
-        std::process::exit(1);
-    }
-    if let Err(e) = property::set(&abs_b, "last_validated", today) {
-        eprintln!("写入 last_validated 失败 {}: {e}", input.page_b);
-        std::process::exit(1);
-    }
+    document_a.metadata.last_validated = today.to_string();
+    document_b.metadata.last_validated = today.to_string();
 
-    Some(ApplyEntry {
+    store(&abs_a, &document_a).map_err(|e| format!("{}: {e}", input.page_a))?;
+    store(&abs_b, &document_b).map_err(|e| format!("{}: {e}", input.page_b))?;
+
+    Ok(Some(ApplyEntry {
         page_a: input.page_a.clone(),
         page_b: input.page_b.clone(),
         claims: input.claims.clone(),
-    })
+    }))
 }
 
 /// CLI entry point for `zwiki contradictions apply`.
 ///
 /// Reads a JSON array of contradiction pairs from stdin, validates
 /// page existence, checks for duplicates, and writes contradiction
-/// frontmatter blocks with `last_validated` update.
+/// records with `last_validated` update.
 /// Status downgrade is NOT performed — callers must explicitly use
 /// `zwiki page set <path> status --downgrade` if desired.
 pub fn cmd_apply(root: &Path, json: bool, note: Option<&str>) {
@@ -612,10 +330,17 @@ pub fn cmd_apply(root: &Path, json: bool, note: Option<&str>) {
     }
 
     let today = Utc::now().format("%Y-%m-%d").to_string();
-    let applied: Vec<ApplyEntry> = inputs
-        .iter()
-        .filter_map(|input| apply_one_pair(input, &wiki_root, &today))
-        .collect();
+    let mut applied: Vec<ApplyEntry> = Vec::new();
+    for input in &inputs {
+        match apply_one_pair(input, &wiki_root, &today) {
+            Ok(Some(entry)) => applied.push(entry),
+            Ok(None) => {}
+            Err(e) => {
+                eprintln!("{e}");
+                std::process::exit(1);
+            }
+        }
+    }
 
     // Log every page whose frontmatter was mutated.
     for entry in &applied {
@@ -648,6 +373,9 @@ pub fn cmd_apply(root: &Path, json: bool, note: Option<&str>) {
 mod tests {
     use super::*;
     use crate::bundle::testutil::temp_dir;
+    use crate::property;
+    use std::fs;
+    use zwiki::document::PageDocument;
 
     // -------------------------------------------------------------------
     // Helpers
@@ -661,36 +389,62 @@ mod tests {
         std::fs::write(path, text).expect("failed to write file");
     }
 
+    /// Valid page with every required field and extra frontmatter lines.
+    fn page(title: &str, extra: &str) -> String {
+        format!(
+            "---\ntitle: {title}\ntype: concept\ntags: []\nstatus: draft\n\
+             last_validated: 2026-07-01T00:00:00Z\ntimeliness: current\n\
+             {extra}---\n\n# {title}\n\nBody.\n"
+        )
+    }
+
+    /// One contradiction record pointing at `other.md`.
+    const CONTRADICTION: &str = "contradictions:\n  - path: other.md\n    \
+                                 claims:\n      - \"claim one\"\n      - \
+                                 \"claim two\"\n    detected: 2026-07-01\n    \
+                                 resolution: unresolved\n";
+
+    fn input(page_a: &str, page_b: &str) -> ContradictionInput {
+        ContradictionInput {
+            page_a: page_a.to_string(),
+            page_b: page_b.to_string(),
+            claims: vec!["claim X".to_string()],
+            detected: "2026-07-04".to_string(),
+            resolution: "unresolved".to_string(),
+        }
+    }
+
     // -------------------------------------------------------------------
-    // parse_contradictions
+    // contradictions metadata
     // -------------------------------------------------------------------
+
+    /// Contradiction entries of a valid page document.
+    fn entries(content: &str) -> Vec<Contradiction> {
+        PageDocument::parse(content)
+            .expect("valid page")
+            .metadata
+            .contradictions
+            .unwrap_or_default()
+    }
 
     #[test]
     fn test_parses_nested_yaml() {
-        let content = "\
----
-contradictions:
-  - path: other.md
-    claims:
-      - \"claim one\"
-      - \"claim two\"
-    detected: 2026-07-01
-    resolution: unresolved
----
-Body.
-";
-        let entries = parse_contradictions(content);
-        assert_eq!(entries.len(), 1);
-        assert_eq!(entries[0].path, "other.md");
-        assert_eq!(entries[0].claims, vec!["claim one", "claim two"]);
-        assert_eq!(entries[0].detected, "2026-07-01");
-        assert_eq!(entries[0].resolution, "unresolved");
+        let entries = entries(&page("Page A", CONTRADICTION));
+
+        assert_eq!(
+            entries,
+            vec![Contradiction {
+                path: "other.md".to_string(),
+                claims: vec!["claim one".to_string(), "claim two".to_string(),],
+                detected: "2026-07-01".to_string(),
+                resolution: "unresolved".to_string(),
+            }]
+        );
     }
 
     #[test]
     fn test_multiple_entries() {
-        let content = "\
----
+        let extra = "\
 contradictions:
   - path: first.md
     claims:
@@ -703,9 +457,9 @@ contradictions:
       - C
     detected: 2026-02-01
     resolution: fixed by ADR-005
----
 ";
-        let entries = parse_contradictions(content);
+        let entries = entries(&page("Page A", extra));
+
         assert_eq!(entries.len(), 2);
         assert_eq!(entries[0].path, "first.md");
         assert_eq!(entries[1].path, "second.md");
@@ -714,46 +468,39 @@ contradictions:
     }
 
     #[test]
-    fn test_no_frontmatter() {
-        let content = "# Just a page\n\nNo frontmatter here.";
-        let entries = parse_contradictions(content);
-        assert!(entries.is_empty());
-    }
-
-    #[test]
-    fn test_empty_frontmatter() {
-        let content = "---\n---\n\nBody.";
-        let entries = parse_contradictions(content);
-        assert!(entries.is_empty());
-    }
-
-    #[test]
     fn test_no_contradictions_field() {
-        let content = "---\ntitle: Hello\ntype: concept\n---\n\nBody.";
-        let entries = parse_contradictions(content);
-        assert!(entries.is_empty());
+        assert!(entries(&page("Page A", "")).is_empty());
     }
 
     #[test]
     fn test_empty_contradictions() {
-        let content = "---\ncontradictions: []\n---\n\nBody.";
-        let entries = parse_contradictions(content);
-        assert!(entries.is_empty());
+        let content = page("Page A", "contradictions: []\n");
+        assert!(entries(&content).is_empty());
     }
 
     #[test]
     fn test_inline_array_format() {
-        // Some pages might use inline YAML array syntax.
-        let content = "\
----
-contradictions:
-  - {path: other.md, claims: [x, y], detected: '2026-07-01', resolution: unresolved}
----
-";
-        let entries = parse_contradictions(content);
+        let extra = "contradictions:\n  - {path: other.md, claims: [x, y], \
+                     detected: '2026-07-01', resolution: unresolved}\n";
+        let entries = entries(&page("Page A", extra));
+
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].path, "other.md");
         assert_eq!(entries[0].claims, vec!["x", "y"]);
+    }
+
+    #[test]
+    fn test_malformed_entry_reports_error() {
+        let extra = "contradictions:\n  - path: other.md\n    detected: \
+                     2026-07-01\nresolution: unresolved\n";
+        let error = PageDocument::parse(&page("Page A", extra))
+            .expect_err("claims missing")
+            .to_string();
+
+        assert!(
+            error.contains("contradictions[0].claims"),
+            "unexpected error: {error}"
+        );
     }
 
     // -------------------------------------------------------------------
@@ -792,75 +539,48 @@ contradictions:
     }
 
     // -------------------------------------------------------------------
-    // collect_all (integration with temp wiki)
+    // collect_all
     // -------------------------------------------------------------------
 
     #[test]
     fn test_collect_all_finds_contradictions() {
         let dir = temp_dir("collect_all");
-        // Create pages with and without contradictions.
-        write(
-            &dir.join("shared").join("a.md"),
-            "\
----
-title: Page A
-contradictions:
-  - path: shared/b.md
-    claims:
-      - claim X
-    detected: 2026-07-01
-    resolution: unresolved
----
-# Page A
-",
-        );
-        write(
-            &dir.join("shared").join("b.md"),
-            "---\ntitle: Page B\n---\n\n# Page B\n",
-        );
-        write(&dir.join("shared").join("c.md"), "# Page C\n\nNo frontmatter.");
+        write(&dir.join("shared/a.md"), &page("Page A", CONTRADICTION));
+        write(&dir.join("shared/b.md"), &page("Page B", ""));
+        write(&dir.join("shared/c.md"), &page("Page C", ""));
 
-        // Override wiki_dir for testing by using discover_pages directly.
-        let paths = wiki::discover_pages(&dir);
-        let mut results: Vec<PageContradictions> = Vec::new();
-        for path in &paths {
-            let content = wiki::read_file(path);
-            let entries = parse_contradictions(&content);
-            if entries.is_empty() {
-                continue;
-            }
-            let rel = path
-                .strip_prefix(&dir)
-                .ok()
-                .and_then(|p| p.to_str())
-                .map_or_else(
-                    || path.to_string_lossy().to_string(),
-                    ToString::to_string,
-                );
-            results.push(PageContradictions { page: rel, entries });
-        }
+        let results = collect_all(&dir).expect("collect");
+
+        assert_eq!(results.len(), 1);
+
+        let results = collect_all(&dir).expect("collect");
 
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].page, "shared/a.md");
         assert_eq!(results[0].entries.len(), 1);
-        assert_eq!(results[0].entries[0].path, "shared/b.md");
+        assert_eq!(results[0].entries[0].path, "other.md");
     }
 
     #[test]
     fn test_collect_all_empty() {
         let dir = temp_dir("collect_all_empty");
-        write(&dir.join("a.md"), "# Just body\n");
+        write(&dir.join("a.md"), &page("Page A", ""));
 
-        let paths = wiki::discover_pages(&dir);
-        let mut count = 0;
-        for path in &paths {
-            let content = wiki::read_file(path);
-            let entries = parse_contradictions(&content);
-            if !entries.is_empty() {
-                count += 1;
-            }
-        }
-        assert_eq!(count, 0);
+        assert!(collect_all(&dir).expect("collect").is_empty());
+    }
+
+    #[test]
+    fn test_collect_all_reports_invalid_page() {
+        let dir = temp_dir("collect_all_invalid");
+        write(
+            &dir.join("a.md"),
+            "---\ntitle: Page A\ncontradictions: []\n---\n\nBody.",
+        );
+
+        let error = collect_all(&dir).expect_err("invalid page");
+
+        assert!(error.contains("a.md"), "unexpected error: {error}");
+        assert!(error.contains("缺少必需字段"), "unexpected error: {error}");
     }
 
     // -------------------------------------------------------------------
@@ -896,31 +616,20 @@ contradictions:
     // has_mutual_contradiction
     // -------------------------------------------------------------------
 
+    fn entry(path: &str) -> Contradiction {
+        Contradiction {
+            path: path.to_string(),
+            claims: vec!["claim X".to_string()],
+            detected: "2026-07-01".to_string(),
+            resolution: "unresolved".to_string(),
+        }
+    }
+
     #[test]
     fn test_mutual_contradiction_both_sides() {
-        let content_a = "\
----
-contradictions:
-  - path: page_b.md
-    claims:
-      - claim X
-    detected: 2026-07-01
-    resolution: unresolved
----
-";
-        let content_b = "\
----
-contradictions:
-  - path: page_a.md
-    claims:
-      - claim X
-    detected: 2026-07-01
-    resolution: unresolved
----
-";
         assert!(has_mutual_contradiction(
-            content_a,
-            content_b,
+            &[entry("page_b.md")],
+            &[entry("page_a.md")],
             "page_b.md",
             "page_a.md"
         ));
@@ -928,20 +637,9 @@ contradictions:
 
     #[test]
     fn test_mutual_contradiction_only_one_side() {
-        let content_a = "\
----
-contradictions:
-  - path: page_b.md
-    claims:
-      - claim X
-    detected: 2026-07-01
-    resolution: unresolved
----
-";
-        let content_b = "---\ntitle: B\n---\n";
         assert!(!has_mutual_contradiction(
-            content_a,
-            content_b,
+            &[entry("page_b.md")],
+            &[],
             "page_b.md",
             "page_a.md"
         ));
@@ -949,338 +647,98 @@ contradictions:
 
     #[test]
     fn test_mutual_contradiction_neither_side() {
-        let content_a = "---\ntitle: A\n---\n";
-        let content_b = "---\ntitle: B\n---\n";
-        assert!(!has_mutual_contradiction(
-            content_a,
-            content_b,
-            "page_b.md",
-            "page_a.md"
-        ));
+        assert!(!has_mutual_contradiction(&[], &[], "page_b.md", "page_a.md"));
     }
 
     // -------------------------------------------------------------------
-    // build_contradiction_entry
+    // apply_one_pair
     // -------------------------------------------------------------------
 
     #[test]
-    fn test_build_entry_basic() {
-        let claims = vec!["Page A says X=1 but Page B says X=2".to_string()];
-        let entry = build_contradiction_entry(
-            "shared/page-b.md",
-            &claims,
-            "2026-07-04",
-            "unresolved",
+    fn test_apply_writes_both_sides() {
+        let dir = temp_dir("apply_both_sides");
+        write(&dir.join("a.md"), &page("Page A", ""));
+        write(&dir.join("b.md"), &page("Page B", ""));
+
+        let applied =
+            apply_one_pair(&input("a.md", "b.md"), &dir, "2026-07-05")
+                .expect("apply")
+                .expect("new pair");
+        assert_eq!(applied.page_a, "a.md");
+        assert_eq!(applied.page_b, "b.md");
+
+        let document_a = load(&dir.join("a.md")).expect("page a");
+        assert_eq!(
+            document_a.metadata.contradictions,
+            Some(vec![Contradiction {
+                path: "b.md".to_string(),
+                claims: vec!["claim X".to_string()],
+                detected: "2026-07-04".to_string(),
+                resolution: "unresolved".to_string(),
+            }])
         );
-        assert_eq!(entry.len(), 5);
-        assert_eq!(entry[0], "  - path: shared/page-b.md");
-        assert_eq!(entry[1], "    claims:");
-        assert_eq!(entry[2], "      - \"Page A says X=1 but Page B says X=2\"");
-        assert_eq!(entry[3], "    detected: 2026-07-04");
-        assert_eq!(entry[4], "    resolution: unresolved");
-    }
+        assert_eq!(document_a.metadata.last_validated, "2026-07-05");
 
-    #[test]
-    fn test_build_entry_multiple_claims() {
-        let claims = vec![
-            "Claim one".to_string(),
-            "Claim two with \"quotes\"".to_string(),
-        ];
-        let entry = build_contradiction_entry(
-            "other.md",
-            &claims,
-            "2026-07-01",
-            "partial",
+        let document_b = load(&dir.join("b.md")).expect("page b");
+        assert_eq!(
+            document_b.metadata.contradictions,
+            Some(vec![Contradiction {
+                path: "a.md".to_string(),
+                claims: vec!["claim X".to_string()],
+                detected: "2026-07-04".to_string(),
+                resolution: "unresolved".to_string(),
+            }])
         );
-        assert_eq!(entry.len(), 6);
-        assert_eq!(entry[0], "  - path: other.md");
-        assert_eq!(entry[1], "    claims:");
-        assert_eq!(entry[2], "      - \"Claim one\"");
-        assert_eq!(entry[3], "      - \"Claim two with \\\"quotes\\\"\"");
-        assert_eq!(entry[4], "    detected: 2026-07-01");
-        assert_eq!(entry[5], "    resolution: partial");
+        assert_eq!(document_b.metadata.last_validated, "2026-07-05");
     }
 
-    // -------------------------------------------------------------------
-    // append_contradictions_block — field absent
-    // -------------------------------------------------------------------
-
     #[test]
-    fn test_append_block_field_absent() {
-        let dir = temp_dir("append_absent");
-        let path = dir.join("test.md");
-        write(&path, "---\ntitle: Page A\ntype: concept\n---\n\nBody.\n");
+    fn test_apply_skips_existing_pair() {
+        let dir = temp_dir("apply_existing_pair");
+        write(&dir.join("a.md"), &page("Page A", ""));
+        write(&dir.join("b.md"), &page("Page B", ""));
+        apply_one_pair(&input("a.md", "b.md"), &dir, "2026-07-05")
+            .expect("first apply")
+            .expect("new pair");
+        let before = fs::read_to_string(dir.join("a.md")).expect("read");
 
-        append_contradictions_block(
-            &path,
-            "shared/page-b.md",
-            &["claim text".to_string()],
-            "2026-07-04",
-            "unresolved",
-        )
-        .unwrap();
-
-        let content = std::fs::read_to_string(&path).unwrap();
-        assert!(content.contains("contradictions:"));
-        assert!(content.contains("  - path: shared/page-b.md"));
-        assert!(content.contains("    claims:"));
-        assert!(content.contains("      - \"claim text\""));
-        assert!(content.contains("    detected: 2026-07-04"));
-        assert!(content.contains("    resolution: unresolved"));
-        assert!(content.contains("title: Page A"));
-        assert!(content.contains("type: concept"));
-        assert!(content.contains("Body."));
-    }
-
-    // -------------------------------------------------------------------
-    // append_contradictions_block — empty array
-    // -------------------------------------------------------------------
-
-    #[test]
-    fn test_append_block_empty_array() {
-        let dir = temp_dir("append_empty_array");
-        let path = dir.join("test.md");
-        write(
-            &path,
-            "---\ntitle: Page A\ncontradictions: []\ntype: concept\n---\n\nBody.\n",
+        assert!(
+            apply_one_pair(&input("a.md", "b.md"), &dir, "2026-07-06")
+                .expect("second apply")
+                .is_none()
         );
-
-        append_contradictions_block(
-            &path,
-            "shared/page-b.md",
-            &["claim text".to_string()],
-            "2026-07-04",
-            "unresolved",
-        )
-        .unwrap();
-
-        let content = std::fs::read_to_string(&path).unwrap();
-        assert!(!content.contains("contradictions: []"));
-        assert!(content.contains("contradictions:"));
-        assert!(content.contains("  - path: shared/page-b.md"));
-        assert!(content.contains("    claims:"));
-        assert!(content.contains("      - \"claim text\""));
-        assert!(content.contains("    detected: 2026-07-04"));
-        assert!(content.contains("    resolution: unresolved"));
-        assert!(content.contains("title: Page A"));
-        assert!(content.contains("type: concept"));
-        assert!(content.contains("Body."));
-    }
-
-    // -------------------------------------------------------------------
-    // append_contradictions_block — existing entries
-    // -------------------------------------------------------------------
-
-    #[test]
-    fn test_append_block_existing_entries() {
-        let dir = temp_dir("append_existing");
-        let path = dir.join("test.md");
-        write(
-            &path,
-            "---\ntitle: Page A\ncontradictions:\n  - path: other-a.md\n    \
-             claims:\n      - \"first claim\"\n    detected: 2026-06-01\n    \
-             resolution: unresolved\ntype: concept\n---\n\nBody.\n",
-        );
-
-        append_contradictions_block(
-            &path,
-            "shared/page-b.md",
-            &["second claim".to_string()],
-            "2026-07-04",
-            "unresolved",
-        )
-        .unwrap();
-
-        let content = std::fs::read_to_string(&path).unwrap();
-        assert!(content.contains("  - path: other-a.md"));
-        assert!(content.contains("    claims:"));
-        assert!(content.contains("      - \"first claim\""));
-        assert!(content.contains("  - path: shared/page-b.md"));
-        assert!(content.contains("      - \"second claim\""));
-        assert!(content.contains("    detected: 2026-07-04"));
-        assert!(content.contains("    resolution: unresolved"));
-
-        // Order must be preserved: first entry before second.
-        let pos_first = content.find("other-a.md").unwrap();
-        let pos_second = content.find("shared/page-b.md").unwrap();
-        assert!(pos_first < pos_second, "entries must be in order");
-
-        assert!(content.contains("title: Page A"));
-        assert!(content.contains("type: concept"));
-        assert!(content.contains("Body."));
-    }
-
-    // -------------------------------------------------------------------
-    // append_contradictions_block — no frontmatter → error
-    // -------------------------------------------------------------------
-
-    #[test]
-    fn test_append_block_no_frontmatter() {
-        let dir = temp_dir("append_no_fm");
-        let path = dir.join("test.md");
-        write(&path, "# Just body\n\nNo frontmatter.\n");
-
-        let result = append_contradictions_block(
-            &path,
-            "other.md",
-            &["claim".to_string()],
-            "2026-07-01",
-            "unresolved",
-        );
-        assert!(result.is_err());
-        assert!(result.unwrap_err().contains("缺少有效的 frontmatter"));
-    }
-
-    // -------------------------------------------------------------------
-    // append_contradictions_block — empty file → error
-    // -------------------------------------------------------------------
-
-    #[test]
-    fn test_append_block_empty_file() {
-        let dir = temp_dir("append_empty_file");
-        let path = dir.join("test.md");
-        write(&path, "");
-
-        let result = append_contradictions_block(
-            &path,
-            "other.md",
-            &["claim".to_string()],
-            "2026-07-01",
-            "unresolved",
-        );
-        assert!(result.is_err());
-    }
-
-    // -------------------------------------------------------------------
-    // append_contradictions_block — header only (field with no entries)
-    // -------------------------------------------------------------------
-
-    #[test]
-    fn test_append_block_header_only() {
-        let dir = temp_dir("append_header_only");
-        let path = dir.join("test.md");
-        write(
-            &path,
-            "---\ntitle: Page A\ncontradictions:\ntype: concept\n---\n\nBody.\n",
-        );
-
-        append_contradictions_block(
-            &path,
-            "shared/page-b.md",
-            &["header text".to_string()],
-            "2026-07-04",
-            "unresolved",
-        )
-        .unwrap();
-
-        let content = std::fs::read_to_string(&path).unwrap();
-        assert!(content.contains("contradictions:"));
-        assert!(content.contains("  - path: shared/page-b.md"));
-        assert!(content.contains("      - \"header text\""));
-        assert!(content.contains("type: concept"));
-        assert!(content.contains("Body."));
-    }
-
-    // -------------------------------------------------------------------
-    // append_contradictions_block — trailing newline preserved
-    // -------------------------------------------------------------------
-
-    #[test]
-    fn test_append_block_preserves_trailing_newline() {
-        let dir = temp_dir("append_trailing_nl");
-        let path = dir.join("test.md");
-        write(&path, "---\ntitle: Test\n---\n\nBody.\n");
-
-        append_contradictions_block(
-            &path,
-            "other.md",
-            &["claim".to_string()],
-            "2026-07-01",
-            "unresolved",
-        )
-        .unwrap();
-
-        let content = std::fs::read_to_string(&path).unwrap();
-        assert!(content.ends_with('\n'), "trailing newline must be preserved");
-    }
-
-    // -------------------------------------------------------------------
-    // append_contradictions_block — path with domain
-    // -------------------------------------------------------------------
-
-    #[test]
-    fn test_append_block_path_with_domain() {
-        let dir = temp_dir("append_path_domain");
-        let path = dir.join("test.md");
-        write(&path, "---\ntitle: Test\n---\n\nBody.\n");
-
-        append_contradictions_block(
-            &path,
-            "autoresearch/concepts/other.md",
-            &["domain claim".to_string()],
-            "2026-07-04",
-            "unresolved",
-        )
-        .unwrap();
-
-        let content = std::fs::read_to_string(&path).unwrap();
-        assert!(content.contains("  - path: autoresearch/concepts/other.md"));
-    }
-
-    // -------------------------------------------------------------------
-    // locate_contradictions_field
-    // -------------------------------------------------------------------
-
-    #[test]
-    fn test_locate_field_finds_basic() {
-        let lines = vec![
-            "---",
-            "title: Test",
-            "contradictions:",
-            "  - path: x.md",
-            "    claims:",
-            "      - c",
-            "    detected: d",
-            "    resolution: r",
-            "type: concept",
-            "---",
-            "Body.",
-        ];
-        let loc = locate_contradictions_field(&lines).unwrap();
-        assert_eq!(loc.start, 0);
-        assert!(!loc.empty_array);
-        assert!(loc.field_line.is_some());
-        assert!(loc.block_end.is_some());
-        // The last indented line is `    resolution: r` at index 7
-        assert_eq!(loc.block_end.unwrap(), 7);
+        assert_eq!(fs::read_to_string(dir.join("a.md")).expect("read"), before);
     }
 
     #[test]
-    fn test_locate_field_absent_field() {
-        let lines = vec!["---", "title: Test", "type: concept", "---", "Body."];
-        let loc = locate_contradictions_field(&lines).unwrap();
-        assert!(loc.field_line.is_none());
-        assert!(!loc.empty_array);
+    fn test_apply_keeps_existing_entries() {
+        let dir = temp_dir("apply_existing_entries");
+        write(&dir.join("a.md"), &page("Page A", CONTRADICTION));
+        write(&dir.join("b.md"), &page("Page B", ""));
+
+        apply_one_pair(&input("a.md", "b.md"), &dir, "2026-07-05")
+            .expect("apply")
+            .expect("new pair");
+
+        let document_a = load(&dir.join("a.md")).expect("page a");
+        let entries =
+            document_a.metadata.contradictions.expect("contradictions present");
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].path, "other.md");
+        assert_eq!(entries[1].path, "b.md");
     }
 
     #[test]
-    fn test_locate_field_no_frontmatter() {
-        let lines = vec!["# Just body"];
-        let loc = locate_contradictions_field(&lines);
-        assert!(loc.is_none());
-    }
+    fn test_apply_reports_invalid_page() {
+        let dir = temp_dir("apply_invalid_page");
+        write(&dir.join("a.md"), &page("Page A", ""));
+        write(&dir.join("b.md"), "---\ntitle: Page B\n---\n\nBody.\n");
+        let before = fs::read_to_string(dir.join("a.md")).expect("read");
 
-    #[test]
-    fn test_locate_field_empty_array() {
-        let lines = vec![
-            "---",
-            "title: Test",
-            "contradictions: []",
-            "type: concept",
-            "---",
-        ];
-        let loc = locate_contradictions_field(&lines).unwrap();
-        assert!(loc.field_line.is_some());
-        assert!(loc.empty_array);
+        let error = apply_one_pair(&input("a.md", "b.md"), &dir, "2026-07-05")
+            .expect_err("invalid page");
+
+        assert!(error.contains("缺少必需字段"), "unexpected error: {error}");
+        assert_eq!(fs::read_to_string(dir.join("a.md")).expect("read"), before);
     }
 }

@@ -10,6 +10,7 @@ mod backlinks;
 mod bundle;
 mod contradictions;
 mod display;
+mod document_io;
 mod freshness;
 mod health;
 mod index;
@@ -313,9 +314,8 @@ enum ContradictionsCommand {
     List,
     /// Apply/record contradictions from stdin JSON.
     ///
-    /// Reads a JSON array of contradiction pairs from stdin and writes
-    /// `contradictions` frontmatter blocks to both conflicting pages
-    /// with symmetric status downgrade and `last_validated` update.
+    /// Reads a JSON array of contradiction pairs from stdin and records
+    /// the contradictions on both pages with a `last_validated` update.
     Apply(ContradictionsApplyArgs),
 }
 
@@ -1090,7 +1090,7 @@ fn dispatch_check(root: &WikiRoot, json_mode: bool) {
                     &lint_results,
                     health_issues,
                     lint_issues,
-                    true,
+                    DerivedSync::Skipped,
                 );
             } else {
                 crate::print_stdout_line(display::format_full_report(
@@ -1107,18 +1107,52 @@ fn dispatch_check(root: &WikiRoot, json_mode: bool) {
     }
 }
 
+/// Derived-metadata outcome reported by `zwiki check`.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum DerivedSync {
+    /// Read-only root: nothing was written.
+    Skipped,
+    /// Every page is synchronized.
+    Synced,
+    /// Synchronization failed; the caller reports the error.
+    Failed,
+}
+
+impl DerivedSync {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Skipped => "skipped",
+            Self::Synced => "synced",
+            Self::Failed => "failed",
+        }
+    }
+}
+
 /// Check a directory root directly (no lock file) — run health/lint +
 /// `sync_derived_metadata`.  Returns exit code (0 = pass, 1 = issues found).
 fn dispatch_check_root_dir(dir: &Path, json_mode: bool) -> i32 {
     // An installed store and a directory nested in a bundle are read-only.
     let read_only = is_read_only_check_root(dir);
-    if !read_only {
+    let set = wiki::PageSet::load(dir);
+    let mut sync_error = None;
+    let derived_sync = if read_only {
+        eprintln!("只读根，已跳过派生元数据同步");
+        DerivedSync::Skipped
+    } else {
         // Regenerate generated index bodies from authored frontmatter so
         // the report reflects the synchronized state.
         index::regenerate_all_indexes(dir, json_mode);
-    }
+        // Sync derived metadata (writable for Dir root).
+        match sync_derived_metadata(dir, &set, json_mode) {
+            Ok(()) => DerivedSync::Synced,
+            Err(error) => {
+                sync_error = Some(error);
+                DerivedSync::Failed
+            }
+        }
+    };
     let (health_results, lint_results, health_issues, lint_issues) =
-        run_health_lint_at(dir);
+        run_health_lint(dir, &set);
     let total = health_issues + lint_issues;
     if json_mode {
         print_json_check_output(
@@ -1126,7 +1160,7 @@ fn dispatch_check_root_dir(dir: &Path, json_mode: bool) -> i32 {
             &lint_results,
             health_issues,
             lint_issues,
-            read_only,
+            derived_sync,
         );
     } else {
         crate::print_stdout_line(display::format_full_report(
@@ -1134,29 +1168,32 @@ fn dispatch_check_root_dir(dir: &Path, json_mode: bool) -> i32 {
             &lint_results,
         ));
     }
-    if read_only {
-        eprintln!("只读根，已跳过派生元数据同步");
-    } else {
-        // Sync derived metadata (writable for Dir root).
-        let paths = wiki::all_wiki_pages_at(dir);
-        let all_pages: Vec<wiki::Page> =
-            paths.iter().filter_map(|p| wiki::read_page_at(p, dir)).collect();
-        sync_derived_metadata(dir, &all_pages, json_mode);
-    }
-    i32::from(total > 0)
+    sync_error.map_or_else(
+        || i32::from(total > 0),
+        |error| {
+            eprintln!("{error}");
+            1
+        },
+    )
 }
 
 /// Sync backlinks and apply timeliness updates (`mark_stale` +
 /// `invalidate_by_source`) across a set of pages under `root`.  When
 /// `suppress_eprint` is true, informational eprintln messages are suppressed
 /// (used in `json_mode` for the no-arg check path).
+///
+/// # Errors
+///
+/// Fails when a page cannot be read, parsed, or written, so the caller
+/// reports the failure instead of a partial sync.
 fn sync_derived_metadata(
     root: &Path,
-    all_pages: &[wiki::Page],
+    set: &wiki::PageSet,
     suppress_eprint: bool,
-) {
+) -> Result<(), String> {
+    let all_pages = set.require_all()?;
     if all_pages.is_empty() {
-        return;
+        return Ok(());
     }
 
     let bundles = wiki::BundleSet::discover(root);
@@ -1182,13 +1219,9 @@ fn sync_derived_metadata(
     // bundle pages contribute their outbound links, but only writable
     // pages are rewritten.
     let bl_index = backlinks::build_reverse_index(root, all_pages, &bundles);
-    let updated = backlinks::update_backlinks(
-        root,
-        &bl_index,
-        &writable,
-        &bundles,
-        suppress_eprint,
-    );
+    let titles = backlinks::title_map(all_pages);
+    let updated =
+        backlinks::update_backlinks(&bl_index, &titles, &writable, &bundles)?;
     if updated > 0 && !suppress_eprint {
         eprintln!("已同步 {updated} 个页面的反向链接");
     }
@@ -1210,11 +1243,8 @@ fn sync_derived_metadata(
     let current_count =
         stale_updates.iter().filter(|u| u.new_timeliness == "current").count();
     for update in &stale_updates {
-        if let Err(e) =
-            property::set(&update.path, "timeliness", &update.new_timeliness)
-        {
-            eprintln!("写入失败 {}: {e}", update.rel);
-        }
+        property::set(&update.path, "timeliness", &update.new_timeliness)
+            .map_err(|e| format!("{}: {e}", update.rel))?;
     }
     if !stale_updates.is_empty() && !suppress_eprint {
         eprintln!(
@@ -1232,13 +1262,12 @@ fn sync_derived_metadata(
             .filter(|u| wiki::bundle_on_path(root, &u.rel).is_none())
             .collect();
     for update in &invalidated {
-        if let Err(e) = property::set(
+        property::set(
             &update.path,
             "last_validated",
             &update.new_last_validated,
-        ) {
-            eprintln!("写入失败 {}: {e}", update.rel);
-        }
+        )
+        .map_err(|e| format!("{}: {e}", update.rel))?;
     }
     if !invalidated.is_empty() && !suppress_eprint {
         eprintln!(
@@ -1246,6 +1275,7 @@ fn sync_derived_metadata(
             invalidated.len()
         );
     }
+    Ok(())
 }
 
 /// Inner implementation of `dispatch_check_no_arg` that returns an exit code
@@ -1312,29 +1342,38 @@ fn dispatch_check_no_arg_inner(
     // Sync backlinks and apply timeliness updates across the entire wiki
     // root before printing the aggregate output.  Read-only roots skip all
     // writes.
-    if read_only {
+    let mut sync_error = None;
+    let derived_sync = if read_only {
         eprintln!("只读根，已跳过派生元数据同步");
+        DerivedSync::Skipped
     } else {
-        let paths = wiki::all_wiki_pages_at(wiki_root);
-        let all_pages: Vec<wiki::Page> = paths
-            .iter()
-            .filter_map(|p| wiki::read_page_at(p, wiki_root))
-            .collect();
-        sync_derived_metadata(wiki_root, &all_pages, json_mode);
-    }
+        let set = wiki::PageSet::load(wiki_root);
+        match sync_derived_metadata(wiki_root, &set, json_mode) {
+            Ok(()) => DerivedSync::Synced,
+            Err(error) => {
+                sync_error = Some(error);
+                DerivedSync::Failed
+            }
+        }
+    };
 
     if json_mode {
-        let status =
-            if total_issues > 0 || had_missing { "error" } else { "ok" };
+        let status = if total_issues > 0
+            || had_missing
+            || derived_sync == DerivedSync::Failed
+        {
+            "error"
+        } else {
+            "ok"
+        };
         let final_output = serde_json::json!({
             "status": status,
             "root_index": "ok",
             "bundles": bundle_results,
             "total_issues": total_issues,
             "missing": missing_count,
-            "read_only_root": read_only,
-            "derived_metadata_sync":
-                if read_only { "skipped" } else { "synced" },
+            "read_only_root": derived_sync == DerivedSync::Skipped,
+            "derived_metadata_sync": derived_sync.as_str(),
         });
         crate::print_stdout_line(
             serde_json::to_string_pretty(&final_output).unwrap(),
@@ -1347,6 +1386,10 @@ fn dispatch_check_no_arg_inner(
         ));
     }
 
+    if let Some(error) = sync_error {
+        eprintln!("{error}");
+        return 1;
+    }
     if total_issues > 0 || had_missing {
         return 1;
     }
@@ -1362,11 +1405,8 @@ fn check_single_bundle(
     bundle_results: &mut Vec<serde_json::Value>,
     entry: &bundle::ZwikiLockEntry,
 ) -> (usize, usize) {
-    let health_results = health::run_all(bundle_dir);
-    let lint_results = lint::run_all(bundle_dir);
-
-    let health_issues = display::count_health_issues(&health_results);
-    let lint_issues = display::count_lint_issues(&lint_results);
+    let (health_results, lint_results, health_issues, lint_issues) =
+        run_health_lint_at(bundle_dir);
 
     if json_mode {
         let hl_json = format_health_lint_json(&health_results, &lint_results);
@@ -1398,8 +1438,16 @@ fn check_single_bundle(
 pub(crate) fn run_health_lint_at(
     root: &Path,
 ) -> (display::CheckResults, display::LintResults, usize, usize) {
-    let health_results = health::run_all(root);
-    let lint_results = lint::run_all(root);
+    run_health_lint(root, &wiki::PageSet::load(root))
+}
+
+/// Run health and lint checks on one page snapshot.
+pub(crate) fn run_health_lint(
+    root: &Path,
+    set: &wiki::PageSet,
+) -> (display::CheckResults, display::LintResults, usize, usize) {
+    let health_results = health::run_all(root, set);
+    let lint_results = lint::run_all(root, set);
     let health_issues = display::count_health_issues(&health_results);
     let lint_issues = display::count_lint_issues(&lint_results);
     (health_results, lint_results, health_issues, lint_issues)
@@ -1451,22 +1499,23 @@ fn print_json_check_output(
     lint: &display::LintResults,
     health_issues: usize,
     lint_issues: usize,
-    derived_metadata_skipped: bool,
+    derived_sync: DerivedSync,
 ) {
     let mut json_output = format_health_lint_json(health, lint);
     let total = health_issues + lint_issues;
     // `status` reflects whether the check passed — consumers rely on this
     // field (not just the exit code) to decide success/failure.
-    json_output["status"] =
-        serde_json::json!(if total == 0 { "ok" } else { "error" });
+    let status = if total == 0 && derived_sync != DerivedSync::Failed {
+        "ok"
+    } else {
+        "error"
+    };
+    json_output["status"] = serde_json::json!(status);
     json_output["total_issues"] = serde_json::json!(total);
-    json_output["read_only_root"] = serde_json::json!(derived_metadata_skipped);
+    json_output["read_only_root"] =
+        serde_json::json!(derived_sync == DerivedSync::Skipped);
     json_output["derived_metadata_sync"] =
-        serde_json::json!(if derived_metadata_skipped {
-            "skipped"
-        } else {
-            "synced"
-        });
+        serde_json::json!(derived_sync.as_str());
 
     crate::print_stdout_line(
         serde_json::to_string_pretty(&json_output).unwrap(),
@@ -1589,6 +1638,14 @@ fn dispatch_domain(wiki_root: &WikiRoot, cmd: &DomainCommand) {
     }
 }
 
+/// Read a page title for display, failing the command on a read error.
+fn page_title(rel: &str, root: &Path) -> String {
+    backlinks::page_title_from_rel(rel, root).unwrap_or_else(|e| {
+        eprintln!("{e}");
+        process::exit(1);
+    })
+}
+
 /// Show a page: read full content, or project property/outline/backlinks.
 fn cmd_page_show(
     wiki_root: &WikiRoot,
@@ -1600,13 +1657,15 @@ fn cmd_page_show(
 ) {
     if backlinks {
         let root = wiki_root.path();
-        let paths = wiki::all_wiki_pages_at(root);
-        let pages: Vec<wiki::Page> =
-            paths.iter().filter_map(|p| wiki::read_page_at(p, root)).collect();
+        let set = wiki::PageSet::load(root);
+        let pages = set.require_all().unwrap_or_else(|e| {
+            eprintln!("{e}");
+            process::exit(1);
+        });
         let filtered_index = backlinks::build_backlinks_for(
             path,
             root,
-            &pages,
+            pages,
             &wiki::BundleSet::discover(root),
         );
 
@@ -1615,12 +1674,11 @@ fn cmd_page_show(
             let with_bl = filtered_index.len();
             let mut map = serde_json::Map::new();
             for (tgt, srcs) in &filtered_index {
-                let t = backlinks::page_title_from_rel(tgt, root);
+                let t = page_title(tgt, root);
                 let s: Vec<_> = srcs
                     .iter()
                     .map(|s| {
-                        let st = backlinks::page_title_from_rel(s, root);
-                        serde_json::json!({"path": s, "title": st})
+                        serde_json::json!({"path": s, "title": page_title(s, root)})
                     })
                     .collect();
                 map.insert(
@@ -1634,7 +1692,7 @@ fn cmd_page_show(
             );
         } else {
             // Compact single-page view — not the full-wiki report frame.
-            let title = backlinks::page_title_from_rel(path, root);
+            let title = page_title(path, root);
             let sources: Vec<&String> = filtered_index
                 .get(path)
                 .map(|s| s.iter().collect())
@@ -1647,8 +1705,8 @@ fn cmd_page_show(
                 crate::print_stdout_line("无页面引用此页。");
             } else {
                 for s in sources {
-                    let st = backlinks::page_title_from_rel(s, root);
-                    crate::print_stdout_line(format!("- [{st}]({s})"));
+                    let title = page_title(s, root);
+                    crate::print_stdout_line(format!("- [{title}]({s})"));
                 }
             }
         }
@@ -1657,7 +1715,7 @@ fn cmd_page_show(
 
     let full = wiki_root.path().join(path);
     if let Some(prop) = property {
-        match page::read_property(&full, prop) {
+        match property::get(&full, prop) {
             Ok(Some(v)) => crate::print_stdout_line(v),
             Ok(None) => {
                 eprintln!("属性未找到: {prop}");
@@ -1797,7 +1855,12 @@ fn cmd_search(
         return;
     }
 
-    let results = engine.search(query, type_filter, tag_filter, domain_filter);
+    let results = engine
+        .search(query, type_filter, tag_filter, domain_filter)
+        .unwrap_or_else(|e| {
+            eprintln!("{e}");
+            process::exit(1);
+        });
 
     if json {
         crate::print_stdout_line(search::format_results_json(&results));
@@ -1826,7 +1889,11 @@ fn cmd_list(
         tag_filter,
         domain_filter,
         &bundles,
-    );
+    )
+    .unwrap_or_else(|e| {
+        eprintln!("{e}");
+        process::exit(1);
+    });
 
     if json {
         crate::print_stdout_line(list::format_list_json(&entries));
@@ -1855,7 +1922,11 @@ fn cmd_status(
         tag_filter,
         domain_filter,
         &bundles,
-    );
+    )
+    .unwrap_or_else(|e| {
+        eprintln!("{e}");
+        process::exit(1);
+    });
 
     if json {
         crate::print_stdout_line(status::format_status_json(&report));
@@ -1895,7 +1966,11 @@ fn cmd_aggregate(
         tag_filter,
         domain_filter,
         &bundles,
-    );
+    )
+    .unwrap_or_else(|e| {
+        eprintln!("{e}");
+        process::exit(1);
+    });
 
     if json {
         crate::print_stdout_line(aggregate::format_aggregate_json(&counts));
@@ -3125,6 +3200,40 @@ runs during validation.  It contains well over one hundred characters to
 satisfy the stub threshold check and other quality gates.\n";
 
     #[test]
+    fn test_run_health_lint_shares_one_snapshot() {
+        // Health and lint see the same snapshot: the rejected page is one
+        // invalid_document issue, and its links are missing targets for lint.
+        let dir = temp_dir("shared_snapshot");
+        std::fs::write(
+            dir.join("linker.md"),
+            "---\ntitle: Linker\ntype: concept\ntags: []\nstatus: draft\n\
+             last_validated: 2026-01-01\ntimeliness: current\n---\n\n\
+             See [Broken](broken.md).\n",
+        )
+        .unwrap();
+        std::fs::write(dir.join("broken.md"), "# Broken page\n").unwrap();
+
+        let (health, lint, health_issues, lint_issues) =
+            run_health_lint_at(&dir);
+
+        assert_eq!(health.total_pages, 2, "both pages are counted");
+        assert!(
+            health
+                .frontmatter
+                .iter()
+                .any(|i| i.category == "invalid_document"
+                    && i.page == "broken.md"),
+            "health reports the rejected page"
+        );
+        assert!(
+            lint.broken_links.iter().any(|i| i.category == "target_not_found"
+                && i.details.contains("broken.md")),
+            "lint misses the rejected page as a link target"
+        );
+        assert!(health_issues > 0 && lint_issues > 0);
+    }
+
+    #[test]
     fn test_dispatch_check_root_dir_empty() {
         // Verify dispatch_check_root_dir succeeds on an empty directory.
         let dir = temp_dir("check_root_empty");
@@ -3378,10 +3487,8 @@ Detailed information about page B goes here.
         );
         std::fs::write(dir.join("page_b.md"), &page_b).unwrap();
 
-        let paths = wiki::all_wiki_pages_at(&dir);
-        let all_pages: Vec<wiki::Page> =
-            paths.iter().filter_map(|p| wiki::read_page_at(p, &dir)).collect();
-        sync_derived_metadata(&dir, &all_pages, false);
+        sync_derived_metadata(&dir, &wiki::PageSet::load(&dir), false)
+            .expect("sync derived metadata");
 
         // Verify backlinks were synced to page_b.md.
         let content_b = std::fs::read_to_string(dir.join("page_b.md")).unwrap();

@@ -3,7 +3,12 @@ title: 面向理解的 LLM 输出设计
 description: 用 ASD-STE100 风格约束和合适的输出形式，降低技术内容的理解与监督成本。
 type: synthesis
 timestamp: 2026-10-06T09:11:24Z
-tags: [agent-design, llm-output, asd-ste100, technical-writing, multimodal]
+tags:
+  - agent-design
+  - llm-output
+  - asd-ste100
+  - technical-writing
+  - multimodal
 status: review
 last_validated: 2026-10-06T09:11:24Z
 timeliness: current

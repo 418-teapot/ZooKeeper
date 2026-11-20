@@ -27,13 +27,13 @@ fn make_wiki(dir: &Path) {
     // A page for set/unset/show tests.
     std::fs::write(
         dir.join("concepts").join("test-page.md"),
-        "---\ntitle: Test Page\ntype: concept\ntimestamp: 2026-07-01T00:00:00Z\nstatus: draft\ntags: []\nlast_validated: 2026-07-01T00:00:00Z\ntimeliness: current\n---\n\n# Test Page\n\nContent here.\n",
+        "---\ntitle: Test Page\ntype: concept\ndescription: 摘要\ntimestamp: 2026-07-01T00:00:00Z\nstatus: draft\ntags: []\nlast_validated: 2026-07-01T00:00:00Z\ntimeliness: current\n---\n\n# Test Page\n\nContent here.\n",
     )
     .unwrap();
     // A second page that links to test-page (for backlinks).
     std::fs::write(
         dir.join("concepts").join("linker.md"),
-        "---\ntitle: Linker\ntype: concept\n---\n\n# Linker\n\nSee [Test Page](concepts/test-page.md).\n",
+        "---\ntitle: Linker\ntype: concept\ntags: []\nstatus: draft\nlast_validated: 2026-07-01T00:00:00Z\ntimeliness: current\n---\n\n# Linker\n\nSee [Test Page](concepts/test-page.md).\n",
     )
     .unwrap();
 }
@@ -245,12 +245,172 @@ fn test_page_set_downgrade() {
 }
 
 #[test]
-fn test_page_unset() {
+fn test_page_set_title_keeps_colon_as_text() {
     let bin = PathBuf::from(env!("CARGO_BIN_EXE_zwiki"));
-    let wiki = temp_dir("page_unset");
+    let wiki = temp_dir("page_set_title_colon");
+    make_wiki(&wiki);
+    let page = wiki.join("concepts").join("test-page.md");
+
+    let set_title = |value: &str| {
+        Command::new(&bin)
+            .args([
+                "--root",
+                &wiki.to_string_lossy(),
+                "page",
+                "set",
+                "concepts/test-page.md",
+                "title",
+                value,
+            ])
+            .output()
+            .unwrap()
+    };
+    let output = set_title("Coin: v2");
+    assert!(
+        output.status.success(),
+        "title with a colon should be accepted.\nstderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let shown = Command::new(&bin)
+        .args([
+            "--root",
+            &wiki.to_string_lossy(),
+            "page",
+            "show",
+            "concepts/test-page.md",
+            "--property",
+            "title",
+        ])
+        .output()
+        .unwrap();
+    assert!(shown.status.success(), "page show --property should succeed");
+    assert_eq!(String::from_utf8_lossy(&shown.stdout).trim(), "Coin: v2");
+
+    let text = std::fs::read_to_string(&page).unwrap();
+    assert!(
+        text.contains("# Test Page\n\nContent here.\n"),
+        "body should stay unchanged:\n{text}"
+    );
+
+    // The same value again leaves the bytes untouched.
+    let output = set_title("Coin: v2");
+    assert!(output.status.success(), "repeat set should succeed");
+    assert_eq!(std::fs::read_to_string(&page).unwrap(), text);
+}
+
+#[test]
+fn test_page_set_string_field_keeps_number_shape() {
+    let bin = PathBuf::from(env!("CARGO_BIN_EXE_zwiki"));
+    let wiki = temp_dir("page_set_number_shape");
     make_wiki(&wiki);
 
-    // Verify timeliness exists first.
+    assert_ok(
+        &bin,
+        &[
+            "--root",
+            &wiki.to_string_lossy(),
+            "page",
+            "set",
+            "concepts/test-page.md",
+            "title",
+            "12345",
+        ],
+        "page set number-shaped title",
+    );
+    assert_ok(
+        &bin,
+        &[
+            "--root",
+            &wiki.to_string_lossy(),
+            "page",
+            "set",
+            "concepts/test-page.md",
+            "description",
+            "2026",
+        ],
+        "page set number-shaped description",
+    );
+
+    for (property, expected) in [("title", "12345"), ("description", "2026")] {
+        let output = Command::new(&bin)
+            .args([
+                "--root",
+                &wiki.to_string_lossy(),
+                "page",
+                "show",
+                "concepts/test-page.md",
+                "--property",
+                property,
+            ])
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "page show {property}");
+        assert_eq!(
+            String::from_utf8_lossy(&output.stdout).trim(),
+            expected,
+            "{property} should keep the text as written"
+        );
+    }
+}
+
+#[test]
+fn test_page_set_rejects_wrong_value_types() {
+    let bin = PathBuf::from(env!("CARGO_BIN_EXE_zwiki"));
+    let wiki = temp_dir("page_set_wrong_types");
+    make_wiki(&wiki);
+    let page = wiki.join("concepts").join("test-page.md");
+    let before = std::fs::read_to_string(&page).unwrap();
+
+    for (property, value) in
+        [("tags", "not-a-list"), ("freshness_days", "soon")]
+    {
+        let output = Command::new(&bin)
+            .args([
+                "--root",
+                &wiki.to_string_lossy(),
+                "page",
+                "set",
+                "concepts/test-page.md",
+                property,
+                value,
+            ])
+            .output()
+            .unwrap();
+        assert!(
+            !output.status.success(),
+            "{property}={value} should be rejected"
+        );
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains(property), "stderr names the field: {stderr}");
+        assert_eq!(
+            std::fs::read_to_string(&page).unwrap(),
+            before,
+            "a rejected value leaves the page unchanged"
+        );
+    }
+}
+
+#[test]
+fn test_page_set_extension_field_decodes_yaml() {
+    let bin = PathBuf::from(env!("CARGO_BIN_EXE_zwiki"));
+    let wiki = temp_dir("page_set_extension_yaml");
+    make_wiki(&wiki);
+
+    assert_ok(
+        &bin,
+        &[
+            "--root",
+            &wiki.to_string_lossy(),
+            "page",
+            "set",
+            "concepts/test-page.md",
+            "owners",
+            "[team-a, team-b]",
+        ],
+        "page set extension list",
+    );
+
     let output = Command::new(&bin)
         .args([
             "--root",
@@ -259,14 +419,41 @@ fn test_page_unset() {
             "show",
             "concepts/test-page.md",
             "--property",
-            "timeliness",
+            "owners",
+        ])
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "page show owners");
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout).trim(),
+        "- team-a\n- team-b",
+        "an extension field keeps its YAML structure"
+    );
+}
+
+#[test]
+fn test_page_unset() {
+    let bin = PathBuf::from(env!("CARGO_BIN_EXE_zwiki"));
+    let wiki = temp_dir("page_unset");
+    make_wiki(&wiki);
+
+    // Verify the description exists first.
+    let output = Command::new(&bin)
+        .args([
+            "--root",
+            &wiki.to_string_lossy(),
+            "page",
+            "show",
+            "concepts/test-page.md",
+            "--property",
+            "description",
         ])
         .output()
         .unwrap();
     assert!(output.status.success());
-    assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "current");
+    assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "摘要");
 
-    // Unset timeliness.
+    // Unset the optional field.
     assert_ok(
         &bin,
         &[
@@ -275,12 +462,12 @@ fn test_page_unset() {
             "page",
             "unset",
             "concepts/test-page.md",
-            "timeliness",
+            "description",
         ],
-        "page unset timeliness",
+        "page unset description",
     );
 
-    // Verify timeliness is gone.
+    // Verify the description is gone.
     let output = Command::new(&bin)
         .args([
             "--root",
@@ -289,14 +476,136 @@ fn test_page_unset() {
             "show",
             "concepts/test-page.md",
             "--property",
-            "timeliness",
+            "description",
         ])
         .output()
         .unwrap();
     assert!(
         !output.status.success(),
-        "page show --property timeliness should fail after unset"
+        "page show --property description should fail after unset"
     );
+}
+
+#[test]
+fn test_page_show_property_reads_a_list() {
+    let bin = PathBuf::from(env!("CARGO_BIN_EXE_zwiki"));
+    let wiki = temp_dir("page_show_prop_list");
+    make_wiki(&wiki);
+    std::fs::write(
+        wiki.join("concepts").join("listed.md"),
+        "---\ntitle: Listed\ntype: concept\ntags: [a, b]\nstatus: draft\nlast_validated: 2026-07-01T00:00:00Z\ntimeliness: current\n---\n\n# Listed\n",
+    )
+    .unwrap();
+
+    let output = Command::new(&bin)
+        .args([
+            "--root",
+            &wiki.to_string_lossy(),
+            "page",
+            "show",
+            "concepts/listed.md",
+            "--property",
+            "tags",
+        ])
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "list property should be readable");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(stdout.trim(), "- a\n- b");
+}
+
+#[test]
+fn test_page_show_property_reads_page_without_required_fields() {
+    let bin = PathBuf::from(env!("CARGO_BIN_EXE_zwiki"));
+    let wiki = temp_dir("page_show_prop_partial");
+    make_wiki(&wiki);
+    std::fs::write(
+        wiki.join("concepts").join("partial.md"),
+        "---\ntitle: Partial\n---\n\n# Partial\n",
+    )
+    .unwrap();
+
+    let output = Command::new(&bin)
+        .args([
+            "--root",
+            &wiki.to_string_lossy(),
+            "page",
+            "show",
+            "concepts/partial.md",
+            "--property",
+            "title",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "a partial page should still show a field.\nstderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(stdout.trim(), "Partial");
+}
+
+#[test]
+fn test_page_unset_required_field_rejected() {
+    let bin = PathBuf::from(env!("CARGO_BIN_EXE_zwiki"));
+    let wiki = temp_dir("page_unset_required");
+    make_wiki(&wiki);
+
+    let output = Command::new(&bin)
+        .args([
+            "--root",
+            &wiki.to_string_lossy(),
+            "page",
+            "unset",
+            "concepts/test-page.md",
+            "timeliness",
+        ])
+        .output()
+        .unwrap();
+    assert!(!output.status.success(), "unsetting a required field should fail");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("timeliness"),
+        "stderr should name the field: {stderr}"
+    );
+    let page =
+        std::fs::read_to_string(wiki.join("concepts").join("test-page.md"))
+            .unwrap();
+    assert!(
+        page.contains("timeliness: current"),
+        "page must stay unchanged:\n{page}"
+    );
+}
+
+#[test]
+fn test_page_set_rejects_wrong_field_type() {
+    let bin = PathBuf::from(env!("CARGO_BIN_EXE_zwiki"));
+    let wiki = temp_dir("page_set_wrong_type");
+    make_wiki(&wiki);
+
+    let output = Command::new(&bin)
+        .args([
+            "--root",
+            &wiki.to_string_lossy(),
+            "page",
+            "set",
+            "concepts/test-page.md",
+            "tags",
+            "permission",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        !output.status.success(),
+        "a scalar value for a list field should fail"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("tags"), "stderr should name the field: {stderr}");
+    let page =
+        std::fs::read_to_string(wiki.join("concepts").join("test-page.md"))
+            .unwrap();
+    assert!(page.contains("tags: []"), "page must stay unchanged:\n{page}");
 }
 
 #[test]
@@ -949,7 +1258,7 @@ fn test_page_unset_writes_edit_log_with_note() {
             "page",
             "unset",
             "concepts/test-page.md",
-            "timeliness",
+            "description",
             "--note",
             "清理属性",
         ],
@@ -1076,7 +1385,8 @@ fn test_log_coverage_tracks_tool_created_sources() {
     let hand = "research/sources/adr/hand-dropped.md";
     std::fs::write(
         wiki.join(hand),
-        "---\ntitle: Hand Dropped\ntype: source\n---\nBody.\n",
+        "---\ntitle: Hand Dropped\ntype: source\ntags: []\nstatus: draft\n\
+         last_validated: 2026-01-01\ntimeliness: current\n---\nBody.\n",
     )
     .unwrap();
 
@@ -1156,4 +1466,33 @@ fn test_schema_command_prints_embedded_schema() {
     assert!(output.status.success(), "schema command should succeed");
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.starts_with("# Wiki Schema"), "should print SCHEMA.md");
+}
+
+#[test]
+fn test_page_move_names_a_load_failure_once() {
+    let bin = PathBuf::from(env!("CARGO_BIN_EXE_zwiki"));
+    let wiki = temp_dir("page_move_load_error");
+    make_wiki(&wiki);
+    std::fs::write(
+        wiki.join("concepts").join("broken.md"),
+        "# 缺少 frontmatter\n",
+    )
+    .unwrap();
+
+    let output = Command::new(bin)
+        .args([
+            "--root",
+            &wiki.to_string_lossy(),
+            "page",
+            "move",
+            "concepts/test-page.md",
+            "concepts/renamed-page.md",
+        ])
+        .output()
+        .expect("run page move");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert!(!output.status.success(), "move must fail: {stderr}");
+    assert!(stderr.contains("concepts/broken.md"), "{stderr}");
+    assert_eq!(stderr.matches("无法加载页面").count(), 1, "{stderr}");
 }

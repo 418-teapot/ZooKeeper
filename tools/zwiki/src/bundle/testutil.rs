@@ -2,7 +2,6 @@
 
 #![cfg(test)]
 
-use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use clap::Parser;
@@ -26,8 +25,7 @@ pub fn w(path: PathBuf, content: &str) {
     std::fs::write(path, content).unwrap();
 }
 
-/// Write a wiki page at `wiki_root/rel`, creating parent directories, and
-/// return its full path.
+/// Write a page file, creating parent directories, and return its path.
 pub fn write_page(wiki_root: &Path, rel: &str, content: &str) -> PathBuf {
     let path = wiki_root.join(rel);
     if let Some(parent) = path.parent() {
@@ -37,28 +35,22 @@ pub fn write_page(wiki_root: &Path, rel: &str, content: &str) -> PathBuf {
     path
 }
 
-/// Create a temp wiki root holding `files` and return it with the parsed
-/// pages and a rel-path index of them.
+/// Create a temp wiki root holding `files` and return it with the pages.
+///
+/// The files must be valid page documents; an invalid one fails the test.
 pub fn setup_wiki(
     dir_name: &str,
     files: &[(&str, &str)],
-) -> (PathBuf, Vec<Page>, HashMap<String, Page>) {
+) -> (PathBuf, Vec<Page>) {
     let dir = temp_dir(dir_name);
     let mut pages = Vec::new();
-    let mut cache = HashMap::new();
     for (rel, content) in files {
         let path = write_page(&dir, rel, content);
-        let page = Page {
-            path,
-            rel: (*rel).to_string(),
-            frontmatter: wiki::parse_frontmatter(content),
-            body: wiki::strip_frontmatter(content),
-            raw: (*content).to_string(),
-        };
-        cache.insert((*rel).to_string(), page.clone());
+        let page = wiki::read_page_at(&path, &dir)
+            .unwrap_or_else(|e| panic!("invalid page fixture: {e}"));
         pages.push(page);
     }
-    (dir, pages, cache)
+    (dir, pages)
 }
 
 // Re-export the shared unique-temp-dir helper so existing

@@ -3,7 +3,9 @@ title: <概念名称>
 description: <一句话摘要>。
 type: concept
 timestamp: YYYY-MM-DDTHH:mm:ssZ
-tags: [tag1, tag2]
+tags:
+  - tag1
+  - tag2
 status: draft|review|stable|deprecated
 last_validated: YYYY-MM-DDTHH:mm:ssZ
 timeliness: current

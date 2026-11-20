@@ -3,7 +3,12 @@ title: 多 agent 研究架构
 description: 由 lead agent 编排多个隔离上下文中的专门 subagent，以并行探索和结果压缩处理开放式研究任务的架构模式。
 type: concept
 timestamp: 2026-09-14T02:14:29Z
-tags: [multi-agent, orchestration, subagent, parallelism, context-isolation]
+tags:
+  - multi-agent
+  - orchestration
+  - subagent
+  - parallelism
+  - context-isolation
 status: stable
 last_validated: 2026-09-14T02:14:29Z
 timeliness: current

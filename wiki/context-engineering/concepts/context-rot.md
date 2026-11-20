@@ -4,7 +4,11 @@ description: 随上下文 token 数增加，LLM 信息召回能力下降的现�
 resource: https://www.anthropic.com/engineering/effective-context-engineering-for-ai-agents
 type: concept
 timestamp: 2026-07-21T00:00:00Z
-tags: [context-engineering, llm, attention, context-rot]
+tags:
+  - context-engineering
+  - llm
+  - attention
+  - context-rot
 status: stable
 last_validated: 2026-07-21T00:00:00Z
 timeliness: current

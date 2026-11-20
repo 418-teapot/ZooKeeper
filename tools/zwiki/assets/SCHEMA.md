@@ -80,7 +80,9 @@ title: 权限系统
 description: 基于 deny 列表的权限判定模型。
 type: concept
 timestamp: 2026-06-17T00:00:00Z
-tags: [permission, security]
+tags:
+  - permission
+  - security
 status: stable
 last_validated: 2026-06-19T00:00:00Z
 timeliness: current
@@ -129,7 +131,9 @@ freshness_days: 90
   ```
 - **Frontmatter `sources`（synthesis 页面）：**
   ```yaml
-  sources: [research/concepts/foo.md, design/entities/bar.md]
+  sources:
+    - research/concepts/foo.md
+    - design/entities/bar.md
   ```
 
 读取页面时从 store 访问：`~/.zoo/wiki/<bundle>/<domain>/...`；写入一律通过 zwiki 写命令并显式指定 `--root <bundle 源>`，不直接编辑 store 内文件。
