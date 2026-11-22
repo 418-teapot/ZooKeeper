@@ -385,7 +385,7 @@ fn prepare_update_staging(
 
     // Run health + lint checks before installing
     let (health_results, lint_results, health_issues, lint_issues) =
-        crate::run_health_lint_at(staging.path());
+        crate::run_health_lint_at(staging.path())?;
     let total = health_issues + lint_issues;
     if total > 0 {
         if use_json {

@@ -4,12 +4,14 @@
 //! by `run_all()` into a `LintResults` for display.
 
 use std::collections::{HashMap, HashSet};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use chrono::NaiveDate;
 use regex::Regex;
+use zwiki::identity::Reference;
 
 use crate::backlinks;
+use crate::catalog::{Catalog, Resolution};
 use crate::display::{Issue, LintResults};
 use crate::freshness::{self, StaleReason};
 use crate::wiki::{self, Page, PageSet};
@@ -22,80 +24,21 @@ use crate::wiki::{self, Page, PageSet};
 /// is considered non-sparse.
 const SPARSE_BODY_CHARS: usize = 50;
 
-// ---------------------------------------------------------------------------
-// Path utilities
-// ---------------------------------------------------------------------------
-
-/// Normalize a path by resolving `.` and `..` components (without requiring
-/// the file to exist on disk).
-fn normalize_path(path: &Path) -> PathBuf {
-    let mut result = PathBuf::new();
-    for component in path.components() {
-        match component {
-            std::path::Component::RootDir => {
-                result = PathBuf::from("/");
-            }
-            std::path::Component::Normal(c) => result.push(c),
-            std::path::Component::CurDir => {}
-            std::path::Component::ParentDir => {
-                let has_normal = result
-                    .components()
-                    .any(|c| matches!(c, std::path::Component::Normal(_)));
-                if has_normal {
-                    result.pop();
-                }
-            }
-            std::path::Component::Prefix(_) => {
-                result.push(component.as_os_str());
-            }
-        }
-    }
-    result
-}
-
-/// Resolve a markdown link target to a canonical wiki-relative path.
+/// The page reference a markdown link target carries.
 ///
-/// Returns `None` for external URLs, anchor-only links, non-`.md` links,
-/// or targets that escape the wiki directory.
-fn resolve_target(target: &str) -> Option<String> {
-    // Skip external URLs.
-    if target.starts_with("http://") || target.starts_with("https://") {
-        return None;
-    }
-    // Skip anchor-only links.
-    if target.starts_with('#') {
-        return None;
-    }
-
-    // Cross-bundle @name/path references resolve to other installed bundles;
-    // the local linter cannot verify them so they are skipped.
-    if target.starts_with('@') {
-        return None;
-    }
-
-    // Strip anchor fragment (e.g. `foo.md#section` → `foo.md`).
-    let target = target.split('#').next().unwrap_or(target);
-
-    // Check for wiki-root-relative link (starts with `wiki/`).
-    // These are resolved from the wiki root, not relative to source dir.
-    if let Some(stripped) = target.strip_prefix("wiki/") {
-        let resolved = normalize_path(Path::new(stripped));
-        return Some(resolved.to_string_lossy().to_string());
-    }
-
-    // Only resolve `.md` targets.
-    if !Path::new(target)
-        .extension()
-        .is_some_and(|ext| ext.eq_ignore_ascii_case("md"))
+/// Returns `None` for external URLs, anchor-only links and empty targets.
+/// Every other target keeps its text and is a bundle-relative path:
+/// `Reference::parse` decides whether the text names a page.
+fn page_reference(target: &str) -> Option<&str> {
+    let target = target.trim();
+    if target.is_empty()
+        || target.starts_with("http://")
+        || target.starts_with("https://")
+        || target.starts_with('#')
     {
         return None;
     }
-
-    // Resolve relative to wiki root (wiki links are wiki-relative, not
-    // page-directory-relative).
-    let resolved = normalize_path(Path::new(target));
-
-    Some(resolved.to_string_lossy().to_string())
+    Some(target)
 }
 
 // ---------------------------------------------------------------------------
@@ -118,32 +61,49 @@ fn extract_markdown_links(body: &str) -> Vec<(String, String)> {
 // ---------------------------------------------------------------------------
 
 /// Scan each page body for markdown links `[text](target.md)`.  For each
-/// resolved target that did not load as a page in `set`, report an issue.
+/// link that names no page, report an issue.
 ///
-/// Skips external URLs (http/https) and anchor-only links (`#fragment`).
-pub fn check_broken_links(set: &PageSet) -> Vec<Issue> {
+/// A bare target stays in the referrer's bundle and a `@bundle/path`
+/// reference names one bundle; neither is searched across bundles.  Skips
+/// external URLs (http/https) and anchor-only links (`#fragment`).  An
+/// explicit reference keeps its bundle in `target_path`, so two bundles
+/// holding one page path stay distinguishable.
+pub fn check_broken_links(set: &PageSet, catalog: &Catalog) -> Vec<Issue> {
     let mut issues = Vec::new();
 
     for page in set.pages() {
+        let Some(referrer) = catalog.id_of(&page.rel) else {
+            continue;
+        };
         let body = page.document.body.author();
         for (link_text, raw_target) in extract_markdown_links(body) {
-            if let Some(resolved) = resolve_target(&raw_target)
-                && !set.contains(&resolved)
-            {
-                issues.push(Issue {
-                    page: page.rel.clone(),
-                    category: "target_not_found".to_string(),
-                    details: serde_json::json!({
-                        "link_text": link_text,
-                        "target_path": resolved,
-                    })
-                    .to_string(),
-                });
-            }
+            let Some(reference) = page_reference(&raw_target) else {
+                continue;
+            };
+            let Resolution::MissingPage(id) =
+                catalog.resolve(referrer, reference)
+            else {
+                continue;
+            };
+            let explicit = Reference::parse(reference)
+                .is_some_and(|parsed| parsed.bundle().is_some());
+            let target_path = if explicit {
+                id.to_string()
+            } else {
+                id.path().as_str().to_string()
+            };
+            issues.push(Issue {
+                page: page.rel.clone(),
+                category: "target_not_found".to_string(),
+                details: serde_json::json!({
+                    "link_text": link_text,
+                    "target_path": target_path,
+                })
+                .to_string(),
+            });
         }
     }
 
-    issues.sort_by(|a, b| a.page.cmp(&b.page));
     issues
 }
 
@@ -155,23 +115,37 @@ pub fn check_broken_links(set: &PageSet) -> Vec<Issue> {
 /// `index.md` (bundle root or domain index).
 ///
 /// Inbound links are counted from markdown body links (`[text](target.md)`).
+/// Each body target resolves through `catalog` from the referrer's bundle, so
+/// a bundle-relative link reaches its page whether the root is the bundle
+/// itself or an aggregate above it.
 ///
 /// Self-references are excluded from the inbound count.  Links from meta
 /// files (index.md, SCHEMA.md, etc.) are naturally excluded because they are
 /// not part of the `pages` slice.
-pub fn check_orphan_pages(pages: &[Page], wiki_dir: &Path) -> Vec<Issue> {
+pub fn check_orphan_pages(
+    pages: &[Page],
+    catalog: &Catalog,
+    wiki_dir: &Path,
+) -> Vec<Issue> {
     // Build inbound link count (excluding self-references).
     let mut inbound: HashMap<String, usize> = HashMap::new();
 
     for page in pages {
+        let Some(referrer) = catalog.id_of(&page.rel) else {
+            continue;
+        };
         // Markdown links.
         for (_, raw_target) in
             extract_markdown_links(page.document.body.author())
         {
-            if let Some(resolved) = resolve_target(&raw_target)
-                && resolved != page.rel
-            {
-                *inbound.entry(resolved).or_insert(0) += 1;
+            let Some(reference) = page_reference(&raw_target) else {
+                continue;
+            };
+            let Some(target) = catalog.resolve_rel(referrer, reference) else {
+                continue;
+            };
+            if target != page.rel.as_str() {
+                *inbound.entry(target.to_string()).or_insert(0) += 1;
             }
         }
     }
@@ -258,15 +232,13 @@ pub struct FreshnessIssues {
 /// report categories the CLI gates on.
 pub fn check_freshness(
     pages: &[Page],
-    wiki_dir: &Path,
-    bundles: &wiki::BundleSet,
+    catalog: &Catalog,
     reference_date: NaiveDate,
 ) -> FreshnessIssues {
     // Cascade detection needs the reverse index built from the same
     // snapshot; a rejected page never reaches the lint rules.
-    let reverse_index =
-        backlinks::build_reverse_index(wiki_dir, pages, bundles);
-    let ctx = freshness::FreshnessContext::new(pages, reference_date)
+    let reverse_index = backlinks::build_reverse_index(catalog, pages);
+    let ctx = freshness::FreshnessContext::new(pages, catalog, reference_date)
         .with_reverse_index(&reverse_index);
 
     let mut result = FreshnessIssues::default();
@@ -324,21 +296,25 @@ pub fn check_freshness(
 ///
 /// `set` is the shared page snapshot; a page the document model rejected is
 /// absent here and already reported by the health check.
-pub fn run_all(root: &Path, set: &PageSet) -> LintResults {
+///
+/// # Errors
+///
+/// Fails when the pages carry no bundle identity, as the link and freshness
+/// rules resolve every reference through the catalog.
+pub fn run_all(root: &Path, set: &PageSet) -> Result<LintResults, String> {
     let pages = set.pages();
-    let bundles = wiki::BundleSet::discover(root);
+    let catalog = Catalog::new(root, set)?;
 
     let reference_date = chrono::Utc::now().date_naive();
-    let freshness_issues =
-        check_freshness(pages, root, &bundles, reference_date);
+    let freshness_issues = check_freshness(pages, &catalog, reference_date);
 
-    LintResults {
-        broken_links: check_broken_links(set),
-        orphan_pages: check_orphan_pages(pages, root),
+    Ok(LintResults {
+        broken_links: check_broken_links(set, &catalog),
+        orphan_pages: check_orphan_pages(pages, &catalog, root),
         sparse_pages: check_sparse_pages(pages),
         stale_pages: freshness_issues.stale,
         cascade_stale: freshness_issues.cascade_stale,
-    }
+    })
 }
 
 // ===========================================================================
@@ -352,9 +328,12 @@ mod tests {
 
     use serde_json::Value;
 
-    /// An empty bundle set for a plain (non-aggregated) root.
-    fn no_bundles() -> wiki::BundleSet {
-        wiki::BundleSet::default()
+    /// Project the freshness verdict of pages a test holds in memory.
+    fn freshness_at(
+        pages: &[Page],
+        reference_date: NaiveDate,
+    ) -> FreshnessIssues {
+        check_freshness(pages, &Catalog::flat(pages), reference_date)
     }
     use std::fs;
     use std::path::PathBuf;
@@ -382,6 +361,31 @@ mod tests {
         }
     }
 
+    /// Mark `dir` as the root of the bundle named `name`.
+    fn mark_bundle(dir: &Path, name: &str) {
+        fs::create_dir_all(dir).unwrap();
+        fs::write(
+            dir.join("bundle.toml"),
+            format!(
+                "[package]\nname = \"{name}\"\nversion = \"0.1.0\"\n\n\
+                 [export]\ninclude = [\"**/*.md\"]\n"
+            ),
+        )
+        .unwrap();
+    }
+
+    /// Run the broken-link rule over `dir`.
+    fn broken_links_at(dir: &Path) -> Vec<Issue> {
+        let set = PageSet::load(dir);
+        let catalog = Catalog::new(dir, &set).expect("catalog");
+        check_broken_links(&set, &catalog)
+    }
+
+    /// Run the orphan rule over pages held in memory.
+    fn orphans(pages: &[Page], wiki_dir: &Path) -> Vec<Issue> {
+        check_orphan_pages(pages, &Catalog::flat(pages), wiki_dir)
+    }
+
     // =======================================================================
     // 1. check_broken_links
     // =======================================================================
@@ -396,8 +400,8 @@ mod tests {
                 "---\ntitle: Page A\ntype: concept\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\nSee [page b](page-b.md) for details.\n",
             )],
         );
-        let set = PageSet::load(&dir);
-        let issues = check_broken_links(&set);
+        mark_bundle(&dir, "wiki");
+        let issues = broken_links_at(&dir);
         assert_eq!(issues.len(), 1);
         assert_eq!(issues[0].page, "concepts/page-a.md");
         assert_eq!(issues[0].category, "target_not_found");
@@ -422,33 +426,9 @@ mod tests {
                 ),
             ],
         );
-        let set = PageSet::load(&dir);
-        let issues = check_broken_links(&set);
+        mark_bundle(&dir, "wiki");
+        let issues = broken_links_at(&dir);
         assert!(issues.is_empty(), "expected no broken links for valid target");
-    }
-
-    #[test]
-    fn test_broken_links_wiki_prefix_stripped() {
-        // Link with `wiki/` prefix should be stripped.
-        let (dir, _) = setup_wiki(
-            "broken_wiki_prefix",
-            &[
-                (
-                    "concepts/page-a.md",
-                    "---\ntitle: Page A\ntype: concept\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\nSee [page b](wiki/concepts/page-b.md).\n",
-                ),
-                (
-                    "concepts/page-b.md",
-                    "---\ntitle: Page B\ntype: concept\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\nBody.\n",
-                ),
-            ],
-        );
-        let set = PageSet::load(&dir);
-        let issues = check_broken_links(&set);
-        assert!(
-            issues.is_empty(),
-            "wiki/ prefix should be stripped and link resolved"
-        );
     }
 
     #[test]
@@ -460,8 +440,8 @@ mod tests {
                 "---\ntitle: Page A\ntype: concept\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\nSee [example](https://example.com).\n",
             )],
         );
-        let set = PageSet::load(&dir);
-        let issues = check_broken_links(&set);
+        mark_bundle(&dir, "wiki");
+        let issues = broken_links_at(&dir);
         assert!(issues.is_empty(), "external URLs should be ignored");
     }
 
@@ -474,14 +454,15 @@ mod tests {
                 "---\ntitle: Page A\ntype: concept\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\nSee [section](#intro).\n",
             )],
         );
-        let set = PageSet::load(&dir);
-        let issues = check_broken_links(&set);
+        mark_bundle(&dir, "wiki");
+        let issues = broken_links_at(&dir);
         assert!(issues.is_empty(), "anchor-only links should be ignored");
     }
 
     #[test]
-    fn test_broken_links_cross_bundle_skipped() {
-        // @name/path cross-bundle references should not be flagged.
+    fn test_broken_links_absent_bundle_not_reported() {
+        // A reference to a bundle the root does not hold is not a local
+        // dead link.
         let (dir, _) = setup_wiki(
             "broken_cross_bundle",
             &[(
@@ -491,11 +472,51 @@ mod tests {
                      [vendor](@vendor/bar.md).\n",
             )],
         );
-        let set = PageSet::load(&dir);
-        let issues = check_broken_links(&set);
+        mark_bundle(&dir, "wiki");
+        let issues = broken_links_at(&dir);
         assert!(
             issues.is_empty(),
-            "@name/path cross-bundle references should be skipped"
+            "an absent bundle is not a broken local link"
+        );
+    }
+
+    #[test]
+    fn test_broken_links_explicit_reference_keeps_its_bundle() {
+        // An explicit reference to a held bundle that lacks the page is
+        // broken; `target_path` keeps the bundle so it cannot be mistaken
+        // for a local path.  A bare reference stays bundle-relative.
+        let dir = temp_dir("broken_explicit_bundle");
+        mark_bundle(&dir, "core");
+        mark_bundle(&dir, "vendor");
+        write(
+            &dir.join("core/concepts/page-a.md"),
+            &page(
+                "Page A",
+                "concept",
+                "draft",
+                "2026-01-01",
+                "",
+                "See [gone](@vendor/concepts/gone.md) and \
+                 [local](concepts/gone.md).",
+            ),
+        );
+
+        let issues = broken_links_at(&dir);
+        let target_paths: Vec<String> = issues
+            .iter()
+            .map(|issue| {
+                let details: Value =
+                    serde_json::from_str(&issue.details).unwrap();
+                details["target_path"].as_str().unwrap().to_string()
+            })
+            .collect();
+        assert_eq!(
+            target_paths,
+            vec![
+                "@vendor/concepts/gone.md".to_string(),
+                "concepts/gone.md".to_string()
+            ],
+            "an explicit reference keeps its bundle in target_path"
         );
     }
 
@@ -540,7 +561,7 @@ mod tests {
         ];
         let (_, pages) = setup_wiki("orphan_detected_inner", all_files);
         // Use the dir we created manually with index.md.
-        let issues = check_orphan_pages(&pages, &dir);
+        let issues = orphans(&pages, &dir);
         assert_eq!(issues.len(), 1);
         assert_eq!(issues[0].page, "page-c.md");
         assert_eq!(issues[0].category, "orphan");
@@ -571,7 +592,7 @@ mod tests {
             ),
         ];
         let (_, pages) = setup_wiki("orphan_non_orphan_inner", all_files);
-        let issues = check_orphan_pages(&pages, &dir);
+        let issues = orphans(&pages, &dir);
         assert!(
             issues.is_empty(),
             "page-b has inbound link, should not be orphan"
@@ -614,7 +635,7 @@ mod tests {
             ),
         ];
         let (_, pages) = setup_wiki("orphan_in_index_inner", all_files);
-        let issues = check_orphan_pages(&pages, &dir);
+        let issues = orphans(&pages, &dir);
         assert!(
             issues.is_empty(),
             "page-c is in index.md so should not be orphan"
@@ -638,7 +659,7 @@ mod tests {
             "---\ntitle: Foo\ntype: concept\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\nBody content.\n",
         )];
         let (_, pages) = setup_wiki("orphan_domain_index_inner", files);
-        let issues = check_orphan_pages(&pages, &dir);
+        let issues = orphans(&pages, &dir);
         assert!(
             issues.is_empty(),
             "page listed in its domain index should not be orphan: {issues:?}"
@@ -673,10 +694,60 @@ mod tests {
             ),
         ];
         let (_, pages) = setup_wiki("orphan_unindexed_inner", files);
-        let issues = check_orphan_pages(&pages, &dir);
+        let issues = orphans(&pages, &dir);
         assert_eq!(issues.len(), 1);
         assert_eq!(issues[0].page, "alpha/bar.md");
         assert_eq!(issues[0].category, "orphan");
+    }
+
+    #[test]
+    fn test_orphan_pages_of_an_aggregate_root() {
+        // A bundle-relative body link reaches the page inside the bundle,
+        // and an explicit reference counts for the bundle it names.
+        let dir = temp_dir("orphan_aggregate");
+        mark_bundle(&dir.join("core"), "core");
+        mark_bundle(&dir.join("vendor"), "vendor");
+        write(
+            &dir.join("index.md"),
+            "# Index\n\n[Alpha](core/concepts/alpha.md)\n\
+             [Gamma](vendor/concepts/gamma.md)\n",
+        );
+        write(
+            &dir.join("core/concepts/alpha.md"),
+            &page(
+                "Alpha",
+                "concept",
+                "draft",
+                "2026-01-01",
+                "",
+                "See [beta](concepts/beta.md).",
+            ),
+        );
+        write(
+            &dir.join("core/concepts/beta.md"),
+            &page("Beta", "concept", "draft", "2026-01-01", "", "Body."),
+        );
+        write(
+            &dir.join("vendor/concepts/gamma.md"),
+            &page(
+                "Gamma",
+                "concept",
+                "draft",
+                "2026-01-01",
+                "",
+                "See [beta](@core/concepts/beta.md).",
+            ),
+        );
+        write(
+            &dir.join("core/concepts/delta.md"),
+            &page("Delta", "concept", "draft", "2026-01-01", "", "Body."),
+        );
+
+        let set = PageSet::load(&dir);
+        let catalog = Catalog::new(&dir, &set).expect("catalog");
+        let issues = check_orphan_pages(set.pages(), &catalog, &dir);
+        assert_eq!(issues.len(), 1, "only delta stays unlinked: {issues:?}");
+        assert_eq!(issues[0].page, "core/concepts/delta.md");
     }
 
     // =======================================================================
@@ -759,10 +830,9 @@ mod tests {
     #[test]
     fn test_freshness_time_expired_flagged() {
         let old = page("Old", "concept", "stable", "2024-06-01", "", "Body.");
-        let (dir, pages) =
+        let (_, pages) =
             setup_wiki("freshness_stale", &[("concepts/old.md", &old)]);
-        let result =
-            check_freshness(&pages, &dir, &no_bundles(), reference_date());
+        let result = freshness_at(&pages, reference_date());
         assert_eq!(result.stale.len(), 1);
         assert_eq!(result.stale[0].page, "concepts/old.md");
         assert_eq!(result.stale[0].category, "stale");
@@ -776,12 +846,11 @@ mod tests {
     fn test_freshness_deprecated_exempt() {
         let deprecated =
             page("Dep", "concept", "deprecated", "2020-01-01", "", "Body.");
-        let (dir, pages) = setup_wiki(
+        let (_, pages) = setup_wiki(
             "freshness_deprecated",
             &[("concepts/deprecated.md", &deprecated)],
         );
-        let result =
-            check_freshness(&pages, &dir, &no_bundles(), reference_date());
+        let result = freshness_at(&pages, reference_date());
         assert!(result.stale.is_empty(), "deprecated pages should be exempt");
     }
 
@@ -789,10 +858,9 @@ mod tests {
     fn test_freshness_recent_not_flagged() {
         let recent =
             page("Recent", "concept", "stable", "2024-12-15", "", "Body.");
-        let (dir, pages) =
+        let (_, pages) =
             setup_wiki("freshness_recent", &[("concepts/recent.md", &recent)]);
-        let result =
-            check_freshness(&pages, &dir, &no_bundles(), reference_date());
+        let result = freshness_at(&pages, reference_date());
         assert!(result.stale.is_empty(), "recent page should pass");
     }
 
@@ -800,12 +868,11 @@ mod tests {
     fn test_freshness_invalid_last_validated_skipped() {
         let baddate =
             page("Bad Date", "concept", "draft", "not-a-date", "", "Body.");
-        let (dir, pages) = setup_wiki(
+        let (_, pages) = setup_wiki(
             "freshness_bad_lv",
             &[("concepts/baddate.md", &baddate)],
         );
-        let result =
-            check_freshness(&pages, &dir, &no_bundles(), reference_date());
+        let result = freshness_at(&pages, reference_date());
         assert!(result.stale.is_empty(), "invalid date should be skipped");
     }
 
@@ -821,12 +888,11 @@ mod tests {
             "timestamp: 2020-01-01\n",
             "Body.",
         );
-        let (dir, pages) = setup_wiki(
+        let (_, pages) = setup_wiki(
             "freshness_old_ts",
             &[("concepts/validated.md", &validated)],
         );
-        let result =
-            check_freshness(&pages, &dir, &no_bundles(), reference_date());
+        let result = freshness_at(&pages, reference_date());
         assert!(
             result.stale.is_empty(),
             "recent validation must keep the page fresh"
@@ -853,16 +919,55 @@ mod tests {
             "sources: [shared/sources/bar.md]\n",
             "Body.",
         );
-        let (dir, pages) = setup_wiki(
+        let (_, pages) = setup_wiki(
             "freshness_source_newer",
             &[
                 ("shared/sources/bar.md", &source),
                 ("shared/analysis/foo.md", &analysis),
             ],
         );
-        let result = check_freshness(&pages, &dir, &no_bundles(), reference);
+        let result = freshness_at(&pages, reference);
         assert_eq!(result.stale.len(), 1);
         assert_eq!(result.stale[0].page, "shared/analysis/foo.md");
+        let details: Value =
+            serde_json::from_str(&result.stale[0].details).unwrap();
+        assert_eq!(details["reasons"][0], "source_newer");
+    }
+
+    #[test]
+    fn test_freshness_source_resolved_inside_the_bundle() {
+        // The `sources` entry is bundle-relative, so an aggregate root finds
+        // the source inside the derived page's bundle.
+        let dir = temp_dir("freshness_source_bundle");
+        mark_bundle(&dir.join("core"), "core");
+        write(
+            &dir.join("core/sources/bar.md"),
+            &page(
+                "Bar",
+                "source",
+                "stable",
+                "2025-06-01",
+                "timestamp: 2025-05-01\n",
+                "Body.",
+            ),
+        );
+        write(
+            &dir.join("core/analysis/foo.md"),
+            &page(
+                "Foo",
+                "analysis",
+                "draft",
+                "2025-04-01",
+                "sources: [sources/bar.md]\n",
+                "Body.",
+            ),
+        );
+
+        let set = PageSet::load(&dir);
+        let catalog = Catalog::new(&dir, &set).expect("catalog");
+        let result = check_freshness(set.pages(), &catalog, reference_date());
+        assert_eq!(result.stale.len(), 1);
+        assert_eq!(result.stale[0].page, "core/analysis/foo.md");
         let details: Value =
             serde_json::from_str(&result.stale[0].details).unwrap();
         assert_eq!(details["reasons"][0], "source_newer");
@@ -907,7 +1012,7 @@ superseded_by:
             "",
             "# New\n\nContent.",
         );
-        let (wiki_dir, pages) = setup_wiki(
+        let (_, pages) = setup_wiki(
             "cascade_flagged",
             &[
                 ("shared/concepts/old.md", &old),
@@ -915,8 +1020,7 @@ superseded_by:
                 ("shared/concepts/new.md", &new),
             ],
         );
-        let result =
-            check_freshness(&pages, &wiki_dir, &no_bundles(), reference_date());
+        let result = freshness_at(&pages, reference_date());
         assert_eq!(result.cascade_stale.len(), 1);
         assert_eq!(result.cascade_stale[0].page, "shared/concepts/referrer.md");
         assert_eq!(result.cascade_stale[0].category, "cascade_stale");
@@ -958,7 +1062,7 @@ superseded_by:
             "",
             "# New\n\nContent.",
         );
-        let (wiki_dir, pages) = setup_wiki(
+        let (_, pages) = setup_wiki(
             "cascade_reviewed",
             &[
                 ("shared/concepts/old.md", &old),
@@ -966,8 +1070,7 @@ superseded_by:
                 ("shared/concepts/new.md", &new),
             ],
         );
-        let result =
-            check_freshness(&pages, &wiki_dir, &no_bundles(), reference_date());
+        let result = freshness_at(&pages, reference_date());
         assert!(
             result.cascade_stale.is_empty(),
             "referrer reviewed after supersedure should not be flagged"
@@ -993,15 +1096,14 @@ superseded_by:
             "",
             "# New\n\nSee [old](shared/concepts/old.md).",
         );
-        let (wiki_dir, pages) = setup_wiki(
+        let (_, pages) = setup_wiki(
             "cascade_excluded",
             &[
                 ("shared/concepts/old.md", &old),
                 ("shared/concepts/new.md", &new),
             ],
         );
-        let result =
-            check_freshness(&pages, &wiki_dir, &no_bundles(), reference_date());
+        let result = freshness_at(&pages, reference_date());
         assert!(
             result.cascade_stale.is_empty(),
             "superseding page itself should be excluded"
@@ -1043,15 +1145,14 @@ superseded_by:
             "",
             "# Referrer\n\nSee [old](shared/concepts/old.md).",
         );
-        let (wiki_dir, pages) = setup_wiki(
+        let (_, pages) = setup_wiki(
             "cascade_no_ref_lv",
             &[
                 ("shared/concepts/old.md", &old),
                 ("shared/concepts/referrer.md", &referrer),
             ],
         );
-        let result =
-            check_freshness(&pages, &wiki_dir, &no_bundles(), reference_date());
+        let result = freshness_at(&pages, reference_date());
         assert!(
             result.cascade_stale.is_empty(),
             "an uncomparable referrer is skipped"
@@ -1077,15 +1178,14 @@ superseded_by:
             "",
             "# New\n\nContent.",
         );
-        let (wiki_dir, pages) = setup_wiki(
+        let (_, pages) = setup_wiki(
             "cascade_no_refs",
             &[
                 ("shared/concepts/old.md", &old),
                 ("shared/concepts/new.md", &new),
             ],
         );
-        let result =
-            check_freshness(&pages, &wiki_dir, &no_bundles(), reference_date());
+        let result = freshness_at(&pages, reference_date());
         assert!(
             result.cascade_stale.is_empty(),
             "no referrers should produce no issues"

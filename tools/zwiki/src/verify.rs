@@ -8,8 +8,10 @@
 use std::collections::HashMap;
 use std::path::Path;
 
+use crate::catalog::Catalog;
 use crate::freshness;
 use crate::wiki;
+use zwiki::identity::PageId;
 
 /// A stale source–derived page pair.
 #[derive(Debug, Clone)]
@@ -83,20 +85,25 @@ pub fn collect_stale_pairs(
     let pages = set.require_all()?;
     let by_rel: HashMap<&str, &wiki::Page> =
         pages.iter().map(|page| (page.rel.as_str(), page)).collect();
+    // A `sources` entry names a page of the derived page's bundle.
+    let catalog = Catalog::new(root, &set)?;
 
     let mut stale: Vec<StalePair> = Vec::new();
 
     for page in pages {
-        // Domain filter: skip pages whose top-level directory doesn't match.
+        // Domain filter: keep the pages of the requested domain.
         if let Some(df) = domain {
             let df_lower = df.to_lowercase();
-            let page_domain = page.rel.split('/').next().unwrap_or("");
+            let page_domain = catalog
+                .id_of(&page.rel)
+                .map(PageId::domain)
+                .unwrap_or_default();
             if page_domain.to_lowercase() != df_lower {
                 continue;
             }
         }
 
-        let pairs = freshness::stale_sources(page, &by_rel);
+        let pairs = freshness::stale_sources(page, &by_rel, &catalog);
         for (source_rel, _) in pairs {
             let lv_str = page.document.metadata.last_validated.clone();
             let ts_str = by_rel
@@ -128,7 +135,6 @@ pub fn collect_stale_pairs(
 
 #[cfg(test)]
 mod tests {
-    use crate::bundle::testutil::temp_dir;
     use std::fs;
     use std::path::PathBuf;
 
@@ -139,6 +145,18 @@ mod tests {
     // -------------------------------------------------------------------
     // Helpers
     // -------------------------------------------------------------------
+
+    /// A temp root holding the bundle named `wiki`.
+    fn wiki_root(name: &str) -> PathBuf {
+        let dir = crate::bundle::testutil::temp_dir(name);
+        fs::write(
+            dir.join("bundle.toml"),
+            "[package]\nname = \"wiki\"\nversion = \"0.1.0\"\n\n\
+             [export]\ninclude = [\"**/*.md\"]\n",
+        )
+        .unwrap();
+        dir
+    }
 
     fn write(path: &PathBuf, text: &str) {
         if let Some(parent) = path.parent() {
@@ -155,7 +173,7 @@ mod tests {
     fn test_cmd_verify_stale_detected() {
         // Source page has a newer timestamp than the analysis page's
         // last_validated → should report the stale pair.
-        let dir = temp_dir("stale_detected");
+        let dir = crate::bundle::testutil::temp_dir("stale_detected");
         write(
             &dir.join("shared/sources/bar.md"),
             "---\ntitle: Bar\ntype: source\ntimestamp: 2024-06-01\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\nBody.\n",
@@ -172,7 +190,8 @@ mod tests {
             .expect("valid pages")
             .to_vec();
 
-        let updates = health::invalidate_by_source(&pages);
+        let updates =
+            health::invalidate_by_source(&pages, &Catalog::flat(&pages));
         assert_eq!(updates.len(), 1, "should detect one stale pair");
         assert_eq!(updates[0].rel, "shared/analysis/foo.md");
         assert_eq!(updates[0].new_last_validated, "2024-06-01");
@@ -181,7 +200,7 @@ mod tests {
     #[test]
     fn test_cmd_verify_no_stale_when_timestamps_match() {
         // When source timestamp equals derived last_validated → no stale.
-        let dir = temp_dir("no_stale_match");
+        let dir = wiki_root("no_stale_match");
         write(
             &dir.join("shared/sources/bar.md"),
             "---\ntitle: Bar\ntype: source\ntimestamp: 2024-01-01\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\nBody.\n",
@@ -198,7 +217,8 @@ mod tests {
             .expect("valid pages")
             .to_vec();
 
-        let updates = health::invalidate_by_source(&pages);
+        let updates =
+            health::invalidate_by_source(&pages, &Catalog::flat(&pages));
         assert!(
             updates.is_empty(),
             "matching timestamps should not produce stale pair"
@@ -212,7 +232,7 @@ mod tests {
     #[test]
     fn test_collect_stale_pairs_basic() {
         // Source newer than derived last_validated → one stale pair.
-        let dir = temp_dir("collect_basic");
+        let dir = wiki_root("collect_basic");
         write(
             &dir.join("shared/sources/bar.md"),
             "---\ntitle: Bar\ntype: source\ntimestamp: 2024-06-01\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\nBody.\n",
@@ -233,9 +253,36 @@ mod tests {
     }
 
     #[test]
+    fn test_collect_stale_pairs_markdown_link_source() {
+        // A `sources` entry may carry a markdown link; both the bare and the
+        // explicit form name the same source page.
+        let dir = wiki_root("collect_markdown_link");
+        write(
+            &dir.join("shared/sources/bar.md"),
+            "---\ntitle: Bar\ntype: source\ntimestamp: 2024-06-01\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\nBody.\n",
+        );
+        write(
+            &dir.join("shared/analysis/foo.md"),
+            "---\ntitle: Foo\ntype: analysis\n\
+             sources: ['[Bar](shared/sources/bar.md)', \
+             '[Bar](@wiki/shared/sources/bar.md)']\n\
+             last_validated: 2024-01-01\ntags: []\nstatus: draft\ntimeliness: current\n---\nBody.\n",
+        );
+
+        let stale = collect_stale_pairs(&dir, None).expect("valid pages");
+        assert_eq!(stale.len(), 2, "both entries reach the source");
+        assert!(
+            stale
+                .iter()
+                .all(|pair| pair.source_page == "shared/sources/bar.md"),
+            "every entry names the same source page: {stale:?}"
+        );
+    }
+
+    #[test]
     fn test_collect_stale_pairs_domain_filter() {
         // Pages in different domains; filter should exclude out-of-domain.
-        let dir = temp_dir("collect_domain");
+        let dir = wiki_root("collect_domain");
         write(
             &dir.join("domain1/sources/bar.md"),
             "---\ntitle: Bar\ntype: source\ntimestamp: 2024-06-01\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\nBody.\n",
@@ -271,7 +318,7 @@ mod tests {
     #[test]
     fn test_collect_stale_pairs_no_stale() {
         // Source timestamp equals derived last_validated → no stale.
-        let dir = temp_dir("collect_none");
+        let dir = wiki_root("collect_none");
         write(
             &dir.join("shared/sources/bar.md"),
             "---\ntitle: Bar\ntype: source\ntimestamp: 2024-01-01\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\nBody.\n",
@@ -290,7 +337,7 @@ mod tests {
     #[test]
     fn test_collect_stale_pairs_json_shape() {
         // Verify the JSON output structure is correct.
-        let dir = temp_dir("collect_json");
+        let dir = wiki_root("collect_json");
         write(
             &dir.join("shared/sources/bar.md"),
             "---\ntitle: Bar\ntype: source\ntimestamp: 2024-06-01\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\nBody.\n",

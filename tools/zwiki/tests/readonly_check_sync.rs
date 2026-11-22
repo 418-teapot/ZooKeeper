@@ -134,13 +134,16 @@ fn test_check_on_store_root_skips_all_writes() {
     // metadata or regenerate indexes for stray non-hidden directories.
     let store = temp_dir("check_store_readonly");
     std::fs::create_dir_all(store.join("concepts")).unwrap();
+    let bundle = store.join("core");
+    std::fs::create_dir_all(bundle.join("concepts")).unwrap();
+    common::write_bundle_manifest(&bundle);
     std::fs::write(
-        store.join("concepts/linker.md"),
+        bundle.join("concepts/linker.md"),
         page("Linker", "See [Target](concepts/target.md)."),
     )
     .unwrap();
     std::fs::write(
-        store.join("concepts/target.md"),
+        bundle.join("concepts/target.md"),
         page("Target", "Body of target page."),
     )
     .unwrap();

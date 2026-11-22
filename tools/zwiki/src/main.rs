@@ -8,6 +8,7 @@ mod aggregate;
 mod assets;
 mod backlinks;
 mod bundle;
+pub mod catalog;
 mod contradictions;
 mod display;
 mod document_io;
@@ -983,6 +984,20 @@ fn cmd_supersede(
     crate::print_stdout_line(format!("已记录取代关系: {old} ← {new}"));
 }
 
+/// Report a command failure and return exit code 1: a JSON error object on
+/// stdout in JSON mode, the message on stderr otherwise.
+fn report_error(error: &str, json_mode: bool) -> i32 {
+    if json_mode {
+        let output = serde_json::json!({"status": "error", "error": error});
+        crate::print_stdout_line(
+            serde_json::to_string_pretty(&output).unwrap(),
+        );
+    } else {
+        eprintln!("{error}");
+    }
+    1
+}
+
 /// Validate `--domain` and emit the error output if invalid.
 ///
 /// Returns `true` when the caller should short-circuit (invalid domain
@@ -1081,8 +1096,14 @@ fn dispatch_check(root: &WikiRoot, json_mode: bool) {
                 process::exit(1);
             }
             // Health + lint checks.
+            let checked = run_health_lint_at(tmp.path());
             let (health_results, lint_results, health_issues, lint_issues) =
-                run_health_lint_at(tmp.path());
+                match checked {
+                    Ok(results) => results,
+                    Err(error) => {
+                        process::exit(report_error(&error, json_mode))
+                    }
+                };
             let total = health_issues + lint_issues;
             if json_mode {
                 print_json_check_output(
@@ -1151,8 +1172,12 @@ fn dispatch_check_root_dir(dir: &Path, json_mode: bool) -> i32 {
             }
         }
     };
+    let checked = run_health_lint(dir, &set);
     let (health_results, lint_results, health_issues, lint_issues) =
-        run_health_lint(dir, &set);
+        match checked {
+            Ok(results) => results,
+            Err(error) => return report_error(&error, json_mode),
+        };
     let total = health_issues + lint_issues;
     if json_mode {
         print_json_check_output(
@@ -1196,8 +1221,6 @@ fn sync_derived_metadata(
         return Ok(());
     }
 
-    let bundles = wiki::BundleSet::discover(root);
-
     // Pages inside an installed bundle layer must never be rewritten.
     // Their check report is still produced; only the derived metadata
     // writes are skipped.  The bundle pages remain part of the reverse
@@ -1215,13 +1238,17 @@ fn sync_derived_metadata(
         .cloned()
         .collect();
 
+    // Page identity comes from the bundle manifests; without them no
+    // reference has a target.
+    let catalog = catalog::Catalog::new(root, set)?;
+
     // Sync backlinks.  The reverse index is built from all pages so that
     // bundle pages contribute their outbound links, but only writable
     // pages are rewritten.
-    let bl_index = backlinks::build_reverse_index(root, all_pages, &bundles);
+    let bl_index = backlinks::build_reverse_index(&catalog, all_pages);
     let titles = backlinks::title_map(all_pages);
     let updated =
-        backlinks::update_backlinks(&bl_index, &titles, &writable, &bundles)?;
+        backlinks::update_backlinks(&bl_index, &titles, &writable, &catalog)?;
     if updated > 0 && !suppress_eprint {
         eprintln!("已同步 {updated} 个页面的反向链接");
     }
@@ -1231,7 +1258,7 @@ fn sync_derived_metadata(
     // pages only.  The reverse index is reused for supersede detection.
     let reference_date = chrono::Utc::now().date_naive();
     let freshness_ctx =
-        freshness::FreshnessContext::new(all_pages, reference_date)
+        freshness::FreshnessContext::new(all_pages, &catalog, reference_date)
             .with_reverse_index(&bl_index);
     let stale_updates: Vec<health::StaleUpdate> =
         health::mark_stale(all_pages, &freshness_ctx)
@@ -1257,7 +1284,7 @@ fn sync_derived_metadata(
 
     // Invalidate derived pages whose sources have changed.
     let invalidated: Vec<health::InvalidateUpdate> =
-        health::invalidate_by_source(all_pages)
+        health::invalidate_by_source(all_pages, &catalog)
             .into_iter()
             .filter(|u| wiki::bundle_on_path(root, &u.rel).is_none())
             .collect();
@@ -1330,12 +1357,16 @@ fn dispatch_check_no_arg_inner(
             continue;
         }
 
-        let (health_issues, lint_issues) = check_single_bundle(
+        let counts = check_single_bundle(
             &bundle_dir,
             json_mode,
             &mut bundle_results,
             entry,
         );
+        let (health_issues, lint_issues) = match counts {
+            Ok(counts) => counts,
+            Err(error) => return report_error(&error, json_mode),
+        };
         total_issues += health_issues + lint_issues;
     }
 
@@ -1399,14 +1430,18 @@ fn dispatch_check_no_arg_inner(
 /// Run health + lint checks for a single bundle directory, accumulate JSON
 /// results into `bundle_results` (when `json_mode`), and return the issue
 /// counts for the caller to sum.
+///
+/// # Errors
+///
+/// Fails when the bundle pages carry no bundle identity.
 fn check_single_bundle(
     bundle_dir: &Path,
     json_mode: bool,
     bundle_results: &mut Vec<serde_json::Value>,
     entry: &bundle::ZwikiLockEntry,
-) -> (usize, usize) {
+) -> Result<(usize, usize), String> {
     let (health_results, lint_results, health_issues, lint_issues) =
-        run_health_lint_at(bundle_dir);
+        run_health_lint_at(bundle_dir)?;
 
     if json_mode {
         let hl_json = format_health_lint_json(&health_results, &lint_results);
@@ -1429,28 +1464,40 @@ fn check_single_bundle(
         }
     }
 
-    (health_issues, lint_issues)
+    Ok((health_issues, lint_issues))
 }
 
 /// Run health + lint checks against `root`, return structured results
 /// and issue counts. Does NOT print, sync backlinks, write reports,
 /// apply timeliness, or exit. Pure detection only.
+///
+/// # Errors
+///
+/// Fails when the pages carry no bundle identity, so the lint rules cannot
+/// resolve their references.
 pub(crate) fn run_health_lint_at(
     root: &Path,
-) -> (display::CheckResults, display::LintResults, usize, usize) {
+) -> Result<(display::CheckResults, display::LintResults, usize, usize), String>
+{
     run_health_lint(root, &wiki::PageSet::load(root))
 }
 
 /// Run health and lint checks on one page snapshot.
+///
+/// # Errors
+///
+/// Fails when the pages carry no bundle identity, so the lint rules cannot
+/// resolve their references.
 pub(crate) fn run_health_lint(
     root: &Path,
     set: &wiki::PageSet,
-) -> (display::CheckResults, display::LintResults, usize, usize) {
-    let health_results = health::run_all(root, set);
-    let lint_results = lint::run_all(root, set);
+) -> Result<(display::CheckResults, display::LintResults, usize, usize), String>
+{
+    let health_results = health::run_all(root, set)?;
+    let lint_results = lint::run_all(root, set)?;
     let health_issues = display::count_health_issues(&health_results);
     let lint_issues = display::count_lint_issues(&lint_results);
-    (health_results, lint_results, health_issues, lint_issues)
+    Ok((health_results, lint_results, health_issues, lint_issues))
 }
 
 /// Build the JSON representation of health + lint results (without the
@@ -1662,28 +1709,28 @@ fn cmd_page_show(
             eprintln!("{e}");
             process::exit(1);
         });
-        let filtered_index = backlinks::build_backlinks_for(
-            path,
-            root,
-            pages,
-            &wiki::BundleSet::discover(root),
-        );
+        let catalog = catalog::Catalog::new(root, &set).unwrap_or_else(|e| {
+            eprintln!("{e}");
+            process::exit(1);
+        });
+        let sources = catalog.id_of(path).map_or_else(Vec::new, |target| {
+            backlinks::build_backlinks_for(target, &catalog, pages)
+        });
 
         if json {
             let total = pages.len();
-            let with_bl = filtered_index.len();
+            let with_bl = usize::from(!sources.is_empty());
             let mut map = serde_json::Map::new();
-            for (tgt, srcs) in &filtered_index {
-                let t = page_title(tgt, root);
-                let s: Vec<_> = srcs
+            if !sources.is_empty() {
+                let list: Vec<_> = sources
                     .iter()
                     .map(|s| {
                         serde_json::json!({"path": s, "title": page_title(s, root)})
                     })
                     .collect();
                 map.insert(
-                    tgt.clone(),
-                    serde_json::json!({"title": t, "sources": s}),
+                    path.to_string(),
+                    serde_json::json!({"title": page_title(path, root), "sources": list}),
                 );
             }
             let out = serde_json::json!({"total_pages": total, "pages_with_backlinks": with_bl, "backlinks": map});
@@ -1693,10 +1740,6 @@ fn cmd_page_show(
         } else {
             // Compact single-page view — not the full-wiki report frame.
             let title = page_title(path, root);
-            let sources: Vec<&String> = filtered_index
-                .get(path)
-                .map(|s| s.iter().collect())
-                .unwrap_or_default();
             crate::print_stdout_line(format!(
                 "## 反向链接 — {title}（{}）\n",
                 sources.len()
@@ -1704,7 +1747,7 @@ fn cmd_page_show(
             if sources.is_empty() {
                 crate::print_stdout_line("无页面引用此页。");
             } else {
-                for s in sources {
+                for s in &sources {
                     let title = page_title(s, root);
                     crate::print_stdout_line(format!("- [{title}]({s})"));
                 }
@@ -3199,11 +3242,16 @@ This document has enough text to pass the health and lint checks that zwiki
 runs during validation.  It contains well over one hundred characters to
 satisfy the stub threshold check and other quality gates.\n";
 
+    /// A valid bundle manifest for fixtures that need page identity.
+    const TEST_MANIFEST: &str = "[package]\nname = \"test\"\nversion = \"0.1.0\"\n\n\
+         [export]\ninclude = [\"**/*.md\"]\n";
+
     #[test]
     fn test_run_health_lint_shares_one_snapshot() {
         // Health and lint see the same snapshot: the rejected page is one
         // invalid_document issue, and its links are missing targets for lint.
         let dir = temp_dir("shared_snapshot");
+        std::fs::write(dir.join("bundle.toml"), TEST_MANIFEST).unwrap();
         std::fs::write(
             dir.join("linker.md"),
             "---\ntitle: Linker\ntype: concept\ntags: []\nstatus: draft\n\
@@ -3214,7 +3262,7 @@ satisfy the stub threshold check and other quality gates.\n";
         std::fs::write(dir.join("broken.md"), "# Broken page\n").unwrap();
 
         let (health, lint, health_issues, lint_issues) =
-            run_health_lint_at(&dir);
+            run_health_lint_at(&dir).expect("the root holds a manifest");
 
         assert_eq!(health.total_pages, 2, "both pages are counted");
         assert!(
@@ -3283,6 +3331,7 @@ satisfy the stub threshold check and other quality gates.\n";
         // is excluded from page discovery).
         let bundle_dir = dir.join("bundles").join("test");
         std::fs::create_dir_all(&bundle_dir).unwrap();
+        std::fs::write(bundle_dir.join("bundle.toml"), TEST_MANIFEST).unwrap();
         // Add index.md referencing the bundle page so the index-sync check
         // passes and doc.md is not orphaned.
         std::fs::write(
@@ -3326,22 +3375,29 @@ title: Bundle Index
         // Verify that `zwiki check` (no source) materialises timeliness
         // from the unified freshness verdict by default.  The page is
         // freshly validated, so the verdict is fresh and a stale marker is
-        // rewritten to current.
+        // rewritten to current.  The page lies outside every installed
+        // bundle, so the sync may write it.
         let dir = temp_dir("check_inner_timeliness");
         // A writable parent must contain bundle.toml; without it the root
         // is read-only for check and no derived metadata is written.
-        std::fs::write(dir.join("bundle.toml"), ".").unwrap();
+        std::fs::write(
+            dir.join("bundle.toml"),
+            "[package]\nname = \"store\"\nversion = \"0.1.0\"\n\n\
+             [export]\ninclude = [\"**/*.md\"]\n",
+        )
+        .unwrap();
         std::fs::write(
             dir.join("index.md"),
-            "- [test](bundles/test/index.md)\n",
+            "- [test](bundles/test/index.md)\n- [Doc](shared/doc.md)\n",
         )
         .unwrap();
 
         let bundle_dir = dir.join("bundles").join("test");
         std::fs::create_dir_all(&bundle_dir).unwrap();
+        std::fs::write(bundle_dir.join("bundle.toml"), TEST_MANIFEST).unwrap();
         std::fs::write(
             bundle_dir.join("index.md"),
-            "---\ntitle: Index\n---\n\n# Index\n\n- [Doc](doc.md)\n",
+            "---\ntitle: Index\n---\n\n# Index\n",
         )
         .unwrap();
 
@@ -3368,7 +3424,9 @@ runs during validation.  It contains well over one hundred characters to
 satisfy the stub threshold check and other quality gates required for the
 bundle validation process.\n"
         );
-        std::fs::write(bundle_dir.join("doc.md"), page_content).unwrap();
+        let page_path = dir.join("shared").join("doc.md");
+        std::fs::create_dir_all(page_path.parent().unwrap()).unwrap();
+        std::fs::write(&page_path, page_content).unwrap();
 
         let lock = bundle::ZwikiLock {
             entries: vec![bundle::ZwikiLockEntry {
@@ -3387,11 +3445,10 @@ bundle validation process.\n"
         assert_eq!(code, 0, "fresh page should return 0");
 
         // Verify timeliness was updated in the file content.
-        let content =
-            std::fs::read_to_string(bundle_dir.join("doc.md")).unwrap();
+        let content = std::fs::read_to_string(&page_path).unwrap();
         assert!(
             content.contains("timeliness: current"),
-            "doc.md should have timeliness: current after check, \
+            "the page should have timeliness: current after check, \
              got: {content:?}"
         );
     }
@@ -3407,6 +3464,7 @@ bundle validation process.\n"
 
         let bundle_dir = dir.join("bundles").join("test");
         std::fs::create_dir_all(&bundle_dir).unwrap();
+        std::fs::write(bundle_dir.join("bundle.toml"), TEST_MANIFEST).unwrap();
         // index.md is excluded from page discovery, so add a non-index page
         // with no frontmatter — check_frontmatter reports missing_frontmatter.
         std::fs::write(bundle_dir.join("index.md"), "# Bundle\n").unwrap();
@@ -3436,6 +3494,7 @@ bundle validation process.\n"
     fn test_sync_derived_metadata_writes_backlinks() {
         // Verify that sync_derived_metadata writes backlinks into pages.
         let dir = temp_dir("sync_bl");
+        std::fs::write(dir.join("bundle.toml"), TEST_MANIFEST).unwrap();
         std::fs::create_dir_all(dir.join("logs")).unwrap();
         std::fs::write(dir.join("logs/.gitkeep"), "").unwrap();
 

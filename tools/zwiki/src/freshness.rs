@@ -9,6 +9,7 @@ use std::collections::HashMap;
 
 use chrono::NaiveDate;
 
+use crate::catalog::Catalog;
 use crate::wiki::{self, Page};
 
 /// Time-decay threshold (days) for `concept`, `entity`, and untyped pages.
@@ -92,12 +93,15 @@ pub fn threshold_days(page: &Page) -> i64 {
 /// derived page's `last_validated`.
 ///
 /// Applies only to `analysis` / `synthesis` pages with a non-empty `sources`
-/// list and a parseable `last_validated`.  Unresolvable sources and
-/// unparseable timestamps are skipped.
+/// list and a parseable `last_validated`.  A bare entry names a page of the
+/// derived page's bundle; `@bundle/path` names a page of `bundle`.  An entry
+/// may carry a markdown link, which names its target.
+/// Unresolvable sources and unparseable timestamps are skipped.
 #[must_use]
 pub fn stale_sources<'a>(
     page: &'a Page,
     by_rel: &HashMap<&'a str, &'a Page>,
+    catalog: &Catalog,
 ) -> Vec<(String, NaiveDate)> {
     let metadata = &page.document.metadata;
     if !matches!(metadata.page_type.as_str(), "analysis" | "synthesis") {
@@ -114,14 +118,9 @@ pub fn stale_sources<'a>(
     };
 
     let mut stale: Vec<(String, NaiveDate)> = Vec::new();
-    for source_rel_in in sources {
-        let source_rel = if std::path::Path::new(source_rel_in)
-            .extension()
-            .is_some_and(|ext| ext.eq_ignore_ascii_case("md"))
-        {
-            source_rel_in.clone()
-        } else {
-            format!("{source_rel_in}.md")
+    for entry in sources {
+        let Some(source_rel) = source_rel(page, entry, catalog) else {
+            continue;
         };
 
         let Some(source_page) = by_rel.get(source_rel.as_str()) else {
@@ -143,12 +142,20 @@ pub fn stale_sources<'a>(
     stale
 }
 
+/// The page path a `sources` entry names, `None` when it names no page.
+fn source_rel(page: &Page, entry: &str, catalog: &Catalog) -> Option<String> {
+    let referrer = catalog.id_of(&page.rel)?;
+    catalog.resolve_rel(referrer, entry).map(ToString::to_string)
+}
+
 /// Peer lookups the judgment needs.  Build the context once from the page
 /// set (and, for supersede detection, a reverse link index), then judge any
 /// number of pages with [`FreshnessContext::judge`].
 pub struct FreshnessContext<'a> {
     reference_date: NaiveDate,
     by_rel: HashMap<&'a str, &'a Page>,
+    /// Page identity for `sources` lookup.
+    catalog: &'a Catalog,
     /// Referrer rel → superseded page rels it still cites.
     cascade: HashMap<String, Vec<String>>,
 }
@@ -156,10 +163,15 @@ pub struct FreshnessContext<'a> {
 impl<'a> FreshnessContext<'a> {
     /// Build a context for time-decay and source checks.
     #[must_use]
-    pub fn new(pages: &'a [Page], reference_date: NaiveDate) -> Self {
+    pub fn new(
+        pages: &'a [Page],
+        catalog: &'a Catalog,
+        reference_date: NaiveDate,
+    ) -> Self {
         Self {
             reference_date,
             by_rel: pages.iter().map(|p| (p.rel.as_str(), p)).collect(),
+            catalog,
             cascade: HashMap::new(),
         }
     }
@@ -230,7 +242,7 @@ impl<'a> FreshnessContext<'a> {
         if (self.reference_date - lv_date).num_days() > threshold_days(page) {
             reasons.push(StaleReason::TimeExpired);
         }
-        if !stale_sources(page, &self.by_rel).is_empty() {
+        if !stale_sources(page, &self.by_rel, self.catalog).is_empty() {
             reasons.push(StaleReason::SourceNewer);
         }
         if self.has_unreviewed_supersede(page, lv_str) {
@@ -314,7 +326,8 @@ mod tests {
 
     fn judge_one(page: &Page) -> Option<Freshness> {
         let pages = vec![page.clone()];
-        let ctx = FreshnessContext::new(&pages, reference());
+        let catalog = Catalog::flat(&pages);
+        let ctx = FreshnessContext::new(&pages, &catalog, reference());
         ctx.judge(&pages[0])
     }
 
@@ -457,11 +470,57 @@ mod tests {
             ),
         );
         let pages = vec![analysis, source];
-        let ctx = FreshnessContext::new(&pages, reference());
+        let catalog = Catalog::flat(&pages);
+        let ctx = FreshnessContext::new(&pages, &catalog, reference());
         let verdict = ctx.judge(&pages[0]).expect("analysis judged");
         assert!(
             verdict.reasons().contains(&StaleReason::SourceNewer),
             "newer source should mark the analysis stale"
+        );
+    }
+
+    #[test]
+    fn test_markdown_link_source_names_the_same_page() {
+        // A `sources` entry may carry a markdown link; its target is the
+        // same page as the bare path, in the bare and explicit forms.
+        let analysis = make_page(
+            "shared/analysis/a.md",
+            &page_text(
+                "analysis",
+                "draft",
+                "2026-01-01",
+                "sources:\n  - '[Bar](shared/sources/bar.md)'\n  \
+                 - '[Bar](@flat/shared/sources/bar.md)'\n  \
+                 - shared/sources/bar.md\n",
+                "Body.",
+            ),
+        );
+        let source = make_page(
+            "shared/sources/bar.md",
+            &page_text(
+                "source",
+                "draft",
+                "2026-10-05",
+                "timestamp: 2026-06-01\n",
+                "Body.",
+            ),
+        );
+        let pages = vec![analysis, source];
+        let by_rel: HashMap<&str, &Page> =
+            pages.iter().map(|p| (p.rel.as_str(), p)).collect();
+        let catalog = Catalog::flat(&pages);
+
+        let stale = stale_sources(&pages[0], &by_rel, &catalog);
+        let targets: Vec<&str> =
+            stale.iter().map(|(rel, _)| rel.as_str()).collect();
+        assert_eq!(
+            targets,
+            vec![
+                "shared/sources/bar.md",
+                "shared/sources/bar.md",
+                "shared/sources/bar.md"
+            ],
+            "every spelling of the entry names the same page"
         );
     }
 
@@ -488,7 +547,8 @@ mod tests {
             ),
         );
         let pages = vec![concept, source];
-        let ctx = FreshnessContext::new(&pages, reference());
+        let catalog = Catalog::flat(&pages);
+        let ctx = FreshnessContext::new(&pages, &catalog, reference());
         let verdict = ctx.judge(&pages[0]).expect("concept judged");
         assert!(
             !verdict.reasons().contains(&StaleReason::SourceNewer),
@@ -500,7 +560,10 @@ mod tests {
     // UnreviewedSupersede
     // -------------------------------------------------------------------
 
-    fn cascade_context(pages: &[Page]) -> FreshnessContext<'_> {
+    fn cascade_context<'a>(
+        pages: &'a [Page],
+        catalog: &'a Catalog,
+    ) -> FreshnessContext<'a> {
         use std::collections::HashMap;
 
         // The reverse index maps the superseded page to its referrers.
@@ -518,7 +581,8 @@ mod tests {
                 }
             }
         }
-        FreshnessContext::new(pages, reference()).with_reverse_index(&reverse)
+        FreshnessContext::new(pages, catalog, reference())
+            .with_reverse_index(&reverse)
     }
 
     #[test]
@@ -554,7 +618,8 @@ mod tests {
             ),
         );
         let pages = vec![old, referrer, new];
-        let ctx = cascade_context(&pages);
+        let catalog = Catalog::flat(&pages);
+        let ctx = cascade_context(&pages, &catalog);
         let verdict = ctx.judge(&pages[1]).expect("referrer judged");
         assert!(
             verdict.reasons().contains(&StaleReason::UnreviewedSupersede),
@@ -595,7 +660,8 @@ mod tests {
             ),
         );
         let pages = vec![old, referrer, new];
-        let ctx = cascade_context(&pages);
+        let catalog = Catalog::flat(&pages);
+        let ctx = cascade_context(&pages, &catalog);
         let verdict = ctx.judge(&pages[1]).expect("referrer judged");
         assert!(
             !verdict.reasons().contains(&StaleReason::UnreviewedSupersede),
@@ -626,7 +692,8 @@ mod tests {
             ),
         );
         let pages = vec![old, new];
-        let ctx = cascade_context(&pages);
+        let catalog = Catalog::flat(&pages);
+        let ctx = cascade_context(&pages, &catalog);
         let verdict = ctx.judge(&pages[1]).expect("superseding page judged");
         assert!(
             !verdict.reasons().contains(&StaleReason::UnreviewedSupersede),

@@ -8,11 +8,13 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use regex::Regex;
+use zwiki::identity::PageId;
 
+use crate::catalog::Catalog;
 use crate::display::{CheckResults, IndexSyncResult, Issue};
 use crate::freshness::{self, FreshnessContext};
 use crate::wiki;
-use crate::wiki::{Page, PageError, PageSet, resolve_wiki_link};
+use crate::wiki::{Page, PageError, PageSet};
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -448,15 +450,19 @@ pub fn check_source_field(pages: &[Page]) -> Vec<Issue> {
 /// Scan all pages and extract `[display text](target.md)` → target mappings.
 ///
 /// Builds a dictionary of every display text used in markdown links across
-/// the wiki, mapped to the set of wiki-relative target paths it points to.
+/// the wiki, mapped to the set of page rels it points to from the referrer's
+/// bundle.
 pub fn extract_anchor_map(
     pages: &[Page],
-    wiki_dir: &Path,
+    catalog: &Catalog,
 ) -> HashMap<String, HashSet<String>> {
     let link_re = Regex::new(r"\[([^\]]+)\]\(([^)]+)\)").unwrap();
     let mut map: HashMap<String, HashSet<String>> = HashMap::new();
 
     for page in pages {
+        let Some(referrer) = catalog.id_of(&page.rel) else {
+            continue;
+        };
         for cap in link_re.captures_iter(page.document.body.author()) {
             let display_text = cap[1].trim().to_string();
             let target = cap[2].trim().to_string();
@@ -471,8 +477,10 @@ pub fn extract_anchor_map(
                 continue;
             }
 
-            if let Some(rel_target) = resolve_wiki_link(&target, wiki_dir) {
-                map.entry(display_text).or_default().insert(rel_target);
+            if let Some(rel_target) = catalog.resolve_rel(referrer, &target) {
+                map.entry(display_text)
+                    .or_default()
+                    .insert(rel_target.to_string());
             }
         }
     }
@@ -536,12 +544,19 @@ fn first_unlinked_occurrence(
 }
 
 /// Check a body text fragment for anchor terms missing inline links.
+///
+/// Each link target resolves through `catalog` from `referrer`, so a
+/// bundle-relative target reaches its own page whatever root holds the
+/// bundle.  Returns nothing when `referrer` names no page of the catalog.
 pub fn check_body_for_missing_links(
     body: &str,
-    rel_page: &str,
+    referrer: &PageId,
     anchor_map: &HashMap<String, HashSet<String>>,
-    wiki_dir: &Path,
+    catalog: &Catalog,
 ) -> Vec<Issue> {
+    let Some(rel_page) = catalog.rel(referrer) else {
+        return Vec::new();
+    };
     let mut results: Vec<Issue> = Vec::new();
     let link_re = Regex::new(r"\[([^\]]+)\]\(([^)]+)\)").unwrap();
 
@@ -573,9 +588,9 @@ pub fn check_body_for_missing_links(
         {
             continue;
         }
-        if let Some(rel_target) = resolve_wiki_link(&target, wiki_dir) {
+        if let Some(rel_target) = catalog.resolve_rel(referrer, &target) {
             let display = cap[1].trim().to_string();
-            linked_texts.insert((display, rel_target));
+            linked_texts.insert((display, rel_target.to_string()));
         }
     }
 
@@ -710,9 +725,9 @@ pub fn deduplicate_prefix_matches(results: &mut Vec<Issue>) {
 /// appear in the body without a corresponding link.
 pub fn check_missing_inline_links(
     pages: &[Page],
-    wiki_dir: &Path,
+    catalog: &Catalog,
 ) -> Vec<Issue> {
-    let mut anchor_map = extract_anchor_map(pages, wiki_dir);
+    let mut anchor_map = extract_anchor_map(pages, catalog);
 
     // Register each page's own title as an anchor text pointing to itself.
     for page in pages {
@@ -727,11 +742,14 @@ pub fn check_missing_inline_links(
 
     let mut results: Vec<Issue> = Vec::new();
     for page in pages {
+        let Some(referrer) = catalog.id_of(&page.rel) else {
+            continue;
+        };
         results.extend(check_body_for_missing_links(
             page.document.body.author(),
-            &page.rel,
+            referrer,
             &anchor_map,
-            wiki_dir,
+            catalog,
         ));
     }
 
@@ -743,21 +761,25 @@ pub fn check_missing_inline_links(
 // check_duplicate_inline_links
 // ---------------------------------------------------------------------------
 
-/// Find pages that link to the same wiki target multiple times in prose
-/// sections (Backlinks/References/Notes excluded).
+/// Find pages that link to the same page multiple times in prose sections
+/// (Backlinks/References/Notes excluded).
 ///
+/// Each link target resolves through `catalog` from the referrer's bundle.
 /// Each issue carries a `suggestion` guiding the author to keep the first
 /// occurrence and remove later duplicates, so the report never invites
 /// deleting the first link to silence the warning.
 pub fn check_duplicate_inline_links(
     pages: &[Page],
-    wiki_dir: &Path,
+    catalog: &Catalog,
 ) -> Vec<Issue> {
     let link_re = Regex::new(r"\[([^\]]+)\]\(([^)]+)\)").unwrap();
     let code_re = Regex::new(r"(?s)```.*?```").unwrap();
     let mut results: Vec<Issue> = Vec::new();
 
     for page in pages {
+        let Some(referrer) = catalog.id_of(&page.rel) else {
+            continue;
+        };
         let body = page.document.body.author();
 
         // Remove code blocks.
@@ -784,14 +806,14 @@ pub fn check_duplicate_inline_links(
                 continue;
             }
 
-            if let Some(rel_target) = resolve_wiki_link(&target, wiki_dir) {
+            if let Some(rel_target) = catalog.resolve_rel(referrer, &target) {
                 // 1-based line number within body (frontmatter already stripped).
                 let line_num =
                     body[..cap.get(0).unwrap().start()].matches('\n').count()
                         + 1;
 
                 target_groups
-                    .entry(rel_target)
+                    .entry(rel_target.to_string())
                     .or_default()
                     .push((display_text, line_num));
             }
@@ -906,7 +928,12 @@ pub struct InvalidateUpdate {
 /// - Unresolvable source path (not in the page set) → skip.
 /// - Unparseable source `timestamp` → skip that source.
 /// - Missing or unparseable `last_validated` on the derived page → skip.
-pub fn invalidate_by_source(pages: &[Page]) -> Vec<InvalidateUpdate> {
+///
+/// `catalog` resolves each `sources` entry from the derived page's bundle.
+pub fn invalidate_by_source(
+    pages: &[Page],
+    catalog: &Catalog,
+) -> Vec<InvalidateUpdate> {
     // Build a lookup map keyed by rel path for O(1) source resolution.
     let by_rel: HashMap<&str, &Page> =
         pages.iter().map(|p| (p.rel.as_str(), p)).collect();
@@ -914,7 +941,7 @@ pub fn invalidate_by_source(pages: &[Page]) -> Vec<InvalidateUpdate> {
     let mut updates: Vec<InvalidateUpdate> = Vec::new();
 
     for page in pages {
-        let pairs = freshness::stale_sources(page, &by_rel);
+        let pairs = freshness::stale_sources(page, &by_rel, catalog);
         if pairs.is_empty() {
             continue;
         }
@@ -941,13 +968,19 @@ pub fn invalidate_by_source(pages: &[Page]) -> Vec<InvalidateUpdate> {
 /// `set` is the shared page snapshot.  A page the document model rejected
 /// keeps its place in the page count and is reported as `invalid_document`;
 /// the remaining rules run on the valid pages.
-pub fn run_all(root: &Path, set: &PageSet) -> CheckResults {
+///
+/// # Errors
+///
+/// Fails when the pages carry no bundle identity, as the inline-link rules
+/// resolve every body link through the catalog.
+pub fn run_all(root: &Path, set: &PageSet) -> Result<CheckResults, String> {
     let pages = set.pages();
+    let catalog = Catalog::new(root, set)?;
     let mut frontmatter = check_invalid_documents(set.errors());
     frontmatter.extend(check_frontmatter(pages));
     frontmatter.sort_by(|a, b| a.page.cmp(&b.page));
 
-    CheckResults {
+    Ok(CheckResults {
         total_pages: pages.len() + set.errors().len(),
         empty_files: check_empty_files(pages, DEFAULT_STUB_THRESHOLD),
         index_sync: check_index_sync(pages, root),
@@ -955,9 +988,9 @@ pub fn run_all(root: &Path, set: &PageSet) -> CheckResults {
         frontmatter,
         system_file_links: check_system_file_links(pages),
         source_field: check_source_field(pages),
-        missing_inline_links: check_missing_inline_links(pages, root),
-        duplicate_inline_links: check_duplicate_inline_links(pages, root),
-    }
+        missing_inline_links: check_missing_inline_links(pages, &catalog),
+        duplicate_inline_links: check_duplicate_inline_links(pages, &catalog),
+    })
 }
 
 // ===========================================================================
@@ -1005,8 +1038,18 @@ mod tests {
 
     /// Run `mark_stale` with a context anchored at the current date.
     fn mark_stale_now(pages: &[Page]) -> Vec<StaleUpdate> {
-        let ctx = FreshnessContext::new(pages, chrono::Utc::now().date_naive());
+        let catalog = Catalog::flat(pages);
+        let ctx = FreshnessContext::new(
+            pages,
+            &catalog,
+            chrono::Utc::now().date_naive(),
+        );
         mark_stale(pages, &ctx)
+    }
+
+    /// Invalidate derived pages with the identity of the pages in memory.
+    fn invalidate(pages: &[Page]) -> Vec<InvalidateUpdate> {
+        invalidate_by_source(pages, &Catalog::flat(pages))
     }
 
     fn page_paths_to_pages(paths: &[PathBuf], base: &Path) -> Vec<Page> {
@@ -1217,6 +1260,29 @@ mod tests {
         page_paths_to_pages(&wiki::all_wiki_pages_at(dir), dir)
     }
 
+    /// Run the missing-inline-link rule over pages held in memory.
+    fn missing_links(pages: &[Page]) -> Vec<Issue> {
+        check_missing_inline_links(pages, &Catalog::flat(pages))
+    }
+
+    /// Run the duplicate-inline-link rule over pages held in memory.
+    fn duplicate_links(pages: &[Page]) -> Vec<Issue> {
+        check_duplicate_inline_links(pages, &Catalog::flat(pages))
+    }
+
+    /// Mark `dir` as the root of the bundle named `name`.
+    fn mark_bundle(dir: &Path, name: &str) {
+        fs::create_dir_all(dir).unwrap();
+        fs::write(
+            dir.join("bundle.toml"),
+            format!(
+                "[package]\nname = \"{name}\"\nversion = \"0.1.0\"\n\n\
+                 [export]\ninclude = [\"**/*.md\"]\n"
+            ),
+        )
+        .unwrap();
+    }
+
     // =======================================================================
     // check_log_coverage
     // =======================================================================
@@ -1417,6 +1483,7 @@ mod tests {
     #[test]
     fn test_run_all_counts_invalid_page() {
         let dir = temp_dir("run_all_invalid");
+        mark_bundle(&dir, "wiki");
         write(
             &dir.join("concepts/valid.md"),
             "---\ntitle: Valid\ntype: concept\ntags: []\nstatus: draft\n\
@@ -1425,7 +1492,7 @@ mod tests {
         write(&dir.join("concepts/broken.md"), "# No frontmatter\n");
 
         let set = wiki::PageSet::load(&dir);
-        let results = run_all(&dir, &set);
+        let results = run_all(&dir, &set).expect("checks");
 
         assert_eq!(results.total_pages, 2, "invalid page counts as a page");
         let invalid: Vec<&Issue> = results
@@ -1718,7 +1785,7 @@ last_validated: not-a-date\n---\nBody.\n";
         );
 
         let pages = discover_local_pages(&dir);
-        let issues = check_missing_inline_links(&pages, &dir);
+        let issues = missing_links(&pages);
         // "target page" appears in page-c.md without a link.
         // The anchor map has "target page" → {page-b.md} from page-a.md.
         assert!(!issues.is_empty(), "should find at least one missing link");
@@ -1745,7 +1812,7 @@ last_validated: not-a-date\n---\nBody.\n";
         );
 
         let pages = discover_local_pages(&dir);
-        let issues = check_duplicate_inline_links(&pages, &dir);
+        let issues = duplicate_links(&pages);
         assert_eq!(issues.len(), 1);
         assert_eq!(issues[0].page, "page.md");
     }
@@ -1767,7 +1834,7 @@ last_validated: not-a-date\n---\nBody.\n";
         );
 
         let pages = discover_local_pages(&dir);
-        let issues = check_duplicate_inline_links(&pages, &dir);
+        let issues = duplicate_links(&pages);
         assert!(issues.is_empty());
     }
 
@@ -1784,12 +1851,40 @@ last_validated: not-a-date\n---\nBody.\n";
         );
 
         let pages = discover_local_pages(&dir);
-        let issues = check_duplicate_inline_links(&pages, &dir);
+        let issues = duplicate_links(&pages);
         assert_eq!(issues.len(), 1);
         assert!(
             issues[0].details.contains("保留首次出现"),
             "suggestion should keep the first occurrence: {}",
             issues[0].details
+        );
+    }
+
+    #[test]
+    fn test_duplicate_inline_links_of_an_aggregate_root() {
+        // Both links name the page of the referrer's bundle, so one target
+        // carries two prose occurrences.
+        let dir = temp_dir("dup_links_aggregate");
+        mark_bundle(&dir.join("core"), "core");
+        write(
+            &dir.join("core/concepts/page.md"),
+            "---\ntitle: Test\ntype: concept\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n\nSee [foo](concepts/b.md) and also [foo again](concepts/b.md).\n",
+        );
+        write(
+            &dir.join("core/concepts/b.md"),
+            "---\ntitle: Page B\ntype: concept\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n\nBody.\n",
+        );
+
+        let set = wiki::PageSet::load(&dir);
+        let catalog = Catalog::new(&dir, &set).expect("catalog");
+        let issues = check_duplicate_inline_links(set.pages(), &catalog);
+        assert_eq!(issues.len(), 1, "one duplicated target: {issues:?}");
+        assert_eq!(issues[0].page, "core/concepts/page.md");
+        let details: serde_json::Value =
+            serde_json::from_str(&issues[0].details).unwrap();
+        assert_eq!(
+            details["target"], "core/concepts/b.md",
+            "the target keeps the bundle-relative page path"
         );
     }
 
@@ -1813,7 +1908,7 @@ last_validated: not-a-date\n---\nBody.\n";
         );
 
         let pages = discover_local_pages(&dir);
-        let issues = check_missing_inline_links(&pages, &dir);
+        let issues = missing_links(&pages);
         assert!(
             !issues.iter().any(|i| {
                 i.page == "page-c.md" && i.details.contains("多 agent")
@@ -1846,7 +1941,7 @@ last_validated: not-a-date\n---\nBody.\n";
         );
 
         let pages = discover_local_pages(&dir);
-        let issues = check_missing_inline_links(&pages, &dir);
+        let issues = missing_links(&pages);
         assert!(
             !issues.iter().any(|i| {
                 i.page == "page-c.md" && i.details.contains("多 agent 研究架构")
@@ -1940,21 +2035,21 @@ last_validated: not-a-date\n---\nBody.\n";
     #[test]
     fn test_resolve_wiki_link_simple() {
         let wiki = Path::new("/tmp/wiki");
-        let result = resolve_wiki_link("concepts/foo.md", wiki);
+        let result = wiki::resolve_wiki_link("concepts/foo.md", wiki);
         assert_eq!(result, Some("concepts/foo.md".to_string()));
     }
 
     #[test]
     fn test_resolve_wiki_link_absolute_skipped() {
         let wiki = Path::new("/tmp/wiki");
-        let result = resolve_wiki_link("/etc/passwd", wiki);
+        let result = wiki::resolve_wiki_link("/etc/passwd", wiki);
         assert_eq!(result, None);
     }
 
     #[test]
     fn test_resolve_wiki_link_parent_dir_skipped() {
         let wiki = Path::new("/tmp/wiki");
-        let result = resolve_wiki_link("../outside.md", wiki);
+        let result = wiki::resolve_wiki_link("../outside.md", wiki);
         assert_eq!(result, None);
     }
 
@@ -2000,7 +2095,7 @@ last_validated: not-a-date\n---\nBody.\n";
             "shared/sources/bar.md",
             "---\ntitle: Bar\ntype: source\ntimestamp: 2024-06-01\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\nBody.\n",
         );
-        let updates = invalidate_by_source(&[analysis, source]);
+        let updates = invalidate(&[analysis, source]);
         assert_eq!(updates.len(), 1);
         assert_eq!(updates[0].rel, "shared/analysis/foo.md");
         assert_eq!(updates[0].new_last_validated, "2024-06-01");
@@ -2017,7 +2112,7 @@ last_validated: not-a-date\n---\nBody.\n";
             "shared/sources/bar.md",
             "---\ntitle: Bar\ntype: source\ntimestamp: 2024-01-01\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\nBody.\n",
         );
-        let updates = invalidate_by_source(&[analysis, source]);
+        let updates = invalidate(&[analysis, source]);
         assert!(updates.is_empty(), "older source should not trigger stale");
     }
 
@@ -2032,7 +2127,7 @@ last_validated: not-a-date\n---\nBody.\n";
             "shared/sources/bar.md",
             "---\ntitle: Bar\ntype: source\ntimestamp: 2024-06-01\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\nBody.\n",
         );
-        let updates = invalidate_by_source(&[analysis, source]);
+        let updates = invalidate(&[analysis, source]);
         assert!(
             updates.is_empty(),
             "equal timestamps should not trigger stale"
@@ -2046,7 +2141,7 @@ last_validated: not-a-date\n---\nBody.\n";
             "shared/analysis/foo.md",
             "---\ntitle: Foo\ntype: analysis\nsources: []\nlast_validated: 2024-01-01\ntags: []\nstatus: draft\ntimeliness: current\n---\nBody.\n",
         );
-        let updates = invalidate_by_source(&[analysis]);
+        let updates = invalidate(&[analysis]);
         assert!(updates.is_empty(), "empty sources should be skipped");
     }
 
@@ -2057,7 +2152,7 @@ last_validated: not-a-date\n---\nBody.\n";
             "shared/analysis/foo.md",
             "---\ntitle: Foo\ntype: analysis\nlast_validated: 2024-01-01\ntags: []\nstatus: draft\ntimeliness: current\n---\nBody.\n",
         );
-        let updates = invalidate_by_source(&[analysis]);
+        let updates = invalidate(&[analysis]);
         assert!(updates.is_empty(), "missing sources should be skipped");
     }
 
@@ -2072,7 +2167,7 @@ last_validated: not-a-date\n---\nBody.\n";
             "shared/sources/bar.md",
             "---\ntitle: Bar\ntype: source\ntimestamp: 2024-06-01\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\nBody.\n",
         );
-        let updates = invalidate_by_source(&[analysis, source]);
+        let updates = invalidate(&[analysis, source]);
         assert!(updates.is_empty(), "missing last_validated should be skipped");
     }
 
@@ -2084,7 +2179,7 @@ last_validated: not-a-date\n---\nBody.\n";
             "---\ntitle: Foo\ntype: analysis\nsources: [shared/sources/bar.md]\nlast_validated: 2024-01-01\ntags: []\nstatus: draft\ntimeliness: current\n---\nBody.\n",
         );
         // Only the analysis page — bar.md is not in the set.
-        let updates = invalidate_by_source(&[analysis]);
+        let updates = invalidate(&[analysis]);
         assert!(
             updates.is_empty(),
             "unresolvable source path should be skipped"
@@ -2098,7 +2193,7 @@ last_validated: not-a-date\n---\nBody.\n";
             "shared/concepts/foo.md",
             "---\ntitle: Foo\ntype: concept\nsources: [shared/sources/bar.md]\nlast_validated: 2024-01-01\ntags: []\nstatus: draft\ntimeliness: current\n---\nBody.\n",
         );
-        let updates = invalidate_by_source(&[concept]);
+        let updates = invalidate(&[concept]);
         assert!(
             updates.is_empty(),
             "non-analysis/synthesis pages should be skipped"
@@ -2116,7 +2211,7 @@ last_validated: not-a-date\n---\nBody.\n";
             "shared/sources/bar.md",
             "---\ntitle: Bar\ntype: source\ntimestamp: 2024-06-01\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\nBody.\n",
         );
-        let updates = invalidate_by_source(&[synthesis, source]);
+        let updates = invalidate(&[synthesis, source]);
         assert_eq!(updates.len(), 1);
         assert_eq!(updates[0].rel, "shared/syntheses/overview.md");
         assert_eq!(updates[0].new_last_validated, "2024-06-01");
@@ -2137,7 +2232,7 @@ last_validated: not-a-date\n---\nBody.\n";
             "shared/sources/baz.md",
             "---\ntitle: Baz\ntype: source\ntimestamp: 2024-03-01\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\nBody.\n",
         );
-        let updates = invalidate_by_source(&[analysis, bar, baz]);
+        let updates = invalidate(&[analysis, bar, baz]);
         assert_eq!(updates.len(), 1);
         // Should use the latest source timestamp.
         assert_eq!(updates[0].new_last_validated, "2024-06-01");
@@ -2154,7 +2249,7 @@ last_validated: not-a-date\n---\nBody.\n";
             "shared/sources/bar.md",
             "---\ntitle: Bar\ntype: source\ntimestamp: not-a-date\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\nBody.\n",
         );
-        let updates = invalidate_by_source(&[analysis, source]);
+        let updates = invalidate(&[analysis, source]);
         assert!(
             updates.is_empty(),
             "unparseable source timestamp should be skipped"

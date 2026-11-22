@@ -11,3 +11,4 @@
 #![warn(clippy::nursery)]
 
 pub mod document;
+pub mod identity;

@@ -12,7 +12,9 @@ use std::path::Path;
 use chrono::NaiveDate;
 use serde::Serialize;
 
+use crate::catalog::Catalog;
 use crate::wiki;
+use zwiki::identity::PageId;
 
 // ---------------------------------------------------------------------------
 // Data structures
@@ -56,7 +58,8 @@ pub struct StatusReport {
 ///
 /// # Errors
 ///
-/// Fails when any page cannot be loaded, naming its path.
+/// Fails when any page cannot be loaded, naming its path, or when the
+/// pages carry no bundle identity.
 pub fn compute_status(
     wiki_dir: &Path,
     type_filter: Option<&str>,
@@ -66,6 +69,7 @@ pub fn compute_status(
 ) -> Result<StatusReport, String> {
     let set = wiki::PageSet::load(wiki_dir);
     let pages = set.require_all()?;
+    let catalog = Catalog::new(wiki_dir, &set)?;
 
     let mut by_type: BTreeMap<String, usize> = BTreeMap::new();
     let mut by_domain: BTreeMap<String, usize> = BTreeMap::new();
@@ -97,11 +101,12 @@ pub fn compute_status(
             *by_type.entry(metadata.page_type.clone()).or_insert(0) += 1;
         }
 
-        // Domain (first path component; root-level files excluded to
-        // match validate_domain's directory-only rule).
-        if page.rel.contains('/') {
-            let domain = page.rel.split('/').next().unwrap_or("").to_string();
-            *by_domain.entry(domain).or_insert(0) += 1;
+        // Domain of the page identity; a bundle-root page has none, which
+        // matches validate_domain's directory-only rule.
+        if let Some(domain) = catalog.id_of(&page.rel).map(PageId::domain)
+            && !domain.is_empty()
+        {
+            *by_domain.entry(domain.to_string()).or_insert(0) += 1;
         }
 
         if !metadata.status.is_empty() {
@@ -224,11 +229,23 @@ pub fn format_status_json(report: &StatusReport) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::bundle::testutil::{temp_dir, write_page};
+    use crate::bundle::testutil::{temp_dir, w, write_page};
+    use std::path::PathBuf;
 
     /// An empty bundle set for a plain (non-aggregated) root.
     fn no_bundles() -> wiki::BundleSet {
         wiki::BundleSet::default()
+    }
+
+    /// A temp root holding the bundle named `wiki`.
+    fn wiki_root(name: &str) -> PathBuf {
+        let dir = temp_dir(name);
+        w(
+            dir.join("bundle.toml"),
+            "[package]\nname = \"wiki\"\nversion = \"0.1.0\"\n\n\
+             [export]\ninclude = [\"**/*.md\"]\n",
+        );
+        dir
     }
     // -------------------------------------------------------------------
     // Helpers
@@ -266,7 +283,7 @@ mod tests {
 
     #[test]
     fn test_empty_wiki() {
-        let dir = temp_dir("empty");
+        let dir = wiki_root("empty");
         let report = compute_status(&dir, None, None, None, &no_bundles())
             .expect("valid pages");
         assert_eq!(report.total, 0);
@@ -284,7 +301,7 @@ mod tests {
 
     #[test]
     fn test_status_all_pages() {
-        let dir = temp_dir("all_pages");
+        let dir = wiki_root("all_pages");
         make_page(
             &dir,
             "shared/concepts/foo.md",
@@ -350,7 +367,7 @@ mod tests {
 
     #[test]
     fn test_status_invalid_page_fails() {
-        let dir = temp_dir("missing_fields");
+        let dir = wiki_root("missing_fields");
         // A page without status, timeliness, or last_validated.
         write_page(
             &dir,
@@ -365,7 +382,7 @@ mod tests {
 
     #[test]
     fn test_status_missing_type_fails() {
-        let dir = temp_dir("missing_type");
+        let dir = wiki_root("missing_type");
         // A page without a type field cannot be loaded as a page.
         write_page(
             &dir,
@@ -380,7 +397,7 @@ mod tests {
 
     #[test]
     fn test_status_type_slice() {
-        let dir = temp_dir("type_slice");
+        let dir = wiki_root("type_slice");
         make_page(
             &dir,
             "shared/concepts/a.md",
@@ -414,7 +431,7 @@ mod tests {
 
     #[test]
     fn test_status_tag_slice() {
-        let dir = temp_dir("tag_slice");
+        let dir = wiki_root("tag_slice");
         make_page(
             &dir,
             "shared/concepts/a.md",
@@ -446,7 +463,7 @@ mod tests {
 
     #[test]
     fn test_status_domain_slice() {
-        let dir = temp_dir("domain_slice");
+        let dir = wiki_root("domain_slice");
         make_page(
             &dir,
             "shared/concepts/a.md",
@@ -476,7 +493,7 @@ mod tests {
 
     #[test]
     fn test_status_by_domain_excludes_root_files() {
-        let dir = temp_dir("root_file_domain");
+        let dir = wiki_root("root_file_domain");
         make_page(
             &dir,
             "shared/concepts/a.md",
@@ -507,7 +524,7 @@ mod tests {
 
     #[test]
     fn test_status_invalid_dates_ignored() {
-        let dir = temp_dir("bad_dates");
+        let dir = wiki_root("bad_dates");
         write_page(
             &dir,
             "shared/concepts/a.md",
@@ -522,7 +539,7 @@ mod tests {
 
     #[test]
     fn test_status_single_date() {
-        let dir = temp_dir("single_date");
+        let dir = wiki_root("single_date");
         make_page(
             &dir,
             "shared/concepts/a.md",

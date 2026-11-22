@@ -11,7 +11,9 @@ use std::path::Path;
 
 use regex::Regex;
 use zwiki::document::{self, PageDocument};
+use zwiki::identity::{PageId, link_target};
 
+use crate::catalog::{Catalog, Resolution};
 use crate::{document_io, wiki};
 
 // ---------------------------------------------------------------------------
@@ -26,47 +28,35 @@ const SYSTEM_FILES: &[&str] =
 const EXCLUDED_DIRS: &[&str] = &["tools", "raw", "logs"];
 
 // ---------------------------------------------------------------------------
-// is_valid_wiki_target
+// is_backlink_target
 // ---------------------------------------------------------------------------
 
-/// Check whether `target` is a valid wiki-root-relative link target.
+/// Check whether `target` can name a backlink target.
 ///
-/// Must be a `.md` path that is not a system file, not under `tools/`,
-/// `raw/`, or `logs/`, and points to a file that actually exists.
-/// Paths containing `..` are rejected to prevent symlink traversal attacks.
-///
-/// For installed bundles, `target` is a bundle-relative path, so the
-/// function also searches inside each discovered bundle directory for the
-/// file.
+/// Must be a `.md` path that is not a system file and not under `tools/`,
+/// `raw/`, or `logs/`.  Paths containing `..` are rejected.  Whether the
+/// path names a page is decided by the catalog, not by this check.
 #[must_use]
-pub fn is_valid_wiki_target(
-    wiki_root: &Path,
-    target: &str,
-    bundles: &wiki::BundleSet,
-) -> bool {
-    // Must end with .md
-    if !std::path::Path::new(target)
+pub fn is_backlink_target(target: &str) -> bool {
+    if !Path::new(target)
         .extension()
         .is_some_and(|ext| ext.eq_ignore_ascii_case("md"))
     {
         return false;
     }
 
-    // Must NOT contain ..
     if target.contains("..") {
         return false;
     }
 
     let p = Path::new(target);
 
-    // Must NOT be a system file
     if let Some(name) = p.file_name().and_then(|n| n.to_str())
         && SYSTEM_FILES.contains(&name)
     {
         return false;
     }
 
-    // Must NOT be in excluded directories
     for component in p.components() {
         if let Some(name) = component.as_os_str().to_str()
             && EXCLUDED_DIRS.contains(&name)
@@ -75,66 +65,31 @@ pub fn is_valid_wiki_target(
         }
     }
 
-    // Target file must exist on disk — check the direct path first, then
-    // each discovered bundle directory.
-    let full_path = wiki_root.join(target);
-    full_path.exists()
-        || target_exists_in_any_bundle(wiki_root, target, bundles)
-}
-
-/// Check whether `target` exists inside any discovered bundle directory.
-///
-/// Links in the wiki are bundle-relative (e.g. `shared/concepts/foo.md`),
-/// so they must be resolved against each installed bundle's root.
-fn target_exists_in_any_bundle(
-    wiki_root: &Path,
-    target: &str,
-    bundles: &wiki::BundleSet,
-) -> bool {
-    bundles.names().any(|name| wiki_root.join(name).join(target).exists())
+    true
 }
 
 // ---------------------------------------------------------------------------
 // extract_links
 // ---------------------------------------------------------------------------
 
-/// Resolve a `sources` entry to a bare path.
-///
-/// An entry is either a plain path (`path/to.md`) or a markdown link
-/// (`[Name](path/to.md)`).
-fn source_path(value: &str) -> &str {
-    let trimmed = value.trim();
-    if let Some(rest) = trimmed.strip_prefix('[')
-        && let Some(close) = rest.find("](")
-    {
-        let after = &rest[close + 2..];
-        if let Some(end) = after.find(')') {
-            return after[..end].trim();
-        }
-    }
-    trimmed
-}
-
 /// Extract cross-reference link targets from `document`.
 ///
 /// Sources:
 /// - Typed metadata paths: `sources`, `supersedes`, `superseded_by`, and
 ///   `contradictions`.  A derived page names its source pages in `sources`,
-///   so a source page sees the derived pages as backlinks.
+///   so a source page sees the derived pages as backlinks.  A `sources`
+///   entry may be a markdown link, which names its target.
 /// - Inline markdown links `[text](path.md)` in the author body
 /// - Backtick-wrapped paths `` `path.md` `` in the author body
 ///
 /// The generated `## Backlinks` region is not author text, so it never
 /// feeds back into extraction.
 ///
-/// Returns a sorted, deduplicated list of wiki-root-relative `.md` paths
-/// that pass [`is_valid_wiki_target`].
+/// Returns a sorted, deduplicated list of reference texts that pass
+/// [`is_backlink_target`].  A reference names a page only after
+/// [`Catalog::resolve`] resolves it from the referrer's bundle.
 #[must_use]
-pub fn extract_links(
-    wiki_root: &Path,
-    document: &PageDocument,
-    bundles: &wiki::BundleSet,
-) -> Vec<String> {
+pub fn extract_links(document: &PageDocument) -> Vec<String> {
     let mut links: Vec<String> = Vec::new();
 
     let sources = document.metadata.sources.iter().flatten();
@@ -153,7 +108,7 @@ pub fn extract_links(
         .map(|record| record.path.as_str());
     links.extend(
         sources
-            .map(|source| source_path(source))
+            .map(|source| link_target(source))
             .chain(relations)
             .chain(conflicts)
             .map(str::to_string),
@@ -184,70 +139,37 @@ pub fn extract_links(
     // Deduplicate, filter, sort
     links.sort();
     links.dedup();
-    links
-        .into_iter()
-        .filter(|ln| is_valid_wiki_target(wiki_root, ln, bundles))
-        .collect()
-}
-
-/// Map each bundle-relative path to every matching `page.rel` value.
-///
-/// Bundles may share the same bundle-relative path, so one key maps to all
-/// matching pages.
-fn bundle_rel_map(
-    pages: &[wiki::Page],
-    bundles: &wiki::BundleSet,
-) -> HashMap<String, Vec<String>> {
-    let mut rel_map: HashMap<String, Vec<String>> = HashMap::new();
-    for page in pages {
-        if let Some(relative) = bundles.strip_prefix(&page.rel) {
-            rel_map
-                .entry(relative.to_string())
-                .or_default()
-                .push(page.rel.clone());
-        }
-    }
-    rel_map
+    links.into_iter().filter(|ln| is_backlink_target(ln)).collect()
 }
 
 // ---------------------------------------------------------------------------
 // build_reverse_index
 // ---------------------------------------------------------------------------
 
-/// Build the reverse-link index from pages, using `wiki_root` for existence
-/// validation.
+/// Build the reverse-link index.
 ///
-/// Returns a map from each target page (wiki-root-relative path) to a
-/// sorted, deduplicated list of source pages that link to it.
-///
-/// For installed bundles, links are bundle-relative while page rels include
-/// the bundle-name prefix.  The index keys therefore use the full `page.rel`
-/// form, so [`update_backlinks`] can look them up directly.
+/// Returns a map from each target page rel to a sorted, deduplicated list
+/// of the referrer page rels that link to it.  Each reference resolves to
+/// one page identity through `catalog`, so a bare path never reaches a
+/// second bundle.
 pub fn build_reverse_index(
-    wiki_root: &Path,
+    catalog: &Catalog,
     pages: &[wiki::Page],
-    bundles: &wiki::BundleSet,
 ) -> HashMap<String, Vec<String>> {
-    let rel_map = bundle_rel_map(pages, bundles);
     let mut reverse: HashMap<String, Vec<String>> = HashMap::new();
 
     for page in pages {
-        for target in extract_links(wiki_root, &page.document, bundles) {
-            // Multiple bundles may share the same bundle-relative path, so
-            // every matching page.rel becomes a reverse-index key.
-            match rel_map.get(&target) {
-                Some(rels) => {
-                    for rel in rels {
-                        reverse
-                            .entry(rel.clone())
-                            .or_default()
-                            .push(page.rel.clone());
-                    }
-                }
-                None => {
-                    reverse.entry(target).or_default().push(page.rel.clone());
-                }
-            }
+        let Some(referrer) = catalog.id_of(&page.rel) else {
+            continue;
+        };
+        for text in extract_links(&page.document) {
+            let Some(target) = catalog.resolve_rel(referrer, &text) else {
+                continue;
+            };
+            reverse
+                .entry(target.to_string())
+                .or_default()
+                .push(page.rel.clone());
         }
     }
 
@@ -262,33 +184,24 @@ pub fn build_reverse_index(
     sorted.into_iter().collect()
 }
 
-/// Build a reverse index for a single target page.
-///
-/// Scans all `pages` for outbound links and returns only those that
-/// reference `target`.  The result holds at most one entry: the target
-/// mapped to its sorted, deduplicated source `page.rel` values.
+/// The referrer rels of `target`, sorted and deduplicated.
 ///
 /// This is more efficient than [`build_reverse_index`] when only one target
 /// is needed — every page is still scanned, but no global index is built.
-/// Bundle-relative paths resolve the same way as [`build_reverse_index`].
+#[must_use]
 pub fn build_backlinks_for(
-    target: &str,
-    wiki_root: &Path,
+    target: &PageId,
+    catalog: &Catalog,
     pages: &[wiki::Page],
-    bundles: &wiki::BundleSet,
-) -> HashMap<String, Vec<String>> {
-    let rel_map = bundle_rel_map(pages, bundles);
+) -> Vec<String> {
     let mut sources: Vec<String> = Vec::new();
 
     for page in pages {
-        let links = extract_links(wiki_root, &page.document, bundles);
-        let refers_to_target = links.iter().any(|link| {
-            if link == target {
-                return true;
-            }
-            rel_map
-                .get(link)
-                .is_some_and(|rels| rels.iter().any(|rel| rel == target))
+        let Some(referrer) = catalog.id_of(&page.rel) else {
+            continue;
+        };
+        let refers_to_target = extract_links(&page.document).iter().any(|t| {
+            matches!(catalog.resolve(referrer, t), Resolution::Found(id) if &id == target)
         });
         if refers_to_target {
             sources.push(page.rel.clone());
@@ -297,12 +210,7 @@ pub fn build_backlinks_for(
 
     sources.sort();
     sources.dedup();
-
-    let mut result = HashMap::new();
-    if !sources.is_empty() {
-        result.insert(target.to_string(), sources);
-    }
-    result
+    sources
 }
 
 // ---------------------------------------------------------------------------
@@ -313,12 +221,14 @@ pub fn build_backlinks_for(
 ///
 /// The model owns the heading, so the content is the maintenance note
 /// followed by one list entry per source page.  Titles come from `titles`,
-/// which maps each source rel to its page title.  Source paths become
-/// bundle-relative, because wiki links are bundle-relative.
+/// which maps each source rel to its page title.  Each entry names the
+/// source page: a page of the target's bundle by its bundle-relative path,
+/// a page of another bundle by its `@bundle` path.
 #[must_use]
 pub fn format_backlinks_content(
     sources: &[String],
-    bundles: &wiki::BundleSet,
+    target: &PageId,
+    catalog: &Catalog,
     titles: &HashMap<String, String>,
 ) -> String {
     let mut lines = vec![
@@ -326,11 +236,18 @@ pub fn format_backlinks_content(
         String::new(),
     ];
     for source in sources {
+        let Some(id) = catalog.id_of(source) else {
+            continue;
+        };
         let title = titles.get(source).map_or_else(
             || source.rsplit('/').next().map(title_case).unwrap_or_default(),
             Clone::clone,
         );
-        let link_target = bundles.strip_prefix(source).unwrap_or(source);
+        let link_target = if id.bundle() == target.bundle() {
+            id.path().as_str().to_string()
+        } else {
+            id.to_string()
+        };
         lines.push(format!("- [{title}]({link_target})"));
     }
     lines.join("\n")
@@ -364,16 +281,19 @@ pub fn update_backlinks(
     index: &HashMap<String, Vec<String>>,
     titles: &HashMap<String, String>,
     pages: &[wiki::Page],
-    bundles: &wiki::BundleSet,
+    catalog: &Catalog,
 ) -> Result<usize, String> {
     let mut updated_count = 0;
 
     for page in pages {
+        let Some(target) = catalog.id_of(&page.rel) else {
+            continue;
+        };
         let sources = index.get(&page.rel).cloned().unwrap_or_default();
         let content = if sources.is_empty() {
             None
         } else {
-            Some(format_backlinks_content(&sources, bundles, titles))
+            Some(format_backlinks_content(&sources, target, catalog, titles))
         };
 
         let mut document = page.document.clone();
@@ -447,8 +367,10 @@ fn title_case(s: &str) -> String {
 mod tests {
     use super::*;
     use crate::bundle::testutil::temp_dir;
+    use crate::catalog::{Catalog, FLAT_BUNDLE};
     use std::fs;
     use std::path::PathBuf;
+    use zwiki::identity::{BundleId, PagePath};
 
     // -------------------------------------------------------------------
     // Helpers
@@ -476,7 +398,7 @@ mod tests {
         PageDocument::parse(text).expect("valid page document")
     }
 
-    /// Write a page file and return its legacy `Page` record.
+    /// Write a page file and return its page record.
     fn make_page(wiki_root: &Path, rel: &str, text: &str) -> wiki::Page {
         let path = write(&wiki_root.join(rel), text);
         wiki::read_page_at(&path, wiki_root).expect("page record")
@@ -487,14 +409,48 @@ mod tests {
         write(&wiki_root.join(rel), &page_text(title, "", "Body."));
     }
 
-    /// An empty bundle set for tests that use a plain (non-aggregated) root.
-    fn no_bundles() -> wiki::BundleSet {
-        wiki::BundleSet::default()
+    /// Mark `dir/<name>` as the root of the bundle named `name`.
+    fn mark_bundle(dir: &Path, name: &str) {
+        write(
+            &dir.join(name).join("bundle.toml"),
+            &format!(
+                "[package]\nname = \"{name}\"\nversion = \"0.1.0\"\n\n\
+                 [export]\ninclude = [\"**/*.md\"]\n"
+            ),
+        );
     }
 
-    /// Write `dir/<bundle>/bundle.toml` so the bundle is discoverable.
-    fn write_bundle_manifest(dir: &Path, bundle: &str) {
-        write(&dir.join(bundle).join("bundle.toml"), ".");
+    /// The flat catalog of every page written below `dir`.
+    fn disk_catalog(dir: &Path) -> Catalog {
+        Catalog::flat(wiki::PageSet::load(dir).pages())
+    }
+
+    /// The catalog of `root`, as a command builds it.
+    fn catalog_of(root: &Path) -> Catalog {
+        Catalog::new(root, &wiki::PageSet::load(root)).expect("catalog")
+    }
+
+    /// The identity stored at `rel`.
+    fn id(catalog: &Catalog, rel: &str) -> PageId {
+        catalog.id_of(rel).unwrap_or_else(|| panic!("no page at {rel}")).clone()
+    }
+
+    /// A referrer for a test that keeps no page record for the referrer.
+    fn referrer() -> PageId {
+        PageId::new(
+            BundleId::new(FLAT_BUNDLE),
+            PagePath::parse("referrer.md").expect("path"),
+        )
+    }
+
+    /// The resolved target rels of `text` below `root`.
+    fn links_of(root: &Path, text: &str) -> Vec<String> {
+        let catalog = Catalog::flat(wiki::PageSet::load(root).pages());
+        extract_links(&document(text))
+            .iter()
+            .filter_map(|link| catalog.resolve_rel(&referrer(), link))
+            .map(ToString::to_string)
+            .collect()
     }
 
     /// Titles of the pages currently on disk, keyed by rel.
@@ -502,72 +458,41 @@ mod tests {
         title_map(wiki::PageSet::load(dir).pages())
     }
 
-    /// Extract links from `text` parsed as a document.
-    fn links_of(wiki_root: &Path, text: &str) -> Vec<String> {
-        extract_links(wiki_root, &document(text), &no_bundles())
-    }
-
     // -------------------------------------------------------------------
-    // is_valid_wiki_target
+    // is_backlink_target
     // -------------------------------------------------------------------
 
     #[test]
-    fn test_is_valid_wiki_target_valid_md() {
-        let dir = temp_dir("valid_md");
-        write(&dir.join("test.md"), "# Test");
-        assert!(is_valid_wiki_target(&dir, "test.md", &no_bundles()));
+    fn test_is_backlink_target_accepts_md() {
+        assert!(is_backlink_target("test.md"));
+        assert!(is_backlink_target("shared/concepts/foo.md"));
     }
 
     #[test]
-    fn test_is_valid_wiki_target_rejects_non_md() {
-        let dir = temp_dir("non_md");
-        write(&dir.join("test.txt"), "test");
-        assert!(!is_valid_wiki_target(&dir, "test.txt", &no_bundles()));
+    fn test_is_backlink_target_rejects_non_md() {
+        assert!(!is_backlink_target("test.txt"));
     }
 
     #[test]
-    fn test_is_valid_wiki_target_rejects_dotdot() {
-        let dir = temp_dir("dotdot");
-        assert!(!is_valid_wiki_target(&dir, "../etc/passwd.md", &no_bundles()));
+    fn test_is_backlink_target_rejects_dotdot() {
+        assert!(!is_backlink_target("../etc/passwd.md"));
     }
 
     #[test]
-    fn test_is_valid_wiki_target_rejects_system_file() {
-        let dir = temp_dir("system_file");
+    fn test_is_backlink_target_rejects_system_file() {
         for sys_file in SYSTEM_FILES {
-            write(&dir.join(sys_file), "# Meta");
             assert!(
-                !is_valid_wiki_target(&dir, sys_file, &no_bundles()),
+                !is_backlink_target(sys_file),
                 "expected {sys_file} to be rejected"
             );
         }
     }
 
     #[test]
-    fn test_is_valid_wiki_target_rejects_tools_dir() {
-        let dir = temp_dir("tools_dir");
-        write(&dir.join("tools").join("helper.md"), "# Helper");
-        assert!(!is_valid_wiki_target(&dir, "tools/helper.md", &no_bundles()));
-    }
-
-    #[test]
-    fn test_is_valid_wiki_target_rejects_raw_dir() {
-        let dir = temp_dir("raw_dir");
-        write(&dir.join("raw").join("notes.md"), "# Notes");
-        assert!(!is_valid_wiki_target(&dir, "raw/notes.md", &no_bundles()));
-    }
-
-    #[test]
-    fn test_is_valid_wiki_target_rejects_logs_dir() {
-        let dir = temp_dir("logs_dir");
-        write(&dir.join("logs").join("2026-07.md"), "# Log");
-        assert!(!is_valid_wiki_target(&dir, "logs/2026-07.md", &no_bundles()));
-    }
-
-    #[test]
-    fn test_is_valid_wiki_target_nonexistent_rejected() {
-        let dir = temp_dir("nonexistent");
-        assert!(!is_valid_wiki_target(&dir, "no-such-file.md", &no_bundles()));
+    fn test_is_backlink_target_rejects_excluded_dirs() {
+        for target in ["tools/helper.md", "raw/notes.md", "logs/2026-07.md"] {
+            assert!(!is_backlink_target(target), "accepted {target}");
+        }
     }
 
     // -------------------------------------------------------------------
@@ -617,18 +542,13 @@ mod tests {
     }
 
     #[test]
-    fn test_extract_links_deduplicates() {
+    fn test_extract_links_deduplicates_and_sorts() {
         let dir = temp_dir("extract_dedup");
         write_page(&dir, "foo.md", "Foo");
-        let text = page_text("Page", "", "See [Foo](foo.md) and `foo.md`.");
-        assert_eq!(links_of(&dir, &text), vec!["foo.md"]);
-    }
-
-    #[test]
-    fn test_extract_links_sorted() {
-        let dir = temp_dir("extract_sorted");
-        write_page(&dir, "a.md", "A");
         write_page(&dir, "z.md", "Z");
+        write_page(&dir, "a.md", "A");
+        let text = page_text("Page", "", "See [Foo](foo.md), [Foo](foo.md).");
+        assert_eq!(links_of(&dir, &text), vec!["foo.md"]);
         let text = page_text("Page", "", "See [Zed](z.md), [Alpha](a.md).");
         assert_eq!(links_of(&dir, &text), vec!["a.md", "z.md"]);
     }
@@ -675,7 +595,7 @@ contradictions:
     }
 
     #[test]
-    fn test_extract_links_from_relations_filters_missing_target() {
+    fn test_extract_links_from_relations_skips_missing_target() {
         let dir = temp_dir("extract_relations_missing");
         write_page(&dir, "existing.md", "Existing");
         let extra = "supersedes:\n  - path: existing.md\n    reason: r\n  - path: missing.md\n    reason: r\n";
@@ -704,20 +624,19 @@ contradictions: []
     #[test]
     fn test_build_reverse_index_simple() {
         let dir = temp_dir("rev_simple");
-        write_page(&dir, "b.md", "B");
         let pages = vec![
             make_page(
                 &dir,
                 "concepts/a.md",
-                &page_text("A", "", "See [B](b.md)."),
+                &page_text("A", "", "See [B](concepts/b.md)."),
             ),
             make_page(&dir, "concepts/b.md", &page_text("B", "", "No links.")),
         ];
-        let index = build_reverse_index(&dir, &pages, &no_bundles());
+        let index = build_reverse_index(&Catalog::flat(&pages), &pages);
         assert_eq!(
             index,
             HashMap::from([(
-                "b.md".to_string(),
+                "concepts/b.md".to_string(),
                 vec!["concepts/a.md".to_string()]
             )])
         );
@@ -730,19 +649,19 @@ contradictions: []
             make_page(&dir, "a.md", &page_text("A", "", "No links.")),
             make_page(&dir, "b.md", &page_text("B", "", "No links.")),
         ];
-        let index = build_reverse_index(&dir, &pages, &no_bundles());
+        let index = build_reverse_index(&Catalog::flat(&pages), &pages);
         assert!(index.is_empty());
     }
 
     #[test]
-    fn test_build_reverse_index_self_links_ignored() {
+    fn test_build_reverse_index_keeps_self_links() {
         let dir = temp_dir("rev_self");
         let pages = vec![make_page(
             &dir,
             "a.md",
             &page_text("A", "", "See [A](a.md)."),
         )];
-        let index = build_reverse_index(&dir, &pages, &no_bundles());
+        let index = build_reverse_index(&Catalog::flat(&pages), &pages);
         assert_eq!(
             index,
             HashMap::from([("a.md".to_string(), vec!["a.md".to_string()])])
@@ -756,7 +675,7 @@ contradictions: []
             make_page(&dir, "a.md", &page_text("A", "", "See [B](b.md).")),
             make_page(&dir, "b.md", &page_text("B", "", "See [A](a.md).")),
         ];
-        let index = build_reverse_index(&dir, &pages, &no_bundles());
+        let index = build_reverse_index(&Catalog::flat(&pages), &pages);
         assert_eq!(index["a.md"], vec!["b.md"]);
         assert_eq!(index["b.md"], vec!["a.md"]);
     }
@@ -764,15 +683,179 @@ contradictions: []
     #[test]
     fn test_build_reverse_index_uses_loaded_document() {
         let dir = temp_dir("rev_loaded_doc");
-        write_page(&dir, "target.md", "Target");
         // The file on disk has no links; the loaded document does.  The
         // index must follow the document instead of reading the file again.
         let mut page =
             make_page(&dir, "a.md", &page_text("A", "", "No links."));
-        page.document = document(&page_text("A", "", "See [T](target.md)."));
+        page.document = document(&page_text("A", "", "See [T](b.md)."));
+        let target = make_page(&dir, "b.md", &page_text("B", "", "Body."));
 
-        let index = build_reverse_index(&dir, &[page], &no_bundles());
-        assert_eq!(index["target.md"], vec!["a.md"]);
+        let pages = vec![page, target];
+        let index = build_reverse_index(&Catalog::flat(&pages), &pages);
+        assert_eq!(index["b.md"], vec!["a.md"]);
+    }
+
+    #[test]
+    fn test_build_reverse_index_skips_a_target_without_a_page() {
+        let dir = temp_dir("rev_missing_target");
+        let pages = vec![make_page(
+            &dir,
+            "a.md",
+            &page_text("A", "", "See [Gone](gone.md)."),
+        )];
+        let index = build_reverse_index(&Catalog::flat(&pages), &pages);
+        assert!(index.is_empty(), "a target without a page has no referrer");
+    }
+
+    // -------------------------------------------------------------------
+    // build_reverse_index — bundle structure
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn test_build_reverse_index_bundle_structure() {
+        let dir = temp_dir("rev_bundle");
+        mark_bundle(&dir, "core");
+        let pages = vec![
+            make_page(
+                &dir,
+                "core/shared/concepts/a.md",
+                &page_text("Page A", "", "See [B](shared/concepts/b.md)."),
+            ),
+            make_page(
+                &dir,
+                "core/shared/concepts/b.md",
+                &page_text("Page B", "", "No links."),
+            ),
+        ];
+        let index = build_reverse_index(&catalog_of(&dir), &pages);
+        assert_eq!(
+            index,
+            HashMap::from([(
+                "core/shared/concepts/b.md".to_string(),
+                vec!["core/shared/concepts/a.md".to_string()]
+            )]),
+            "keys use the full page.rel form"
+        );
+    }
+
+    #[test]
+    fn test_build_reverse_index_keeps_bundles_apart() {
+        let dir = temp_dir("rev_two_bundles");
+        mark_bundle(&dir, "core");
+        mark_bundle(&dir, "vendor");
+        let pages = vec![
+            make_page(
+                &dir,
+                "core/shared/concepts/target.md",
+                &page_text("Target Core", "", "No links."),
+            ),
+            make_page(
+                &dir,
+                "vendor/shared/concepts/target.md",
+                &page_text("Target Vendor", "", "No links."),
+            ),
+            make_page(
+                &dir,
+                "core/docs/linker.md",
+                &page_text(
+                    "Linker",
+                    "",
+                    "See [target](shared/concepts/target.md).",
+                ),
+            ),
+        ];
+        let index = build_reverse_index(&catalog_of(&dir), &pages);
+        assert_eq!(
+            index,
+            HashMap::from([(
+                "core/shared/concepts/target.md".to_string(),
+                vec!["core/docs/linker.md".to_string()]
+            )]),
+            "a bare reference names the page of the referrer's bundle only"
+        );
+    }
+
+    #[test]
+    fn test_build_reverse_index_follows_an_explicit_reference() {
+        let dir = temp_dir("rev_explicit_bundle");
+        mark_bundle(&dir, "core");
+        mark_bundle(&dir, "vendor");
+        let pages = vec![
+            make_page(
+                &dir,
+                "core/shared/concepts/target.md",
+                &page_text("Target Core", "", "No links."),
+            ),
+            make_page(
+                &dir,
+                "vendor/shared/concepts/target.md",
+                &page_text("Target Vendor", "", "No links."),
+            ),
+            make_page(
+                &dir,
+                "core/docs/linker.md",
+                &page_text(
+                    "Linker",
+                    "",
+                    "See [target](@vendor/shared/concepts/target.md).",
+                ),
+            ),
+        ];
+        let index = build_reverse_index(&catalog_of(&dir), &pages);
+        assert_eq!(
+            index,
+            HashMap::from([(
+                "vendor/shared/concepts/target.md".to_string(),
+                vec!["core/docs/linker.md".to_string()]
+            )]),
+            "an explicit reference names the page of that bundle only"
+        );
+    }
+
+    #[test]
+    fn test_build_reverse_index_follows_a_markdown_link_source() {
+        // A `sources` entry may carry a markdown link.  The bare link and
+        // the explicit bundle link name the same page.
+        let dir = temp_dir("rev_markdown_link_source");
+        mark_bundle(&dir, "core");
+        mark_bundle(&dir, "vendor");
+        let pages = vec![
+            make_page(
+                &dir,
+                "vendor/shared/concepts/target.md",
+                &page_text("Target", "", "No links."),
+            ),
+            make_page(
+                &dir,
+                "vendor/docs/bare.md",
+                &page_text(
+                    "Bare",
+                    "sources:\n  - \"[Target](shared/concepts/target.md)\"\n",
+                    "No links.",
+                ),
+            ),
+            make_page(
+                &dir,
+                "core/docs/explicit.md",
+                &page_text(
+                    "Explicit",
+                    "sources:\n  - \"[Target](@vendor/shared/concepts/target.md)\"\n",
+                    "No links.",
+                ),
+            ),
+        ];
+        let index = build_reverse_index(&catalog_of(&dir), &pages);
+        assert_eq!(
+            index,
+            HashMap::from([(
+                "vendor/shared/concepts/target.md".to_string(),
+                vec![
+                    "core/docs/explicit.md".to_string(),
+                    "vendor/docs/bare.md".to_string()
+                ]
+            )]),
+            "both spellings of the link name one target"
+        );
     }
 
     // -------------------------------------------------------------------
@@ -782,16 +865,17 @@ contradictions: []
     #[test]
     fn test_format_backlinks_content_lists_sources() {
         let dir = temp_dir("fmt_basic");
-        write_page(&dir, "src.md", "Source Page");
         let pages = vec![make_page(
             &dir,
             "src.md",
             &page_text("Source Page", "", "Body."),
         )];
+        let catalog = Catalog::flat(&pages);
         let sources = vec![String::from("src.md")];
         let content = format_backlinks_content(
             &sources,
-            &no_bundles(),
+            &id(&catalog, "src.md"),
+            &catalog,
             &title_map(&pages),
         );
         assert_eq!(
@@ -803,20 +887,49 @@ contradictions: []
     #[test]
     fn test_format_backlinks_content_uses_bundle_relative_link() {
         let dir = temp_dir("fmt_bundle");
-        write_bundle_manifest(&dir, "core");
-        write_page(&dir, "core/docs/a.md", "Page A");
-        let bundles = wiki::BundleSet::discover(&dir);
+        mark_bundle(&dir, "core");
         let pages = vec![make_page(
             &dir,
             "core/docs/a.md",
             &page_text("Page A", "", "Body."),
         )];
+        let catalog = catalog_of(&dir);
         let sources = vec![String::from("core/docs/a.md")];
-        let content =
-            format_backlinks_content(&sources, &bundles, &title_map(&pages));
+        let content = format_backlinks_content(
+            &sources,
+            &id(&catalog, "core/docs/a.md"),
+            &catalog,
+            &title_map(&pages),
+        );
         assert!(
             content.ends_with("- [Page A](docs/a.md)"),
-            "link must be bundle-relative: {content}"
+            "a page of the target's bundle keeps its bundle-relative link: \
+             {content}"
+        );
+    }
+
+    #[test]
+    fn test_format_backlinks_content_marks_a_foreign_bundle() {
+        let dir = temp_dir("fmt_cross_bundle");
+        mark_bundle(&dir, "core");
+        mark_bundle(&dir, "vendor");
+        write_page(&dir, "vendor/docs/b.md", "Page B");
+        let pages = vec![make_page(
+            &dir,
+            "core/docs/a.md",
+            &page_text("Page A", "", "Body."),
+        )];
+        let catalog = catalog_of(&dir);
+        let sources = vec![String::from("core/docs/a.md")];
+        let content = format_backlinks_content(
+            &sources,
+            &id(&catalog, "vendor/docs/b.md"),
+            &catalog,
+            &title_map(&pages),
+        );
+        assert!(
+            content.ends_with("- [Page A](@core/docs/a.md)"),
+            "a page of another bundle carries its bundle name: {content}"
         );
     }
 
@@ -840,11 +953,12 @@ contradictions: []
             "target.md",
             &page_text("Target", "", "# Target\n\nBody."),
         );
+        let catalog = disk_catalog(&dir);
         let updated = update_backlinks(
             &index_of("target.md", &["foo.md"]),
             &titles_of(&dir),
             &[page],
-            &no_bundles(),
+            &catalog,
         )
         .expect("update");
         assert_eq!(updated, 1);
@@ -875,11 +989,12 @@ contradictions: []
                 "# Target\n\nIntro.\n\n## References\n\n- `bar.md`",
             ),
         );
+        let catalog = disk_catalog(&dir);
         let updated = update_backlinks(
             &index_of("target.md", &["foo.md"]),
             &titles_of(&dir),
             &[page],
-            &no_bundles(),
+            &catalog,
         )
         .expect("update");
         assert_eq!(updated, 1);
@@ -910,11 +1025,12 @@ contradictions: []
                 "# Target\n\n## Backlinks\n\n- [Old](old.md)",
             ),
         );
+        let catalog = disk_catalog(&dir);
         let updated = update_backlinks(
             &index_of("target.md", &["foo.md", "new.md"]),
             &titles_of(&dir),
             &[page],
-            &no_bundles(),
+            &catalog,
         )
         .expect("update");
         assert_eq!(updated, 1);
@@ -945,11 +1061,12 @@ contradictions: []
                 "# Target\n\n## Backlinks\n\n- [Old](old.md)",
             ),
         );
+        let catalog = disk_catalog(&dir);
         let updated = update_backlinks(
             &HashMap::new(),
             &titles_of(&dir),
             &[page],
-            &no_bundles(),
+            &catalog,
         )
         .expect("update");
         assert_eq!(updated, 1);
@@ -968,11 +1085,12 @@ contradictions: []
                     last_validated: 2026-07-01T00:00:00Z\n---\n\n\
                     # Target\n\nBody.\n";
         let page = make_page(&dir, "target.md", text);
+        let catalog = disk_catalog(&dir);
         let updated = update_backlinks(
             &HashMap::new(),
             &titles_of(&dir),
             &[page],
-            &no_bundles(),
+            &catalog,
         )
         .expect("update");
         assert_eq!(updated, 0);
@@ -993,15 +1111,17 @@ contradictions: []
 
         let first = {
             let pages = vec![make_page(&dir, "target.md", &text)];
-            update_backlinks(&index, &titles_of(&dir), &pages, &no_bundles())
+            let catalog = disk_catalog(&dir);
+            update_backlinks(&index, &titles_of(&dir), &pages, &catalog)
                 .expect("first update")
         };
         assert_eq!(first, 1);
         let after_first = fs::read_to_string(dir.join("target.md")).unwrap();
 
         let pages = vec![make_page(&dir, "target.md", &after_first)];
+        let catalog = disk_catalog(&dir);
         let second =
-            update_backlinks(&index, &titles_of(&dir), &pages, &no_bundles())
+            update_backlinks(&index, &titles_of(&dir), &pages, &catalog)
                 .expect("second update");
         assert_eq!(second, 0);
         assert_eq!(
@@ -1019,6 +1139,7 @@ contradictions: []
             "target.md",
             &page_text("Target", "", "# Target\n\nBody."),
         );
+        let catalog = disk_catalog(&dir);
         // The atomic writer stores through a `target.md.tmp` sibling; a
         // directory at that path rejects the write.
         fs::create_dir(dir.join("target.md.tmp")).unwrap();
@@ -1027,174 +1148,12 @@ contradictions: []
             &index_of("target.md", &["foo.md"]),
             &titles_of(&dir),
             &[page],
-            &no_bundles(),
+            &catalog,
         )
         .expect_err("a rejected write must fail the update");
         assert!(
             error.contains("target.md"),
             "error must name the page: {error}"
-        );
-    }
-
-    // -------------------------------------------------------------------
-    // Bundle path resolution
-    // -------------------------------------------------------------------
-
-    #[test]
-    fn test_is_valid_wiki_target_finds_bundle_file() {
-        let dir = temp_dir("bundle_valid");
-        write_bundle_manifest(&dir, "core");
-        write(
-            &dir.join("core").join("shared").join("concepts").join("foo.md"),
-            "# Foo",
-        );
-        let bundles = wiki::BundleSet::discover(&dir);
-        assert!(is_valid_wiki_target(&dir, "shared/concepts/foo.md", &bundles));
-    }
-
-    #[test]
-    fn test_is_valid_wiki_target_finds_nested_bundle_file() {
-        let dir = temp_dir("bundle_nested");
-        write_bundle_manifest(&dir, "myorg");
-        write(&dir.join("myorg").join("shared").join("bar.md"), "# Bar");
-        let bundles = wiki::BundleSet::discover(&dir);
-        assert!(is_valid_wiki_target(&dir, "shared/bar.md", &bundles));
-    }
-
-    #[test]
-    fn test_is_valid_wiki_target_finds_deep_bundle_file() {
-        let dir = temp_dir("bundle_deep");
-        write_bundle_manifest(&dir, "up");
-        write(&dir.join("up").join("docs").join("baz.md"), "# Baz");
-        let bundles = wiki::BundleSet::discover(&dir);
-        assert!(is_valid_wiki_target(&dir, "docs/baz.md", &bundles));
-    }
-
-    #[test]
-    fn test_is_valid_wiki_target_bundle_nonexistent_rejected() {
-        let dir = temp_dir("bundle_nonexistent");
-        let bundles = wiki::BundleSet::discover(&dir);
-        assert!(!is_valid_wiki_target(
-            &dir,
-            "shared/concepts/nonexistent.md",
-            &bundles
-        ));
-    }
-
-    #[test]
-    fn test_is_valid_wiki_target_ignores_manifest_dir_without_manifest() {
-        let dir = temp_dir("bundle_no_manifest");
-        write(&dir.join("core").join("shared").join("foo.md"), "# Foo");
-        let bundles = wiki::BundleSet::discover(&dir);
-        assert_eq!(bundles.names().count(), 0);
-        assert!(!is_valid_wiki_target(&dir, "shared/foo.md", &bundles));
-    }
-
-    // -------------------------------------------------------------------
-    // build_reverse_index with bundle structure
-    // -------------------------------------------------------------------
-
-    #[test]
-    fn test_build_reverse_index_bundle_structure() {
-        let dir = temp_dir("rev_bundle");
-        write_bundle_manifest(&dir, "core");
-        let pages = vec![
-            make_page(
-                &dir,
-                "core/shared/concepts/a.md",
-                &page_text("Page A", "", "See [B](shared/concepts/b.md)."),
-            ),
-            make_page(
-                &dir,
-                "core/shared/concepts/b.md",
-                &page_text("Page B", "", "No links."),
-            ),
-        ];
-        let bundles = wiki::BundleSet::discover(&dir);
-        let index = build_reverse_index(&dir, &pages, &bundles);
-        assert_eq!(
-            index,
-            HashMap::from([(
-                "core/shared/concepts/b.md".to_string(),
-                vec!["core/shared/concepts/a.md".to_string()]
-            )]),
-            "keys use the full page.rel form"
-        );
-    }
-
-    // -------------------------------------------------------------------
-    // BundleSet::strip_prefix
-    // -------------------------------------------------------------------
-
-    #[test]
-    fn test_strip_prefix_normal() {
-        let dir = temp_dir("strip_prefix_normal");
-        write_bundle_manifest(&dir, "core");
-        write_bundle_manifest(&dir, "myorg");
-        let bundles = wiki::BundleSet::discover(&dir);
-        assert_eq!(
-            bundles.strip_prefix("core/shared/concepts/foo.md"),
-            Some("shared/concepts/foo.md")
-        );
-        assert_eq!(
-            bundles.strip_prefix("myorg/docs/bar.md"),
-            Some("docs/bar.md")
-        );
-    }
-
-    #[test]
-    fn test_strip_prefix_no_prefix() {
-        let dir = temp_dir("strip_prefix_none");
-        write_bundle_manifest(&dir, "core");
-        let bundles = wiki::BundleSet::discover(&dir);
-        assert_eq!(bundles.strip_prefix("index.md"), None);
-        assert_eq!(bundles.strip_prefix("notes/other.md"), None);
-    }
-
-    // -------------------------------------------------------------------
-    // build_reverse_index — multi-bundle collision
-    // -------------------------------------------------------------------
-
-    #[test]
-    fn test_build_reverse_index_multi_bundle_collision() {
-        let dir = temp_dir("rev_multi_bundle");
-        write_bundle_manifest(&dir, "core");
-        write_bundle_manifest(&dir, "other");
-        let pages = vec![
-            make_page(
-                &dir,
-                "core/shared/concepts/target.md",
-                &page_text("Target Core", "", "No links."),
-            ),
-            make_page(
-                &dir,
-                "other/shared/concepts/target.md",
-                &page_text("Target Other", "", "No links."),
-            ),
-            make_page(
-                &dir,
-                "core/docs/link_source.md",
-                &page_text(
-                    "Link Source",
-                    "",
-                    "Links to [target](shared/concepts/target.md).",
-                ),
-            ),
-        ];
-        let bundles = wiki::BundleSet::discover(&dir);
-        let index = build_reverse_index(&dir, &pages, &bundles);
-
-        let source = "core/docs/link_source.md".to_string();
-        assert_eq!(
-            index,
-            HashMap::from([
-                (
-                    "core/shared/concepts/target.md".to_string(),
-                    vec![source.clone()]
-                ),
-                ("other/shared/concepts/target.md".to_string(), vec![source]),
-            ]),
-            "both bundle-specific targets get the referrer"
         );
     }
 
@@ -1253,71 +1212,49 @@ contradictions: []
     }
 
     // -------------------------------------------------------------------
-    // build_backlinks_for — equivalence with build_reverse_index + filter
+    // build_backlinks_for
     // -------------------------------------------------------------------
-
-    fn setup_backlinks_pages(dir: &Path) {
-        write_page(dir, "target.md", "Target");
-        write_page(dir, "other.md", "Other");
-        write(
-            &dir.join("page_a.md"),
-            &page_text(
-                "Page A",
-                "",
-                "See also [Target](target.md) for details.",
-            ),
-        );
-        write(
-            &dir.join("page_b.md"),
-            &page_text(
-                "Page B",
-                "",
-                "Refer to `target.md` for the definition.",
-            ),
-        );
-        write(
-            &dir.join("page_c.md"),
-            &page_text("Page C", "", "See [Other](other.md)."),
-        );
-    }
-
-    fn discover_pages_backlinks(base: &Path) -> Vec<PathBuf> {
-        let mut paths: Vec<PathBuf> = walkdir::WalkDir::new(base)
-            .into_iter()
-            .filter_map(Result::ok)
-            .filter(|e| e.file_type().is_file())
-            .filter(|e| {
-                e.path().extension().and_then(|ext| ext.to_str()) == Some("md")
-            })
-            .map(|e| e.path().to_path_buf())
-            .collect();
-        paths.sort();
-        paths
-    }
 
     #[test]
     fn test_build_backlinks_for_matches_full_index() {
         let dir = temp_dir("backlinks_for");
-        setup_backlinks_pages(&dir);
-        let paths = discover_pages_backlinks(&dir);
-        let pages: Vec<wiki::Page> = paths
-            .iter()
-            .map(|p| wiki::read_page_at(p, &dir).expect("valid page"))
-            .collect();
+        write_page(&dir, "target.md", "Target");
+        write_page(&dir, "other.md", "Other");
+        let pages = vec![
+            make_page(
+                &dir,
+                "page_a.md",
+                &page_text(
+                    "Page A",
+                    "",
+                    "See also [Target](target.md) for details.",
+                ),
+            ),
+            make_page(
+                &dir,
+                "page_b.md",
+                &page_text(
+                    "Page B",
+                    "",
+                    "Refer to `target.md` for the definition.",
+                ),
+            ),
+            make_page(
+                &dir,
+                "page_c.md",
+                &page_text("Page C", "", "See [Other](other.md)."),
+            ),
+            make_page(&dir, "target.md", &page_text("Target", "", "Body.")),
+        ];
+        let catalog = Catalog::flat(&pages);
 
-        let full = build_reverse_index(&dir, &pages, &no_bundles());
+        let full = build_reverse_index(&catalog, &pages);
         let single =
-            build_backlinks_for("target.md", &dir, &pages, &no_bundles());
+            build_backlinks_for(&id(&catalog, "target.md"), &catalog, &pages);
 
+        assert_eq!(single, full["target.md"]);
         assert_eq!(
-            HashMap::from([(
-                "target.md".to_string(),
-                full["target.md"].clone()
-            )]),
-            single
-        );
-        assert_eq!(
-            single["target.md"],
+            single,
             vec!["page_a.md".to_string(), "page_b.md".to_string()]
         );
     }
@@ -1325,32 +1262,35 @@ contradictions: []
     #[test]
     fn test_build_backlinks_for_nonexistent_target() {
         let dir = temp_dir("backlinks_for_nonexist");
-        setup_backlinks_pages(&dir);
-        let paths = discover_pages_backlinks(&dir);
-        let pages: Vec<wiki::Page> = paths
-            .iter()
-            .map(|p| wiki::read_page_at(p, &dir).expect("valid page"))
-            .collect();
-        let result =
-            build_backlinks_for("nonexistent.md", &dir, &pages, &no_bundles());
-        assert!(result.is_empty());
+        write_page(&dir, "target.md", "Target");
+        let pages = vec![make_page(
+            &dir,
+            "page_a.md",
+            &page_text("Page A", "", "See [Target](target.md)."),
+        )];
+        let catalog = Catalog::flat(&pages);
+        let absent = PageId::new(
+            BundleId::new(FLAT_BUNDLE),
+            PagePath::parse("absent.md").expect("path"),
+        );
+        assert!(build_backlinks_for(&absent, &catalog, &pages).is_empty());
     }
 
     #[test]
     fn test_build_backlinks_for_no_references() {
         let dir = temp_dir("backlinks_for_noref");
-        write(
-            &dir.join("page_a.md"),
-            &page_text("Page A", "", "See [Target](target.md)."),
+        let pages = vec![
+            make_page(
+                &dir,
+                "page_a.md",
+                &page_text("Page A", "", "No references."),
+            ),
+            make_page(&dir, "target.md", &page_text("Target", "", "Body.")),
+        ];
+        let catalog = Catalog::flat(&pages);
+        assert!(
+            build_backlinks_for(&id(&catalog, "target.md"), &catalog, &pages)
+                .is_empty()
         );
-        write_page(&dir, "target.md", "Target");
-        let paths = discover_pages_backlinks(&dir);
-        let pages: Vec<wiki::Page> = paths
-            .iter()
-            .map(|p| wiki::read_page_at(p, &dir).expect("valid page"))
-            .collect();
-        let result =
-            build_backlinks_for("target.md", &dir, &pages, &no_bundles());
-        assert_eq!(result["target.md"], vec!["page_a.md".to_string()]);
     }
 }

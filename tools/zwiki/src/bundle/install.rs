@@ -446,7 +446,7 @@ pub fn cmd_install_at_inner(
     source::check_bundle_structure(source_dir, use_json)?;
 
     let (health_results, lint_results, health_issues, lint_issues) =
-        crate::run_health_lint_at(source_dir);
+        crate::run_health_lint_at(source_dir)?;
     let total = health_issues + lint_issues;
     if total > 0 {
         if use_json {
@@ -692,7 +692,8 @@ include = ["*.md"]
         );
 
         let (_health_results, _lint_results, health_issues, lint_issues) =
-            crate::run_health_lint_at(&source_dir);
+            crate::run_health_lint_at(&source_dir)
+                .expect("the bundle source holds a manifest");
         let total = health_issues + lint_issues;
         assert!(
             total > 0,

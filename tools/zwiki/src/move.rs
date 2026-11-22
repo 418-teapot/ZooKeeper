@@ -11,6 +11,7 @@ use regex::Regex;
 
 use zwiki::document::PageDocument;
 
+use crate::catalog::Catalog;
 use crate::{backlinks, document_io, wiki};
 
 // ---------------------------------------------------------------------------
@@ -73,9 +74,12 @@ pub fn execute_move(
     // ---- Step 2: Build reverse-index BEFORE the move -----------------------
     let set = wiki::PageSet::load(wiki_root);
     let all_pages = set.require_all()?.to_vec();
-    let bundles = wiki::BundleSet::discover(wiki_root);
-    let rev_index =
-        backlinks::build_reverse_index(wiki_root, &all_pages, &bundles);
+    let catalog = Catalog::new(wiki_root, &set)?;
+    let rev_index = backlinks::build_reverse_index(&catalog, &all_pages);
+
+    // The reference forms are known before the move, so a target the bundle
+    // cannot express fails here and leaves the page in place.
+    let forms = reference_forms(&catalog, old_rel, new_rel, &new_rel_recorded)?;
 
     // ---- Step 3: Physical move ---------------------------------------------
     fs::rename(&old_abs, &new_abs).map_err(|e| format!("移动文件失败: {e}"))?;
@@ -96,7 +100,7 @@ pub fn execute_move(
             } else {
                 wiki_root.join(src_rel)
             };
-            if rewrite_page_references(&src_abs, old_rel, new_rel)
+            if rewrite_page_references(&src_abs, &forms)
                 .map_err(|e| format!("{src_rel}: {e}"))?
             {
                 updated_refs.push(src_rel.clone());
@@ -154,9 +158,8 @@ pub fn execute_move(
 fn rebuild_backlinks(wiki_root: &Path) -> Result<usize, String> {
     let set = wiki::PageSet::load(wiki_root);
     let refreshed_pages = set.require_all()?.to_vec();
-    let bundles = wiki::BundleSet::discover(wiki_root);
-    let index =
-        backlinks::build_reverse_index(wiki_root, &refreshed_pages, &bundles);
+    let catalog = Catalog::new(wiki_root, &set)?;
+    let index = backlinks::build_reverse_index(&catalog, &refreshed_pages);
     // The reverse index is built from all pages so bundle pages still
     // contribute outbound links, but only pages outside installed bundles
     // are rewritten.
@@ -165,7 +168,7 @@ fn rebuild_backlinks(wiki_root: &Path) -> Result<usize, String> {
         .into_iter()
         .filter(|p| wiki::bundle_on_path(wiki_root, &p.rel).is_none())
         .collect();
-    backlinks::update_backlinks(&index, &titles, &writable, &bundles)
+    backlinks::update_backlinks(&index, &titles, &writable, &catalog)
 }
 
 // ---------------------------------------------------------------------------
@@ -187,17 +190,65 @@ pub fn validate_rel_path(path_str: &str) -> Result<(), String> {
 // Reference rewriting (per-page)
 // ---------------------------------------------------------------------------
 
-/// Rewrite every whole-token occurrence of `old_rel` in `text`.
+/// One literal reference form of the moved page and its replacement.
+struct PathForm {
+    from: String,
+    to: String,
+    pattern: Regex,
+}
+
+impl PathForm {
+    /// Prepare the rewrite of literal `from` into `to`.
+    fn new(from: &str, to: &str) -> Result<Self, String> {
+        let pattern = Regex::new(&regex::escape(from))
+            .map_err(|e| format!("正则编译失败: {e}"))?;
+        Ok(Self { from: from.to_string(), to: to.to_string(), pattern })
+    }
+}
+
+/// The reference forms that name the moved page.
+///
+/// The bare form keeps the root-relative text.  The explicit
+/// `@bundle/path` form keeps its bundle and gains the new bundle-relative
+/// path.  A page of the root scope has no explicit form.  The reverse index
+/// already limits the rewrite to pages that resolve to the moved page.
+fn reference_forms(
+    catalog: &Catalog,
+    old_rel: &str,
+    new_rel: &str,
+    new_rel_recorded: &str,
+) -> Result<Vec<PathForm>, String> {
+    let mut forms = vec![PathForm::new(old_rel, new_rel)?];
+    let Some(moved) = catalog.id_of(old_rel) else {
+        return Ok(forms);
+    };
+    let Some(bundle) = moved.bundle().name() else {
+        return Ok(forms);
+    };
+    let old_path = moved.path().as_str();
+    // The bundle root is the registered rel without the page path.
+    let prefix = old_rel.strip_suffix(old_path).unwrap_or_default();
+    let new_path = new_rel_recorded.strip_prefix(prefix).ok_or_else(|| {
+        format!("移动目标必须留在 bundle @{bundle} 内: {new_rel_recorded}")
+    })?;
+    forms.push(PathForm::new(
+        &format!("@{bundle}/{old_path}"),
+        &format!("@{bundle}/{new_path}"),
+    )?);
+    Ok(forms)
+}
+
+/// Rewrite every whole-token occurrence of a path form in `text`.
 ///
 /// Boundaries are checked without consuming them, so two occurrences
 /// separated by a single delimiter (e.g. `[a.md,a.md]`) are both
 /// rewritten.  A boundary character is anything outside
 /// `[A-Za-z0-9_./-]`; this prevents `concepts/foo.md` from matching inside
 /// `concepts/foo-old.md` or `xconcepts/foo.md`.
-fn rewrite_path_tokens(re: &Regex, text: &str, new_rel: &str) -> String {
+fn rewrite_path_tokens(form: &PathForm, text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     let mut last = 0;
-    for m in re.find_iter(text) {
+    for m in form.pattern.find_iter(text) {
         let (start, end) = (m.start(), m.end());
         let before_ok =
             text[..start].chars().next_back().is_none_or(is_path_boundary);
@@ -206,7 +257,7 @@ fn rewrite_path_tokens(re: &Regex, text: &str, new_rel: &str) -> String {
             continue;
         }
         out.push_str(&text[last..start]);
-        out.push_str(new_rel);
+        out.push_str(&form.to);
         last = end;
     }
     out.push_str(&text[last..]);
@@ -222,8 +273,7 @@ const fn is_path_boundary(c: char) -> bool {
 fn rewrite_paths<T>(
     entries: &mut Option<Vec<T>>,
     path: impl Fn(&mut T) -> &mut String,
-    re: &Regex,
-    new_rel: &str,
+    forms: &[PathForm],
 ) -> bool {
     let Some(entries) = entries else {
         return false;
@@ -231,72 +281,68 @@ fn rewrite_paths<T>(
     let mut changed = false;
     for entry in entries {
         let value = path(entry);
-        let rewritten = rewrite_path_tokens(re, value, new_rel);
-        if rewritten != *value {
-            *value = rewritten;
-            changed = true;
+        for form in forms {
+            let rewritten = rewrite_path_tokens(form, value);
+            if rewritten != *value {
+                *value = rewritten;
+                changed = true;
+            }
         }
     }
     changed
 }
 
 /// Rewrite body references: markdown inline links and backtick paths.
-fn rewrite_body_references(body: &str, old_rel: &str, new_rel: &str) -> String {
-    let replaced =
-        body.replace(&format!("]({old_rel})"), &format!("]({new_rel})"));
-    replaced.replace(&format!("`{old_rel}`"), &format!("`{new_rel}`"))
+fn rewrite_body_references(body: &str, forms: &[PathForm]) -> String {
+    let mut text = body.to_string();
+    for form in forms {
+        text = text
+            .replace(&format!("]({})", form.from), &format!("]({})", form.to));
+        text = text
+            .replace(&format!("`{}`", form.from), &format!("`{}`", form.to));
+    }
+    text
 }
 
-/// Rewrite all references to `old_rel` in a parsed page.
+/// Rewrite all occurrences of the moved page in a parsed page.
 ///
 /// Typed path fields keep their structure, so only their path values
 /// change.  The author body keeps the literal replacement of markdown
-/// inline links `[text](old_rel)` and backtick-wrapped `` `old_rel` ``.
-/// The generated backlinks region is left for the rebuild step.
+/// inline links `[text](form)` and backtick-wrapped `` `form` ``.  Each
+/// form keeps its shape: a bare path stays bare, `@bundle/path` stays
+/// explicit.  The generated backlinks region is left for the rebuild step.
 fn rewrite_document_references(
     document: &mut PageDocument,
-    old_rel: &str,
-    new_rel: &str,
-) -> Result<bool, String> {
-    let re = Regex::new(&regex::escape(old_rel))
-        .map_err(|e| format!("正则编译失败: {e}"))?;
-
-    let mut changed = rewrite_paths(
-        &mut document.metadata.sources,
-        |value| value,
-        &re,
-        new_rel,
-    );
+    forms: &[PathForm],
+) -> bool {
+    let mut changed =
+        rewrite_paths(&mut document.metadata.sources, |value| value, forms);
     changed |= rewrite_paths(
         &mut document.metadata.supersedes,
         |relation| &mut relation.path,
-        &re,
-        new_rel,
+        forms,
     );
     changed |= rewrite_paths(
         &mut document.metadata.superseded_by,
         |relation| &mut relation.path,
-        &re,
-        new_rel,
+        forms,
     );
     changed |= rewrite_paths(
         &mut document.metadata.contradictions,
         |record| &mut record.path,
-        &re,
-        new_rel,
+        forms,
     );
 
-    let author =
-        rewrite_body_references(document.body.author(), old_rel, new_rel);
+    let author = rewrite_body_references(document.body.author(), forms);
     if author != document.body.author() {
         *document.body.author_mut() = author;
         changed = true;
     }
 
-    Ok(changed)
+    changed
 }
 
-/// Rewrite all references to `old_rel` in a single page file.
+/// Rewrite the moved-page references in one page file.
 ///
 /// The page is parsed as a document, changed in memory, rendered and
 /// written atomically.  A page the model cannot parse fails the command
@@ -305,11 +351,10 @@ fn rewrite_document_references(
 /// Returns `true` if the file was modified.
 fn rewrite_page_references(
     page_abs: &Path,
-    old_rel: &str,
-    new_rel: &str,
+    forms: &[PathForm],
 ) -> Result<bool, String> {
     let mut document = document_io::load(page_abs)?;
-    if !rewrite_document_references(&mut document, old_rel, new_rel)? {
+    if !rewrite_document_references(&mut document, forms) {
         return Ok(false);
     }
     document_io::store(page_abs, &document)?;
@@ -374,13 +419,23 @@ fn regenerate_root_index_and_record(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::bundle::testutil::temp_dir;
     use std::fs;
     use std::path::PathBuf;
 
     // -------------------------------------------------------------------
     // Helpers
     // -------------------------------------------------------------------
+
+    /// A temp root holding the bundle named `wiki`.
+    fn wiki_root(name: &str) -> PathBuf {
+        let dir = crate::bundle::testutil::temp_dir(name);
+        write(
+            &dir.join("bundle.toml"),
+            "[package]\nname = \"wiki\"\nversion = \"0.1.0\"\n\n\
+             [export]\ninclude = [\"**/*.md\"]\n",
+        );
+        dir
+    }
 
     fn write(path: &Path, text: &str) -> PathBuf {
         if let Some(parent) = path.parent() {
@@ -412,6 +467,11 @@ mod tests {
         fs::read_to_string(path).unwrap_or_default()
     }
 
+    /// The bare reference form of one move, without a catalog.
+    fn bare_form(from: &str, to: &str) -> Vec<PathForm> {
+        vec![PathForm::new(from, to).expect("valid form")]
+    }
+
     // -------------------------------------------------------------------
     // Validation tests
     // -------------------------------------------------------------------
@@ -441,7 +501,7 @@ mod tests {
 
     #[test]
     fn test_move_old_not_found() {
-        let wiki_root = temp_dir("old_not_found");
+        let wiki_root = wiki_root("old_not_found");
         // Create a minimal wiki with a page but not the source.
         make_page(&wiki_root, "concepts/existing.md", "# Existing");
         let result = execute_move(
@@ -455,7 +515,7 @@ mod tests {
 
     #[test]
     fn test_move_new_already_exists() {
-        let wiki_root = temp_dir("new_exists");
+        let wiki_root = wiki_root("new_exists");
         make_page(&wiki_root, "concepts/old.md", "# Old");
         make_page(&wiki_root, "concepts/new.md", "# New");
         let result =
@@ -466,14 +526,14 @@ mod tests {
 
     #[test]
     fn test_move_rejects_dotdot() {
-        let wiki_root = temp_dir("dotdot");
+        let wiki_root = wiki_root("dotdot");
         let result = execute_move(&wiki_root, "concepts/foo.md", "../bar.md");
         assert!(result.is_err());
     }
 
     #[test]
     fn test_move_rejects_absolute() {
-        let wiki_root = temp_dir("absolute");
+        let wiki_root = wiki_root("absolute");
         let result = execute_move(&wiki_root, "concepts/foo.md", "/tmp/bar.md");
         assert!(result.is_err());
     }
@@ -481,7 +541,7 @@ mod tests {
     #[test]
     fn test_old_not_found_no_side_effects() {
         // Verify no file was created/moved when validation fails.
-        let wiki_root = temp_dir("no_side_effect");
+        let wiki_root = wiki_root("no_side_effect");
         make_page(&wiki_root, "concepts/foo.md", "# Foo");
         make_page(&wiki_root, "concepts/bar.md", "# Bar");
 
@@ -505,7 +565,7 @@ mod tests {
 
     #[test]
     fn test_same_domain_basic_rename() {
-        let wiki_root = temp_dir("same_domain_basic");
+        let wiki_root = wiki_root("same_domain_basic");
         let old_rel = "concepts/foo.md";
         let new_rel = "concepts/bar.md";
 
@@ -586,7 +646,7 @@ mod tests {
 
     #[test]
     fn test_same_domain_body_only_references() {
-        let wiki_root = temp_dir("body_only");
+        let wiki_root = wiki_root("body_only");
         let old_rel = "concepts/foo.md";
         let new_rel = "concepts/bar.md";
 
@@ -619,7 +679,7 @@ mod tests {
 
     #[test]
     fn test_same_domain_all_frontmatter_types() {
-        let wiki_root = temp_dir("all_fm_types");
+        let wiki_root = wiki_root("all_fm_types");
         let old_rel = "concepts/foo.md";
         let new_rel = "concepts/bar.md";
 
@@ -667,7 +727,7 @@ contradictions:
 
     #[test]
     fn test_cross_domain_move() {
-        let wiki_root = temp_dir("cross_domain");
+        let wiki_root = wiki_root("cross_domain");
         let old_rel = "concepts/foo.md";
         let new_rel = "autoresearch/concepts/foo.md";
 
@@ -759,7 +819,7 @@ contradictions:
 
     #[test]
     fn test_cross_domain_move_registers_root_index() {
-        let wiki_root = temp_dir("cross_domain_root_index");
+        let wiki_root = wiki_root("cross_domain_root_index");
         make_page(
             &wiki_root,
             "concepts/foo.md",
@@ -795,7 +855,7 @@ contradictions:
 
     #[test]
     fn test_cross_domain_new_domain_no_index() {
-        let wiki_root = temp_dir("new_domain_no_index");
+        let wiki_root = wiki_root("new_domain_no_index");
         let old_rel = "concepts/foo.md";
         let new_rel = "newdomain/concepts/foo.md";
 
@@ -826,7 +886,7 @@ contradictions:
 
     #[test]
     fn test_cross_domain_new_index_is_generated() {
-        let wiki_root = temp_dir("generated_new_index");
+        let wiki_root = wiki_root("generated_new_index");
         let old_rel = "concepts/foo.md";
         let new_rel = "brandnew/concepts/foo.md";
 
@@ -853,7 +913,7 @@ contradictions:
 
     #[test]
     fn test_cross_domain_source_lists_under_source_heading() {
-        let wiki_root = temp_dir("cross_domain_source");
+        let wiki_root = wiki_root("cross_domain_source");
 
         make_page(
             &wiki_root,
@@ -883,7 +943,7 @@ contradictions:
 
     #[test]
     fn test_cross_domain_lists_multiple_source_pages() {
-        let wiki_root = temp_dir("cross_domain_two_sources");
+        let wiki_root = wiki_root("cross_domain_two_sources");
 
         make_page(
             &wiki_root,
@@ -918,7 +978,7 @@ contradictions:
 
     #[test]
     fn test_cross_domain_subdir() {
-        let wiki_root = temp_dir("cross_domain_subdir");
+        let wiki_root = wiki_root("cross_domain_subdir");
         let old_rel = "concepts/foo.md";
         let new_rel = "autoresearch/concepts/foo.md";
 
@@ -952,7 +1012,7 @@ contradictions:
 
     #[test]
     fn test_cross_domain_correct_type_section() {
-        let wiki_root = temp_dir("correct_type");
+        let wiki_root = wiki_root("correct_type");
         let old_rel = "concepts/foo.md";
         let new_rel = "autoresearch/concepts/foo.md";
 
@@ -990,7 +1050,7 @@ contradictions:
 
     #[test]
     fn test_cross_domain_new_type_section() {
-        let wiki_root = temp_dir("new_type_section");
+        let wiki_root = wiki_root("new_type_section");
         let old_rel = "concepts/foo.md";
         let new_rel = "autoresearch/concepts/foo.md";
 
@@ -1030,7 +1090,7 @@ contradictions:
 
     #[test]
     fn test_multiple_referencers() {
-        let wiki_root = temp_dir("multiple_refs");
+        let wiki_root = wiki_root("multiple_refs");
         let old_rel = "concepts/foo.md";
         let new_rel = "concepts/bar.md";
 
@@ -1069,7 +1129,7 @@ contradictions:
 
     #[test]
     fn test_self_reference_does_not_crash() {
-        let wiki_root = temp_dir("self_ref");
+        let wiki_root = wiki_root("self_ref");
         let old_rel = "concepts/foo.md";
         let new_rel = "concepts/bar.md";
 
@@ -1118,7 +1178,7 @@ contradictions:
 
     #[test]
     fn test_unknown_page_type_lists_under_custom_heading() {
-        let wiki_root = temp_dir("unknown_type");
+        let wiki_root = wiki_root("unknown_type");
         make_page(
             &wiki_root,
             "concepts/foo.md",
@@ -1139,7 +1199,7 @@ contradictions:
 
     #[test]
     fn test_no_substring_matching() {
-        let wiki_root = temp_dir("no_substring");
+        let wiki_root = wiki_root("no_substring");
         let old_rel = "concepts/foo.md";
         let new_rel = "concepts/bar.md";
 
@@ -1184,7 +1244,7 @@ contradictions:
 
     #[test]
     fn test_no_referencers() {
-        let wiki_root = temp_dir("no_referencers");
+        let wiki_root = wiki_root("no_referencers");
         let old_rel = "concepts/foo.md";
         let new_rel = "concepts/bar.md";
 
@@ -1203,7 +1263,7 @@ contradictions:
 
     #[test]
     fn test_cross_domain_not_in_old_index() {
-        let wiki_root = temp_dir("not_in_old_index");
+        let wiki_root = wiki_root("not_in_old_index");
         let old_rel = "concepts/foo.md";
         let new_rel = "autoresearch/concepts/foo.md";
 
@@ -1239,7 +1299,7 @@ contradictions:
 
     #[test]
     fn test_regeneration_has_no_duplicate_entries() {
-        let wiki_root = temp_dir("no_dup");
+        let wiki_root = wiki_root("no_dup");
         let old_rel = "other/foo.md";
         let new_rel = "shared/concepts/foo.md";
 
@@ -1275,7 +1335,7 @@ contradictions:
 
     #[test]
     fn test_atomic_write_preserves_content() {
-        let wiki_root = temp_dir("atomic_write");
+        let wiki_root = wiki_root("atomic_write");
         let old_rel = "concepts/foo.md";
         let new_rel = "concepts/bar.md";
 
@@ -1305,7 +1365,7 @@ contradictions:
 
     #[test]
     fn test_move_rebuilds_backlinks_through_documents() {
-        let wiki_root = temp_dir("move_backlinks");
+        let wiki_root = wiki_root("move_backlinks");
         let old_rel = "concepts/foo.md";
         let new_rel = "concepts/bar.md";
 
@@ -1344,7 +1404,7 @@ contradictions:
 
     #[test]
     fn test_move_rewrites_bare_path_fields() {
-        let wiki_root = temp_dir("bare_path_fields");
+        let wiki_root = wiki_root("bare_path_fields");
         let old_rel = "concepts/foo.md";
         let new_rel = "concepts/bar.md";
 
@@ -1417,8 +1477,147 @@ contradictions:
     }
 
     #[test]
+    fn test_move_rewrites_explicit_bundle_references() {
+        let wiki_root = wiki_root("explicit_bundle_refs");
+        let old_rel = "concepts/foo.md";
+        let new_rel = "concepts/bar.md";
+
+        make_page(&wiki_root, old_rel, &fm_page("Foo", "concept", "", "# Foo"));
+
+        let ref_fm = "\
+sources: ['@wiki/concepts/foo.md']
+supersedes:
+  - path: '@wiki/concepts/foo.md'
+    reason: outdated
+superseded_by:
+  - path: '@wiki/concepts/foo.md'
+    reason: newer
+contradictions:
+  - path: '@wiki/concepts/foo.md'
+    claims:
+      - claim
+    detected: 2025-01-01
+    resolution: unresolved
+";
+        let ref_path = make_page(
+            &wiki_root,
+            "concepts/ref.md",
+            &fm_page(
+                "Ref",
+                "concept",
+                ref_fm,
+                "# Ref\n\nSee [Foo](@wiki/concepts/foo.md), \
+                 [Same](concepts/foo.md), and `@wiki/concepts/foo.md`.\n",
+            ),
+        );
+
+        let result = execute_move(&wiki_root, old_rel, new_rel).unwrap();
+        assert!(
+            result.updated_refs.contains(&"concepts/ref.md".to_string()),
+            "referencer should be updated: {:?}",
+            result.updated_refs
+        );
+
+        let text = read_file(&ref_path);
+        let document = PageDocument::parse(&text).expect("valid document");
+        assert_eq!(
+            document.metadata.sources,
+            Some(vec!["@wiki/concepts/bar.md".to_string()])
+        );
+        assert_eq!(
+            document.metadata.supersedes.as_ref().map(|items| &items[0].path),
+            Some(&"@wiki/concepts/bar.md".to_string())
+        );
+        assert_eq!(
+            document
+                .metadata
+                .superseded_by
+                .as_ref()
+                .map(|items| &items[0].path),
+            Some(&"@wiki/concepts/bar.md".to_string())
+        );
+        assert_eq!(
+            document
+                .metadata
+                .contradictions
+                .as_ref()
+                .map(|items| &items[0].path),
+            Some(&"@wiki/concepts/bar.md".to_string())
+        );
+        assert!(
+            text.contains("](@wiki/concepts/bar.md)"),
+            "explicit body link should keep its form:\n{text}"
+        );
+        assert!(
+            text.contains("`@wiki/concepts/bar.md`"),
+            "explicit backtick path should keep its form:\n{text}"
+        );
+        assert!(
+            text.contains("](concepts/bar.md)"),
+            "the bare path should stay bare:\n{text}"
+        );
+        assert!(!text.contains("concepts/foo.md"), "{text}");
+
+        let moved = read_file(&wiki_root.join(new_rel));
+        assert!(
+            moved.contains("- [Ref](concepts/ref.md)"),
+            "the rewritten reference still feeds the backlinks rebuild:\n{moved}"
+        );
+    }
+
+    #[test]
+    fn test_move_keeps_explicit_reference_of_another_bundle() {
+        let wiki_root = wiki_root("explicit_other_bundle");
+        let old_rel = "concepts/foo.md";
+        let new_rel = "concepts/bar.md";
+
+        write(
+            &wiki_root.join("vendor/bundle.toml"),
+            "[package]\nname = \"vendor\"\nversion = \"0.1.0\"\n\n\
+             [export]\ninclude = [\"**/*.md\"]\n",
+        );
+        make_page(&wiki_root, old_rel, &fm_page("Foo", "concept", "", "# Foo"));
+        let vendor_page = make_page(
+            &wiki_root,
+            "vendor/concepts/foo.md",
+            &fm_page("Vendor Foo", "concept", "", "# Vendor Foo"),
+        );
+        let vendor_before = read_file(&vendor_page);
+
+        let ref_path = make_page(
+            &wiki_root,
+            "concepts/ref.md",
+            &fm_page(
+                "Ref",
+                "concept",
+                "",
+                "# Ref\n\nSee [Mine](@wiki/concepts/foo.md) and \
+                 [Vendor](@vendor/concepts/foo.md).\n",
+            ),
+        );
+
+        execute_move(&wiki_root, old_rel, new_rel).unwrap();
+
+        let text = read_file(&ref_path);
+        assert!(
+            text.contains("](@wiki/concepts/bar.md)"),
+            "own bundle reference should be updated:\n{text}"
+        );
+        assert!(
+            text.contains("](@vendor/concepts/foo.md)"),
+            "another bundle's page must keep its path:\n{text}"
+        );
+        assert!(!text.contains("](@wiki/concepts/foo.md)"), "{text}");
+        assert_eq!(
+            read_file(&vendor_page),
+            vendor_before,
+            "an installed bundle page stays read-only"
+        );
+    }
+
+    #[test]
     fn test_move_rewrites_adjacent_same_token_on_one_line() {
-        let wiki_root = temp_dir("adjacent_tokens");
+        let wiki_root = wiki_root("adjacent_tokens");
         let old_rel = "concepts/foo.md";
         let new_rel = "concepts/bar.md";
 
@@ -1457,8 +1656,56 @@ contradictions:
     }
 
     #[test]
+    fn test_move_across_bundles_keeps_the_page_and_its_references() {
+        // The page belongs to the nested bundle `core`.  A target outside
+        // that bundle has no reference form, so the move fails before the
+        // rename: the page stays, the target never appears and every
+        // reference keeps its text.
+        let wiki_root = wiki_root("move_across_bundles");
+        write(
+            &wiki_root.join("core/bundle.toml"),
+            "[package]\nname = \"core\"\nversion = \"0.1.0\"\n\n\
+             [export]\ninclude = [\"**/*.md\"]\n",
+        );
+        make_page(
+            &wiki_root,
+            "core/concepts/foo.md",
+            &fm_page("Foo", "concept", "", "# Foo"),
+        );
+        let ref_path = make_page(
+            &wiki_root,
+            "concepts/ref.md",
+            &fm_page(
+                "Ref",
+                "concept",
+                "",
+                "# Ref\n\nSee [Foo](@core/concepts/foo.md).\n",
+            ),
+        );
+        let ref_before = read_file(&ref_path);
+
+        let error =
+            execute_move(&wiki_root, "core/concepts/foo.md", "concepts/bar.md")
+                .expect_err("a cross-bundle target must fail");
+        assert!(error.contains("@core"), "{error}");
+        assert!(
+            wiki_root.join("core/concepts/foo.md").exists(),
+            "the page stays in place"
+        );
+        assert!(
+            !wiki_root.join("concepts/bar.md").exists(),
+            "the rejected target never appears"
+        );
+        assert_eq!(
+            read_file(&ref_path),
+            ref_before,
+            "the reference keeps its text"
+        );
+    }
+
+    #[test]
     fn test_move_leaves_body_path_string_untouched() {
-        let wiki_root = temp_dir("body_path_string");
+        let wiki_root = wiki_root("body_path_string");
         let old_rel = "concepts/foo.md";
         let new_rel = "concepts/bar.md";
 
@@ -1500,7 +1747,7 @@ contradictions:
 
     #[test]
     fn test_move_rebuilds_backlinks_immediately() {
-        let wiki_root = temp_dir("backlinks_rebuild");
+        let wiki_root = wiki_root("backlinks_rebuild");
         let old_rel = "concepts/foo.md";
         let new_rel = "concepts/bar.md";
 
@@ -1547,7 +1794,7 @@ contradictions:
 
     #[test]
     fn test_rewrite_rejects_invalid_document() {
-        let wiki_root = temp_dir("invalid_document");
+        let wiki_root = wiki_root("invalid_document");
         let path = write(
             &wiki_root.join("concepts/ref.md"),
             "---\ntitle: Ref\n---\n\nSee [Foo](concepts/foo.md).\n",
@@ -1556,8 +1803,7 @@ contradictions:
 
         let error = rewrite_page_references(
             &path,
-            "concepts/foo.md",
-            "concepts/bar.md",
+            &bare_form("concepts/foo.md", "concepts/bar.md"),
         )
         .expect_err("page without required fields");
 
@@ -1571,7 +1817,7 @@ contradictions:
 
     #[test]
     fn test_move_updates_all_typed_path_fields() {
-        let wiki_root = temp_dir("typed_path_fields");
+        let wiki_root = wiki_root("typed_path_fields");
         let old_rel = "concepts/foo.md";
         let new_rel = "concepts/bar.md";
 
@@ -1671,10 +1917,8 @@ owner: team-a
 
         let changed = rewrite_document_references(
             &mut document,
-            "concepts/foo.md",
-            "concepts/bar.md",
-        )
-        .expect("rewrite");
+            &bare_form("concepts/foo.md", "concepts/bar.md"),
+        );
 
         assert!(!changed, "backlinks must not count as author content");
         assert_eq!(document.body.author(), "# Ref\n\nAuthor text.");
