@@ -51,7 +51,6 @@ const fn change_label(kind: ChangeKind) -> &'static str {
     match kind {
         ChangeKind::Index => "索引",
         ChangeKind::Backlinks => "反向链接",
-        ChangeKind::Timeliness => "时效",
         ChangeKind::Format => "格式",
     }
 }
@@ -68,10 +67,10 @@ const fn status_label(status: Status) -> &'static str {
 /// The source and the two times of a source-newer issue.
 fn source_line(details: &serde_json::Value) -> String {
     format!(
-        "  来源 `{}`，更新时间 {}，验证时间 {}",
+        "  来源 `{}`，来源确认时间 {}，本页确认时间 {}",
         text(details, "source"),
         text(details, "source_timestamp"),
-        text(details, "last_validated"),
+        text(details, "derived_timestamp"),
     )
 }
 

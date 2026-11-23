@@ -1094,7 +1094,7 @@ version = "2.0.0"
 [export]
 include = ["*.md"]
 "#;
-        let index_a = br"---\ntitle: Index\ntype: concept\ntimestamp: 2026-07-01T00:00:00Z\ntags: []\nstatus: draft\nlast_validated: 2026-07-01T00:00:00Z\ntimeliness: current\n---\n\n# Index\n\nUpdated bundle-a index for health/lint pass.\n";
+        let index_a = br"---\ntitle: Index\ntype: concept\ntimestamp: 2026-07-01T00:00:00Z\ntags: []\n---\n\n# Index\n\nUpdated bundle-a index for health/lint pass.\n";
         let log_a = br"# 2026-07\n\nAll good.\n";
         let tar_a = tar::raw_multi_tar_gz(&[
             ("bundle.toml", bundle_a_toml),

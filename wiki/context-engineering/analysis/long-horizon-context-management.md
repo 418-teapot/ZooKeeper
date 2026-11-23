@@ -12,9 +12,6 @@ tags:
   - multi-agent
 sources:
   - context-engineering/sources/notes/anthropic-context-engineering.md
-status: stable
-last_validated: 2026-09-14T02:27:26Z
-timeliness: current
 ---
 
 # 长程任务的上下文管理

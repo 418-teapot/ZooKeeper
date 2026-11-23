@@ -11,9 +11,6 @@ tags:
   - ai-agent
 sources:
   - autoresearch/sources/rfc/autoresearch-design.md
-status: stable
-last_validated: 2026-09-18
-timeliness: current
 ---
 
 # 性能调优设计模式

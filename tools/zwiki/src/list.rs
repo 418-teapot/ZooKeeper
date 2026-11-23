@@ -140,17 +140,17 @@ mod tests {
         write_page(
             &dir,
             "concepts/npc.md",
-            "---\ntitle: NPC\ntype: concept\ntags: [rpg]\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n# NPC\n",
+            "---\ntitle: NPC\ntype: concept\ntags: [rpg]\ntimestamp: 2026-01-01T00:00:00Z\n---\n# NPC\n",
         );
         write_page(
             &dir,
             "entities/weapon.md",
-            "---\ntitle: Weapon\ntype: entity\ntags: [item]\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n# Weapon\n",
+            "---\ntitle: Weapon\ntype: entity\ntags: [item]\ntimestamp: 2026-01-01T00:00:00Z\n---\n# Weapon\n",
         );
         write_page(
             &dir,
             "shared/overview.md",
-            "---\ntitle: Shared\ntype: concept\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n# Shared\n",
+            "---\ntitle: Shared\ntype: concept\ntags: []\ntimestamp: 2026-01-01T00:00:00Z\n---\n# Shared\n",
         );
 
         let entries = list_pages(&dir, None, None, None, &no_bundles())
@@ -172,12 +172,12 @@ mod tests {
         write_page(
             &dir,
             "concepts/one.md",
-            "---\ntitle: One\ntype: concept\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n",
+            "---\ntitle: One\ntype: concept\ntags: []\ntimestamp: 2026-01-01T00:00:00Z\n---\n",
         );
         write_page(
             &dir,
             "entities/one.md",
-            "---\ntitle: Entity One\ntype: entity\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n",
+            "---\ntitle: Entity One\ntype: entity\ntags: []\ntimestamp: 2026-01-01T00:00:00Z\n---\n",
         );
 
         let entries =
@@ -193,7 +193,7 @@ mod tests {
         write_page(
             &dir,
             "concepts/one.md",
-            "---\ntitle: One\ntype: concept\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n",
+            "---\ntitle: One\ntype: concept\ntags: []\ntimestamp: 2026-01-01T00:00:00Z\n---\n",
         );
         let entries =
             list_pages(&dir, Some("Concept"), None, None, &no_bundles())
@@ -207,12 +207,12 @@ mod tests {
         write_page(
             &dir,
             "concepts/one.md",
-            "---\ntitle: One\ntype: concept\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n",
+            "---\ntitle: One\ntype: concept\ntags: []\ntimestamp: 2026-01-01T00:00:00Z\n---\n",
         );
         write_page(
             &dir,
             "analysis/two.md",
-            "---\ntitle: Two\ntype: analysis\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n",
+            "---\ntitle: Two\ntype: analysis\ntags: []\ntimestamp: 2026-01-01T00:00:00Z\n---\n",
         );
         let entries = list_pages(&dir, Some("ana"), None, None, &no_bundles())
             .expect("valid pages");
@@ -230,12 +230,12 @@ mod tests {
         write_page(
             &dir,
             "concepts/auth.md",
-            "---\ntitle: Auth\ntype: concept\ntags: [access-control]\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n",
+            "---\ntitle: Auth\ntype: concept\ntags: [access-control]\ntimestamp: 2026-01-01T00:00:00Z\n---\n",
         );
         write_page(
             &dir,
             "concepts/misc.md",
-            "---\ntitle: Misc\ntype: concept\ntags: [other]\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n",
+            "---\ntitle: Misc\ntype: concept\ntags: [other]\ntimestamp: 2026-01-01T00:00:00Z\n---\n",
         );
 
         let entries =
@@ -250,7 +250,7 @@ mod tests {
         write_page(
             &dir,
             "concepts/auth.md",
-            "---\ntitle: Auth\ntype: concept\ntags: [access-control]\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n",
+            "---\ntitle: Auth\ntype: concept\ntags: [access-control]\ntimestamp: 2026-01-01T00:00:00Z\n---\n",
         );
         let entries =
             list_pages(&dir, None, Some("control"), None, &no_bundles())
@@ -264,7 +264,7 @@ mod tests {
         write_page(
             &dir,
             "concepts/auth.md",
-            "---\ntitle: Auth\ntype: concept\ntags: [Access]\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n",
+            "---\ntitle: Auth\ntype: concept\ntags: [Access]\ntimestamp: 2026-01-01T00:00:00Z\n---\n",
         );
         let entries =
             list_pages(&dir, None, Some("access"), None, &no_bundles())
@@ -282,12 +282,12 @@ mod tests {
         write_page(
             &dir,
             "shared/concepts/a.md",
-            "---\ntitle: A\ntype: concept\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n",
+            "---\ntitle: A\ntype: concept\ntags: []\ntimestamp: 2026-01-01T00:00:00Z\n---\n",
         );
         write_page(
             &dir,
             "autoresearch/concepts/b.md",
-            "---\ntitle: B\ntype: concept\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n",
+            "---\ntitle: B\ntype: concept\ntags: []\ntimestamp: 2026-01-01T00:00:00Z\n---\n",
         );
 
         let entries =
@@ -303,7 +303,7 @@ mod tests {
         write_page(
             &dir,
             "Shared/concepts/a.md",
-            "---\ntitle: A\ntype: concept\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n",
+            "---\ntitle: A\ntype: concept\ntags: []\ntimestamp: 2026-01-01T00:00:00Z\n---\n",
         );
         let entries =
             list_pages(&dir, None, None, Some("shared"), &no_bundles())
@@ -321,17 +321,17 @@ mod tests {
         write_page(
             &dir,
             "shared/concepts/a.md",
-            "---\ntitle: A\ntype: concept\ntags: [access]\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n",
+            "---\ntitle: A\ntype: concept\ntags: [access]\ntimestamp: 2026-01-01T00:00:00Z\n---\n",
         );
         write_page(
             &dir,
             "shared/entities/b.md",
-            "---\ntitle: B\ntype: entity\ntags: [access]\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n",
+            "---\ntitle: B\ntype: entity\ntags: [access]\ntimestamp: 2026-01-01T00:00:00Z\n---\n",
         );
         write_page(
             &dir,
             "shared/concepts/c.md",
-            "---\ntitle: C\ntype: concept\ntags: [misc]\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n",
+            "---\ntitle: C\ntype: concept\ntags: [misc]\ntimestamp: 2026-01-01T00:00:00Z\n---\n",
         );
 
         // Only concept pages in shared domain with "access" tag.
@@ -357,7 +357,7 @@ mod tests {
         write_page(
             &dir,
             "concepts/one.md",
-            "---\ntitle: One\ntype: concept\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n",
+            "---\ntitle: One\ntype: concept\ntags: []\ntimestamp: 2026-01-01T00:00:00Z\n---\n",
         );
         let entries =
             list_pages(&dir, Some("entity"), None, None, &no_bundles())
@@ -375,7 +375,7 @@ mod tests {
         write_page(
             &dir,
             "concepts/test.md",
-            "---\ntitle: My Page\ntype: analysis\ntags: [tag1, tag2]\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\nBody.",
+            "---\ntitle: My Page\ntype: analysis\ntags: [tag1, tag2]\ntimestamp: 2026-01-01T00:00:00Z\n---\nBody.",
         );
         let entries = list_pages(&dir, None, None, None, &no_bundles())
             .expect("valid pages");
@@ -462,17 +462,17 @@ mod tests {
         write_page(
             &dir,
             "z/concepts/a.md",
-            "---\ntitle: Z-A\ntype: concept\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n",
+            "---\ntitle: Z-A\ntype: concept\ntags: []\ntimestamp: 2026-01-01T00:00:00Z\n---\n",
         );
         write_page(
             &dir,
             "a/concepts/b.md",
-            "---\ntitle: A-B\ntype: concept\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n",
+            "---\ntitle: A-B\ntype: concept\ntags: []\ntimestamp: 2026-01-01T00:00:00Z\n---\n",
         );
         write_page(
             &dir,
             "m/concepts/c.md",
-            "---\ntitle: M-C\ntype: concept\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n",
+            "---\ntitle: M-C\ntype: concept\ntags: []\ntimestamp: 2026-01-01T00:00:00Z\n---\n",
         );
 
         let entries = list_pages(&dir, None, None, None, &no_bundles())

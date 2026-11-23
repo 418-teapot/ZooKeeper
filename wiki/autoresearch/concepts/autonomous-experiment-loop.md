@@ -8,9 +8,6 @@ tags:
   - ai-agent
   - experiment-loop
   - automation
-status: stable
-last_validated: 2026-06-19T00:00:00Z
-timeliness: current
 ---
 
 # 自主实验循环

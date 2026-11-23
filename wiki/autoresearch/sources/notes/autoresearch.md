@@ -9,9 +9,6 @@ tags:
   - ai-agent
   - llm-training
   - research-automation
-status: stable
-last_validated: 2026-06-19T00:00:00Z
-timeliness: current
 ---
 
 # autoresearch — AI agent 自主 LLM 训练实验框架

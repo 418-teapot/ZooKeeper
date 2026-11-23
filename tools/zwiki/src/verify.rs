@@ -2,8 +2,8 @@
 //!
 //! Scans analysis/synthesis pages with non-empty `sources` frontmatter,
 //! and identifies pairs where a source page's `timestamp` is newer than
-//! the derived page's `last_validated` — indicating the derived page
-//! may need re-validation against updated source material.
+//! the derived page's `timestamp` — indicating the derived page may need
+//! an update against updated source material.
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -19,7 +19,7 @@ pub struct StalePair {
     pub(crate) derived_page: String,
     pub(crate) source_page: String,
     pub(crate) source_timestamp: String,
-    pub(crate) derived_last_validated: String,
+    pub(crate) derived_timestamp: String,
 }
 
 /// Run the verify command.
@@ -44,7 +44,7 @@ pub fn cmd_verify(root: &Path, json: bool, domain: Option<&str>) {
                     "derived_page": s.derived_page,
                     "source_page": s.source_page,
                     "source_timestamp": s.source_timestamp,
-                    "derived_last_validated": s.derived_last_validated,
+                    "derived_timestamp": s.derived_timestamp,
                 })
             })
             .collect();
@@ -56,11 +56,11 @@ pub fn cmd_verify(root: &Path, json: bool, domain: Option<&str>) {
     } else {
         for s in &stale {
             crate::print_stdout_line(format!(
-                "  {} ← {} (source changed {}, validated {})",
+                "  {} ← {} (来源确认于 {}，本页确认于 {})",
                 s.derived_page,
                 s.source_page,
                 s.source_timestamp,
-                s.derived_last_validated,
+                s.derived_timestamp,
             ));
         }
     }
@@ -108,11 +108,7 @@ pub fn collect_stale_pairs(
                 derived_page: page.rel.clone(),
                 source_page: newer.source,
                 source_timestamp: newer.source_timestamp,
-                derived_last_validated: page
-                    .document
-                    .metadata
-                    .last_validated
-                    .clone(),
+                derived_timestamp: newer.derived_timestamp,
             });
         }
     }
@@ -161,31 +157,41 @@ mod tests {
         fs::write(path, text).expect("failed to write file");
     }
 
+    /// Page text with `type`, `timestamp`, and `extra` frontmatter lines.
+    fn page_text(page_type: &str, timestamp: &str, extra: &str) -> String {
+        format!(
+            "---\ntitle: T\ntype: {page_type}\ntimestamp: {timestamp}\n\
+             tags: []\n{extra}---\nBody.\n"
+        )
+    }
+
     // -------------------------------------------------------------------
-    // 2. collect_stale_pairs — domain filter + output shape
+    // collect_stale_pairs
     // -------------------------------------------------------------------
 
     #[test]
     fn test_collect_stale_pairs_basic() {
-        // Source newer than derived last_validated → one stale pair.
+        // Source newer than the derived page → one stale pair.
         let dir = wiki_root("collect_basic");
         write(
             &dir.join("shared/sources/bar.md"),
-            "---\ntitle: Bar\ntype: source\ntimestamp: 2024-06-01\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\nBody.\n",
+            &page_text("source", "2024-06-01T00:00:00Z", ""),
         );
         write(
             &dir.join("shared/analysis/foo.md"),
-            "---\ntitle: Foo\ntype: analysis\n\
-             sources: [shared/sources/bar.md]\n\
-             last_validated: 2024-01-01\ntags: []\nstatus: draft\ntimeliness: current\n---\nBody.\n",
+            &page_text(
+                "analysis",
+                "2024-01-01T00:00:00Z",
+                "sources: [shared/sources/bar.md]\n",
+            ),
         );
 
         let stale = collect_stale_pairs(&dir, None).expect("valid pages");
         assert_eq!(stale.len(), 1, "should detect one stale pair");
         assert_eq!(stale[0].derived_page, "shared/analysis/foo.md");
         assert_eq!(stale[0].source_page, "shared/sources/bar.md");
-        assert_eq!(stale[0].source_timestamp, "2024-06-01");
-        assert_eq!(stale[0].derived_last_validated, "2024-01-01");
+        assert_eq!(stale[0].source_timestamp, "2024-06-01T00:00:00Z");
+        assert_eq!(stale[0].derived_timestamp, "2024-01-01T00:00:00Z");
     }
 
     #[test]
@@ -195,14 +201,16 @@ mod tests {
         let dir = wiki_root("collect_markdown_link");
         write(
             &dir.join("shared/sources/bar.md"),
-            "---\ntitle: Bar\ntype: source\ntimestamp: 2024-06-01\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\nBody.\n",
+            &page_text("source", "2024-06-01T00:00:00Z", ""),
         );
         write(
             &dir.join("shared/analysis/foo.md"),
-            "---\ntitle: Foo\ntype: analysis\n\
-             sources: ['[Bar](shared/sources/bar.md)', \
-             '[Bar](@wiki/shared/sources/bar.md)']\n\
-             last_validated: 2024-01-01\ntags: []\nstatus: draft\ntimeliness: current\n---\nBody.\n",
+            &page_text(
+                "analysis",
+                "2024-01-01T00:00:00Z",
+                "sources: ['[Bar](shared/sources/bar.md)', \
+                 '[Bar](@wiki/shared/sources/bar.md)']\n",
+            ),
         );
 
         let stale = collect_stale_pairs(&dir, None).expect("valid pages");
@@ -219,23 +227,27 @@ mod tests {
         let dir = wiki_root("collect_domain");
         write(
             &dir.join("domain1/sources/bar.md"),
-            "---\ntitle: Bar\ntype: source\ntimestamp: 2024-06-01\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\nBody.\n",
+            &page_text("source", "2024-06-01T00:00:00Z", ""),
         );
         write(
             &dir.join("domain1/analysis/foo.md"),
-            "---\ntitle: Foo\ntype: analysis\n\
-             sources: [domain1/sources/bar.md]\n\
-             last_validated: 2024-01-01\ntags: []\nstatus: draft\ntimeliness: current\n---\nBody.\n",
+            &page_text(
+                "analysis",
+                "2024-01-01T00:00:00Z",
+                "sources: [domain1/sources/bar.md]\n",
+            ),
         );
         write(
             &dir.join("domain2/sources/baz.md"),
-            "---\ntitle: Baz\ntype: source\ntimestamp: 2024-06-01\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\nBody.\n",
+            &page_text("source", "2024-06-01T00:00:00Z", ""),
         );
         write(
             &dir.join("domain2/analysis/qux.md"),
-            "---\ntitle: Qux\ntype: analysis\n\
-             sources: [domain2/sources/baz.md]\n\
-             last_validated: 2024-01-01\ntags: []\nstatus: draft\ntimeliness: current\n---\nBody.\n",
+            &page_text(
+                "analysis",
+                "2024-01-01T00:00:00Z",
+                "sources: [domain2/sources/baz.md]\n",
+            ),
         );
 
         // Only domain1 should be included.
@@ -251,21 +263,46 @@ mod tests {
 
     #[test]
     fn test_collect_stale_pairs_no_stale() {
-        // Source timestamp equals derived last_validated → no stale.
+        // Source timestamp equals the derived page timestamp → no stale.
         let dir = wiki_root("collect_none");
         write(
             &dir.join("shared/sources/bar.md"),
-            "---\ntitle: Bar\ntype: source\ntimestamp: 2024-01-01\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\nBody.\n",
+            &page_text("source", "2024-06-01T00:00:00Z", ""),
         );
         write(
             &dir.join("shared/analysis/foo.md"),
-            "---\ntitle: Foo\ntype: analysis\n\
-             sources: [shared/sources/bar.md]\n\
-             last_validated: 2024-06-01\ntags: []\nstatus: draft\ntimeliness: current\n---\nBody.\n",
+            &page_text(
+                "analysis",
+                "2024-06-01T00:00:00Z",
+                "sources: [shared/sources/bar.md]\n",
+            ),
         );
 
         let stale = collect_stale_pairs(&dir, None).expect("valid pages");
-        assert!(stale.is_empty(), "no stale when source is older");
+        assert!(stale.is_empty(), "no stale when the source is not newer");
+    }
+
+    #[test]
+    fn test_collect_stale_pairs_same_day_later_time() {
+        // The whole timestamp is compared, so a source later on the same
+        // day is still newer.
+        let dir = wiki_root("collect_same_day");
+        write(
+            &dir.join("shared/sources/bar.md"),
+            &page_text("source", "2024-06-01T12:00:00Z", ""),
+        );
+        write(
+            &dir.join("shared/analysis/foo.md"),
+            &page_text(
+                "analysis",
+                "2024-06-01T11:00:00Z",
+                "sources: [shared/sources/bar.md]\n",
+            ),
+        );
+
+        let stale = collect_stale_pairs(&dir, None).expect("valid pages");
+        assert_eq!(stale.len(), 1, "same-day later source counts as newer");
+        assert_eq!(stale[0].derived_timestamp, "2024-06-01T11:00:00Z");
     }
 
     #[test]
@@ -274,13 +311,15 @@ mod tests {
         let dir = wiki_root("collect_json");
         write(
             &dir.join("shared/sources/bar.md"),
-            "---\ntitle: Bar\ntype: source\ntimestamp: 2024-06-01\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\nBody.\n",
+            &page_text("source", "2024-06-01T00:00:00Z", ""),
         );
         write(
             &dir.join("shared/analysis/foo.md"),
-            "---\ntitle: Foo\ntype: analysis\n\
-             sources: [shared/sources/bar.md]\n\
-             last_validated: 2024-01-01\ntags: []\nstatus: draft\ntimeliness: current\n---\nBody.\n",
+            &page_text(
+                "analysis",
+                "2024-01-01T00:00:00Z",
+                "sources: [shared/sources/bar.md]\n",
+            ),
         );
 
         let stale = collect_stale_pairs(&dir, None).expect("valid pages");
@@ -291,7 +330,7 @@ mod tests {
                     "derived_page": s.derived_page,
                     "source_page": s.source_page,
                     "source_timestamp": s.source_timestamp,
-                    "derived_last_validated": s.derived_last_validated,
+                    "derived_timestamp": s.derived_timestamp,
                 })
             })
             .collect();
@@ -300,8 +339,8 @@ mod tests {
         let obj = &json_output[0];
         assert_eq!(obj["derived_page"], "shared/analysis/foo.md");
         assert_eq!(obj["source_page"], "shared/sources/bar.md");
-        assert_eq!(obj["source_timestamp"], "2024-06-01");
-        assert_eq!(obj["derived_last_validated"], "2024-01-01");
+        assert_eq!(obj["source_timestamp"], "2024-06-01T00:00:00Z");
+        assert_eq!(obj["derived_timestamp"], "2024-01-01T00:00:00Z");
 
         // Verify pretty-print produces valid JSON.
         let pretty = serde_json::to_string_pretty(&json_output).unwrap();

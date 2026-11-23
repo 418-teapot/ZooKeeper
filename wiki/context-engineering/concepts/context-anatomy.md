@@ -9,9 +9,6 @@ tags:
   - system-prompt
   - tool-design
   - few-shot
-status: stable
-last_validated: 2026-09-16T01:55:38Z
-timeliness: current
 ---
 
 # 有效上下文的构成

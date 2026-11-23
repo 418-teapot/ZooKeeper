@@ -8,9 +8,6 @@ tags:
   - context-engineering
   - agent-design
   - llm
-status: stable
-last_validated: 2026-09-16T01:55:38Z
-timeliness: current
 ---
 
 # 上下文工程

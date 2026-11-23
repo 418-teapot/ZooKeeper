@@ -12,7 +12,6 @@ use zwiki::identity::PageId;
 
 use crate::catalog::Catalog;
 use crate::display::{CheckResults, IndexSyncResult, Issue};
-use crate::freshness::FreshnessContext;
 use crate::wiki;
 use crate::wiki::{Page, PageError, PageSet};
 
@@ -39,12 +38,6 @@ const META_FILE_NAMES: &[&str] = &["index.md", "SCHEMA.md"];
 /// Valid page types.
 const VALID_TYPES: &[&str] =
     &["concept", "entity", "source", "analysis", "synthesis"];
-
-/// Valid status values.
-const VALID_STATUSES: &[&str] = &["draft", "review", "stable", "deprecated"];
-
-/// Valid timeliness values (required field).
-const VALID_TIMELINESS: &[&str] = &["current", "stale"];
 
 /// Sections to skip when checking body text for inline links.
 const SKIP_LINK_CHECK_SECTIONS: &[&str] = &["backlinks", "references", "notes"];
@@ -283,15 +276,9 @@ pub fn check_invalid_documents(errors: &[PageError]) -> Vec<Issue> {
 /// Required fields belong to the document model, so only value checks
 /// remain:
 /// - type enum: concept/entity/source/analysis/synthesis
-/// - status enum: draft/review/stable/deprecated
-/// - timeliness enum: current/stale
-/// - ISO 8601 date format for timestamp
+/// - `YYYY-MM-DDTHH:MM:SSZ` format for timestamp
 pub fn check_frontmatter(pages: &[Page]) -> Vec<Issue> {
     let valid_types: HashSet<&str> = VALID_TYPES.iter().copied().collect();
-    let valid_statuses: HashSet<&str> =
-        VALID_STATUSES.iter().copied().collect();
-    let valid_timeliness: HashSet<&str> =
-        VALID_TIMELINESS.iter().copied().collect();
     let mut results: Vec<Issue> = Vec::new();
 
     for page in pages {
@@ -309,38 +296,14 @@ pub fn check_frontmatter(pages: &[Page]) -> Vec<Issue> {
             });
         }
 
-        if !valid_statuses.contains(metadata.status.as_str()) {
-            let valid_list = VALID_STATUSES.join(", ");
-            results.push(Issue {
-                page: page.rel.clone(),
-                category: format!("invalid_status:{}", metadata.status),
-                details: format!(
-                    "Status '{}' is not valid. Must be one of: {valid_list}",
-                    metadata.status
-                ),
-            });
-        }
-
-        if !valid_timeliness.contains(metadata.timeliness.as_str()) {
-            results.push(Issue {
-                page: page.rel.clone(),
-                category: format!("invalid_timeliness:{}", metadata.timeliness),
-                details: format!(
-                    "Field 'timeliness' value '{}' is not valid, must be \
-                     'current' or 'stale'",
-                    metadata.timeliness
-                ),
-            });
-        }
-
-        if let Some(timestamp) = metadata.timestamp.as_deref()
-            && wiki::parse_date(timestamp).is_none()
-        {
+        if wiki::parse_timestamp(&metadata.timestamp).is_none() {
             results.push(Issue {
                 page: page.rel.clone(),
                 category: "invalid_date:timestamp".to_string(),
                 details: format!(
-                    "Field 'timestamp' value '{timestamp}' is not a valid ISO 8601 date"
+                    "Field 'timestamp' value '{}' must be a UTC timestamp \
+                     in the form YYYY-MM-DDTHH:MM:SSZ",
+                    metadata.timestamp
                 ),
             });
         }
@@ -866,47 +829,6 @@ pub fn check_duplicate_inline_links(
 }
 
 // ---------------------------------------------------------------------------
-// mark_stale — timeliness staleness computation
-// ---------------------------------------------------------------------------
-
-/// Result of a timeliness staleness check — a page whose timeliness needs
-/// updating.
-#[derive(Debug, Clone)]
-pub struct StaleUpdate {
-    /// Path relative to `WIKI_DIR`.
-    pub rel: String,
-    /// The new timeliness value ("current" or "stale").
-    pub new_timeliness: String,
-}
-
-/// Recompute timeliness for all pages from the unified freshness verdict
-/// (time decay, newer sources, and unreviewed supersedes).
-///
-/// Pages the judgment skips (deprecated, missing/unparseable
-/// `last_validated`) are left untouched.  Pages whose computed value
-/// already matches the existing `timeliness` are omitted (idempotent).
-pub fn mark_stale(pages: &[Page], ctx: &FreshnessContext) -> Vec<StaleUpdate> {
-    let mut updates: Vec<StaleUpdate> = Vec::new();
-
-    for page in pages {
-        let Some(verdict) = ctx.judge(page) else {
-            continue;
-        };
-
-        let new_timeliness = verdict.timeliness();
-        let existing = page.document.metadata.timeliness.as_str();
-        if existing != new_timeliness {
-            updates.push(StaleUpdate {
-                rel: page.rel.clone(),
-                new_timeliness: new_timeliness.to_string(),
-            });
-        }
-    }
-
-    updates
-}
-
-// ---------------------------------------------------------------------------
 // Orchestrator
 // ---------------------------------------------------------------------------
 
@@ -983,21 +905,10 @@ mod tests {
     /// Page text with the required fields and a `# title` heading.
     fn page_md(title: &str) -> String {
         format!(
-            "---\ntitle: {title}\ntype: concept\ntags: []\nstatus: draft\n\
-             last_validated: 2026-01-01\ntimeliness: current\n---\n\n\
+            "---\ntitle: {title}\ntype: concept\ntags: []\n\
+             timestamp: 2026-01-01T00:00:00Z\n---\n\n\
              # {title}\n\nBody.\n"
         )
-    }
-
-    /// Run `mark_stale` with a context anchored at the current date.
-    fn mark_stale_now(pages: &[Page]) -> Vec<StaleUpdate> {
-        let catalog = Catalog::flat(pages);
-        let ctx = FreshnessContext::new(
-            pages,
-            &catalog,
-            chrono::Utc::now().date_naive(),
-        );
-        mark_stale(pages, &ctx)
     }
 
     fn page_paths_to_pages(paths: &[PathBuf], base: &Path) -> Vec<Page> {
@@ -1021,7 +932,7 @@ mod tests {
             "empty_stub",
             &[(
                 "concepts/foo.md",
-                "---\ntitle: Foo\ntype: concept\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\nShort body.",
+                "---\ntitle: Foo\ntype: concept\ntags: []\ntimestamp: 2026-01-01T00:00:00Z\n---\nShort body.",
             )],
         );
         let issues = check_empty_files(&pages, 100);
@@ -1037,7 +948,7 @@ mod tests {
             "empty_empty",
             &[(
                 "concepts/empty.md",
-                "---\ntitle: Empty\ntype: concept\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---",
+                "---\ntitle: Empty\ntype: concept\ntags: []\ntimestamp: 2026-01-01T00:00:00Z\n---",
             )],
         );
         let issues = check_empty_files(&pages, 100);
@@ -1054,7 +965,7 @@ mod tests {
             &[(
                 "concepts/long.md",
                 &format!(
-                    "---\ntitle: Long\ntype: concept\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n{long_body}"
+                    "---\ntitle: Long\ntype: concept\ntags: []\ntimestamp: 2026-01-01T00:00:00Z\n---\n{long_body}"
                 ),
             )],
         );
@@ -1070,7 +981,7 @@ mod tests {
             &[(
                 "concepts/long.md",
                 &format!(
-                    "---\ntitle: Long\ntype: concept\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n{long_body}"
+                    "---\ntitle: Long\ntype: concept\ntags: []\ntimestamp: 2026-01-01T00:00:00Z\n---\n{long_body}"
                 ),
             )],
         );
@@ -1247,7 +1158,7 @@ mod tests {
                 .join("sources")
                 .join("adr")
                 .join("adr-001.md"),
-            "---\ntitle: ADR-001\ntype: source\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\nBody.\n",
+            "---\ntitle: ADR-001\ntype: source\ntags: []\ntimestamp: 2026-01-01T00:00:00Z\n---\nBody.\n",
         );
 
         let pages = discover_local_pages(&dir);
@@ -1267,7 +1178,7 @@ mod tests {
                 .join("sources")
                 .join("adr")
                 .join("adr-001.md"),
-            "---\ntitle: ADR-001\ntype: source\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\nBody.\n",
+            "---\ntitle: ADR-001\ntype: source\ntags: []\ntimestamp: 2026-01-01T00:00:00Z\n---\nBody.\n",
         );
 
         let pages = discover_local_pages(&dir);
@@ -1300,7 +1211,7 @@ mod tests {
                 .join("sources")
                 .join("adr")
                 .join("adr-001.md"),
-            "---\ntitle: ADR-001\ntype: source\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\nBody.\n",
+            "---\ntitle: ADR-001\ntype: source\ntags: []\ntimestamp: 2026-01-01T00:00:00Z\n---\nBody.\n",
         );
 
         let pages = discover_local_pages(&dir);
@@ -1319,7 +1230,7 @@ mod tests {
         );
         write(
             &dir.join("concepts").join("foo.md"),
-            "---\ntitle: Foo\ntype: concept\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\nBody.\n",
+            "---\ntitle: Foo\ntype: concept\ntags: []\ntimestamp: 2026-01-01T00:00:00Z\n---\nBody.\n",
         );
 
         let pages = discover_local_pages(&dir);
@@ -1355,7 +1266,7 @@ mod tests {
                 .join("sources")
                 .join("rfc")
                 .join("rfc-001.md"),
-            "---\ntitle: RFC 001 Custom Title\ntype: source\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\nBody.\n",
+            "---\ntitle: RFC 001 Custom Title\ntype: source\ntags: []\ntimestamp: 2026-01-01T00:00:00Z\n---\nBody.\n",
         );
 
         let pages = discover_local_pages(&dir);
@@ -1376,8 +1287,8 @@ mod tests {
                 .join("sources")
                 .join("notes")
                 .join("meeting-notes.md"),
-            "---\ntitle: Meeting Notes\ntype: source\ntags: []\nstatus: draft\n\
-             last_validated: 2026-01-01\ntimeliness: current\n---\nBody.\n",
+            "---\ntitle: Meeting Notes\ntype: source\ntags: []\n\
+             timestamp: 2026-01-01T00:00:00Z\n---\nBody.\n",
         );
 
         let pages = discover_local_pages(&dir);
@@ -1394,7 +1305,7 @@ mod tests {
     fn test_frontmatter_valid_passes() {
         let pages = vec![make_page(
             "concepts/valid.md",
-            "---\ntitle: Valid\ntype: concept\ntimestamp: 2024-06-01\ntags: [test]\nstatus: draft\nlast_validated: 2024-06-01\ntimeliness: current\n---\nBody.\n",
+            "---\ntitle: Valid\ntype: concept\ntimestamp: 2024-06-01T00:00:00Z\ntags: [test]\n---\nBody.\n",
         )];
         let issues = check_frontmatter(&pages);
         let field_issues: Vec<&Issue> = issues
@@ -1410,8 +1321,8 @@ mod tests {
             "valid type should pass"
         );
         assert!(
-            issues.iter().all(|i| !i.category.starts_with("invalid_status")),
-            "valid status should pass"
+            issues.iter().all(|i| !i.category.starts_with("invalid_date")),
+            "a strict timestamp should pass"
         );
     }
 
@@ -1434,8 +1345,8 @@ mod tests {
         mark_bundle(&dir, "wiki");
         write(
             &dir.join("concepts/valid.md"),
-            "---\ntitle: Valid\ntype: concept\ntags: []\nstatus: draft\n\
-             last_validated: 2026-01-01\ntimeliness: current\n---\nBody.\n",
+            "---\ntitle: Valid\ntype: concept\ntags: []\n\
+             timestamp: 2026-01-01T00:00:00Z\n---\nBody.\n",
         );
         write(&dir.join("concepts/broken.md"), "# No frontmatter\n");
 
@@ -1458,149 +1369,35 @@ mod tests {
     }
 
     #[test]
-    fn test_frontmatter_timeliness_valid() {
-        let pages = vec![make_page(
-            "concepts/current.md",
-            "---\ntitle: Current\ntype: concept\ntimestamp: 2024-06-01\ntags: [test]\nstatus: draft\ntimeliness: current\nlast_validated: 2024-06-01\n---\nBody.\n",
-        )];
-        let issues = check_frontmatter(&pages);
-        assert!(
-            !issues
-                .iter()
-                .any(|i| i.category.starts_with("invalid_timeliness")),
-            "valid timeliness 'current' should not produce invalid_timeliness"
-        );
-    }
-
-    #[test]
-    fn test_frontmatter_timeliness_invalid() {
-        let pages = vec![make_page(
-            "concepts/archived.md",
-            "---\ntitle: Archived\ntype: concept\ntimestamp: 2024-06-01\ntags: [test]\nstatus: draft\ntimeliness: archived\nlast_validated: 2024-06-01\n---\nBody.\n",
-        )];
-        let issues = check_frontmatter(&pages);
-        assert!(
-            issues.iter().any(|i| i.category == "invalid_timeliness:archived"),
-            "invalid timeliness 'archived' should be reported"
-        );
-    }
-
-    #[test]
-    fn test_frontmatter_timeliness_absent() {
-        let pages = vec![make_page(
-            "concepts/absent.md",
-            "---\ntitle: Absent\ntype: concept\ntimestamp: 2024-06-01\ntags: [test]\nstatus: draft\nlast_validated: 2024-06-01\ntimeliness: current\n---\nBody.\n",
-        )];
-        let issues = check_frontmatter(&pages);
-        assert!(
-            !issues
-                .iter()
-                .any(|i| i.category.starts_with("invalid_timeliness")),
-            "absent timeliness should not produce invalid_timeliness"
-        );
-    }
-
-    #[test]
-    fn test_mark_stale_recent_page_stays_current() {
-        let today =
-            chrono::Utc::now().date_naive().format("%Y-%m-%d").to_string();
-        let content = format!(
-            "---\ntitle: Recent\ntype: concept\ntimestamp: 2024-06-01\ntags: [test]\nstatus: draft\ntimeliness: current\nlast_validated: {today}\n---\nBody.\n"
-        );
-        let pages = vec![make_page("concepts/recent.md", &content)];
-        let updates = mark_stale_now(&pages);
-        assert!(
-            updates.is_empty(),
-            "recent page should stay current, got {updates:?}"
-        );
-    }
-
-    #[test]
-    fn test_mark_stale_old_page_becomes_stale() {
-        let content = "\
----\ntitle: Old\ntype: concept\ntimestamp: 2024-06-01\n\
-tags: [test]\nstatus: draft\ntimeliness: current\n\
-last_validated: 2020-01-01T00:00:00Z\n---\nBody.\n";
-        let pages = vec![make_page("concepts/old.md", content)];
-        let updates = mark_stale_now(&pages);
-        assert_eq!(updates.len(), 1, "old page should become stale");
-        assert_eq!(updates[0].rel, "concepts/old.md");
-        assert_eq!(updates[0].new_timeliness, "stale");
-    }
-
-    #[test]
-    fn test_mark_stale_source_never_stale() {
-        let content = "\
----\ntitle: Source Page\ntype: source\ntimestamp: 2024-06-01\n\
-tags: [test]\nstatus: draft\ntimeliness: current\n\
-last_validated: 2020-01-01\n---\nBody.\n";
-        let pages = vec![make_page("sources/ref.md", content)];
-        let updates = mark_stale_now(&pages);
-        assert!(
-            updates.is_empty(),
-            "source page should never become stale, got {updates:?}"
-        );
-    }
-
-    #[test]
-    fn test_mark_stale_freshness_days_override() {
-        let three_days_ago = chrono::Utc::now()
-            .date_naive()
-            .pred_opt()
-            .unwrap()
-            .pred_opt()
-            .unwrap()
-            .pred_opt()
-            .unwrap()
-            .format("%Y-%m-%d")
-            .to_string();
-        let content = format!(
-            "---\ntitle: Fresh\ntype: concept\ntimestamp: 2024-06-01\ntags: [test]\nstatus: draft\ntimeliness: current\nfreshness_days: 1\nlast_validated: {three_days_ago}\n---\nBody.\n"
-        );
-        let pages = vec![make_page("concepts/fresh.md", &content)];
-        let updates = mark_stale_now(&pages);
-        assert_eq!(
-            updates.len(),
-            1,
-            "should become stale with freshness_days=1"
-        );
-        assert_eq!(updates[0].rel, "concepts/fresh.md");
-        assert_eq!(updates[0].new_timeliness, "stale");
-    }
-
-    #[test]
-    fn test_mark_stale_idempotent() {
-        let content = "\
----\ntitle: Already Stale\ntype: concept\ntimestamp: 2024-06-01\n\
-tags: [test]\nstatus: draft\ntimeliness: stale\n\
-last_validated: 2020-01-01T00:00:00Z\n---\nBody.\n";
-        let pages = vec![make_page("concepts/stale.md", content)];
-        let updates = mark_stale_now(&pages);
-        assert!(
-            updates.is_empty(),
-            "already stale page should not produce update, got {updates:?}"
-        );
-    }
-
-    #[test]
-    fn test_mark_stale_invalid_last_validated_skipped() {
-        let content = "\
----\ntitle: No Date\ntype: concept\ntimestamp: 2024-06-01\n\
-tags: [test]\nstatus: draft\ntimeliness: current\n\
-last_validated: not-a-date\n---\nBody.\n";
-        let pages = vec![make_page("concepts/no-date.md", content)];
-        let updates = mark_stale_now(&pages);
-        assert!(
-            updates.is_empty(),
-            "invalid last_validated should be skipped, got {updates:?}"
-        );
+    fn test_frontmatter_timestamp_rejects_non_strict_forms() {
+        // Date-only, offset time zone, fractional second, and missing zone
+        // are all invalid; the whole field takes one form.
+        for value in [
+            "2024-06-01",
+            "2024-06-01T12:00:00+08:00",
+            "2024-06-01T12:00:00.500Z",
+            "2024-06-01T12:00:00",
+        ] {
+            let pages = vec![make_page(
+                "concepts/stamp.md",
+                &format!(
+                    "---\ntitle: Stamp\ntype: concept\n\
+                     timestamp: {value}\ntags: [test]\n---\nBody.\n"
+                ),
+            )];
+            let issues = check_frontmatter(&pages);
+            assert!(
+                issues.iter().any(|i| i.category == "invalid_date:timestamp"),
+                "value '{value}' must be reported: {issues:?}"
+            );
+        }
     }
 
     #[test]
     fn test_frontmatter_invalid_date() {
         let pages = vec![make_page(
             "concepts/baddate.md",
-            "---\ntitle: Bad\ntype: concept\ntimestamp: not-a-date\ntags: [test]\nstatus: draft\nlast_validated: 2024-06-01\ntimeliness: current\n---\nBody.\n",
+            "---\ntitle: Bad\ntype: concept\ntimestamp: not-a-date\ntags: [test]\n---\nBody.\n",
         )];
         let issues = check_frontmatter(&pages);
         assert!(
@@ -1617,7 +1414,7 @@ last_validated: not-a-date\n---\nBody.\n";
     fn test_system_file_links_valid() {
         let pages = vec![make_page(
             "concepts/valid.md",
-            "---\ntitle: Valid\ntype: concept\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\nSee [other](concepts/other.md).\n",
+            "---\ntitle: Valid\ntype: concept\ntimestamp: 2026-01-01T00:00:00Z\ntags: []\n---\nSee [other](concepts/other.md).\n",
         )];
         let issues = check_system_file_links(&pages);
         assert!(issues.is_empty());
@@ -1627,7 +1424,7 @@ last_validated: not-a-date\n---\nBody.\n";
     fn test_system_file_links_markdown_link_to_system_file() {
         let pages = vec![make_page(
             "concepts/badlink.md",
-            "---\ntitle: Bad\ntype: concept\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\nSee [schema](SCHEMA.md) and [index](index.md).\n",
+            "---\ntitle: Bad\ntype: concept\ntimestamp: 2026-01-01T00:00:00Z\ntags: []\n---\nSee [schema](SCHEMA.md) and [index](index.md).\n",
         )];
         let issues = check_system_file_links(&pages);
         assert!(
@@ -1641,7 +1438,7 @@ last_validated: not-a-date\n---\nBody.\n";
     fn test_system_file_links_external_ignored() {
         let pages = vec![make_page(
             "concepts/external.md",
-            "---\ntitle: External\ntype: concept\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\nSee [example](https://example.com).\n",
+            "---\ntitle: External\ntype: concept\ntimestamp: 2026-01-01T00:00:00Z\ntags: []\n---\nSee [example](https://example.com).\n",
         )];
         let issues = check_system_file_links(&pages);
         assert!(issues.is_empty(), "external URLs should be ignored");
@@ -1655,7 +1452,7 @@ last_validated: not-a-date\n---\nBody.\n";
     fn test_source_field_valid_url() {
         let pages = vec![make_page(
             "autoresearch/sources/adr/adr-001.md",
-            "---\ntitle: ADR-001\ntype: source\nresource: https://example.com/doc\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\nBody.\n",
+            "---\ntitle: ADR-001\ntype: source\ntimestamp: 2026-01-01T00:00:00Z\nresource: https://example.com/doc\ntags: []\n---\nBody.\n",
         )];
         let issues = check_source_field(&pages);
         assert!(issues.is_empty(), "valid URL should pass");
@@ -1665,7 +1462,7 @@ last_validated: not-a-date\n---\nBody.\n";
     fn test_source_field_missing_resource() {
         let pages = vec![make_page(
             "autoresearch/sources/adr/adr-001.md",
-            "---\ntitle: ADR-001\ntype: source\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\nBody.\n",
+            "---\ntitle: ADR-001\ntype: source\ntimestamp: 2026-01-01T00:00:00Z\ntags: []\n---\nBody.\n",
         )];
         let issues = check_source_field(&pages);
         assert!(
@@ -1678,7 +1475,7 @@ last_validated: not-a-date\n---\nBody.\n";
     fn test_source_field_invalid_resource() {
         let pages = vec![make_page(
             "autoresearch/sources/adr/adr-001.md",
-            "---\ntitle: ADR-001\ntype: source\nresource: /local/path.txt\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\nBody.\n",
+            "---\ntitle: ADR-001\ntype: source\ntimestamp: 2026-01-01T00:00:00Z\nresource: /local/path.txt\ntags: []\n---\nBody.\n",
         )];
         let issues = check_source_field(&pages);
         assert!(
@@ -1691,7 +1488,7 @@ last_validated: not-a-date\n---\nBody.\n";
     fn test_source_field_non_source_ignored() {
         let pages = vec![make_page(
             "concepts/foo.md",
-            "---\ntitle: Foo\ntype: concept\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\nBody.\n",
+            "---\ntitle: Foo\ntype: concept\ntimestamp: 2026-01-01T00:00:00Z\ntags: []\n---\nBody.\n",
         )];
         let issues = check_source_field(&pages);
         assert!(issues.is_empty(), "non-source pages should be ignored");
@@ -1701,7 +1498,7 @@ last_validated: not-a-date\n---\nBody.\n";
     fn test_source_field_raw_path_valid() {
         let pages = vec![make_page(
             "autoresearch/sources/notes/meeting.md",
-            "---\ntitle: Meeting\ntype: source\nresource: raw/notes/meeting.txt\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\nBody.\n",
+            "---\ntitle: Meeting\ntype: source\ntimestamp: 2026-01-01T00:00:00Z\nresource: raw/notes/meeting.txt\ntags: []\n---\nBody.\n",
         )];
         let issues = check_source_field(&pages);
         assert!(issues.is_empty(), "raw/ paths should be valid");
@@ -1719,17 +1516,17 @@ last_validated: not-a-date\n---\nBody.\n";
         // Page A links to page B with display text "target page".
         write(
             &dir.join("page-a.md"),
-            "---\ntitle: Page A\ntype: concept\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n\nSee [target page](page-b.md) for details.\n",
+            "---\ntitle: Page A\ntype: concept\ntimestamp: 2026-01-01T00:00:00Z\ntags: []\n---\n\nSee [target page](page-b.md) for details.\n",
         );
         // Page B links to page C.
         write(
             &dir.join("page-b.md"),
-            "---\ntitle: Page B\ntype: concept\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n\nSee [page c](page-c.md) for details.\n",
+            "---\ntitle: Page B\ntype: concept\ntimestamp: 2026-01-01T00:00:00Z\ntags: []\n---\n\nSee [page c](page-c.md) for details.\n",
         );
         // Page C mentions "target page" (which links to page B) without a link.
         write(
             &dir.join("page-c.md"),
-            "---\ntitle: Page C\ntype: concept\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n\nSome text that mentions target page but without a link.\n",
+            "---\ntitle: Page C\ntype: concept\ntimestamp: 2026-01-01T00:00:00Z\ntags: []\n---\n\nSome text that mentions target page but without a link.\n",
         );
 
         let pages = discover_local_pages(&dir);
@@ -1752,11 +1549,11 @@ last_validated: not-a-date\n---\nBody.\n";
         let dir = temp_dir("dup_links_detected");
         write(
             &dir.join("page.md"),
-            "---\ntitle: Test\ntype: concept\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n\nSee [foo](page-b.md) and also [foo again](page-b.md).\n",
+            "---\ntitle: Test\ntype: concept\ntimestamp: 2026-01-01T00:00:00Z\ntags: []\n---\n\nSee [foo](page-b.md) and also [foo again](page-b.md).\n",
         );
         write(
             &dir.join("page-b.md"),
-            "---\ntitle: Page B\ntype: concept\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n\nBody.\n",
+            "---\ntitle: Page B\ntype: concept\ntimestamp: 2026-01-01T00:00:00Z\ntags: []\n---\n\nBody.\n",
         );
 
         let pages = discover_local_pages(&dir);
@@ -1770,15 +1567,15 @@ last_validated: not-a-date\n---\nBody.\n";
         let dir = temp_dir("dup_links_none");
         write(
             &dir.join("page.md"),
-            "---\ntitle: Test\ntype: concept\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n\nSee [foo](page-b.md) and [bar](page-c.md).\n",
+            "---\ntitle: Test\ntype: concept\ntimestamp: 2026-01-01T00:00:00Z\ntags: []\n---\n\nSee [foo](page-b.md) and [bar](page-c.md).\n",
         );
         write(
             &dir.join("page-b.md"),
-            "---\ntitle: B\ntype: concept\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n\nBody.\n",
+            "---\ntitle: B\ntype: concept\ntimestamp: 2026-01-01T00:00:00Z\ntags: []\n---\n\nBody.\n",
         );
         write(
             &dir.join("page-c.md"),
-            "---\ntitle: C\ntype: concept\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n\nBody.\n",
+            "---\ntitle: C\ntype: concept\ntimestamp: 2026-01-01T00:00:00Z\ntags: []\n---\n\nBody.\n",
         );
 
         let pages = discover_local_pages(&dir);
@@ -1791,11 +1588,11 @@ last_validated: not-a-date\n---\nBody.\n";
         let dir = temp_dir("dup_suggestion");
         write(
             &dir.join("page.md"),
-            "---\ntitle: Test\ntype: concept\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n\nSee [foo](page-b.md) and also [foo again](page-b.md).\n",
+            "---\ntitle: Test\ntype: concept\ntimestamp: 2026-01-01T00:00:00Z\ntags: []\n---\n\nSee [foo](page-b.md) and also [foo again](page-b.md).\n",
         );
         write(
             &dir.join("page-b.md"),
-            "---\ntitle: Page B\ntype: concept\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n\nBody.\n",
+            "---\ntitle: Page B\ntype: concept\ntimestamp: 2026-01-01T00:00:00Z\ntags: []\n---\n\nBody.\n",
         );
 
         let pages = discover_local_pages(&dir);
@@ -1816,11 +1613,11 @@ last_validated: not-a-date\n---\nBody.\n";
         mark_bundle(&dir.join("core"), "core");
         write(
             &dir.join("core/concepts/page.md"),
-            "---\ntitle: Test\ntype: concept\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n\nSee [foo](concepts/b.md) and also [foo again](concepts/b.md).\n",
+            "---\ntitle: Test\ntype: concept\ntimestamp: 2026-01-01T00:00:00Z\ntags: []\n---\n\nSee [foo](concepts/b.md) and also [foo again](concepts/b.md).\n",
         );
         write(
             &dir.join("core/concepts/b.md"),
-            "---\ntitle: Page B\ntype: concept\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n\nBody.\n",
+            "---\ntitle: Page B\ntype: concept\ntimestamp: 2026-01-01T00:00:00Z\ntags: []\n---\n\nBody.\n",
         );
 
         let set = wiki::PageSet::load(&dir);
@@ -1844,15 +1641,15 @@ last_validated: not-a-date\n---\nBody.\n";
         let dir = temp_dir("missing_links_no_prefix");
         write(
             &dir.join("page-a.md"),
-            "---\ntitle: Page A\ntype: concept\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n\nSee [多 agent 协作](page-b.md) for details.\n",
+            "---\ntitle: Page A\ntype: concept\ntimestamp: 2026-01-01T00:00:00Z\ntags: []\n---\n\nSee [多 agent 协作](page-b.md) for details.\n",
         );
         write(
             &dir.join("page-b.md"),
-            "---\ntitle: Page B\ntype: concept\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n\nBody.\n",
+            "---\ntitle: Page B\ntype: concept\ntimestamp: 2026-01-01T00:00:00Z\ntags: []\n---\n\nBody.\n",
         );
         write(
             &dir.join("page-c.md"),
-            "---\ntitle: Page C\ntype: concept\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n\nThe 多 agent pattern is discussed elsewhere.\n",
+            "---\ntitle: Page C\ntype: concept\ntimestamp: 2026-01-01T00:00:00Z\ntags: []\n---\n\nThe 多 agent pattern is discussed elsewhere.\n",
         );
 
         let pages = discover_local_pages(&dir);
@@ -1873,19 +1670,19 @@ last_validated: not-a-date\n---\nBody.\n";
         let dir = temp_dir("missing_links_inside_link_text");
         write(
             &dir.join("page-a.md"),
-            "---\ntitle: Page A\ntype: concept\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n\nSee [多 agent 研究架构](page-b.md) for details.\n",
+            "---\ntitle: Page A\ntype: concept\ntimestamp: 2026-01-01T00:00:00Z\ntags: []\n---\n\nSee [多 agent 研究架构](page-b.md) for details.\n",
         );
         write(
             &dir.join("page-b.md"),
-            "---\ntitle: Page B\ntype: concept\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n\nBody.\n",
+            "---\ntitle: Page B\ntype: concept\ntimestamp: 2026-01-01T00:00:00Z\ntags: []\n---\n\nBody.\n",
         );
         write(
             &dir.join("page-d.md"),
-            "---\ntitle: Page D\ntype: concept\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n\nBody.\n",
+            "---\ntitle: Page D\ntype: concept\ntimestamp: 2026-01-01T00:00:00Z\ntags: []\n---\n\nBody.\n",
         );
         write(
             &dir.join("page-c.md"),
-            "---\ntitle: Page C\ntype: concept\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n\n本文基于 Anthropic 的[多 agent 研究架构实践](page-d.md)。\n",
+            "---\ntitle: Page C\ntype: concept\ntimestamp: 2026-01-01T00:00:00Z\ntags: []\n---\n\n本文基于 Anthropic 的[多 agent 研究架构实践](page-d.md)。\n",
         );
 
         let pages = discover_local_pages(&dir);

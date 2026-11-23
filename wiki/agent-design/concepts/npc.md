@@ -8,9 +8,6 @@ tags:
   - autoresearch
   - human-agent-division
   - skill-pattern
-status: stable
-last_validated: 2026-06-19T00:00:00Z
-timeliness: current
 ---
 
 # NPC 式分工

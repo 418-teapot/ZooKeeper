@@ -17,15 +17,10 @@ use ztest::temp_dir;
 
 /// Page text with the required frontmatter plus `extra` lines, and a body
 /// long enough to stay clear of the stub threshold.
-fn page(
-    title: &str,
-    page_type: &str,
-    last_validated: &str,
-    extra: &str,
-) -> String {
+fn page(title: &str, page_type: &str, timestamp: &str, extra: &str) -> String {
     format!(
-        "---\ntitle: {title}\ntype: {page_type}\ntags: []\nstatus: draft\n\
-         last_validated: {last_validated}\ntimeliness: current\n{extra}---\n\n\
+        "---\ntitle: {title}\ntype: {page_type}\ntags: []\n\
+         timestamp: {timestamp}\n{extra}---\n\n\
          # {title}\n\nThis fixture page carries enough body text to describe \
          the scenario in one full sentence.\n"
     )
@@ -35,7 +30,6 @@ fn page(
 fn source_page(title: &str, timestamp: &str) -> String {
     format!(
         "---\ntitle: {title}\ntype: source\ntimestamp: {timestamp}\ntags: []\n\
-         status: draft\nlast_validated: {timestamp}\ntimeliness: current\n\
          ---\n\n# {title}\n\nThis fixture source carries a timestamp and \
          enough body text to describe the scenario.\n"
     )
@@ -406,14 +400,14 @@ fn test_verify_domain_filter_uses_the_page_domain() {
         &page(
             "Derived",
             "analysis",
-            "2024-01-01",
+            "2024-01-01T00:00:00Z",
             "sources: [concepts/source.md]\n",
         ),
     );
     write_page(
         &aggregate,
         "core/concepts/source.md",
-        &source_page("Source", "2024-06-01"),
+        &source_page("Source", "2024-06-01T00:00:00Z"),
     );
 
     assert_eq!(
@@ -421,8 +415,8 @@ fn test_verify_domain_filter_uses_the_page_domain() {
         serde_json::json!([{
             "derived_page": "core/concepts/derived.md",
             "source_page": "core/concepts/source.md",
-            "source_timestamp": "2024-06-01",
-            "derived_last_validated": "2024-01-01",
+            "source_timestamp": "2024-06-01T00:00:00Z",
+            "derived_timestamp": "2024-01-01T00:00:00Z",
         }]),
         "the domain filter selects the page by its bundle-relative domain"
     );
@@ -438,9 +432,13 @@ fn test_verify_reports_the_same_stale_source_in_both_roots() {
     // The `sources` entry is bundle-relative and omits the extension, as
     // pages author it.  Both roots hold the same bundle, so both report the
     // same stale relation under their own page paths.
-    let analysis =
-        page("Foo", "analysis", "2024-01-01", "sources: [sources/bar.md]\n");
-    let source = source_page("Bar", "2024-06-01");
+    let analysis = page(
+        "Foo",
+        "analysis",
+        "2024-01-01T00:00:00Z",
+        "sources: [sources/bar.md]\n",
+    );
+    let source = source_page("Bar", "2024-06-01T00:00:00Z");
 
     let source_root = temp_dir("identity_verify_source");
     write_manifest(&source_root, "core");
@@ -458,8 +456,8 @@ fn test_verify_reports_the_same_stale_source_in_both_roots() {
         serde_json::json!([{
             "derived_page": "analysis/foo.md",
             "source_page": "sources/bar.md",
-            "source_timestamp": "2024-06-01",
-            "derived_last_validated": "2024-01-01",
+            "source_timestamp": "2024-06-01T00:00:00Z",
+            "derived_timestamp": "2024-01-01T00:00:00Z",
         }]),
         "a source root finds the source beside the derived page"
     );
@@ -468,8 +466,8 @@ fn test_verify_reports_the_same_stale_source_in_both_roots() {
         serde_json::json!([{
             "derived_page": "core/analysis/foo.md",
             "source_page": "core/sources/bar.md",
-            "source_timestamp": "2024-06-01",
-            "derived_last_validated": "2024-01-01",
+            "source_timestamp": "2024-06-01T00:00:00Z",
+            "derived_timestamp": "2024-01-01T00:00:00Z",
         }]),
         "an aggregate root finds the source inside the same bundle"
     );
@@ -489,7 +487,7 @@ fn test_verify_follows_an_explicit_source_only_when_the_bundle_is_visible() {
         &page(
             "Visible",
             "analysis",
-            "2024-01-01",
+            "2024-01-01T00:00:00Z",
             "sources: ['@core/sources/bar.md']\n",
         ),
     );
@@ -499,14 +497,14 @@ fn test_verify_follows_an_explicit_source_only_when_the_bundle_is_visible() {
         &page(
             "Absent",
             "analysis",
-            "2024-01-01",
+            "2024-01-01T00:00:00Z",
             "sources: ['@absent/sources/bar.md']\n",
         ),
     );
     write_page(
         &aggregate,
         "core/sources/bar.md",
-        &source_page("Bar", "2024-06-01"),
+        &source_page("Bar", "2024-06-01T00:00:00Z"),
     );
 
     assert_eq!(
@@ -514,8 +512,8 @@ fn test_verify_follows_an_explicit_source_only_when_the_bundle_is_visible() {
         serde_json::json!([{
             "derived_page": "core/analysis/visible.md",
             "source_page": "core/sources/bar.md",
-            "source_timestamp": "2024-06-01",
-            "derived_last_validated": "2024-01-01",
+            "source_timestamp": "2024-06-01T00:00:00Z",
+            "derived_timestamp": "2024-01-01T00:00:00Z",
         }]),
         "only the explicit source of the visible bundle is judged"
     );
@@ -532,12 +530,17 @@ fn test_verify_does_not_lend_a_source_from_another_bundle() {
     write_page(
         &aggregate,
         "core/analysis/foo.md",
-        &page("Foo", "analysis", "2024-01-01", "sources: [sources/bar.md]\n"),
+        &page(
+            "Foo",
+            "analysis",
+            "2024-01-01T00:00:00Z",
+            "sources: [sources/bar.md]\n",
+        ),
     );
     write_page(
         &aggregate,
         "vendor/sources/bar.md",
-        &source_page("Bar", "2024-06-01"),
+        &source_page("Bar", "2024-06-01T00:00:00Z"),
     );
 
     assert_eq!(
@@ -569,14 +572,14 @@ fn test_root_without_manifest_serves_read_only_commands() {
         &page(
             "Derived",
             "analysis",
-            "2024-01-01",
+            "2024-01-01T00:00:00Z",
             "sources: [concepts/source.md]\n",
         ),
     );
     write_page(
         &root,
         "concepts/source.md",
-        &source_page("Source", "2024-06-01"),
+        &source_page("Source", "2024-06-01T00:00:00Z"),
     );
     write_page(
         &root,
@@ -617,8 +620,8 @@ fn test_root_without_manifest_serves_read_only_commands() {
         serde_json::json!([{
             "derived_page": "concepts/derived.md",
             "source_page": "concepts/source.md",
-            "source_timestamp": "2024-06-01",
-            "derived_last_validated": "2024-01-01",
+            "source_timestamp": "2024-06-01T00:00:00Z",
+            "derived_timestamp": "2024-01-01T00:00:00Z",
         }]),
         "verify pairs the loose source in the root scope"
     );
@@ -637,14 +640,18 @@ fn test_aggregate_root_reads_a_link_source_in_verify_and_backlinks() {
     write_manifest(&aggregate, "root");
     write_page(&aggregate, "index.md", "# Index\n");
     write_manifest(&aggregate.join("core"), "core");
-    write_page(&aggregate, "sources/bar.md", &source_page("Bar", "2024-06-01"));
+    write_page(
+        &aggregate,
+        "sources/bar.md",
+        &source_page("Bar", "2024-06-01T00:00:00Z"),
+    );
     write_page(
         &aggregate,
         "core/analysis/foo.md",
         &page(
             "Foo",
             "analysis",
-            "2024-01-01",
+            "2024-01-01T00:00:00Z",
             "sources: ['[Bar](@root/sources/bar.md)']\n",
         ),
     );
@@ -654,8 +661,8 @@ fn test_aggregate_root_reads_a_link_source_in_verify_and_backlinks() {
         serde_json::json!([{
             "derived_page": "core/analysis/foo.md",
             "source_page": "sources/bar.md",
-            "source_timestamp": "2024-06-01",
-            "derived_last_validated": "2024-01-01",
+            "source_timestamp": "2024-06-01T00:00:00Z",
+            "derived_timestamp": "2024-01-01T00:00:00Z",
         }]),
         "verify reads the target of the markdown link"
     );

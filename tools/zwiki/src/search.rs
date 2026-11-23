@@ -351,7 +351,7 @@ mod tests {
             "score_title",
             &[(
                 "concepts/test.md",
-                "---\ntitle: Permission System\ntype: concept\ntags: [auth]\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n\n# Test\n\nBody about foo.",
+                "---\ntitle: Permission System\ntype: concept\ntags: [auth]\ntimestamp: 2026-01-01T00:00:00Z\n---\n\n# Test\n\nBody about foo.",
             )],
         );
         // "Permission" matches title -> +4, nothing else.
@@ -367,7 +367,7 @@ mod tests {
             "score_tag",
             &[(
                 "concepts/test.md",
-                "---\ntitle: Foo\ntype: concept\ntags: [auth, permission, access]\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n\n# Test\n\nBody.",
+                "---\ntitle: Foo\ntype: concept\ntags: [auth, permission, access]\ntimestamp: 2026-01-01T00:00:00Z\n---\n\n# Test\n\nBody.",
             )],
         );
         // "mission" matches "permission" tag -> +3.
@@ -383,7 +383,7 @@ mod tests {
             "score_tag_multi",
             &[(
                 "concepts/test.md",
-                "---\ntitle: Foo\ntype: concept\ntags: [auth-tag, perm-tag]\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n\n# Test\n\nBody.",
+                "---\ntitle: Foo\ntype: concept\ntags: [auth-tag, perm-tag]\ntimestamp: 2026-01-01T00:00:00Z\n---\n\n# Test\n\nBody.",
             )],
         );
         // "tag" matches both tags -> +3 +3 = +6.
@@ -399,7 +399,7 @@ mod tests {
             "score_heading",
             &[(
                 "concepts/test.md",
-                "---\ntitle: Foo\ntype: concept\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n\n# Intro\n\n## Permission Overview\n\nBody.",
+                "---\ntitle: Foo\ntype: concept\ntags: []\ntimestamp: 2026-01-01T00:00:00Z\n---\n\n# Intro\n\n## Permission Overview\n\nBody.",
             )],
         );
         // "Permission" matches heading -> +2.  The heading text is also
@@ -416,7 +416,7 @@ mod tests {
             "score_heading_multi",
             &[(
                 "concepts/test.md",
-                "---\ntitle: Foo\ntype: concept\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n\n# Intro\n\n## Permission One\n\n## Permission Two\n\nBody.",
+                "---\ntitle: Foo\ntype: concept\ntags: []\ntimestamp: 2026-01-01T00:00:00Z\n---\n\n# Intro\n\n## Permission One\n\n## Permission Two\n\nBody.",
             )],
         );
         // Two headings match -> +2 +2 = +4.  Each heading line is also
@@ -433,7 +433,7 @@ mod tests {
             "score_body",
             &[(
                 "concepts/test.md",
-                "---\ntitle: Foo\ntype: concept\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n\n# Test\n\nThe permission system handles access control.",
+                "---\ntitle: Foo\ntype: concept\ntags: []\ntimestamp: 2026-01-01T00:00:00Z\n---\n\n# Test\n\nThe permission system handles access control.",
             )],
         );
         // "permission" appears once in body -> +1.
@@ -449,7 +449,7 @@ mod tests {
             "score_body_multi",
             &[(
                 "concepts/test.md",
-                "---\ntitle: Foo\ntype: concept\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n\n# Test\n\npermission one. permission two. permission three.",
+                "---\ntitle: Foo\ntype: concept\ntags: []\ntimestamp: 2026-01-01T00:00:00Z\n---\n\n# Test\n\npermission one. permission two. permission three.",
             )],
         );
         // "permission" appears three times -> +3.
@@ -465,7 +465,7 @@ mod tests {
             "score_all",
             &[(
                 "concepts/test.md",
-                "---\ntitle: Permission System\ntype: concept\ntags: [permissions, auth]\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n\n# Intro\n\n## Permission Overview\n\nThis page describes the permission system.",
+                "---\ntitle: Permission System\ntype: concept\ntags: [permissions, auth]\ntimestamp: 2026-01-01T00:00:00Z\n---\n\n# Intro\n\n## Permission Overview\n\nThis page describes the permission system.",
             )],
         );
         // title "Permission" -> +4
@@ -489,7 +489,7 @@ mod tests {
             "ci_title",
             &[(
                 "concepts/test.md",
-                "---\ntitle: Permission System\ntype: concept\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n\nBody.",
+                "---\ntitle: Permission System\ntype: concept\ntags: []\ntimestamp: 2026-01-01T00:00:00Z\n---\n\nBody.",
             )],
         );
         let results =
@@ -504,7 +504,7 @@ mod tests {
             "ci_tags",
             &[(
                 "concepts/test.md",
-                "---\ntitle: Foo\ntype: concept\ntags: [AuthZ]\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n\nBody.",
+                "---\ntitle: Foo\ntype: concept\ntags: [AuthZ]\ntimestamp: 2026-01-01T00:00:00Z\n---\n\nBody.",
             )],
         );
         let results =
@@ -519,7 +519,7 @@ mod tests {
             "ci_body",
             &[(
                 "concepts/test.md",
-                "---\ntitle: Foo\ntype: concept\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n\nPERMISSION is IMPORTANT.",
+                "---\ntitle: Foo\ntype: concept\ntags: []\ntimestamp: 2026-01-01T00:00:00Z\n---\n\nPERMISSION is IMPORTANT.",
             )],
         );
         let results =
@@ -538,7 +538,7 @@ mod tests {
             "accum_tag_body",
             &[(
                 "concepts/test.md",
-                "---\ntitle: Foo\ntype: concept\ntags: [test-tag]\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n\n# Test\n\ntest-tag is mentioned. Also test-tag again.",
+                "---\ntitle: Foo\ntype: concept\ntags: [test-tag]\ntimestamp: 2026-01-01T00:00:00Z\n---\n\n# Test\n\ntest-tag is mentioned. Also test-tag again.",
             )],
         );
         // tags: "test-tag" matches "test" -> +3
@@ -562,11 +562,11 @@ mod tests {
             &[
                 (
                     "concepts/perm.md",
-                    "---\ntitle: Permission\ntype: concept\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n\nBody about permission.",
+                    "---\ntitle: Permission\ntype: concept\ntags: []\ntimestamp: 2026-01-01T00:00:00Z\n---\n\nBody about permission.",
                 ),
                 (
                     "entities/perm.md",
-                    "---\ntitle: Permission Entity\ntype: entity\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n\nBody.",
+                    "---\ntitle: Permission Entity\ntype: entity\ntags: []\ntimestamp: 2026-01-01T00:00:00Z\n---\n\nBody.",
                 ),
             ],
         );
@@ -583,7 +583,7 @@ mod tests {
             "type_ci",
             &[(
                 "concepts/perm.md",
-                "---\ntitle: Permission\ntype: concept\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n\nBody.",
+                "---\ntitle: Permission\ntype: concept\ntags: []\ntimestamp: 2026-01-01T00:00:00Z\n---\n\nBody.",
             )],
         );
         let results = engine
@@ -598,7 +598,7 @@ mod tests {
             "type_no_match",
             &[(
                 "concepts/perm.md",
-                "---\ntitle: Permission\ntype: concept\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n\nBody.",
+                "---\ntitle: Permission\ntype: concept\ntags: []\ntimestamp: 2026-01-01T00:00:00Z\n---\n\nBody.",
             )],
         );
         let results = engine
@@ -618,11 +618,11 @@ mod tests {
             &[
                 (
                     "concepts/perm.md",
-                    "---\ntitle: Permission\ntype: concept\ntags: [auth, access]\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n\nBody.",
+                    "---\ntitle: Permission\ntype: concept\ntags: [auth, access]\ntimestamp: 2026-01-01T00:00:00Z\n---\n\nBody.",
                 ),
                 (
                     "concepts/foo.md",
-                    "---\ntitle: Foo\ntype: concept\ntags: [misc]\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n\nBody.",
+                    "---\ntitle: Foo\ntype: concept\ntags: [misc]\ntimestamp: 2026-01-01T00:00:00Z\n---\n\nBody.",
                 ),
             ],
         );
@@ -638,7 +638,7 @@ mod tests {
             "tag_substr",
             &[(
                 "concepts/perm.md",
-                "---\ntitle: Permission\ntype: concept\ntags: [access-control]\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n\nBody.",
+                "---\ntitle: Permission\ntype: concept\ntags: [access-control]\ntimestamp: 2026-01-01T00:00:00Z\n---\n\nBody.",
             )],
         );
         let results = engine
@@ -653,7 +653,7 @@ mod tests {
             "tag_no_match",
             &[(
                 "concepts/perm.md",
-                "---\ntitle: Permission\ntype: concept\ntags: [auth]\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n\nBody.",
+                "---\ntitle: Permission\ntype: concept\ntags: [auth]\ntimestamp: 2026-01-01T00:00:00Z\n---\n\nBody.",
             )],
         );
         let results = engine
@@ -668,7 +668,7 @@ mod tests {
             "tag_ci",
             &[(
                 "concepts/perm.md",
-                "---\ntitle: Permission\ntype: concept\ntags: [Access]\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n\nBody.",
+                "---\ntitle: Permission\ntype: concept\ntags: [Access]\ntimestamp: 2026-01-01T00:00:00Z\n---\n\nBody.",
             )],
         );
         let results = engine
@@ -688,15 +688,15 @@ mod tests {
             &[
                 (
                     "concepts/perm.md",
-                    "---\ntitle: Permission\ntype: concept\ntags: [auth]\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n\nBody.",
+                    "---\ntitle: Permission\ntype: concept\ntags: [auth]\ntimestamp: 2026-01-01T00:00:00Z\n---\n\nBody.",
                 ),
                 (
                     "entities/perm.md",
-                    "---\ntitle: Permission Entity\ntype: entity\ntags: [auth]\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n\nBody.",
+                    "---\ntitle: Permission Entity\ntype: entity\ntags: [auth]\ntimestamp: 2026-01-01T00:00:00Z\n---\n\nBody.",
                 ),
                 (
                     "concepts/noauth.md",
-                    "---\ntitle: No Auth\ntype: concept\ntags: [misc]\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n\nBody.",
+                    "---\ntitle: No Auth\ntype: concept\ntags: [misc]\ntimestamp: 2026-01-01T00:00:00Z\n---\n\nBody.",
                 ),
             ],
         );
@@ -719,11 +719,11 @@ mod tests {
             &[
                 (
                     "shared/concepts/perm.md",
-                    "---\ntitle: Permission\ntype: concept\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n\nBody.",
+                    "---\ntitle: Permission\ntype: concept\ntags: []\ntimestamp: 2026-01-01T00:00:00Z\n---\n\nBody.",
                 ),
                 (
                     "autoresearch/concepts/perm.md",
-                    "---\ntitle: Permission\ntype: concept\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n\nBody.",
+                    "---\ntitle: Permission\ntype: concept\ntags: []\ntimestamp: 2026-01-01T00:00:00Z\n---\n\nBody.",
                 ),
             ],
         );
@@ -740,7 +740,7 @@ mod tests {
             "domain_ci",
             &[(
                 "Shared/concepts/perm.md",
-                "---\ntitle: Permission\ntype: concept\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n\nBody.",
+                "---\ntitle: Permission\ntype: concept\ntags: []\ntimestamp: 2026-01-01T00:00:00Z\n---\n\nBody.",
             )],
         );
         let results = engine
@@ -755,7 +755,7 @@ mod tests {
             "domain_no_match",
             &[(
                 "shared/concepts/perm.md",
-                "---\ntitle: Permission\ntype: concept\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n\nBody.",
+                "---\ntitle: Permission\ntype: concept\ntags: []\ntimestamp: 2026-01-01T00:00:00Z\n---\n\nBody.",
             )],
         );
         let results = engine
@@ -774,7 +774,7 @@ mod tests {
             "result_fields",
             &[(
                 "concepts/test.md",
-                "---\ntitle: My Page\ntype: analysis\ntags: [tag1, tag2]\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n\nBody.",
+                "---\ntitle: My Page\ntype: analysis\ntags: [tag1, tag2]\ntimestamp: 2026-01-01T00:00:00Z\n---\n\nBody.",
             )],
         );
         let results =
@@ -796,7 +796,7 @@ mod tests {
             "no_match",
             &[(
                 "concepts/foo.md",
-                "---\ntitle: Foo\ntype: concept\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n\nNothing here.",
+                "---\ntitle: Foo\ntype: concept\ntags: []\ntimestamp: 2026-01-01T00:00:00Z\n---\n\nNothing here.",
             )],
         );
         let results = engine
@@ -811,7 +811,7 @@ mod tests {
             "empty_query",
             &[(
                 "concepts/foo.md",
-                "---\ntitle: Foo\ntype: concept\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n\nBody.",
+                "---\ntitle: Foo\ntype: concept\ntags: []\ntimestamp: 2026-01-01T00:00:00Z\n---\n\nBody.",
             )],
         );
         let results = engine.search("", None, None, None).expect("valid pages");
@@ -883,11 +883,11 @@ mod tests {
             &[
                 (
                     "low.md",
-                    "---\ntitle: Low Match\ntype: concept\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n\npermission appears once in body only.",
+                    "---\ntitle: Low Match\ntype: concept\ntags: []\ntimestamp: 2026-01-01T00:00:00Z\n---\n\npermission appears once in body only.",
                 ),
                 (
                     "high.md",
-                    "---\ntitle: Permission Title\ntype: concept\ntags: [permission]\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n\npermission body.",
+                    "---\ntitle: Permission Title\ntype: concept\ntags: [permission]\ntimestamp: 2026-01-01T00:00:00Z\n---\n\npermission body.",
                 ),
             ],
         );
@@ -912,11 +912,11 @@ mod tests {
             &[
                 (
                     "concepts/a.md",
-                    "---\ntitle: Alpha\ntype: concept\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n\nTarget word here.",
+                    "---\ntitle: Alpha\ntype: concept\ntags: []\ntimestamp: 2026-01-01T00:00:00Z\n---\n\nTarget word here.",
                 ),
                 (
                     "concepts/b.md",
-                    "---\ntitle: Beta\ntype: concept\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n\nNothing.",
+                    "---\ntitle: Beta\ntype: concept\ntags: []\ntimestamp: 2026-01-01T00:00:00Z\n---\n\nNothing.",
                 ),
             ],
         );
@@ -939,9 +939,9 @@ mod tests {
             "title: Page A\n",
             "type: concept\n",
             "tags: []\n",
-            "status: draft\n",
-            "last_validated: 2026-07-01T00:00:00Z\n",
-            "timeliness: current\n",
+            "",
+            "timestamp: 2026-07-01T00:00:00Z\n",
+            "",
             "contradictions:\n",
             "  - path: shared/page-b.md\n",
             "    claims:\n",
@@ -956,7 +956,7 @@ mod tests {
                 ("shared/page-a.md", page_a_content),
                 (
                     "shared/page-b.md",
-                    "---\ntitle: Page B\ntype: concept\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n\nBody about page B.",
+                    "---\ntitle: Page B\ntype: concept\ntags: []\ntimestamp: 2026-01-01T00:00:00Z\n---\n\nBody about page B.",
                 ),
             ],
         );

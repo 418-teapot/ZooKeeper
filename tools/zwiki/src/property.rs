@@ -70,24 +70,6 @@ fn render(value: &Value) -> Result<String, String> {
     Ok(text.clone())
 }
 
-// ---------------------------------------------------------------------------
-// Status downgrade
-// ---------------------------------------------------------------------------
-
-/// Downgrade a status value by one confidence level.
-///
-/// Mapping: `stable` → `review` → `draft` → `draft`.
-/// `deprecated` and unknown values pass through unchanged.
-#[must_use]
-pub fn downgrade_status(status: &str) -> &str {
-    match status {
-        "stable" => "review",
-        "review" | "draft" => "draft",
-        "deprecated" => "deprecated",
-        other => other,
-    }
-}
-
 // ===========================================================================
 // Tests
 // ===========================================================================
@@ -105,9 +87,9 @@ mod tests {
         "type: concept\n",
         "description: 摘要\n",
         "tags: [a, b]\n",
-        "status: draft\n",
-        "last_validated: 2026-07-01T00:00:00Z\n",
-        "timeliness: current\n",
+        "",
+        "timestamp: 2026-07-01T00:00:00Z\n",
+        "",
         "---\n",
         "\n",
         "Body content.\n",
@@ -124,35 +106,6 @@ mod tests {
     }
 
     // -------------------------------------------------------------------
-    // downgrade_status
-    // -------------------------------------------------------------------
-
-    #[test]
-    fn test_downgrade_stable_to_review() {
-        assert_eq!(downgrade_status("stable"), "review");
-    }
-
-    #[test]
-    fn test_downgrade_review_to_draft() {
-        assert_eq!(downgrade_status("review"), "draft");
-    }
-
-    #[test]
-    fn test_downgrade_draft_stays_draft() {
-        assert_eq!(downgrade_status("draft"), "draft");
-    }
-
-    #[test]
-    fn test_downgrade_deprecated_stays_deprecated() {
-        assert_eq!(downgrade_status("deprecated"), "deprecated");
-    }
-
-    #[test]
-    fn test_downgrade_unknown_status_passthrough() {
-        assert_eq!(downgrade_status("unknown"), "unknown");
-    }
-
-    // -------------------------------------------------------------------
     // get
     // -------------------------------------------------------------------
 
@@ -160,9 +113,9 @@ mod tests {
     fn test_get_existing_field() {
         let dir = temp_dir("get_existing");
         let path = make_page(&dir, "test.md", SAMPLE);
-        let result = get(&path, "status");
+        let result = get(&path, "timestamp");
         assert!(result.is_ok());
-        assert_eq!(result.unwrap(), Some("draft".to_string()));
+        assert_eq!(result.unwrap(), Some("2026-07-01T00:00:00Z".to_string()));
     }
 
     #[test]
@@ -202,24 +155,17 @@ mod tests {
     #[test]
     fn test_get_integer_field() {
         let dir = temp_dir("get_integer");
-        let page = SAMPLE.replace(
-            "timeliness: current\n",
-            "timeliness: current\nfreshness_days: 90\n",
-        );
+        let page =
+            SAMPLE.replace("tags: [a, b]\n", "tags: [a, b]\npriority: 90\n");
         let path = make_page(&dir, "test.md", &page);
-        assert_eq!(
-            get(&path, "freshness_days").unwrap(),
-            Some("90".to_string())
-        );
+        assert_eq!(get(&path, "priority").unwrap(), Some("90".to_string()));
     }
 
     #[test]
     fn test_get_extension_field() {
         let dir = temp_dir("get_extension");
-        let page = SAMPLE.replace(
-            "timeliness: current\n",
-            "timeliness: current\nokf_version: \"0.1\"\n",
-        );
+        let page = SAMPLE
+            .replace("tags: [a, b]\n", "tags: [a, b]\nokf_version: \"0.1\"\n");
         let path = make_page(&dir, "test.md", &page);
         assert_eq!(get(&path, "okf_version").unwrap(), Some("0.1".to_string()));
     }
@@ -252,9 +198,9 @@ mod tests {
                 "tags:\n",
                 "  - a\n",
                 "  - b\n",
-                "status: draft\n",
-                "last_validated: 2026-07-01T00:00:00Z\n",
-                "timeliness: current\n",
+                "",
+                "timestamp: 2026-07-01T00:00:00Z\n",
+                "",
                 "resource: https://example.com/a\n",
                 "---\n",
                 "\n",
@@ -267,9 +213,12 @@ mod tests {
     fn test_set_existing_field() {
         let dir = temp_dir("set_existing");
         let path = make_page(&dir, "test.md", SAMPLE);
-        set(&path, "status", "stable").unwrap();
+        set(&path, "resource", "https://example.com/a").unwrap();
 
-        assert_eq!(get(&path, "status").unwrap(), Some("stable".to_string()));
+        assert_eq!(
+            get(&path, "resource").unwrap(),
+            Some("https://example.com/a".to_string())
+        );
         assert_eq!(get(&path, "title").unwrap(), Some("Test Page".to_string()));
         assert!(read(&path).contains("Body content."));
     }
@@ -300,13 +249,10 @@ mod tests {
     fn test_set_integer_field() {
         let dir = temp_dir("set_integer");
         let path = make_page(&dir, "test.md", SAMPLE);
-        set(&path, "freshness_days", "90").unwrap();
+        set(&path, "priority", "90").unwrap();
 
-        assert_eq!(
-            get(&path, "freshness_days").unwrap(),
-            Some("90".to_string())
-        );
-        assert!(read(&path).contains("freshness_days: 90\n"));
+        assert_eq!(get(&path, "priority").unwrap(), Some("90".to_string()));
+        assert!(read(&path).contains("priority: 90\n"));
     }
 
     #[test]
@@ -349,9 +295,9 @@ mod tests {
             "title: Test Page\n",
             "type: concept\n",
             "tags: [a]\n",
-            "status: draft\n",
-            "last_validated: 2026-07-01T00:00:00Z\n",
-            "timeliness: current\n",
+            "",
+            "timestamp: 2026-07-01T00:00:00Z\n",
+            "",
             "---\n",
             "\n",
             "# Test Page\n",
@@ -367,7 +313,7 @@ mod tests {
             "- 来源\n",
         );
         let path = make_page(&dir, "test.md", page);
-        set(&path, "status", "stable").unwrap();
+        set(&path, "description", "摘要").unwrap();
 
         assert_eq!(
             read(&path),
@@ -377,9 +323,8 @@ mod tests {
                 "type: concept\n",
                 "tags:\n",
                 "  - a\n",
-                "status: stable\n",
-                "last_validated: 2026-07-01T00:00:00Z\n",
-                "timeliness: current\n",
+                "timestamp: 2026-07-01T00:00:00Z\n",
+                "description: 摘要\n",
                 "---\n",
                 "\n",
                 "# Test Page\n",
@@ -435,9 +380,9 @@ mod tests {
     fn test_delete_required_field_rejected() {
         let dir = temp_dir("delete_required");
         let path = make_page(&dir, "test.md", SAMPLE);
-        let error = delete(&path, "timeliness").expect_err("required field");
+        let error = delete(&path, "timestamp").expect_err("required field");
 
-        assert!(error.contains("timeliness"), "unexpected error: {error}");
+        assert!(error.contains("timestamp"), "unexpected error: {error}");
         assert_eq!(read(&path), SAMPLE);
     }
 
@@ -452,9 +397,9 @@ mod tests {
             "- path: shared/a.md\n",
             "  reason: 覆盖旧模型\n",
             "tags: [a]\n",
-            "status: draft\n",
-            "last_validated: 2026-07-01T00:00:00Z\n",
-            "timeliness: current\n",
+            "",
+            "timestamp: 2026-07-01T00:00:00Z\n",
+            "",
             "---\n",
             "\n",
             "Body content.\n",
@@ -479,9 +424,9 @@ mod tests {
             "- path: shared/a.md\n",
             "  reason: 覆盖旧模型\n",
             "tags: [a]\n",
-            "status: draft\n",
-            "last_validated: 2026-07-01T00:00:00Z\n",
-            "timeliness: current\n",
+            "",
+            "timestamp: 2026-07-01T00:00:00Z\n",
+            "",
             "---\n",
             "\n",
             "Body content.\n",

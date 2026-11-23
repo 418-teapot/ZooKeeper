@@ -23,10 +23,10 @@ fn check(root: &Path) -> String {
 }
 
 /// Page text with every required field.
-fn page(title: &str, validated: &str, timeliness: &str, body: &str) -> String {
+fn page(title: &str, timestamp: &str, tags: &str, body: &str) -> String {
     format!(
-        "---\ntitle: {title}\ntype: concept\ntags: []\nstatus: draft\n\
-         last_validated: {validated}\ntimeliness: {timeliness}\n---\n\n\
+        "---\ntitle: {title}\ntype: concept\ntags: {tags}\n\
+         timestamp: {timestamp}\n---\n\n\
          # {title}\n\n{body}\n"
     )
 }
@@ -38,17 +38,17 @@ fn test_check_reports_the_stored_pages() {
     std::fs::create_dir_all(root.join("logs")).unwrap();
     std::fs::write(root.join("logs/.gitkeep"), "").unwrap();
 
-    // `archived` is not a valid timeliness value.  The page is fresh, so the
-    // sync stores `current` before the report runs.
-    let today = chrono::Utc::now().date_naive().format("%Y-%m-%d").to_string();
+    // Flow-style tags are not the stored layout, so the run normalizes the
+    // page before the report runs.
+    let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
     std::fs::write(
         root.join("target.md"),
-        page("Target", &today, "archived", "Target body."),
+        page("Target", &now, "[a]", "Target body."),
     )
     .unwrap();
     std::fs::write(
         root.join("linker.md"),
-        page("Linker", &today, "current", "See [Target](target.md)."),
+        page("Linker", &now, "[]", "See [Target](target.md)."),
     )
     .unwrap();
 
@@ -67,12 +67,20 @@ fn test_check_reports_the_stored_pages() {
         "the automatic writes settle within one run"
     );
     assert!(
-        !first.to_string().contains("invalid_timeliness"),
-        "the sync replaced the invalid value before the report: {first}"
+        first["changes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|c| c["path"] == "target.md" && c["kind"] == "format"),
+        "the layout normalization is a change of the same run: {first}"
     );
     let stored = std::fs::read_to_string(root.join("target.md")).unwrap();
     assert!(
-        stored.contains("timeliness: current"),
-        "the stored page carries the computed timeliness: {stored}"
+        stored.contains("tags:\n  - a\n"),
+        "the stored page carries the normalized list: {stored}"
+    );
+    assert!(
+        stored.contains(&format!("timestamp: {now}")),
+        "the run never rewrites the timestamp: {stored}"
     );
 }

@@ -407,15 +407,15 @@ mod tests {
         let dir = temp_dir("domain_generated");
         write(
             &dir.join("concepts/beta.md"),
-            "---\ntitle: Beta\ntype: concept\ndescription: Beta description\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n\n# Beta\n",
+            "---\ntitle: Beta\ntype: concept\ndescription: Beta description\ntags: []\ntimestamp: 2026-01-01T00:00:00Z\n---\n\n# Beta\n",
         );
         write(
             &dir.join("concepts/alpha.md"),
-            "---\ntitle: Alpha\ntype: concept\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n\n# Alpha\n",
+            "---\ntitle: Alpha\ntype: concept\ntags: []\ntimestamp: 2026-01-01T00:00:00Z\n---\n\n# Alpha\n",
         );
         write(
             &dir.join("entities/ent.md"),
-            "---\ntitle: Entity One\ntype: entity\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n\n# Entity One\n",
+            "---\ntitle: Entity One\ntype: entity\ntags: []\ntimestamp: 2026-01-01T00:00:00Z\n---\n\n# Entity One\n",
         );
 
         assert!(regenerate_domain_index(&dir).unwrap());
@@ -440,7 +440,7 @@ mod tests {
     #[test]
     fn test_domain_index_preserves_authored_frontmatter() {
         let dir = temp_dir("domain_preserve");
-        let frontmatter = "---\ntitle: Custom Title\ndescription: Domain description\ncustom: keep-me\ntype: concept\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n";
+        let frontmatter = "---\ntitle: Custom Title\ndescription: Domain description\ncustom: keep-me\ntype: concept\ntags: []\ntimestamp: 2026-01-01T00:00:00Z\n---\n";
         write(
             &dir.join("index.md"),
             &format!(
@@ -449,7 +449,7 @@ mod tests {
         );
         write(
             &dir.join("concepts/live.md"),
-            "---\ntitle: Live\ntype: concept\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n\n# Live\n",
+            "---\ntitle: Live\ntype: concept\ntimestamp: 2026-01-01T00:00:00Z\ntags: []\n---\n\n# Live\n",
         );
 
         assert!(regenerate_domain_index(&dir).unwrap());
@@ -471,7 +471,7 @@ mod tests {
         let dir = temp_dir("domain_idempotent");
         write(
             &dir.join("concepts/one.md"),
-            "---\ntitle: One\ntype: concept\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n\n# One\n",
+            "---\ntitle: One\ntype: concept\ntimestamp: 2026-01-01T00:00:00Z\ntags: []\n---\n\n# One\n",
         );
         assert!(regenerate_domain_index(&dir).unwrap());
         assert!(
@@ -485,7 +485,7 @@ mod tests {
         let dir = temp_dir("domain_unknown_type");
         write(
             &dir.join("misc/odd.md"),
-            "---\ntitle: Odd\ntype: custom\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n\n# Odd\n",
+            "---\ntitle: Odd\ntype: custom\ntimestamp: 2026-01-01T00:00:00Z\ntags: []\n---\n\n# Odd\n",
         );
         regenerate_domain_index(&dir).unwrap();
         let content = read(&dir.join("index.md"));
@@ -515,11 +515,11 @@ mod tests {
         let dir = temp_dir("root_domains");
         write(
             &dir.join("alpha/index.md"),
-            "---\ntitle: Alpha Domain\ndescription: First domain\ntype: concept\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n",
+            "---\ntitle: Alpha Domain\ndescription: First domain\ntype: concept\ntags: []\ntimestamp: 2026-01-01T00:00:00Z\n---\n",
         );
         write(
             &dir.join("beta/index.md"),
-            "---\ntitle: Beta Domain\ntype: concept\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n",
+            "---\ntitle: Beta Domain\ntype: concept\ntags: []\ntimestamp: 2026-01-01T00:00:00Z\n---\n",
         );
         // Reserved, hidden, and bundle directories are not domains.
         fs::create_dir_all(dir.join("logs")).unwrap();
@@ -542,14 +542,14 @@ mod tests {
     #[test]
     fn test_bundle_root_preserves_authored_frontmatter() {
         let dir = temp_dir("root_preserve");
-        let frontmatter = "---\ntitle: My Bundle\ndescription: Bundle description\ntype: concept\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n";
+        let frontmatter = "---\ntitle: My Bundle\ndescription: Bundle description\ntype: concept\ntags: []\ntimestamp: 2026-01-01T00:00:00Z\n---\n";
         write(
             &dir.join("index.md"),
             &format!("{frontmatter}\n- [stale](stale/index.md)\n"),
         );
         write(
             &dir.join("real/index.md"),
-            "---\ntitle: Real\ntype: concept\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n",
+            "---\ntitle: Real\ntype: concept\ntags: []\ntimestamp: 2026-01-01T00:00:00Z\n---\n",
         );
 
         regenerate_bundle_root_index(&dir).unwrap();
@@ -564,20 +564,20 @@ mod tests {
         let dir = temp_dir("root_pages");
         write(
             &dir.join("alpha/index.md"),
-            "---\ntitle: Alpha Domain\ntype: concept\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n",
+            "---\ntitle: Alpha Domain\ntype: concept\ntags: []\ntimestamp: 2026-01-01T00:00:00Z\n---\n",
         );
         write(
             &dir.join("overview.md"),
-            "---\ntitle: Overview\ndescription: High-level map\ntype: concept\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n\nBody.\n",
+            "---\ntitle: Overview\ndescription: High-level map\ntype: concept\ntags: []\ntimestamp: 2026-01-01T00:00:00Z\n---\n\nBody.\n",
         );
         write(
             &dir.join("notes.md"),
-            "---\ntitle: Notes\ntype: concept\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n\nBody.\n",
+            "---\ntitle: Notes\ntype: concept\ntags: []\ntimestamp: 2026-01-01T00:00:00Z\n---\n\nBody.\n",
         );
         // Meta files must never be listed.
         write(
             &dir.join("SCHEMA.md"),
-            "---\ntitle: Schema\ntype: concept\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n",
+            "---\ntitle: Schema\ntype: concept\ntags: []\ntimestamp: 2026-01-01T00:00:00Z\n---\n",
         );
 
         assert!(regenerate_bundle_root_index(&dir).unwrap());
@@ -612,7 +612,7 @@ mod tests {
         let dir = temp_dir("all_indexes");
         write(
             &dir.join("alpha/concepts/one.md"),
-            "---\ntitle: One\ntype: concept\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n\n# One\n",
+            "---\ntitle: One\ntype: concept\ntags: []\ntimestamp: 2026-01-01T00:00:00Z\n---\n\n# One\n",
         );
         regenerate_all_indexes(&dir, false);
 
@@ -627,7 +627,7 @@ mod tests {
         let dir = temp_dir("all_indexes_store");
         write(
             &dir.join("alpha/concepts/one.md"),
-            "---\ntitle: One\ntype: concept\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n\n# One\n",
+            "---\ntitle: One\ntype: concept\ntags: []\ntimestamp: 2026-01-01T00:00:00Z\n---\n\n# One\n",
         );
         fs::write(dir.join("zwiki.lock"), "").unwrap();
         regenerate_all_indexes(&dir, false);

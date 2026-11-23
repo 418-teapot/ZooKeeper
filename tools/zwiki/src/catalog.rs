@@ -244,8 +244,8 @@ mod tests {
     /// A page document the loader accepts.
     fn page(title: &str) -> String {
         format!(
-            "---\ntitle: {title}\ntype: concept\ntags: []\nstatus: draft\n\
-             last_validated: 2026-01-01T00:00:00Z\ntimeliness: current\n---\n\
+            "---\ntitle: {title}\ntype: concept\ntags: []\n\
+             timestamp: 2026-01-01T00:00:00Z\n---\n\
              \n# {title}\n"
         )
     }

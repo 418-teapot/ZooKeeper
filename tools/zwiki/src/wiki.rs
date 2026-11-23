@@ -572,41 +572,16 @@ pub fn page_matches_slice(
 // Date parsing
 // ---------------------------------------------------------------------------
 
-/// Parse an ISO 8601 date string (`YYYY-MM-DD` or `YYYY-MM-DDTHH:mm:ssZ`)
-/// into the moment it names.
+/// Parse a page `timestamp` value into the moment it names.
 ///
-/// A date without a time names the start of that day, so two values stay
-/// comparable to the second.  Returns `None` when the value is empty or
-/// malformed.
+/// A page timestamp carries UTC seconds only, so the single valid form is
+/// `YYYY-MM-DDTHH:MM:SSZ`.  A date without a time, an offset time zone, a
+/// fractional second, or a non-canonical digit count yields `None`.
 #[must_use]
-pub fn parse_moment(value: &str) -> Option<chrono::NaiveDateTime> {
-    let cleaned = value.trim();
-    if cleaned.is_empty() {
-        return None;
-    }
-
-    if let Ok(date) = chrono::NaiveDate::parse_from_str(cleaned, "%Y-%m-%d") {
-        return date.and_hms_opt(0, 0, 0);
-    }
-
-    // Datetime formats, with an optional `Z` suffix and optional
-    // fractional seconds.
-    let cleaned = cleaned.strip_suffix('Z').unwrap_or(cleaned);
-    if let Ok(moment) =
-        chrono::NaiveDateTime::parse_from_str(cleaned, "%Y-%m-%dT%H:%M:%S%.f")
-    {
-        return Some(moment);
-    }
-    chrono::NaiveDateTime::parse_from_str(cleaned, "%Y-%m-%dT%H:%M:%S").ok()
-}
-
-/// Parse an ISO 8601 date string (`YYYY-MM-DD` or `YYYY-MM-DDTHH:mm:ssZ`)
-/// into the day it names.
-///
-/// Returns `Some(NaiveDate)` on success, `None` on failure.
-#[must_use]
-pub fn parse_date(date_str: &str) -> Option<chrono::NaiveDate> {
-    parse_moment(date_str).map(|moment| moment.date())
+pub fn parse_timestamp(value: &str) -> Option<chrono::NaiveDateTime> {
+    const FORMAT: &str = "%Y-%m-%dT%H:%M:%SZ";
+    let moment = chrono::NaiveDateTime::parse_from_str(value, FORMAT).ok()?;
+    (moment.format(FORMAT).to_string() == value).then_some(moment)
 }
 
 // ===========================================================================
@@ -746,46 +721,48 @@ mod tests {
     }
 
     // -------------------------------------------------------------------
-    // 3. parse_date
+    // 3. parse_timestamp
     // -------------------------------------------------------------------
 
     #[test]
-    fn test_parse_date_valid() {
-        let result = parse_date("2024-06-01");
+    fn test_parse_timestamp_valid() {
+        let result = parse_timestamp("2024-06-01T12:30:45Z");
         assert_eq!(
             result,
             Some(
                 chrono::NaiveDate::parse_from_str("2024-06-01", "%Y-%m-%d")
                     .unwrap()
-            )
-        );
-    }
-
-    #[test]
-    fn test_parse_date_invalid() {
-        assert_eq!(parse_date("not-a-date"), None);
-    }
-
-    #[test]
-    fn test_parse_date_empty_string() {
-        assert_eq!(parse_date(""), None);
-    }
-
-    #[test]
-    fn test_parse_date_whitespace_around() {
-        let result = parse_date("  2024-01-15  ");
-        assert_eq!(
-            result,
-            Some(
-                chrono::NaiveDate::parse_from_str("2024-01-15", "%Y-%m-%d")
+                    .and_hms_opt(12, 30, 45)
                     .unwrap()
             )
         );
     }
 
     #[test]
-    fn test_parse_date_invalid_month() {
-        assert_eq!(parse_date("2024-13-01"), None);
+    fn test_parse_timestamp_rejects_date_only() {
+        assert_eq!(parse_timestamp("2024-06-01"), None);
+    }
+
+    #[test]
+    fn test_parse_timestamp_rejects_offset() {
+        assert_eq!(parse_timestamp("2024-06-01T12:30:45+08:00"), None);
+    }
+
+    #[test]
+    fn test_parse_timestamp_rejects_fraction() {
+        assert_eq!(parse_timestamp("2024-06-01T12:30:45.500Z"), None);
+    }
+
+    #[test]
+    fn test_parse_timestamp_rejects_missing_zone() {
+        assert_eq!(parse_timestamp("2024-06-01T12:30:45"), None);
+    }
+
+    #[test]
+    fn test_parse_timestamp_rejects_empty_and_malformed() {
+        assert_eq!(parse_timestamp(""), None);
+        assert_eq!(parse_timestamp("not-a-date"), None);
+        assert_eq!(parse_timestamp("2024-13-01T00:00:00Z"), None);
     }
 
     // -------------------------------------------------------------------
@@ -882,8 +859,8 @@ mod tests {
     fn page_text(page_type: &str, tags: &str) -> String {
         format!(
             "---\ntitle: T\ntype: {page_type}\ntags: {tags}\n\
-             status: draft\nlast_validated: 2026-01-01T00:00:00Z\n\
-             timeliness: current\n---\n"
+             timestamp: 2026-01-01T00:00:00Z\n\
+             ---\n"
         )
     }
 

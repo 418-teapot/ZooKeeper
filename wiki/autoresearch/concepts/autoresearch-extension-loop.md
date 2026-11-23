@@ -8,9 +8,6 @@ tags:
   - extension
   - experiment-loop
   - auto-resume
-status: stable
-last_validated: 2026-06-19T00:00:00Z
-timeliness: current
 ---
 
 # autoresearch 扩展循环

@@ -10,9 +10,6 @@ tags:
   - agent
   - anthropic
   - tool-design
-status: stable
-last_validated: 2026-09-16T01:55:38Z
-timeliness: current
 ---
 
 # Anthropic Building Effective Agents 工程博客

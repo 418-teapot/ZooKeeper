@@ -1,4 +1,5 @@
-//! Deep structural checks for broken links, orphans, sparse and stale pages.
+//! Deep structural checks for broken links, orphans, sparse pages and
+//! superseded references.
 //!
 //! Each check scans wiki pages and returns issues.  Results are aggregated
 //! by `run_all()` into a `LintResults` for display.
@@ -6,7 +7,6 @@
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
-use chrono::NaiveDate;
 use regex::Regex;
 use zwiki::identity::Reference;
 
@@ -214,76 +214,48 @@ pub fn check_sparse_pages(pages: &[Page]) -> Vec<Issue> {
 // 4. check_freshness
 // ---------------------------------------------------------------------------
 
-/// Freshness lint issues, split by report category.
+/// Freshness lint issues.
 ///
-/// A page judged stale for time decay or a newer source lands in `stale`;
-/// an unreviewed supersede lands in `cascade_stale`.  A page can appear in
-/// both when several reasons apply.
+/// A page that still cites a superseded page lands in `cascade_stale`.  A
+/// newer source stays a source relation of the report; it never repeats as
+/// a cascade issue.
 #[derive(Debug, Default)]
 pub struct FreshnessIssues {
-    pub stale: Vec<Issue>,
     pub cascade_stale: Vec<Issue>,
 }
 
 /// Project the unified freshness judgment onto lint issues.
 ///
-/// Thresholds, exemptions, and reason semantics live in
-/// [`crate::freshness`]; this function only turns the verdict into the
-/// report categories the CLI gates on.
-pub fn check_freshness(
-    pages: &[Page],
-    catalog: &Catalog,
-    reference_date: NaiveDate,
-) -> FreshnessIssues {
+/// Reason semantics live in [`crate::freshness`]; this function only turns
+/// the verdict into the report category the CLI gates on.
+pub fn check_freshness(pages: &[Page], catalog: &Catalog) -> FreshnessIssues {
     // Cascade detection needs the reverse index built from the same
     // snapshot; a rejected page never reaches the lint rules.
     let reverse_index = backlinks::build_reverse_index(catalog, pages);
-    let ctx = freshness::FreshnessContext::new(pages, catalog, reference_date)
+    let ctx = freshness::FreshnessContext::new(pages, catalog)
         .with_reverse_index(&reverse_index);
 
     let mut result = FreshnessIssues::default();
 
     for page in pages {
-        let Some(verdict) = ctx.judge(page) else {
-            continue;
-        };
-        if !verdict.is_stale() {
+        let verdict = ctx.judge(page);
+        if !verdict.reasons().contains(&StaleReason::UnreviewedSupersede) {
             continue;
         }
 
         let reasons: Vec<&str> =
             verdict.reasons().iter().map(|r| r.as_str()).collect();
-
-        let time_or_source = verdict.reasons().iter().any(|r| {
-            matches!(r, StaleReason::TimeExpired | StaleReason::SourceNewer)
+        result.cascade_stale.push(Issue {
+            page: page.rel.clone(),
+            category: "cascade_stale".to_string(),
+            details: serde_json::json!({
+                "reasons": &reasons,
+                "superseded_pages": ctx.cited_superseded(&page.rel),
+            })
+            .to_string(),
         });
-        if time_or_source {
-            let last_validated = page.document.metadata.last_validated.as_str();
-            result.stale.push(Issue {
-                page: page.rel.clone(),
-                category: "stale".to_string(),
-                details: serde_json::json!({
-                    "last_validated": last_validated,
-                    "reasons": &reasons,
-                })
-                .to_string(),
-            });
-        }
-
-        if verdict.reasons().contains(&StaleReason::UnreviewedSupersede) {
-            result.cascade_stale.push(Issue {
-                page: page.rel.clone(),
-                category: "cascade_stale".to_string(),
-                details: serde_json::json!({
-                    "reasons": &reasons,
-                    "superseded_pages": ctx.cited_superseded(&page.rel),
-                })
-                .to_string(),
-            });
-        }
     }
 
-    result.stale.sort_by(|a, b| a.page.cmp(&b.page));
     result.cascade_stale.sort_by(|a, b| a.page.cmp(&b.page));
     result
 }
@@ -305,14 +277,12 @@ pub fn run_all(root: &Path, set: &PageSet) -> Result<LintResults, String> {
     let pages = set.pages();
     let catalog = Catalog::new(root, set)?;
 
-    let reference_date = chrono::Utc::now().date_naive();
-    let freshness_issues = check_freshness(pages, &catalog, reference_date);
+    let freshness_issues = check_freshness(pages, &catalog);
 
     Ok(LintResults {
         broken_links: check_broken_links(set, &catalog),
         orphan_pages: check_orphan_pages(pages, &catalog, root),
         sparse_pages: check_sparse_pages(pages),
-        stale_pages: freshness_issues.stale,
         cascade_stale: freshness_issues.cascade_stale,
     })
 }
@@ -329,11 +299,8 @@ mod tests {
     use serde_json::Value;
 
     /// Project the freshness verdict of pages a test holds in memory.
-    fn freshness_at(
-        pages: &[Page],
-        reference_date: NaiveDate,
-    ) -> FreshnessIssues {
-        check_freshness(pages, &Catalog::flat(pages), reference_date)
+    fn freshness_at(pages: &[Page]) -> FreshnessIssues {
+        check_freshness(pages, &Catalog::flat(pages))
     }
     use std::fs;
     use std::path::PathBuf;
@@ -397,7 +364,7 @@ mod tests {
             "broken_missing_target",
             &[(
                 "concepts/page-a.md",
-                "---\ntitle: Page A\ntype: concept\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\nSee [page b](page-b.md) for details.\n",
+                "---\ntitle: Page A\ntype: concept\ntags: []\ntimestamp: 2026-01-01T00:00:00Z\n---\nSee [page b](page-b.md) for details.\n",
             )],
         );
         mark_bundle(&dir, "wiki");
@@ -418,11 +385,11 @@ mod tests {
             &[
                 (
                     "concepts/page-a.md",
-                    "---\ntitle: Page A\ntype: concept\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\nSee [page b](concepts/page-b.md).\n",
+                    "---\ntitle: Page A\ntype: concept\ntimestamp: 2026-01-01T00:00:00Z\ntags: []\n---\nSee [page b](concepts/page-b.md).\n",
                 ),
                 (
                     "concepts/page-b.md",
-                    "---\ntitle: Page B\ntype: concept\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\nBody content.\n",
+                    "---\ntitle: Page B\ntype: concept\ntimestamp: 2026-01-01T00:00:00Z\ntags: []\n---\nBody content.\n",
                 ),
             ],
         );
@@ -437,7 +404,7 @@ mod tests {
             "broken_external",
             &[(
                 "concepts/page-a.md",
-                "---\ntitle: Page A\ntype: concept\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\nSee [example](https://example.com).\n",
+                "---\ntitle: Page A\ntype: concept\ntimestamp: 2026-01-01T00:00:00Z\ntags: []\n---\nSee [example](https://example.com).\n",
             )],
         );
         mark_bundle(&dir, "wiki");
@@ -451,7 +418,7 @@ mod tests {
             "broken_anchor",
             &[(
                 "concepts/page-a.md",
-                "---\ntitle: Page A\ntype: concept\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\nSee [section](#intro).\n",
+                "---\ntitle: Page A\ntype: concept\ntimestamp: 2026-01-01T00:00:00Z\ntags: []\n---\nSee [section](#intro).\n",
             )],
         );
         mark_bundle(&dir, "wiki");
@@ -467,7 +434,7 @@ mod tests {
             "broken_cross_bundle",
             &[(
                 "concepts/page-a.md",
-                "---\ntitle: Page A\ntype: concept\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n\
+                "---\ntitle: Page A\ntype: concept\ntimestamp: 2026-01-01T00:00:00Z\ntags: []\n---\n\
                      See [core](@core/concepts/foo.md) and \
                      [vendor](@vendor/bar.md).\n",
             )],
@@ -493,8 +460,7 @@ mod tests {
             &page(
                 "Page A",
                 "concept",
-                "draft",
-                "2026-01-01",
+                "2026-01-01T00:00:00Z",
                 "",
                 "See [gone](@vendor/concepts/gone.md) and \
                  [local](concepts/gone.md).",
@@ -534,29 +500,29 @@ mod tests {
         );
         write(
             &dir.join("page-a.md"),
-            "---\ntitle: Page A\ntype: concept\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\nSee [page b](page-b.md).\n",
+            "---\ntitle: Page A\ntype: concept\ntags: []\ntimestamp: 2026-01-01T00:00:00Z\n---\nSee [page b](page-b.md).\n",
         );
         write(
             &dir.join("page-b.md"),
-            "---\ntitle: Page B\ntype: concept\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\nBody.\n",
+            "---\ntitle: Page B\ntype: concept\ntags: []\ntimestamp: 2026-01-01T00:00:00Z\n---\nBody.\n",
         );
         write(
             &dir.join("page-c.md"),
-            "---\ntitle: Page C\ntype: concept\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\nOrphan content.\n",
+            "---\ntitle: Page C\ntype: concept\ntags: []\ntimestamp: 2026-01-01T00:00:00Z\n---\nOrphan content.\n",
         );
 
         let all_files = &[
             (
                 "page-a.md",
-                "---\ntitle: Page A\ntype: concept\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\nSee [page b](page-b.md).\n",
+                "---\ntitle: Page A\ntype: concept\ntags: []\ntimestamp: 2026-01-01T00:00:00Z\n---\nSee [page b](page-b.md).\n",
             ),
             (
                 "page-b.md",
-                "---\ntitle: Page B\ntype: concept\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\nBody.\n",
+                "---\ntitle: Page B\ntype: concept\ntags: []\ntimestamp: 2026-01-01T00:00:00Z\n---\nBody.\n",
             ),
             (
                 "page-c.md",
-                "---\ntitle: Page C\ntype: concept\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\nOrphan content.\n",
+                "---\ntitle: Page C\ntype: concept\ntags: []\ntimestamp: 2026-01-01T00:00:00Z\n---\nOrphan content.\n",
             ),
         ];
         let (_, pages) = setup_wiki("orphan_detected_inner", all_files);
@@ -574,21 +540,21 @@ mod tests {
         write(&dir.join("index.md"), "# Index\n\n[Page A](page-a.md)\n");
         write(
             &dir.join("page-a.md"),
-            "---\ntitle: Page A\ntype: concept\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\nSee [page b](page-b.md).\n",
+            "---\ntitle: Page A\ntype: concept\ntags: []\ntimestamp: 2026-01-01T00:00:00Z\n---\nSee [page b](page-b.md).\n",
         );
         write(
             &dir.join("page-b.md"),
-            "---\ntitle: Page B\ntype: concept\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\nBody.\n",
+            "---\ntitle: Page B\ntype: concept\ntags: []\ntimestamp: 2026-01-01T00:00:00Z\n---\nBody.\n",
         );
 
         let all_files = &[
             (
                 "page-a.md",
-                "---\ntitle: Page A\ntype: concept\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\nSee [page b](page-b.md).\n",
+                "---\ntitle: Page A\ntype: concept\ntags: []\ntimestamp: 2026-01-01T00:00:00Z\n---\nSee [page b](page-b.md).\n",
             ),
             (
                 "page-b.md",
-                "---\ntitle: Page B\ntype: concept\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\nBody.\n",
+                "---\ntitle: Page B\ntype: concept\ntags: []\ntimestamp: 2026-01-01T00:00:00Z\n---\nBody.\n",
             ),
         ];
         let (_, pages) = setup_wiki("orphan_non_orphan_inner", all_files);
@@ -609,29 +575,29 @@ mod tests {
         );
         write(
             &dir.join("page-a.md"),
-            "---\ntitle: Page A\ntype: concept\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\nSee [page b](page-b.md).\n",
+            "---\ntitle: Page A\ntype: concept\ntags: []\ntimestamp: 2026-01-01T00:00:00Z\n---\nSee [page b](page-b.md).\n",
         );
         write(
             &dir.join("page-b.md"),
-            "---\ntitle: Page B\ntype: concept\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\nBody.\n",
+            "---\ntitle: Page B\ntype: concept\ntags: []\ntimestamp: 2026-01-01T00:00:00Z\n---\nBody.\n",
         );
         write(
             &dir.join("page-c.md"),
-            "---\ntitle: Page C\ntype: concept\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\nContent.\n",
+            "---\ntitle: Page C\ntype: concept\ntags: []\ntimestamp: 2026-01-01T00:00:00Z\n---\nContent.\n",
         );
 
         let all_files = &[
             (
                 "page-a.md",
-                "---\ntitle: Page A\ntype: concept\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\nSee [page b](page-b.md).\n",
+                "---\ntitle: Page A\ntype: concept\ntags: []\ntimestamp: 2026-01-01T00:00:00Z\n---\nSee [page b](page-b.md).\n",
             ),
             (
                 "page-b.md",
-                "---\ntitle: Page B\ntype: concept\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\nBody.\n",
+                "---\ntitle: Page B\ntype: concept\ntags: []\ntimestamp: 2026-01-01T00:00:00Z\n---\nBody.\n",
             ),
             (
                 "page-c.md",
-                "---\ntitle: Page C\ntype: concept\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\nContent.\n",
+                "---\ntitle: Page C\ntype: concept\ntags: []\ntimestamp: 2026-01-01T00:00:00Z\n---\nContent.\n",
             ),
         ];
         let (_, pages) = setup_wiki("orphan_in_index_inner", all_files);
@@ -651,12 +617,12 @@ mod tests {
         write(&dir.join("alpha/index.md"), "# Alpha\n\n[Foo](foo.md)\n");
         write(
             &dir.join("alpha/foo.md"),
-            "---\ntitle: Foo\ntype: concept\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\nBody content.\n",
+            "---\ntitle: Foo\ntype: concept\ntags: []\ntimestamp: 2026-01-01T00:00:00Z\n---\nBody content.\n",
         );
 
         let files = &[(
             "alpha/foo.md",
-            "---\ntitle: Foo\ntype: concept\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\nBody content.\n",
+            "---\ntitle: Foo\ntype: concept\ntags: []\ntimestamp: 2026-01-01T00:00:00Z\n---\nBody content.\n",
         )];
         let (_, pages) = setup_wiki("orphan_domain_index_inner", files);
         let issues = orphans(&pages, &dir);
@@ -676,21 +642,21 @@ mod tests {
         write(&dir.join("alpha/index.md"), "# Alpha\n\n[Foo](foo.md)\n");
         write(
             &dir.join("alpha/foo.md"),
-            "---\ntitle: Foo\ntype: concept\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\nBody content.\n",
+            "---\ntitle: Foo\ntype: concept\ntags: []\ntimestamp: 2026-01-01T00:00:00Z\n---\nBody content.\n",
         );
         write(
             &dir.join("alpha/bar.md"),
-            "---\ntitle: Bar\ntype: concept\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\nUnowned content.\n",
+            "---\ntitle: Bar\ntype: concept\ntags: []\ntimestamp: 2026-01-01T00:00:00Z\n---\nUnowned content.\n",
         );
 
         let files = &[
             (
                 "alpha/foo.md",
-                "---\ntitle: Foo\ntype: concept\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\nBody content.\n",
+                "---\ntitle: Foo\ntype: concept\ntags: []\ntimestamp: 2026-01-01T00:00:00Z\n---\nBody content.\n",
             ),
             (
                 "alpha/bar.md",
-                "---\ntitle: Bar\ntype: concept\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\nUnowned content.\n",
+                "---\ntitle: Bar\ntype: concept\ntags: []\ntimestamp: 2026-01-01T00:00:00Z\n---\nUnowned content.\n",
             ),
         ];
         let (_, pages) = setup_wiki("orphan_unindexed_inner", files);
@@ -717,30 +683,28 @@ mod tests {
             &page(
                 "Alpha",
                 "concept",
-                "draft",
-                "2026-01-01",
+                "2026-01-01T00:00:00Z",
                 "",
                 "See [beta](concepts/beta.md).",
             ),
         );
         write(
             &dir.join("core/concepts/beta.md"),
-            &page("Beta", "concept", "draft", "2026-01-01", "", "Body."),
+            &page("Beta", "concept", "2026-01-01T00:00:00Z", "", "Body."),
         );
         write(
             &dir.join("vendor/concepts/gamma.md"),
             &page(
                 "Gamma",
                 "concept",
-                "draft",
-                "2026-01-01",
+                "2026-01-01T00:00:00Z",
                 "",
                 "See [beta](@core/concepts/beta.md).",
             ),
         );
         write(
             &dir.join("core/concepts/delta.md"),
-            &page("Delta", "concept", "draft", "2026-01-01", "", "Body."),
+            &page("Delta", "concept", "2026-01-01T00:00:00Z", "", "Body."),
         );
 
         let set = PageSet::load(&dir);
@@ -758,7 +722,7 @@ mod tests {
     fn test_sparse_pages_below_threshold_flagged() {
         let pages = vec![make_page(
             "concepts/sparse.md",
-            "---\ntitle: Sparse\ntype: concept\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\nShort.\n",
+            "---\ntitle: Sparse\ntype: concept\ntags: []\ntimestamp: 2026-01-01T00:00:00Z\n---\nShort.\n",
         )];
         let issues = check_sparse_pages(&pages);
         assert_eq!(issues.len(), 1);
@@ -773,7 +737,7 @@ mod tests {
         let pages = vec![make_page(
             "concepts/ok.md",
             &format!(
-                "---\ntitle: OK\ntype: concept\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n{body}"
+                "---\ntitle: OK\ntype: concept\ntags: []\ntimestamp: 2026-01-01T00:00:00Z\n---\n{body}"
             ),
         )];
         let issues = check_sparse_pages(&pages);
@@ -784,7 +748,7 @@ mod tests {
     fn test_sparse_pages_empty_body_flagged() {
         let pages = vec![make_page(
             "concepts/empty.md",
-            "---\ntitle: Empty\ntype: concept\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---",
+            "---\ntitle: Empty\ntype: concept\ntags: []\ntimestamp: 2026-01-01T00:00:00Z\n---",
         )];
         let issues = check_sparse_pages(&pages);
         assert_eq!(issues.len(), 1);
@@ -797,7 +761,7 @@ mod tests {
         let pages = vec![make_page(
             "concepts/long.md",
             &format!(
-                "---\ntitle: Long\ntype: concept\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n{body}"
+                "---\ntitle: Long\ntype: concept\ntags: []\ntimestamp: 2026-01-01T00:00:00Z\n---\n{body}"
             ),
         )];
         let issues = check_sparse_pages(&pages);
@@ -805,177 +769,22 @@ mod tests {
     }
 
     // =======================================================================
-    // 4. check_freshness — stale projection
+    // 4. check_freshness — cascade_stale projection
     // =======================================================================
-
-    fn reference_date() -> NaiveDate {
-        NaiveDate::parse_from_str("2025-01-01", "%Y-%m-%d").unwrap()
-    }
 
     /// Page text with every required field, plus `extra` frontmatter lines.
     fn page(
         title: &str,
         page_type: &str,
-        status: &str,
-        last_validated: &str,
+        timestamp: &str,
         extra: &str,
         body: &str,
     ) -> String {
         format!(
-            "---\ntitle: {title}\ntype: {page_type}\ntags: []\nstatus: {status}\n\
-             last_validated: {last_validated}\ntimeliness: current\n{extra}---\n\n{body}\n"
+            "---\ntitle: {title}\ntype: {page_type}\ntags: []\n\
+             timestamp: {timestamp}\n{extra}---\n\n{body}\n"
         )
     }
-
-    #[test]
-    fn test_freshness_time_expired_flagged() {
-        let old = page("Old", "concept", "stable", "2024-06-01", "", "Body.");
-        let (_, pages) =
-            setup_wiki("freshness_stale", &[("concepts/old.md", &old)]);
-        let result = freshness_at(&pages, reference_date());
-        assert_eq!(result.stale.len(), 1);
-        assert_eq!(result.stale[0].page, "concepts/old.md");
-        assert_eq!(result.stale[0].category, "stale");
-        let details: Value =
-            serde_json::from_str(&result.stale[0].details).unwrap();
-        assert_eq!(details["last_validated"], "2024-06-01");
-        assert_eq!(details["reasons"][0], "time_expired");
-    }
-
-    #[test]
-    fn test_freshness_deprecated_exempt() {
-        let deprecated =
-            page("Dep", "concept", "deprecated", "2020-01-01", "", "Body.");
-        let (_, pages) = setup_wiki(
-            "freshness_deprecated",
-            &[("concepts/deprecated.md", &deprecated)],
-        );
-        let result = freshness_at(&pages, reference_date());
-        assert!(result.stale.is_empty(), "deprecated pages should be exempt");
-    }
-
-    #[test]
-    fn test_freshness_recent_not_flagged() {
-        let recent =
-            page("Recent", "concept", "stable", "2024-12-15", "", "Body.");
-        let (_, pages) =
-            setup_wiki("freshness_recent", &[("concepts/recent.md", &recent)]);
-        let result = freshness_at(&pages, reference_date());
-        assert!(result.stale.is_empty(), "recent page should pass");
-    }
-
-    #[test]
-    fn test_freshness_invalid_last_validated_skipped() {
-        let baddate =
-            page("Bad Date", "concept", "draft", "not-a-date", "", "Body.");
-        let (_, pages) = setup_wiki(
-            "freshness_bad_lv",
-            &[("concepts/baddate.md", &baddate)],
-        );
-        let result = freshness_at(&pages, reference_date());
-        assert!(result.stale.is_empty(), "invalid date should be skipped");
-    }
-
-    #[test]
-    fn test_freshness_old_timestamp_new_validation_is_fresh() {
-        // Core regression: an old `timestamp` must not stale a page whose
-        // `last_validated` is recent.
-        let validated = page(
-            "Validated",
-            "concept",
-            "stable",
-            "2024-12-30",
-            "timestamp: 2020-01-01\n",
-            "Body.",
-        );
-        let (_, pages) = setup_wiki(
-            "freshness_old_ts",
-            &[("concepts/validated.md", &validated)],
-        );
-        let result = freshness_at(&pages, reference_date());
-        assert!(
-            result.stale.is_empty(),
-            "recent validation must keep the page fresh"
-        );
-    }
-
-    #[test]
-    fn test_freshness_source_newer_flags_analysis() {
-        let reference =
-            NaiveDate::parse_from_str("2025-06-01", "%Y-%m-%d").unwrap();
-        let source = page(
-            "Bar",
-            "source",
-            "stable",
-            "2025-06-01",
-            "timestamp: 2025-05-01\n",
-            "Body.",
-        );
-        let analysis = page(
-            "Foo",
-            "analysis",
-            "draft",
-            "2025-04-01",
-            "sources: [shared/sources/bar.md]\n",
-            "Body.",
-        );
-        let (_, pages) = setup_wiki(
-            "freshness_source_newer",
-            &[
-                ("shared/sources/bar.md", &source),
-                ("shared/analysis/foo.md", &analysis),
-            ],
-        );
-        let result = freshness_at(&pages, reference);
-        assert_eq!(result.stale.len(), 1);
-        assert_eq!(result.stale[0].page, "shared/analysis/foo.md");
-        let details: Value =
-            serde_json::from_str(&result.stale[0].details).unwrap();
-        assert_eq!(details["reasons"][0], "source_newer");
-    }
-
-    #[test]
-    fn test_freshness_source_resolved_inside_the_bundle() {
-        // The `sources` entry is bundle-relative, so an aggregate root finds
-        // the source inside the derived page's bundle.
-        let dir = temp_dir("freshness_source_bundle");
-        mark_bundle(&dir.join("core"), "core");
-        write(
-            &dir.join("core/sources/bar.md"),
-            &page(
-                "Bar",
-                "source",
-                "stable",
-                "2025-06-01",
-                "timestamp: 2025-05-01\n",
-                "Body.",
-            ),
-        );
-        write(
-            &dir.join("core/analysis/foo.md"),
-            &page(
-                "Foo",
-                "analysis",
-                "draft",
-                "2025-04-01",
-                "sources: [sources/bar.md]\n",
-                "Body.",
-            ),
-        );
-
-        let set = PageSet::load(&dir);
-        let catalog = Catalog::new(&dir, &set).expect("catalog");
-        let result = check_freshness(set.pages(), &catalog, reference_date());
-        assert_eq!(result.stale.len(), 1);
-        assert_eq!(result.stale[0].page, "core/analysis/foo.md");
-        let details: Value =
-            serde_json::from_str(&result.stale[0].details).unwrap();
-        assert_eq!(details["reasons"][0], "source_newer");
-    }
-
-    // =======================================================================
-    // 5. check_freshness — cascade_stale projection
-    // =======================================================================
 
     /// `superseded_by` frontmatter that points at `shared/concepts/new.md`.
     const SUPERSEDED_BY: &str = "\
@@ -986,12 +795,10 @@ superseded_by:
 
     #[test]
     fn test_cascade_stale_referrer_flagged() {
-        // Superseded page with `last_validated`, referrer with older
-        // `last_validated` → 1 cascade issue.
+        // Referrer edited before the superseded page → 1 cascade issue.
         let old = page(
             "Old",
             "concept",
-            "stable",
             "2024-01-01T00:00:00Z",
             SUPERSEDED_BY,
             "# Old\n\nContent.",
@@ -999,7 +806,6 @@ superseded_by:
         let referrer = page(
             "Referrer",
             "concept",
-            "stable",
             "2023-12-01T00:00:00Z",
             "",
             "# Referrer\n\nSee [old](shared/concepts/old.md).",
@@ -1007,7 +813,6 @@ superseded_by:
         let new = page(
             "New",
             "concept",
-            "stable",
             "2024-01-01T00:00:00Z",
             "",
             "# New\n\nContent.",
@@ -1020,7 +825,7 @@ superseded_by:
                 ("shared/concepts/new.md", &new),
             ],
         );
-        let result = freshness_at(&pages, reference_date());
+        let result = freshness_at(&pages);
         assert_eq!(result.cascade_stale.len(), 1);
         assert_eq!(result.cascade_stale[0].page, "shared/concepts/referrer.md");
         assert_eq!(result.cascade_stale[0].category, "cascade_stale");
@@ -1036,12 +841,10 @@ superseded_by:
 
     #[test]
     fn test_cascade_stale_reviewed_not_flagged() {
-        // Superseded page with `last_validated`, referrer reviewed after it
-        // → no cascade issue.
+        // Referrer edited after the superseded page → no cascade issue.
         let old = page(
             "Old",
             "concept",
-            "stable",
             "2024-01-01T00:00:00Z",
             SUPERSEDED_BY,
             "# Old\n\nContent.",
@@ -1049,7 +852,6 @@ superseded_by:
         let referrer = page(
             "Referrer",
             "concept",
-            "stable",
             "2024-06-01T00:00:00Z",
             "",
             "# Referrer\n\nSee [old](shared/concepts/old.md).",
@@ -1057,7 +859,6 @@ superseded_by:
         let new = page(
             "New",
             "concept",
-            "stable",
             "2024-01-01T00:00:00Z",
             "",
             "# New\n\nContent.",
@@ -1070,10 +871,10 @@ superseded_by:
                 ("shared/concepts/new.md", &new),
             ],
         );
-        let result = freshness_at(&pages, reference_date());
+        let result = freshness_at(&pages);
         assert!(
             result.cascade_stale.is_empty(),
-            "referrer reviewed after supersedure should not be flagged"
+            "referrer edited after the supersedure should not be flagged"
         );
     }
 
@@ -1083,7 +884,6 @@ superseded_by:
         let old = page(
             "Old",
             "concept",
-            "stable",
             "2024-01-01T00:00:00Z",
             SUPERSEDED_BY,
             "# Old\n\nContent.",
@@ -1091,7 +891,6 @@ superseded_by:
         let new = page(
             "New",
             "concept",
-            "stable",
             "2024-01-01T00:00:00Z",
             "",
             "# New\n\nSee [old](shared/concepts/old.md).",
@@ -1103,7 +902,7 @@ superseded_by:
                 ("shared/concepts/new.md", &new),
             ],
         );
-        let result = freshness_at(&pages, reference_date());
+        let result = freshness_at(&pages);
         assert!(
             result.cascade_stale.is_empty(),
             "superseding page itself should be excluded"
@@ -1117,7 +916,7 @@ superseded_by:
         let dir = temp_dir("lint_invalid_doc");
         write(
             &dir.join("shared/concepts/old.md"),
-            "---\ntitle: Old\ntype: concept\n---\n\n# Old\n",
+            "---\ntitle: Old\ntype: concept\ntimestamp: 2026-01-01T00:00:00Z\n---\n\n# Old\n",
         );
 
         let set = PageSet::load(&dir);
@@ -1128,11 +927,10 @@ superseded_by:
 
     #[test]
     fn test_cascade_stale_uncomparable_referrer_skipped() {
-        // A referrer whose `last_validated` cannot be compared is skipped.
+        // A referrer whose `timestamp` cannot be compared is skipped.
         let old = page(
             "Old",
             "concept",
-            "stable",
             "2024-01-01T00:00:00Z",
             SUPERSEDED_BY,
             "# Old\n\nContent.",
@@ -1140,19 +938,18 @@ superseded_by:
         let referrer = page(
             "Referrer",
             "concept",
-            "stable",
             "unknown",
             "",
             "# Referrer\n\nSee [old](shared/concepts/old.md).",
         );
         let (_, pages) = setup_wiki(
-            "cascade_no_ref_lv",
+            "cascade_invalid_ts",
             &[
                 ("shared/concepts/old.md", &old),
                 ("shared/concepts/referrer.md", &referrer),
             ],
         );
-        let result = freshness_at(&pages, reference_date());
+        let result = freshness_at(&pages);
         assert!(
             result.cascade_stale.is_empty(),
             "an uncomparable referrer is skipped"
@@ -1165,7 +962,6 @@ superseded_by:
         let old = page(
             "Old",
             "concept",
-            "stable",
             "2024-01-01T00:00:00Z",
             SUPERSEDED_BY,
             "# Old\n\nContent.",
@@ -1173,7 +969,6 @@ superseded_by:
         let new = page(
             "New",
             "concept",
-            "stable",
             "2024-01-01T00:00:00Z",
             "",
             "# New\n\nContent.",
@@ -1185,7 +980,7 @@ superseded_by:
                 ("shared/concepts/new.md", &new),
             ],
         );
-        let result = freshness_at(&pages, reference_date());
+        let result = freshness_at(&pages);
         assert!(
             result.cascade_stale.is_empty(),
             "no referrers should produce no issues"

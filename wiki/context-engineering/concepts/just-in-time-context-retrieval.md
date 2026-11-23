@@ -9,9 +9,6 @@ tags:
   - retrieval
   - agentic-search
   - progressive-disclosure
-status: stable
-last_validated: 2026-09-16T01:55:38Z
-timeliness: current
 ---
 
 # 即时上下文检索

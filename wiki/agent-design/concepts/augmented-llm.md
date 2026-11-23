@@ -10,9 +10,6 @@ tags:
   - memory
   - retrieval
   - aci
-status: stable
-last_validated: 2026-09-16T01:55:38Z
-timeliness: current
 ---
 
 # 增强型 LLM

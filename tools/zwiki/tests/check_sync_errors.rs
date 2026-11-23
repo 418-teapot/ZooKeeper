@@ -12,8 +12,8 @@ pub mod common;
 fn page(title: &str, body: &str) -> String {
     format!(
         "---\ntitle: {title}\ntype: concept\ntimestamp: 2026-01-01T00:00:00Z\n\
-         tags: []\nstatus: draft\nlast_validated: 2026-01-01T00:00:00Z\n\
-         timeliness: current\n---\n\n# {title}\n\n{body}\n"
+         tags: []\n\
+         ---\n\n# {title}\n\n{body}\n"
     )
 }
 
@@ -162,15 +162,10 @@ fn test_check_reports_write_failure() {
         "the failed page keeps its stored text: {target:?}"
     );
     for change in changes {
-        if change["kind"] != "timeliness" {
-            continue;
-        }
         let path = root.join(change["path"].as_str().expect("path"));
-        let text = std::fs::read_to_string(&path)
-            .unwrap_or_else(|e| panic!("a reported change names a page: {e}"));
         assert!(
-            text.contains("timeliness: stale"),
-            "every reported timeliness update is on disk: {text:?}"
+            path.is_file(),
+            "every reported change names a file on disk: {path:?}"
         );
     }
 }

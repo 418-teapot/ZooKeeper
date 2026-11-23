@@ -80,25 +80,20 @@ zwiki search "<query>" [--type <type>] [--domain <domain>]
 
 从搜索结果按分数降序读取页面（软上限 10 篇），每篇先解析 YAML frontmatter。
 
-### 生命周期短路（每页必检）
+### 取代短路（每页必检）
 
 读取 frontmatter 后按以下行为表处理：
 
-| status | superseded_by | timeliness | 行为 |
-|--------|--------------|------------|------|
-| `deprecated` | * | * | ✗ 跳过，不引用 |
-| * | 非空 | * | ✗ 不引用该页面；读取 `superseded_by` 指向的页面，引用取代者 |
-| `stable` | 无 | `current` | ✓ 直接引用，无免责 |
-| `stable` | 无 | `stale` | ⚠ 引用并附加"N 天未验证"（N = 当前日期距 `last_validated` 的天数） |
-| `review` | 无 | `current` | ✎ 引用并附加"未经充分审查" |
-| `review` | 无 | `stale` | ⚠✎ 双重附注 |
-| `draft` | 无 | * | ✎ 引用并附加"草稿状态" |
+| superseded_by | 行为 |
+|---------------|------|
+| 非空 | ✗ 不引用该页面；读取 `superseded_by` 指向的页面，引用取代者 |
+| 空 | ✓ 直接引用该页面 |
 
-**注意：** `superseded_by` 是短路守卫——只要非空，`timeliness` 和 `status` 不再参与判断，行为固定为指向取代者。
+`timestamp` 只表示页面内容的最近确认时刻。引用时可用它说明页面新旧，但不得把它当作内容正确性或已复验的证据。
 
 ### 矛盾感知（正交检查）
 
-`contradictions` 与生命周期表正交——无论 `status`/`timeliness` 如何，只要页面 `contradictions` 非空，引用时必须附加矛盾标注：
+`contradictions` 与取代短路正交——无论 `superseded_by` 是否为空，只要页面 `contradictions` 非空，引用时必须附加矛盾标注：
 
 | contradictions | 行为 |
 |----------------|------|
@@ -113,7 +108,7 @@ zwiki search "<query>" [--type <type>] [--domain <domain>]
 
 ### 合成答案
 
-合成时标注来源路径 + 生命周期状态。三种覆盖层级：
+合成时标注来源页面路径。三种覆盖层级：
 
 | 覆盖度 | 行为 |
 |--------|------|
@@ -131,4 +126,4 @@ zwiki search "<query>" [--type <type>] [--domain <domain>]
 
 ### 呈现答案
 
-向用户呈现合成答案，包含来源标注和生命周期附注。如果归档了，简要提及创建的 synthesis 页面。
+向用户呈现合成答案，包含来源标注和矛盾附注。如果归档了，简要提及创建的 synthesis 页面。

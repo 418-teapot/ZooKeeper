@@ -8,9 +8,6 @@ tags:
   - design-philosophy
   - scope-management
   - agent-constraint
-status: stable
-last_validated: 2026-06-19T00:00:00Z
-timeliness: current
 ---
 
 # 后验问责制

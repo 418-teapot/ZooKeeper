@@ -13,7 +13,7 @@ pub mod text;
 use rules::Rule;
 
 /// Version of the JSON layout.
-const SCHEMA_VERSION: u32 = 1;
+const SCHEMA_VERSION: u32 = 2;
 
 /// Outcome of a `check` run.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -45,8 +45,6 @@ pub enum ChangeKind {
     Index,
     /// The generated `## Backlinks` region.
     Backlinks,
-    /// The `timeliness` field.
-    Timeliness,
     /// The stored page layout.
     Format,
 }
@@ -58,7 +56,6 @@ impl ChangeKind {
         match self {
             Self::Index => "index",
             Self::Backlinks => "backlinks",
-            Self::Timeliness => "timeliness",
             Self::Format => "format",
         }
     }

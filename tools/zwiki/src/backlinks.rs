@@ -406,8 +406,8 @@ mod tests {
     /// Page text with every required field and `extra` frontmatter lines.
     fn page_text(title: &str, extra: &str, body: &str) -> String {
         format!(
-            "---\ntitle: {title}\ntype: concept\ntags: []\nstatus: draft\n\
-             last_validated: 2026-07-01T00:00:00Z\ntimeliness: current\n\
+            "---\ntitle: {title}\ntype: concept\ntags: []\n\
+             timestamp: 2026-07-01T00:00:00Z\n\
              {extra}---\n\n{body}\n"
         )
     }
@@ -1099,9 +1099,9 @@ contradictions: []
     fn test_update_backlinks_skips_page_without_changes() {
         let dir = temp_dir("update_noop");
         // A rewrite must not touch a page that needs no change.
-        let text = "---\nstatus: draft\ntimeliness: current\ntitle: Target\n\
+        let text = "---\ntitle: Target\n\
                     type: concept\ntags: []\n\
-                    last_validated: 2026-07-01T00:00:00Z\n---\n\n\
+                    timestamp: 2026-07-01T00:00:00Z\n---\n\n\
                     # Target\n\nBody.\n";
         let page = make_page(&dir, "target.md", text);
         let catalog = disk_catalog(&dir);

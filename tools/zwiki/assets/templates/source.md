@@ -2,15 +2,12 @@
 title: <源文档标题>
 description: <一句话摘要>。
 type: source
-timestamp: YYYY-MM-DDTHH:mm:ssZ
+timestamp: YYYY-MM-DDTHH:MM:SSZ
 resource: <source-id>
 tags:
   - tag1
   - tag2
-status: draft|review|stable|deprecated
-last_validated: YYYY-MM-DDTHH:mm:ssZ
-timeliness: current
-# 可选生命周期字段（按需取消注释填写，详见 SCHEMA.md）：
+# 可选关系字段（按需取消注释填写，详见 SCHEMA.md）：
 # supersedes:
 #   - path: <domain>/concepts/old.md
 #     reason: "新来源确认此结论已被推翻"
@@ -22,7 +19,6 @@ timeliness: current
 #     claims: ["声明 A", "声明 B"]
 #     detected: YYYY-MM-DD
 #     resolution: unresolved
-# freshness_days: 90
 ---
 
 # <源文档标题>

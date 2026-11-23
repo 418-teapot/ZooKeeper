@@ -213,7 +213,7 @@ fn test_aggregate_root_rejects_page_write_inside_bundle() {
     let bundle_concepts = bundle.join("concepts");
     std::fs::create_dir_all(&bundle_concepts).unwrap();
     let page_path = bundle_concepts.join("page.md");
-    let original = "---\ntitle: P\ntype: concept\nstatus: draft\n---\n\n# P\n";
+    let original = "---\ntitle: P\ntype: concept\ntimestamp: 2026-01-01T00:00:00Z\n---\n\n# P\n";
     std::fs::write(&page_path, original).unwrap();
     let root_arg = root.to_string_lossy().to_string();
 
@@ -239,7 +239,7 @@ fn test_aggregate_root_rejects_page_write_inside_bundle() {
     std::fs::create_dir_all(root.join("notes").join("concepts")).unwrap();
     std::fs::write(
         root.join("notes/concepts/movable.md"),
-        "---\ntitle: M\ntype: concept\n---\n\n# M\n",
+        "---\ntitle: M\ntype: concept\ntimestamp: 2026-01-01T00:00:00Z\n---\n\n# M\n",
     )
     .unwrap();
     let (success, stderr) = run(&[
@@ -302,11 +302,11 @@ fn test_bundle_install_places_content_directly_in_store() {
     // both sides share one clock, so a real UTC timestamp carries the same
     // date and cannot flip staleness across midnight.
     let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
-    let doc = "---\ntitle: Doc\ntype: concept\ntimestamp: {{timestamp}}\ntags: []\nstatus: draft\nlast_validated: {{timestamp}}\ntimeliness: current\n---\n\n# Doc Content\n\nThis document has enough text to pass the health and lint checks that zwiki runs during bundle installation. It contains well over one hundred characters.\n"
+    let doc = "---\ntitle: Doc\ntype: concept\ntimestamp: {{timestamp}}\ntags: []\n---\n\n# Doc Content\n\nThis document has enough text to pass the health and lint checks that zwiki runs during bundle installation. It contains well over one hundred characters.\n"
         .replace("{{timestamp}}", &now);
     std::fs::write(
         src.join("index.md"),
-        "---\ntitle: Index\ntype: concept\ntimestamp: {{timestamp}}\ntags: []\nstatus: draft\nlast_validated: {{timestamp}}\ntimeliness: current\n---\n\n# Index\n\n- [Doc](doc.md)\n"
+        "---\ntitle: Index\ntype: concept\ntimestamp: {{timestamp}}\ntags: []\n---\n\n# Index\n\n- [Doc](doc.md)\n"
             .replace("{{timestamp}}", &now),
     )
     .unwrap();

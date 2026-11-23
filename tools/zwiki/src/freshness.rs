@@ -1,31 +1,24 @@
 //! Unified page freshness judgment.
 //!
-//! Every staleness decision in this tool — lint gating, `timeliness`
-//! materialisation, and `verify` reporting — is derived from the single
-//! judgment implemented here.  Keeping the thresholds, exemptions, and
-//! reason semantics in one module stops the consumers from drifting apart.
+//! Every staleness decision in this tool is derived from the single
+//! judgment implemented here: a derived page outdates when a source it
+//! lists is newer, and a page outdates when it still cites a superseded
+//! page.  Both comparisons use the parsed `timestamp` of the two pages.
 
 use std::collections::{HashMap, HashSet};
-
-use chrono::NaiveDate;
 
 use crate::catalog::Catalog;
 use crate::wiki::{self, Page};
 
-/// Time-decay threshold (days) for `concept`, `entity`, and untyped pages.
-const FRESHNESS_DAYS_DEFAULT: i64 = 180;
-
-/// Time-decay threshold (days) for derived `analysis` / `synthesis` pages.
-const FRESHNESS_DAYS_DERIVED: i64 = 90;
+/// Page types that derive their content from `sources`.
+const DERIVED_TYPES: [&str; 2] = ["analysis", "synthesis"];
 
 /// Independent reasons a page can be judged stale.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StaleReason {
-    /// `last_validated` is older than the page's time threshold.
-    TimeExpired,
     /// A referenced source page has a newer `timestamp`.
     SourceNewer,
-    /// A referenced page was superseded after this page was validated.
+    /// A referenced page was superseded after this page was confirmed.
     UnreviewedSupersede,
 }
 
@@ -34,7 +27,6 @@ impl StaleReason {
     #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
-            Self::TimeExpired => "time_expired",
             Self::SourceNewer => "source_newer",
             Self::UnreviewedSupersede => "unreviewed_supersede",
         }
@@ -48,44 +40,10 @@ pub struct Freshness {
 }
 
 impl Freshness {
-    /// A page with no staleness reason.
-    #[must_use]
-    pub const fn fresh() -> Self {
-        Self { reasons: Vec::new() }
-    }
-
-    /// Whether any staleness reason applies.
-    #[must_use]
-    pub const fn is_stale(&self) -> bool {
-        !self.reasons.is_empty()
-    }
-
     /// The staleness reasons, in discovery order.
     #[must_use]
     pub fn reasons(&self) -> &[StaleReason] {
         &self.reasons
-    }
-
-    /// The `timeliness` value this verdict materialises to.
-    #[must_use]
-    pub const fn timeliness(&self) -> &'static str {
-        if self.is_stale() { "stale" } else { "current" }
-    }
-}
-
-/// Time-decay threshold in days for `page`.
-///
-/// A page-level `freshness_days` override wins; otherwise `analysis` /
-/// `synthesis` use the derived default and every other type falls back to
-/// the standard default.
-#[must_use]
-pub fn threshold_days(page: &Page) -> i64 {
-    if let Some(days) = page.document.metadata.freshness_days {
-        return days;
-    }
-    match page.document.metadata.page_type.as_str() {
-        "analysis" | "synthesis" => FRESHNESS_DAYS_DERIVED,
-        _ => FRESHNESS_DAYS_DEFAULT,
     }
 }
 
@@ -96,18 +54,18 @@ pub struct SourceNewer {
     pub source: String,
     /// The source `timestamp` as stored.
     pub source_timestamp: String,
+    /// The derived page `timestamp` as stored.
+    pub derived_timestamp: String,
 }
 
-/// Sources that outdate the page's `last_validated`.
+/// Sources whose `timestamp` is later than the page's `timestamp`.
 ///
-/// Both fields are compared with their full time, so a source updated on
-/// the validation day still counts.
-/// Applies only to `analysis` / `synthesis` pages with a non-empty `sources`
-/// list and a parseable `last_validated`.  A bare entry names a page of the
-/// derived page's bundle; `@bundle/path` names a page of `bundle`.  An entry
-/// may carry a markdown link, which names its target.
+/// Applies to `analysis` / `synthesis` pages with a non-empty `sources`
+/// list.  A source may hold any page type.  A bare entry names a page of
+/// the derived page's bundle; `@bundle/path` names a page of `bundle`.  An
+/// entry may carry a markdown link, which names its target.
 /// Entries that name the same page give one result.
-/// Unresolvable sources and unparseable timestamps are skipped.
+/// Unresolvable sources and invalid timestamps are skipped.
 #[must_use]
 pub fn newer_sources<'a>(
     page: &'a Page,
@@ -115,7 +73,7 @@ pub fn newer_sources<'a>(
     catalog: &Catalog,
 ) -> Vec<SourceNewer> {
     let metadata = &page.document.metadata;
-    if !matches!(metadata.page_type.as_str(), "analysis" | "synthesis") {
+    if !DERIVED_TYPES.contains(&metadata.page_type.as_str()) {
         return Vec::new();
     }
 
@@ -124,7 +82,7 @@ pub fn newer_sources<'a>(
         _ => return Vec::new(),
     };
 
-    let Some(validated) = wiki::parse_moment(&metadata.last_validated) else {
+    let Some(confirmed) = wiki::parse_timestamp(&metadata.timestamp) else {
         return Vec::new();
     };
 
@@ -143,19 +101,16 @@ pub fn newer_sources<'a>(
         let Some(source_page) = by_rel.get(source_rel) else {
             continue;
         };
-        let Some(timestamp) =
-            source_page.document.metadata.timestamp.as_deref()
-        else {
-            continue;
-        };
-        let Some(changed) = wiki::parse_moment(timestamp) else {
+        let source_timestamp = &source_page.document.metadata.timestamp;
+        let Some(changed) = wiki::parse_timestamp(source_timestamp) else {
             continue;
         };
 
-        if changed > validated {
+        if changed > confirmed {
             newer.push(SourceNewer {
                 source: source_rel.to_string(),
-                source_timestamp: timestamp.to_string(),
+                source_timestamp: source_timestamp.clone(),
+                derived_timestamp: metadata.timestamp.clone(),
             });
         }
     }
@@ -174,10 +129,9 @@ fn source_rel<'c>(
 }
 
 /// Peer lookups the judgment needs.  Build the context once from the page
-/// set (and, for supersede detection, a reverse link index), then judge any
-/// number of pages with [`FreshnessContext::judge`].
+/// set and a reverse link index, then judge any number of pages with
+/// [`FreshnessContext::judge`].
 pub struct FreshnessContext<'a> {
-    reference_date: NaiveDate,
     by_rel: HashMap<&'a str, &'a Page>,
     /// Page identity for `sources` lookup.
     catalog: &'a Catalog,
@@ -186,15 +140,10 @@ pub struct FreshnessContext<'a> {
 }
 
 impl<'a> FreshnessContext<'a> {
-    /// Build a context for time-decay and source checks.
+    /// Build a context for the source and supersede checks.
     #[must_use]
-    pub fn new(
-        pages: &'a [Page],
-        catalog: &'a Catalog,
-        reference_date: NaiveDate,
-    ) -> Self {
+    pub fn new(pages: &'a [Page], catalog: &'a Catalog) -> Self {
         Self {
-            reference_date,
             by_rel: pages.iter().map(|p| (p.rel.as_str(), p)).collect(),
             catalog,
             cascade: HashMap::new(),
@@ -244,48 +193,34 @@ impl<'a> FreshnessContext<'a> {
     }
 
     /// Judge one page.
-    ///
-    /// Returns `None` when the page does not participate: `deprecated`
-    /// pages, and pages whose `last_validated` is unparseable.
-    /// `source` pages always judge fresh.
     #[must_use]
-    pub fn judge(&self, page: &Page) -> Option<Freshness> {
-        let metadata = &page.document.metadata;
-        if metadata.status == "deprecated" {
-            return None;
-        }
-
-        // Source pages never expire.
-        if metadata.page_type == "source" {
-            return Some(Freshness::fresh());
-        }
-
-        let lv_str = metadata.last_validated.as_str();
-        let lv_date = wiki::parse_date(lv_str)?;
-
+    pub fn judge(&self, page: &Page) -> Freshness {
         let mut reasons = Vec::new();
-        if (self.reference_date - lv_date).num_days() > threshold_days(page) {
-            reasons.push(StaleReason::TimeExpired);
-        }
         if !newer_sources(page, &self.by_rel, self.catalog).is_empty() {
             reasons.push(StaleReason::SourceNewer);
         }
-        if self.has_unreviewed_supersede(page, lv_str) {
+        if self.has_unreviewed_supersede(page) {
             reasons.push(StaleReason::UnreviewedSupersede);
         }
-
-        Some(Freshness { reasons })
+        Freshness { reasons }
     }
 
-    /// Whether `page` cites a superseded page it has not been validated
-    /// after.
-    fn has_unreviewed_supersede(&self, page: &Page, lv_str: &str) -> bool {
+    /// Whether `page` cites a superseded page confirmed since `page` was.
+    ///
+    /// A superseded page without a comparable timestamp is skipped.
+    fn has_unreviewed_supersede(&self, page: &Page) -> bool {
         let Some(superseded) = self.cascade.get(&page.rel) else {
+            return false;
+        };
+        let Some(confirmed) =
+            wiki::parse_timestamp(&page.document.metadata.timestamp)
+        else {
             return false;
         };
         superseded.iter().any(|rel| {
             self.by_rel.get(rel.as_str()).is_some_and(|p| {
-                lv_str <= p.document.metadata.last_validated.as_str()
+                wiki::parse_timestamp(&p.document.metadata.timestamp)
+                    .is_some_and(|moment| moment >= confirmed)
             })
         })
     }
@@ -325,147 +260,14 @@ mod tests {
     /// Page text with the required fields plus `extra` frontmatter lines.
     fn page_text(
         page_type: &str,
-        status: &str,
-        last_validated: &str,
+        timestamp: &str,
         extra: &str,
         body: &str,
     ) -> String {
         format!(
-            "---\ntitle: T\ntype: {page_type}\ntags: []\nstatus: {status}\n\
-             last_validated: {last_validated}\ntimeliness: current\n\
-             {extra}---\n\n{body}\n"
+            "---\ntitle: T\ntype: {page_type}\ntimestamp: {timestamp}\n\
+             tags: []\n{extra}---\n\n{body}\n"
         )
-    }
-
-    fn reference() -> NaiveDate {
-        NaiveDate::parse_from_str("2026-10-05", "%Y-%m-%d").unwrap()
-    }
-
-    /// A page validated `days_ago` days before the reference date.
-    fn page_validated(rel: &str, type_str: &str, days_ago: i64) -> Page {
-        let lv = (reference() - chrono::Duration::days(days_ago))
-            .format("%Y-%m-%d")
-            .to_string();
-        make_page(rel, &page_text(type_str, "draft", &lv, "", "Body."))
-    }
-
-    fn judge_one(page: &Page) -> Option<Freshness> {
-        let pages = vec![page.clone()];
-        let catalog = Catalog::flat(&pages);
-        let ctx = FreshnessContext::new(&pages, &catalog, reference());
-        ctx.judge(&pages[0])
-    }
-
-    // -------------------------------------------------------------------
-    // Time-decay thresholds
-    // -------------------------------------------------------------------
-
-    #[test]
-    fn test_concept_181_days_is_stale() {
-        let page = page_validated("c.md", "concept", 181);
-        let verdict = judge_one(&page).expect("concept should be judged");
-        assert_eq!(verdict.reasons(), &[StaleReason::TimeExpired]);
-    }
-
-    #[test]
-    fn test_concept_179_days_is_fresh() {
-        let page = page_validated("c.md", "concept", 179);
-        let verdict = judge_one(&page).expect("concept should be judged");
-        assert!(!verdict.is_stale());
-        assert_eq!(verdict.timeliness(), "current");
-    }
-
-    #[test]
-    fn test_synthesis_91_days_is_stale() {
-        let page = page_validated("s.md", "synthesis", 91);
-        let verdict = judge_one(&page).expect("synthesis should be judged");
-        assert_eq!(verdict.reasons(), &[StaleReason::TimeExpired]);
-    }
-
-    #[test]
-    fn test_synthesis_89_days_is_fresh() {
-        let page = page_validated("s.md", "synthesis", 89);
-        let verdict = judge_one(&page).expect("synthesis should be judged");
-        assert!(!verdict.is_stale());
-    }
-
-    #[test]
-    fn test_entity_uses_default_threshold() {
-        let page = page_validated("e.md", "entity", 181);
-        let verdict = judge_one(&page).expect("entity should be judged");
-        assert_eq!(verdict.reasons(), &[StaleReason::TimeExpired]);
-    }
-
-    #[test]
-    fn test_freshness_days_override_beats_type_default() {
-        // 100 days old analysis would be stale at the 90-day derived
-        // default, but the override raises the threshold to 200.
-        let lv = (reference() - chrono::Duration::days(100))
-            .format("%Y-%m-%d")
-            .to_string();
-        let page = make_page(
-            "a.md",
-            &page_text(
-                "analysis",
-                "draft",
-                &lv,
-                "freshness_days: 200\n",
-                "Body.",
-            ),
-        );
-        let verdict = judge_one(&page).expect("analysis should be judged");
-        assert!(!verdict.is_stale(), "override should keep the page fresh");
-    }
-
-    // -------------------------------------------------------------------
-    // Exemptions and skip rules
-    // -------------------------------------------------------------------
-
-    #[test]
-    fn test_source_never_stale() {
-        let page = page_validated("src.md", "source", 5000);
-        let verdict = judge_one(&page).expect("source should be judged");
-        assert!(!verdict.is_stale());
-        assert_eq!(verdict.timeliness(), "current");
-    }
-
-    #[test]
-    fn test_deprecated_not_judged() {
-        let lv = (reference() - chrono::Duration::days(5000))
-            .format("%Y-%m-%d")
-            .to_string();
-        let page = make_page(
-            "d.md",
-            &page_text("concept", "deprecated", &lv, "", "Body."),
-        );
-        assert!(judge_one(&page).is_none(), "deprecated pages do not judge");
-    }
-
-    #[test]
-    fn test_unparseable_last_validated_skipped() {
-        let page = make_page(
-            "n.md",
-            &page_text("concept", "draft", "not-a-date", "", "Body."),
-        );
-        assert!(judge_one(&page).is_none(), "bad lv should be skipped");
-    }
-
-    #[test]
-    fn test_old_timestamp_new_last_validated_is_fresh() {
-        // The core regression: a long-unedited page that was validated
-        // recently must not be flagged stale.
-        let page = make_page(
-            "c.md",
-            &page_text(
-                "concept",
-                "stable",
-                "2026-10-01",
-                "timestamp: 2020-01-01\n",
-                "Body.",
-            ),
-        );
-        let verdict = judge_one(&page).expect("page should be judged");
-        assert!(!verdict.is_stale(), "recent validation keeps page fresh");
     }
 
     // -------------------------------------------------------------------
@@ -478,30 +280,76 @@ mod tests {
             "shared/analysis/a.md",
             &page_text(
                 "analysis",
-                "draft",
-                "2026-01-01",
+                "2026-01-01T00:00:00Z",
                 "sources: [shared/sources/bar.md]\n",
                 "Body.",
             ),
         );
         let source = make_page(
             "shared/sources/bar.md",
-            &page_text(
-                "source",
-                "draft",
-                "2026-10-05",
-                "timestamp: 2026-06-01\n",
-                "Body.",
-            ),
+            &page_text("source", "2026-06-01T00:00:00Z", "", "Body."),
         );
         let pages = vec![analysis, source];
         let catalog = Catalog::flat(&pages);
-        let ctx = FreshnessContext::new(&pages, &catalog, reference());
-        let verdict = ctx.judge(&pages[0]).expect("analysis judged");
+        let ctx = FreshnessContext::new(&pages, &catalog);
+        let verdict = ctx.judge(&pages[0]);
         assert!(
             verdict.reasons().contains(&StaleReason::SourceNewer),
             "newer source should mark the analysis stale"
         );
+    }
+
+    #[test]
+    fn test_source_newer_same_day_later_time() {
+        // Both timestamps name the same day; the later time still counts.
+        let analysis = make_page(
+            "shared/analysis/a.md",
+            &page_text(
+                "analysis",
+                "2026-06-01T08:00:00Z",
+                "sources: [shared/sources/bar.md]\n",
+                "Body.",
+            ),
+        );
+        let source = make_page(
+            "shared/sources/bar.md",
+            &page_text("source", "2026-06-01T09:00:00Z", "", "Body."),
+        );
+        let pages = vec![analysis, source];
+        let catalog = Catalog::flat(&pages);
+        let ctx = FreshnessContext::new(&pages, &catalog);
+        assert!(
+            ctx.judge(&pages[0]).reasons().contains(&StaleReason::SourceNewer),
+            "a later time on the same day counts as newer"
+        );
+    }
+
+    #[test]
+    fn test_source_newer_accepts_any_source_type() {
+        for source_type in ["concept", "entity", "analysis", "synthesis"] {
+            let analysis = make_page(
+                "shared/analysis/a.md",
+                &page_text(
+                    "analysis",
+                    "2026-01-01T00:00:00Z",
+                    "sources: [shared/pages/bar.md]\n",
+                    "Body.",
+                ),
+            );
+            let source = make_page(
+                "shared/pages/bar.md",
+                &page_text(source_type, "2026-06-01T00:00:00Z", "", "Body."),
+            );
+            let pages = vec![analysis, source];
+            let catalog = Catalog::flat(&pages);
+            let ctx = FreshnessContext::new(&pages, &catalog);
+            assert!(
+                ctx.judge(&pages[0])
+                    .reasons()
+                    .contains(&StaleReason::SourceNewer),
+                "a source of type {source_type} still counts"
+            );
+        }
     }
 
     #[test]
@@ -512,8 +360,7 @@ mod tests {
             "shared/analysis/a.md",
             &page_text(
                 "analysis",
-                "draft",
-                "2026-01-01",
+                "2026-01-01T00:00:00Z",
                 "sources:\n  - '[Bar](shared/sources/bar.md)'\n  \
                  - '[Bar](@flat/shared/sources/bar.md)'\n  \
                  - shared/sources/bar.md\n",
@@ -522,13 +369,7 @@ mod tests {
         );
         let source = make_page(
             "shared/sources/bar.md",
-            &page_text(
-                "source",
-                "draft",
-                "2026-10-05",
-                "timestamp: 2026-06-01\n",
-                "Body.",
-            ),
+            &page_text("source", "2026-06-01T00:00:00Z", "", "Body."),
         );
         let pages = vec![analysis, source];
         let by_rel: HashMap<&str, &Page> =
@@ -551,29 +392,45 @@ mod tests {
             "shared/concepts/a.md",
             &page_text(
                 "concept",
-                "draft",
-                "2026-10-01",
+                "2026-01-01T00:00:00Z",
                 "sources: [shared/sources/bar.md]\n",
                 "Body.",
             ),
         );
         let source = make_page(
             "shared/sources/bar.md",
-            &page_text(
-                "source",
-                "draft",
-                "2026-10-05",
-                "timestamp: 2026-09-01\n",
-                "Body.",
-            ),
+            &page_text("source", "2026-09-01T00:00:00Z", "", "Body."),
         );
         let pages = vec![concept, source];
         let catalog = Catalog::flat(&pages);
-        let ctx = FreshnessContext::new(&pages, &catalog, reference());
-        let verdict = ctx.judge(&pages[0]).expect("concept judged");
+        let ctx = FreshnessContext::new(&pages, &catalog);
         assert!(
-            !verdict.reasons().contains(&StaleReason::SourceNewer),
+            !ctx.judge(&pages[0]).reasons().contains(&StaleReason::SourceNewer),
             "only derived pages track source freshness"
+        );
+    }
+
+    #[test]
+    fn test_source_newer_skips_invalid_timestamp() {
+        let analysis = make_page(
+            "shared/analysis/a.md",
+            &page_text(
+                "analysis",
+                "2026-01-01T00:00:00Z",
+                "sources: [shared/sources/bar.md]\n",
+                "Body.",
+            ),
+        );
+        let source = make_page(
+            "shared/sources/bar.md",
+            &page_text("source", "2026-06-01", "", "Body."),
+        );
+        let pages = vec![analysis, source];
+        let catalog = Catalog::flat(&pages);
+        let ctx = FreshnessContext::new(&pages, &catalog);
+        assert!(
+            ctx.judge(&pages[0]).reasons().is_empty(),
+            "a date-only source timestamp is not comparable"
         );
     }
 
@@ -585,8 +442,6 @@ mod tests {
         pages: &'a [Page],
         catalog: &'a Catalog,
     ) -> FreshnessContext<'a> {
-        use std::collections::HashMap;
-
         // The reverse index maps the superseded page to its referrers.
         let mut reverse: HashMap<String, Vec<String>> = HashMap::new();
         for page in pages {
@@ -602,8 +457,7 @@ mod tests {
                 }
             }
         }
-        FreshnessContext::new(pages, catalog, reference())
-            .with_reverse_index(&reverse)
+        FreshnessContext::new(pages, catalog).with_reverse_index(&reverse)
     }
 
     #[test]
@@ -612,9 +466,9 @@ mod tests {
             "shared/concepts/old.md",
             &page_text(
                 "concept",
-                "stable",
                 "2026-01-01T00:00:00Z",
-                "superseded_by:\n  - path: shared/concepts/new.md\n    reason: replaced\n",
+                "superseded_by:\n  - path: shared/concepts/new.md\n    \
+                 reason: replaced\n",
                 "# Old\n\nContent.",
             ),
         );
@@ -622,7 +476,6 @@ mod tests {
             "shared/concepts/referrer.md",
             &page_text(
                 "concept",
-                "stable",
                 "2025-12-01T00:00:00Z",
                 "",
                 "# Referrer\n\nSee [old](shared/concepts/old.md).",
@@ -630,20 +483,15 @@ mod tests {
         );
         let new = make_page(
             "shared/concepts/new.md",
-            &page_text(
-                "concept",
-                "stable",
-                "2026-02-01T00:00:00Z",
-                "",
-                "# New\n\nContent.",
-            ),
+            &page_text("concept", "2026-02-01T00:00:00Z", "", "# New\n\nYes."),
         );
         let pages = vec![old, referrer, new];
         let catalog = Catalog::flat(&pages);
         let ctx = cascade_context(&pages, &catalog);
-        let verdict = ctx.judge(&pages[1]).expect("referrer judged");
         assert!(
-            verdict.reasons().contains(&StaleReason::UnreviewedSupersede),
+            ctx.judge(&pages[1])
+                .reasons()
+                .contains(&StaleReason::UnreviewedSupersede),
             "unreviewed referrer should be flagged"
         );
     }
@@ -654,9 +502,9 @@ mod tests {
             "shared/concepts/old.md",
             &page_text(
                 "concept",
-                "stable",
                 "2026-01-01T00:00:00Z",
-                "superseded_by:\n  - path: shared/concepts/new.md\n    reason: replaced\n",
+                "superseded_by:\n  - path: shared/concepts/new.md\n    \
+                 reason: replaced\n",
                 "# Old\n\nContent.",
             ),
         );
@@ -664,7 +512,6 @@ mod tests {
             "shared/concepts/referrer.md",
             &page_text(
                 "concept",
-                "stable",
                 "2026-06-01T00:00:00Z",
                 "",
                 "# Referrer\n\nSee [old](shared/concepts/old.md).",
@@ -672,21 +519,16 @@ mod tests {
         );
         let new = make_page(
             "shared/concepts/new.md",
-            &page_text(
-                "concept",
-                "stable",
-                "2026-06-01T00:00:00Z",
-                "",
-                "# New\n\nContent.",
-            ),
+            &page_text("concept", "2026-06-01T00:00:00Z", "", "# New\n\nYes."),
         );
         let pages = vec![old, referrer, new];
         let catalog = Catalog::flat(&pages);
         let ctx = cascade_context(&pages, &catalog);
-        let verdict = ctx.judge(&pages[1]).expect("referrer judged");
         assert!(
-            !verdict.reasons().contains(&StaleReason::UnreviewedSupersede),
-            "reviewed referrer should not be flagged"
+            !ctx.judge(&pages[1])
+                .reasons()
+                .contains(&StaleReason::UnreviewedSupersede),
+            "a referrer confirmed after the supersedure is reviewed"
         );
     }
 
@@ -696,9 +538,9 @@ mod tests {
             "shared/concepts/old.md",
             &page_text(
                 "concept",
-                "stable",
                 "2026-01-01T00:00:00Z",
-                "superseded_by:\n  - path: shared/concepts/new.md\n    reason: replaced\n",
+                "superseded_by:\n  - path: shared/concepts/new.md\n    \
+                 reason: replaced\n",
                 "# Old\n\nContent.",
             ),
         );
@@ -706,7 +548,6 @@ mod tests {
             "shared/concepts/new.md",
             &page_text(
                 "concept",
-                "stable",
                 "2025-01-01T00:00:00Z",
                 "",
                 "# New\n\nSee [old](shared/concepts/old.md).",
@@ -715,10 +556,48 @@ mod tests {
         let pages = vec![old, new];
         let catalog = Catalog::flat(&pages);
         let ctx = cascade_context(&pages, &catalog);
-        let verdict = ctx.judge(&pages[1]).expect("superseding page judged");
         assert!(
-            !verdict.reasons().contains(&StaleReason::UnreviewedSupersede),
+            !ctx.judge(&pages[1])
+                .reasons()
+                .contains(&StaleReason::UnreviewedSupersede),
             "superseding page should be exempt"
+        );
+    }
+
+    #[test]
+    fn test_supersede_compares_full_timestamps() {
+        // A referrer confirmed later on the same day counts as reviewed.
+        let old = make_page(
+            "shared/concepts/old.md",
+            &page_text(
+                "concept",
+                "2026-01-01T00:00:00Z",
+                "superseded_by:\n  - path: shared/concepts/new.md\n    \
+                 reason: replaced\n",
+                "# Old\n\nContent.",
+            ),
+        );
+        let referrer = make_page(
+            "shared/concepts/referrer.md",
+            &page_text(
+                "concept",
+                "2026-01-01T00:00:01Z",
+                "",
+                "# Referrer\n\nSee [old](shared/concepts/old.md).",
+            ),
+        );
+        let new = make_page(
+            "shared/concepts/new.md",
+            &page_text("concept", "2026-01-01T00:00:00Z", "", "# New\n\nYes."),
+        );
+        let pages = vec![old, referrer, new];
+        let catalog = Catalog::flat(&pages);
+        let ctx = cascade_context(&pages, &catalog);
+        assert!(
+            !ctx.judge(&pages[1])
+                .reasons()
+                .contains(&StaleReason::UnreviewedSupersede),
+            "one second later is reviewed"
         );
     }
 }

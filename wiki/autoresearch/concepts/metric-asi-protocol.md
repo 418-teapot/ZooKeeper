@@ -8,9 +8,6 @@ tags:
   - protocol
   - metric
   - benchmark
-status: stable
-last_validated: 2026-06-19T00:00:00Z
-timeliness: current
 ---
 
 # METRIC/ASI 文本协议

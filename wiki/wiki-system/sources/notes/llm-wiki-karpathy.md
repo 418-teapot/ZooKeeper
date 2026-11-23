@@ -9,9 +9,6 @@ tags:
   - knowledge-base
   - llm
   - pattern
-status: stable
-last_validated: 2026-06-18T00:00:00Z
-timeliness: current
 ---
 
 ## Overview

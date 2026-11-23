@@ -60,17 +60,13 @@
 | `title` | 是 | string | 页面标题，中文为主 |
 | `type` | 是 | string | 页面类型：`concept` / `entity` / `source` / `analysis` / `synthesis` |
 | `description` | 否 | string | 一句话摘要，用于各级索引条目 |
-| `timestamp` | 否 | string | 最后更新日期时间，格式 `YYYY-MM-DDTHH:mm:ssZ` |
+| `timestamp` | 是 | string | 最近一次确认时间（语义编辑或显式复验），格式 `YYYY-MM-DDTHH:MM:SSZ` |
 | `resource` | 否 | string | 外部资产 URI |
-| `sources` | 否 | string[] | 参考的源文档标识列表（用于 analysis / synthesis 类型） |
+| `sources` | 否 | string[] | 参考的源页面路径列表（用于 analysis / synthesis 类型） |
 | `tags` | 是 | string[] | 标签列表，如 `[permission, config]` |
-| `status` | 是 | string | 状态：`draft` / `review` / `stable` / `deprecated` |
-| `last_validated` | 是 | string | 验证时间，ISO 8601 datetime，区别于 timestamp（编辑≠验证） |
-| `timeliness` | 是 | string | 时效性标记：`current` / `stale`（仅两档，新页面默认 current） |
 | `supersedes` | 否 | object[] | 取代关系：本页推翻哪些页面，每项含 `path`（相对 bundle 根目录）和 `reason` |
 | `superseded_by` | 否 | object[] | 被取代关系：本页被哪些页面推翻，每项含 `path` 和 `reason` |
 | `contradictions` | 否 | object[] | 矛盾记录，每项含 `path`（冲突页面路径）、`claims`（冲突声明列表）、`detected`（发现日期）、`resolution`（`unresolved` 或具体解决说明） |
-| `freshness_days` | 否 | integer | 时效阈值覆写（天数）；默认按类型：`concept`/`entity` 180 天，`analysis`/`synthesis` 90 天，`source` 类型永不过期 |
 
 示例：
 
@@ -83,9 +79,6 @@ timestamp: 2026-06-17T00:00:00Z
 tags:
   - permission
   - security
-status: stable
-last_validated: 2026-06-19T00:00:00Z
-timeliness: current
 # 以下为可选字段
 supersedes:
   - path: security/concepts/old-permission.md
@@ -97,7 +90,6 @@ contradictions:
       - "声称权限由 Y 控制"
     detected: 2026-06-19
     resolution: unresolved
-freshness_days: 90
 ---
 ```
 

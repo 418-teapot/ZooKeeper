@@ -9,9 +9,6 @@ tags:
   - tool-design
   - delegation
   - evaluation
-status: stable
-last_validated: 2026-09-16T01:55:38Z
-timeliness: current
 ---
 
 # Agent 协作的 prompt 与工具设计

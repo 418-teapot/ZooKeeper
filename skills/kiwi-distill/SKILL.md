@@ -27,11 +27,11 @@ The source material is already in your CONTEXT (or was fetched via webfetch in P
 
 For each topic term, run `zwiki search "<term>" --json`.
 Combine results from all searches into a single candidate list, keeping each unique path only once.
-Read the full content + frontmatter of each candidate page (pay special attention to `last_validated`, `timeliness`, `supersedes`, `superseded_by`, `contradictions` fields).
+Read the full content + frontmatter of each candidate page (pay special attention to `timestamp`, `supersedes`, `superseded_by`, `contradictions` fields).
 
 ### 2.3: Load Related Pages
 
-For each candidate page, read the pages it links to via inline body links (direct links only, depth 1, no recursion). Also read their content + lifecycle fields.
+For each candidate page, read the pages it links to via inline body links (direct links only, depth 1, no recursion). Also read their content + frontmatter.
 
 ### 2.4: Establish Claim Map & Learn Density Patterns
 
@@ -44,7 +44,7 @@ Extract density patterns from the pages you've already read: typical line counts
 Case 1: Candidate list is empty (zwiki search returned 0 results) → keywords didn't match any page.
 Case 2: Candidate list is non-empty but all pages are unrelated to the source material (same name, different concept; false match) → search hit but content is irrelevant.
 
-Both cases handled identically: read the root `index.md` → based on source material content, determine the domain → read that domain's `index.md` → get all page paths in that domain → read each page's content + lifecycle fields → return to Phase 2.4 to establish the claim map.
+Both cases handled identically: read the root `index.md` → based on source material content, determine the domain → read that domain's `index.md` → get all page paths in that domain → read each page's content + frontmatter → return to Phase 2.4 to establish the claim map.
 
 ---
 
@@ -198,10 +198,10 @@ Do NOT propose validation when:
 If validation is warranted:
 - Record the confirmed claim **verbatim** from the existing page
 - Record the confirming claim **verbatim** from the new source
-- State which page's `last_validated` would be refreshed (the existing page, not the new one)
-- Note that validation does NOT change `status` or `timeliness` — it only refreshes `last_validated`
-- Validation is scoped to the **specific confirmed claim**, not the entire page. Page-level `last_validated` means "at least one claim confirmed on this date"
-- This is a **proposal only** — the calling agent must confirm before writing `last_validated`
+- State which page's `timestamp` would be refreshed (the existing page, not the new one)
+- Note that validation does NOT change any other field — it only refreshes `timestamp`
+- Validation is scoped to the **specific confirmed claim**, not the entire page. Page-level `timestamp` covers the whole page: it is written after a semantic edit or an explicit re-validation
+- This is a **proposal only** — the calling agent must confirm before writing `timestamp`
 
 ### If You Found Issues...
 
@@ -262,8 +262,8 @@ If validation candidates were found (per 4.7, Outcome C):
     - `<existing_page_path>` — confirmed by `<new_page_path>`:
       - Existing claim: "..." (exact quote from the existing page)
         Confirming claim: "..." (exact quote from the new source)
-        Status: proposal only — calling agent must confirm before refreshing `last_validated`
-  **THESE ARE PROPOSALS ONLY. The calling agent must confirm with the user before using `zwiki --root <bundle源目录> page set <path> last_validated <value>` on any page.**
+        Status: proposal only — calling agent must confirm before refreshing `timestamp`
+  **THESE ARE PROPOSALS ONLY. The calling agent must confirm with the user before using `zwiki --root <bundle源目录> page set <path> timestamp <value>` on any page.**
 
 If no validation candidates:
   No existing page claims are independently confirmed by this source.
@@ -299,7 +299,8 @@ Before returning your analysis, confirm ALL of the following:
 - [ ] All three Self-Deletion questions passed for every page
 
 ### Format Compliance (SCHEMA.md rules)
-- [ ] All recommended frontmatter includes: title, type, timestamp, tags, status
+- [ ] All recommended frontmatter includes: title, type, timestamp, tags
+- [ ] `timestamp` is a UTC second-precision value in `YYYY-MM-DDTHH:MM:SSZ` format
 - [ ] Cross-reference paths are wiki-root-relative and domain-prefixed (e.g. `foo/concepts/bar.md`)
 - [ ] No links to system files (index.md, overview.md, SCHEMA.md) in any page's body
 - [ ] Every recommended knowledge page has a corresponding `<domain>/sources/<type>/<slug>.md` entry recording the ingested raw material
@@ -324,5 +325,5 @@ Before returning your analysis, confirm ALL of the following:
 - [ ] For every existing page claim that is independently confirmed by the new source, a validation proposal exists — no confirmed claim silently skipped
 - [ ] Validation proposals include verbatim existing claim AND verbatim confirming claim — not summaries, not paraphrasing
 - [ ] The confirming claim is genuinely independent (not a citation or reference to the existing page itself)
-- [ ] Validation proposals clearly state which page's `last_validated` would be refreshed
+- [ ] Validation proposals clearly state which page's `timestamp` would be refreshed
 - [ ] No validation proposed for claims where the new source adds scope-changing information — those should be recommendations to update the page, not validation proposals

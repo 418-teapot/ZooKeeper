@@ -11,9 +11,6 @@ tags:
   - opencode
 sources:
   - autoresearch/sources/rfc/autoresearch-design.md
-status: draft
-last_validated: 2026-09-18
-timeliness: current
 ---
 
 # autoresearch ZooKeeper 移植路线图

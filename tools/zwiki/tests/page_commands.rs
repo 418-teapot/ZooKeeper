@@ -27,20 +27,20 @@ fn make_wiki(dir: &Path) {
     // A page for set/unset/show tests.
     std::fs::write(
         dir.join("concepts").join("test-page.md"),
-        "---\ntitle: Test Page\ntype: concept\ndescription: 摘要\ntimestamp: 2026-07-01T00:00:00Z\nstatus: draft\ntags: []\nlast_validated: 2026-07-01T00:00:00Z\ntimeliness: current\n---\n\n# Test Page\n\nContent here.\n",
+        "---\ntitle: Test Page\ntype: concept\ndescription: 摘要\ntimestamp: 2026-07-01T00:00:00Z\ntags: []\n---\n\n# Test Page\n\nContent here.\n",
     )
     .unwrap();
     // A second page that links to test-page (for backlinks).
     std::fs::write(
         dir.join("concepts").join("linker.md"),
-        "---\ntitle: Linker\ntype: concept\ntags: []\nstatus: draft\nlast_validated: 2026-07-01T00:00:00Z\ntimeliness: current\n---\n\n# Linker\n\nSee [Test Page](concepts/test-page.md).\n",
+        "---\ntitle: Linker\ntype: concept\ntags: []\ntimestamp: 2026-07-01T00:00:00Z\n---\n\n# Linker\n\nSee [Test Page](concepts/test-page.md).\n",
     )
     .unwrap();
 }
 
 /// `doc.md` on the read-only root, carrying `title: Doc` frontmatter so
 /// `page show --property title` resolves against it.
-const DOC_MD: &str = "---\ntitle: Doc\ntype: concept\n---\n\n# Doc\n";
+const DOC_MD: &str = "---\ntitle: Doc\ntype: concept\ntimestamp: 2026-01-01T00:00:00Z\n---\n\n# Doc\n";
 
 /// Assert that a zwiki command succeeds (exit 0).
 fn assert_ok(bin: &Path, args: &[&str], label: &str) {
@@ -111,13 +111,13 @@ fn test_page_show_with_property() {
             "show",
             "concepts/test-page.md",
             "--property",
-            "status",
+            "description",
         ])
         .output()
         .unwrap();
     assert!(output.status.success(), "page show --property should succeed");
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert_eq!(stdout.trim(), "draft");
+    assert_eq!(stdout.trim(), "摘要");
 }
 
 #[test]
@@ -172,7 +172,7 @@ fn test_page_set_and_get() {
     let wiki = temp_dir("page_set_get");
     make_wiki(&wiki);
 
-    // Set timeliness → stale.
+    // Set the description → a new summary.
     assert_ok(
         &bin,
         &[
@@ -181,10 +181,10 @@ fn test_page_set_and_get() {
             "page",
             "set",
             "concepts/test-page.md",
-            "timeliness",
-            "stale",
+            "description",
+            "新的摘要",
         ],
-        "page set timeliness",
+        "page set description",
     );
 
     // Verify via page show --property.
@@ -196,52 +196,13 @@ fn test_page_set_and_get() {
             "show",
             "concepts/test-page.md",
             "--property",
-            "timeliness",
+            "description",
         ])
         .output()
         .unwrap();
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert_eq!(stdout.trim(), "stale", "timeliness should be stale");
-}
-
-#[test]
-fn test_page_set_downgrade() {
-    let bin = PathBuf::from(env!("CARGO_BIN_EXE_zwiki"));
-    let wiki = temp_dir("page_set_downgrade");
-    make_wiki(&wiki);
-
-    // Downgrade status from draft → draft (downgrade is idempotent at bottom).
-    assert_ok(
-        &bin,
-        &[
-            "--root",
-            &wiki.to_string_lossy(),
-            "page",
-            "set",
-            "concepts/test-page.md",
-            "status",
-            "--downgrade",
-        ],
-        "page set --downgrade",
-    );
-
-    // Verify status stayed draft.
-    let output = Command::new(&bin)
-        .args([
-            "--root",
-            &wiki.to_string_lossy(),
-            "page",
-            "show",
-            "concepts/test-page.md",
-            "--property",
-            "status",
-        ])
-        .output()
-        .unwrap();
-    assert!(output.status.success());
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    assert_eq!(stdout.trim(), "draft");
+    assert_eq!(stdout.trim(), "新的摘要", "the description should change");
 }
 
 #[test]
@@ -362,8 +323,7 @@ fn test_page_set_rejects_wrong_value_types() {
     let page = wiki.join("concepts").join("test-page.md");
     let before = std::fs::read_to_string(&page).unwrap();
 
-    for (property, value) in
-        [("tags", "not-a-list"), ("freshness_days", "soon")]
+    for (property, value) in [("tags", "not-a-list"), ("sources", "not-a-list")]
     {
         let output = Command::new(&bin)
             .args([
@@ -493,7 +453,7 @@ fn test_page_show_property_reads_a_list() {
     make_wiki(&wiki);
     std::fs::write(
         wiki.join("concepts").join("listed.md"),
-        "---\ntitle: Listed\ntype: concept\ntags: [a, b]\nstatus: draft\nlast_validated: 2026-07-01T00:00:00Z\ntimeliness: current\n---\n\n# Listed\n",
+        "---\ntitle: Listed\ntype: concept\ntags: [a, b]\ntimestamp: 2026-07-01T00:00:00Z\n---\n\n# Listed\n",
     )
     .unwrap();
 
@@ -559,21 +519,21 @@ fn test_page_unset_required_field_rejected() {
             "page",
             "unset",
             "concepts/test-page.md",
-            "timeliness",
+            "timestamp",
         ])
         .output()
         .unwrap();
     assert!(!output.status.success(), "unsetting a required field should fail");
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("timeliness"),
+        stderr.contains("timestamp"),
         "stderr should name the field: {stderr}"
     );
     let page =
         std::fs::read_to_string(wiki.join("concepts").join("test-page.md"))
             .unwrap();
     assert!(
-        page.contains("timeliness: current"),
+        page.contains("timestamp: 2026-07-01T00:00:00Z"),
         "page must stay unchanged:\n{page}"
     );
 }
@@ -892,7 +852,7 @@ fn test_page_show_suffix_step5() {
     std::fs::create_dir_all(wiki.join("concepts").join("deep")).unwrap();
     std::fs::write(
         wiki.join("concepts").join("deep").join("nested-page.md"),
-        "---\ntitle: Nested Page\ntype: concept\n---\n\n# Nested\n",
+        "---\ntitle: Nested Page\ntype: concept\ntimestamp: 2026-01-01T00:00:00Z\n---\n\n# Nested\n",
     )
     .unwrap();
 
@@ -994,7 +954,7 @@ fn test_page_show_component_boundary_suffix() {
     // Create a page named "otherpage.md" alongside "test-page.md".
     std::fs::write(
         wiki.join("concepts").join("otherpage.md"),
-        "---\ntitle: Other Page\ntype: concept\n---\n\n# Other\n",
+        "---\ntitle: Other Page\ntype: concept\ntimestamp: 2026-01-01T00:00:00Z\n---\n\n# Other\n",
     )
     .unwrap();
 
@@ -1386,8 +1346,8 @@ fn test_log_coverage_tracks_tool_created_sources() {
     let hand = "research/sources/adr/hand-dropped.md";
     std::fs::write(
         wiki.join(hand),
-        "---\ntitle: Hand Dropped\ntype: source\ntags: []\nstatus: draft\n\
-         last_validated: 2026-01-01\ntimeliness: current\n---\nBody.\n",
+        "---\ntitle: Hand Dropped\ntype: source\ntags: []\n\
+         timestamp: 2026-01-01T00:00:00Z\n---\nBody.\n",
     )
     .unwrap();
 

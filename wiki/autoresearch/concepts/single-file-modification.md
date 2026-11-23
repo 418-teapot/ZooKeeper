@@ -8,9 +8,6 @@ tags:
   - autoresearch
   - scope-management
   - agent-constraint
-status: stable
-last_validated: 2026-06-19T00:00:00Z
-timeliness: current
 ---
 
 # 单文件修改原则

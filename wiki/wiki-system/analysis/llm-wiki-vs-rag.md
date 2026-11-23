@@ -11,9 +11,6 @@ tags:
   - knowledge-management
 sources:
   - wiki-system/sources/notes/llm-wiki-karpathy.md
-status: stable
-last_validated: 2026-09-18
-timeliness: current
 ---
 
 ## Overview

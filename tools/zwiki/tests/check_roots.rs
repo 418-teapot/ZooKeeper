@@ -19,16 +19,15 @@ the scenario in one full sentence, so no stub rule applies to it.";
 
 /// Page text with every required field.
 fn page(title: &str, body: &str) -> String {
-    page_with(title, "current", body)
+    page_with(title, "[]", body)
 }
 
-/// Page text with every required field and an explicit `timeliness`.
-fn page_with(title: &str, timeliness: &str, body: &str) -> String {
-    let today = chrono::Utc::now().date_naive().format("%Y-%m-%d").to_string();
+/// Page text with every required field and the given `tags` value.
+fn page_with(title: &str, tags: &str, body: &str) -> String {
+    let today = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
     format!(
-        "---\ntitle: {title}\ntype: concept\ntags: []\nstatus: draft\n\
-         last_validated: {today}\ntimeliness: {timeliness}\n---\n\n\
-         # {title}\n\n{body}\n"
+        "---\ntitle: {title}\ntype: concept\ntags: {tags}\n\
+         timestamp: {today}\n---\n\n# {title}\n\n{body}\n"
     )
 }
 
@@ -36,8 +35,8 @@ fn page_with(title: &str, timeliness: &str, body: &str) -> String {
 fn source_page(title: &str, timestamp: &str) -> String {
     format!(
         "---\ntitle: {title}\ntype: source\ntimestamp: {timestamp}\n\
-         tags: []\nstatus: draft\nlast_validated: {timestamp}\n\
-         timeliness: current\n---\n\n# {title}\n\n{BODY}\n"
+         tags: []\n\
+         ---\n\n# {title}\n\n{BODY}\n"
     )
 }
 
@@ -45,8 +44,8 @@ fn source_page(title: &str, timestamp: &str) -> String {
 fn analysis_page(title: &str, validated: &str, sources: &str) -> String {
     format!(
         "---\ntitle: {title}\ntype: analysis\nsources: {sources}\n\
-         tags: []\nstatus: draft\nlast_validated: {validated}\n\
-         timeliness: current\n---\n\n# {title}\n\n{BODY}\n"
+         tags: []\ntimestamp: {validated}\n\
+         ---\n\n# {title}\n\n{BODY}\n"
     )
 }
 
@@ -265,7 +264,7 @@ fn test_read_only_store_root_reports_unapplied_changes() {
         "core/concepts/target.md",
         &page_with(
             "Target",
-            "archived",
+            "[a]",
             &format!("{BODY}\n\nSee [Linker](concepts/linker.md)."),
         ),
     );
@@ -296,9 +295,9 @@ fn test_read_only_store_root_reports_unapplied_changes() {
     assert!(
         pending.contains(&(
             "core/concepts/target.md".to_string(),
-            "timeliness".to_string()
+            "format".to_string()
         )),
-        "the invalid timeliness repair stays unapplied: {report}"
+        "the layout normalization stays unapplied: {report}"
     );
     assert!(
         pending.contains(&(
@@ -308,7 +307,7 @@ fn test_read_only_store_root_reports_unapplied_changes() {
         "the missing backlinks stay unapplied: {report}"
     );
     assert!(
-        !rules(&report).contains(&"invalid_timeliness".to_string()),
+        !rules(&report).contains(&"invalid_date".to_string()),
         "the pending repair is a change, not an issue: {report}"
     );
     assert!(
@@ -323,7 +322,7 @@ fn test_read_only_store_root_reports_unapplied_changes() {
     let text = String::from_utf8_lossy(&output.stdout);
     assert!(text.contains("未应用变更（"), "{text}");
     assert!(
-        text.contains("`core/concepts/target.md` — 时效"),
+        text.contains("`core/concepts/target.md` — 格式"),
         "the text names the unapplied update: {text}"
     );
 }
@@ -453,12 +452,12 @@ fn test_source_newer_issues_do_not_depend_on_source_order() {
     write_page(
         &first,
         "foo.md",
-        &analysis_page("Foo", "2026-11-20", "[bar.md, aaa.md]"),
+        &analysis_page("Foo", "2026-11-20T09:00:00Z", "[bar.md, aaa.md]"),
     );
     write_page(
         &second,
         "foo.md",
-        &analysis_page("Foo", "2026-11-20", "[aaa.md, bar.md]"),
+        &analysis_page("Foo", "2026-11-20T09:00:00Z", "[aaa.md, bar.md]"),
     );
 
     let (first_report, _) = check_json(&first);

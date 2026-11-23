@@ -11,9 +11,9 @@ use zwiki::document::PageDocument;
 
 pub mod common;
 
-/// Lifecycle guidance block the templates carry.
+/// Relation guidance block the templates carry.
 const GUIDANCE: &str = concat!(
-    "# 可选生命周期字段（按需取消注释填写，详见 SCHEMA.md）：\n",
+    "# 可选关系字段（按需取消注释填写，详见 SCHEMA.md）：\n",
     "# supersedes:\n",
     "#   - path: <domain>/concepts/old.md\n",
 );
@@ -38,17 +38,20 @@ fn write_page(root: &Path, rel: &str, text: &str) {
 fn commented_page(title: &str) -> String {
     format!(
         "---\ntitle: {title}\ntype: concept\ntags:\n  - permission\n\
-         status: stable\nlast_validated: 2099-01-01T00:00:00Z\n\
-         timeliness: current # 复查后更新\n{GUIDANCE}---\n\n# {title}\n\n正文。\n"
+         timestamp: 2099-01-01T00:00:00Z\n\
+         description: 一句话摘要。 # 复查后更新\n\
+         {GUIDANCE}---\n\n# {title}\n\n正文。\n"
     )
 }
 
-/// Page that `check` judges stale, so its `timeliness` value must change.
-fn stale_page(title: &str) -> String {
+/// Page whose stored layout `check` must normalize, next to an inline
+/// comment on an authored field.
+fn flow_tags_page(title: &str) -> String {
     format!(
-        "---\ntitle: {title}\ntype: concept\ntags:\n  - permission\n\
-         status: stable\nlast_validated: 2020-01-01T00:00:00Z\n\
-         timeliness: current # 复查后更新\n{GUIDANCE}---\n\n# {title}\n\n正文。\n"
+        "---\ntitle: {title}\ntype: concept\ntags: [permission]\n\
+         timestamp: 2020-01-01T00:00:00Z\n\
+         description: 一句话摘要。 # 复查后更新\n\
+         {GUIDANCE}---\n\n# {title}\n\n正文。\n"
     )
 }
 
@@ -69,7 +72,6 @@ fn test_template_prints_the_guidance_block() {
     let stdout = String::from_utf8(output.stdout).expect("utf-8");
 
     assert!(stdout.contains(GUIDANCE), "{stdout}");
-    assert!(stdout.contains("# freshness_days: 90\n"), "{stdout}");
     let document = PageDocument::parse(&stdout).expect("template is a page");
     assert_eq!(document.metadata.supersedes, None);
     assert!(document.metadata.extensions.is_empty());
@@ -144,15 +146,7 @@ fn test_supersede_keeps_comments_next_to_the_real_relation() {
     );
     assert_eq!(
         field_names(&new_page),
-        [
-            "title",
-            "type",
-            "tags",
-            "status",
-            "last_validated",
-            "timeliness",
-            "supersedes"
-        ]
+        ["title", "type", "tags", "timestamp", "description", "supersedes"]
     );
     assert!(new_page.ends_with("# 新权限模型\n\n正文。\n"), "{new_page}");
 
@@ -167,15 +161,7 @@ fn test_supersede_keeps_comments_next_to_the_real_relation() {
     );
     assert_eq!(
         field_names(&old_page),
-        [
-            "title",
-            "type",
-            "tags",
-            "status",
-            "last_validated",
-            "timeliness",
-            "superseded_by"
-        ]
+        ["title", "type", "tags", "timestamp", "description", "superseded_by"]
     );
     assert!(old_page.ends_with("# 旧权限模型\n\n正文。\n"), "{old_page}");
 }
@@ -192,8 +178,8 @@ fn test_page_set_keeps_comments() {
         "page",
         "set",
         "concepts/old.md",
-        "status",
-        "review",
+        "resource",
+        "https://example.com/auth",
     ]);
     assert!(
         output.status.success(),
@@ -204,14 +190,17 @@ fn test_page_set_keeps_comments() {
         std::fs::read_to_string(root.join("concepts/old.md")).expect("read");
 
     assert!(content.contains(GUIDANCE), "{content}");
-    assert!(content.contains("status: review\n"), "{content}");
     assert!(
-        content.contains("timeliness: current # 复查后更新\n"),
+        content.contains("description: 一句话摘要。 # 复查后更新\n"),
+        "{content}"
+    );
+    assert!(
+        content.contains("resource: https://example.com/auth\n"),
         "{content}"
     );
     assert_eq!(
         field_names(&content),
-        ["title", "type", "tags", "status", "last_validated", "timeliness"]
+        ["title", "type", "tags", "timestamp", "description", "resource"]
     );
     assert!(content.ends_with("# 旧权限模型\n\n正文。\n"), "{content}");
 }
@@ -239,7 +228,7 @@ fn test_check_keeps_comments_while_syncing_derived_content() {
         std::fs::read_to_string(root.join("concepts/target.md")).expect("read");
     assert!(content.contains(GUIDANCE), "{content}");
     assert!(
-        content.contains("timeliness: current # 复查后更新\n"),
+        content.contains("description: 一句话摘要。 # 复查后更新\n"),
         "{content}"
     );
     assert!(content.contains("## Backlinks\n"), "{content}");
@@ -249,7 +238,7 @@ fn test_check_keeps_comments_while_syncing_derived_content() {
     );
     assert_eq!(
         field_names(&content),
-        ["title", "type", "tags", "status", "last_validated", "timeliness"]
+        ["title", "type", "tags", "timestamp", "description"]
     );
 }
 
@@ -290,35 +279,40 @@ fn test_contradictions_keep_comments_next_to_the_real_records() {
     assert!(content.contains("  - path: concepts/beta.md\n"), "{content}");
     assert_eq!(
         field_names(&content),
-        [
-            "title",
-            "type",
-            "tags",
-            "status",
-            "last_validated",
-            "timeliness",
-            "contradictions"
-        ]
+        ["title", "type", "tags", "timestamp", "description", "contradictions"]
     );
     assert!(content.ends_with("# 甲页面\n\n正文。\n"), "{content}");
 }
 
 #[test]
-fn test_check_reports_a_commented_field_it_must_rewrite() {
-    let root = temp_dir("comments_check_reject");
+fn test_check_keeps_a_comment_while_normalizing_the_layout() {
+    let root = temp_dir("comments_check_format");
     common::write_bundle_manifest(&root);
-    let before = stale_page("过期页面");
-    write_page(&root, "concepts/stale.md", &before);
+    std::fs::create_dir_all(root.join("logs")).unwrap();
+    std::fs::write(root.join("logs").join(".gitkeep"), "").unwrap();
+    write_page(&root, "concepts/flow.md", &flow_tags_page("流式页面"));
 
     let output = zwiki(&["--root", &root.to_string_lossy(), "check"]);
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(!output.status.success(), "check should fail: {stderr}");
-    assert!(stderr.contains("timeliness"), "{stderr}");
-    assert!(stderr.contains("含注释"), "{stderr}");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("`concepts/flow.md` — 格式"),
+        "check normalizes the stored layout: {stdout}"
+    );
 
     let after =
-        std::fs::read_to_string(root.join("concepts/stale.md")).expect("read");
-    assert_eq!(after, before, "a rejected write must leave the page as it was");
+        std::fs::read_to_string(root.join("concepts/flow.md")).expect("read");
+    assert!(
+        after.contains("description: 一句话摘要。 # 复查后更新\n"),
+        "the inline comment stays as written: {after}"
+    );
+    assert!(
+        after.contains("tags:\n  - permission\n"),
+        "the stored list is normalized: {after}"
+    );
+    assert!(
+        after.contains("timestamp: 2020-01-01T00:00:00Z"),
+        "check never rewrites the timestamp: {after}"
+    );
 }
 
 /// Page whose `tags` list carries a column-0 comment between two items.
@@ -326,8 +320,8 @@ fn test_check_reports_a_commented_field_it_must_rewrite() {
 fn ambiguous_page(title: &str) -> String {
     format!(
         "---\ntitle: {title}\ntype: concept\ntags:\n  - permission\n\
-         # 权限标签\n  - security\nstatus: stable\n\
-         last_validated: 2099-01-01T00:00:00Z\ntimeliness: current\n\
+         # 权限标签\n  - security\n\
+         timestamp: 2099-01-01T00:00:00Z\n\
          ---\n\n# {title}\n\n正文。\n"
     )
 }
@@ -345,8 +339,8 @@ fn test_page_set_rejects_a_page_with_an_ambiguous_layout() {
         "page",
         "set",
         "concepts/ambiguous.md",
-        "status",
-        "review",
+        "resource",
+        "https://example.com/auth",
     ]);
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(!output.status.success(), "page set must fail: {stderr}");

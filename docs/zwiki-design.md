@@ -1,7 +1,7 @@
 # zwiki 设计
 
 zwiki 是一个由 LLM 与 human 共同维护的持久知识库工具。知识以页面为单位被
-创作、修改、废弃；以 bundle 为单位打包分发；在对话中被检索；并持续接受
+创作、修改、确认；以 bundle 为单位打包分发；在对话中被检索；并持续接受
 质量检查。
 
 ## 不变量
@@ -56,10 +56,11 @@ bundle 源；root 含 `zwiki.lock`（store）或缺 `bundle.toml` 一律拒写�
 `zwiki check` 在 bundle 源上做两件事：同步全部派生数据（幂等），并报告
 健康问题——结构完整性（frontmatter/命名/路径）、索引同步（磁盘与索引的
 双向一致性，页面列在任一 index 即视为已收录）、死链与孤立页、内联链接
-覆盖（术语首次出现应有链接；出现在既有链接文本内的不算未链接）、时效性
-（`timeliness`/`last_validated`/`freshness_days`）、生命周期一致性
-（supersedes/contradictions 对端与状态）、日志覆盖（绕过工具手工落盘的
-页面没有日志条目，会被标记）。
+覆盖（术语首次出现应有链接；出现在既有链接文本内的不算未链接）、来源
+时效（`source.timestamp > derived.timestamp` 时派生页待复验）、取代级联
+（页面仍引用被取代页，且被取代页的 `timestamp` 不早于引用页时报告
+`unreviewed_supersede`）、日志覆盖（绕过工具手工落盘的页面没有日志条目，
+会被标记）。
 
 在 store（只读根）上 `check` 只报告不同步；写入发生在源上，经
 `bundle install` 到达 store。

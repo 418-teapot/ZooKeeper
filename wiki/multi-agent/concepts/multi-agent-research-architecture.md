@@ -9,9 +9,6 @@ tags:
   - subagent
   - parallelism
   - context-isolation
-status: stable
-last_validated: 2026-09-14T02:14:29Z
-timeliness: current
 ---
 
 # 多 agent 研究架构

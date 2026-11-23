@@ -10,9 +10,6 @@ tags:
   - analysis
 sources:
   - autoresearch/sources/notes/autoresearch.md
-status: stable
-last_validated: 2026-09-18
-timeliness: current
 ---
 
 # [autoresearch 设计](autoresearch/sources/rfc/autoresearch-design.md)权衡分析

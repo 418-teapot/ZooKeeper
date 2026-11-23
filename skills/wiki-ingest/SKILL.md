@@ -149,13 +149,7 @@ kiwi 返回分析后，执行写入命令。写命令必须显式传 `--root`，
     ```bash
     echo '<JSON 数组>' | zwiki --root <bundle源目录> contradictions apply
     ```
-    该命令会追加 `contradictions` 条目并更新 `last_validated`。
-
-    然后对双方页面执行 status 降级：
-    ```bash
-    zwiki --root <bundle源目录> page set "domain/page_a.md" status --downgrade
-    zwiki --root <bundle源目录> page set "domain/page_b.md" status --downgrade
-    ```
+    该命令会在双方的 `contradictions` 中追加条目，并把双方的 `timestamp` 刷新为当前 UTC 秒级时间。
 
 3. **验证写入** — 运行 `zwiki contradictions list` 确认矛盾已记录。
 
@@ -171,16 +165,16 @@ kiwi 返回分析后，执行写入命令。写命令必须显式传 `--root`，
    - 被确认的页面路径
    - 已确认的旧声明（kiwi 摘录的原文）
    - 确认声明（新源中的原文）
-   - 说明：该操作仅刷新 `last_validated`，不改变 `status` 或 `timeliness`
+   - 说明：该操作仅刷新 `timestamp`，不改变其他字段
 
 2. **询问用户是否确认每个提议**。用户可以：
    - 全部确认
    - 部分确认（指定哪些接受，哪些拒绝）
    - 全部拒绝
 
-3. **只对用户确认的提议执行写入**。对每个要刷新的页面：
+3. **只对用户确认的提议执行写入**。对每个要复验的页面：
     ```bash
-    zwiki --root <bundle源目录> page set <domain>/concepts/<page>.md last_validated "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    zwiki --root <bundle源目录> page set <domain>/concepts/<page>.md timestamp "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
       --note "新源确认声明「…」"
     ```
     注意：`zwiki page set` 会覆盖已有时间戳。多次确认同一页面时，只需执行一次（以最新时间为准）。

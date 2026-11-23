@@ -15,9 +15,9 @@ const MINIMAL: &str = concat!(
     "title: 权限系统\n",
     "type: concept\n",
     "tags: [permission, security]\n",
-    "status: stable\n",
-    "last_validated: 2026-06-19T00:00:00Z\n",
-    "timeliness: current\n",
+    "",
+    "timestamp: 2026-06-19T00:00:00Z\n",
+    "",
     "---\n",
     "\n",
     "# 权限系统\n",
@@ -32,12 +32,9 @@ fn parses_required_metadata_and_author_body() {
     assert_eq!(doc.metadata.title, "权限系统");
     assert_eq!(doc.metadata.page_type, "concept");
     assert_eq!(doc.metadata.tags, ["permission", "security"]);
-    assert_eq!(doc.metadata.status, "stable");
-    assert_eq!(doc.metadata.last_validated, "2026-06-19T00:00:00Z");
-    assert_eq!(doc.metadata.timeliness, "current");
+    assert_eq!(doc.metadata.timestamp, "2026-06-19T00:00:00Z");
     assert_eq!(doc.metadata.description, None);
     assert_eq!(doc.metadata.sources, None);
-    assert_eq!(doc.metadata.freshness_days, None);
     assert!(doc.metadata.extensions.is_empty());
     assert_eq!(doc.body.author(), "# 权限系统\n\n正文。");
 }
@@ -119,9 +116,6 @@ const FULL: &str = concat!(
     "resource: https://example.com/auth\n",
     "sources: [security/concepts/deny-list.md]\n",
     "tags: [permission, security]\n",
-    "status: stable\n",
-    "last_validated: 2026-06-19T00:00:00Z\n",
-    "timeliness: current\n",
     "supersedes:\n",
     "  - path: security/concepts/old-permission.md\n",
     "    reason: 新设计覆盖了旧的权限模型\n",
@@ -135,7 +129,6 @@ const FULL: &str = concat!(
     "      - 声称权限由 Y 控制\n",
     "    detected: 2026-06-19\n",
     "    resolution: unresolved\n",
-    "freshness_days: 90\n",
     "---\n",
     "\n",
     "# 权限系统\n",
@@ -150,7 +143,7 @@ fn parses_every_schema_field() {
         metadata.description.as_deref(),
         Some("基于 deny 列表的权限判定模型。")
     );
-    assert_eq!(metadata.timestamp.as_deref(), Some("2026-06-17T00:00:00Z"));
+    assert_eq!(metadata.timestamp, "2026-06-17T00:00:00Z");
     assert_eq!(metadata.resource.as_deref(), Some("https://example.com/auth"));
     assert_eq!(
         metadata.sources.as_deref(),
@@ -191,7 +184,6 @@ fn parses_every_schema_field() {
             .as_slice()
         )
     );
-    assert_eq!(metadata.freshness_days, Some(90));
     assert!(metadata.extensions.is_empty());
 }
 
@@ -265,9 +257,9 @@ const WITH_BACKLINKS: &str = concat!(
     "title: 权限系统\n",
     "type: concept\n",
     "tags: [permission]\n",
-    "status: stable\n",
-    "last_validated: 2026-06-19T00:00:00Z\n",
-    "timeliness: current\n",
+    "",
+    "timestamp: 2026-06-19T00:00:00Z\n",
+    "",
     "---\n",
     "\n",
     "# 权限系统\n",
@@ -297,9 +289,9 @@ fn keeps_the_declared_field_order() {
         "tags:\n",
         "  - permission\n",
         "  - security\n",
-        "status: stable\n",
-        "last_validated: 2026-06-19T00:00:00Z\n",
-        "timeliness: current\n",
+        "",
+        "timestamp: 2026-06-19T00:00:00Z\n",
+        "",
         "---\n",
         "\n",
         "# 权限系统\n",
@@ -310,8 +302,8 @@ fn keeps_the_declared_field_order() {
     assert_eq!(doc.render().expect("render"), expected);
 }
 
-/// Page whose fields sit out of schema order: `description` before `type`,
-/// `resource` after `timestamp`, `timeliness` before `status`.
+/// Page whose fields sit out of schema order: `description` before `type`
+/// and `resource` after `timestamp`.
 const PERMUTED: &str = concat!(
     "---\n",
     "title: 权限系统\n",
@@ -320,9 +312,6 @@ const PERMUTED: &str = concat!(
     "timestamp: 2026-06-17T00:00:00Z\n",
     "resource: https://example.com/auth\n",
     "tags: [permission]\n",
-    "timeliness: current\n",
-    "status: stable\n",
-    "last_validated: 2026-06-19T00:00:00Z\n",
     "---\n",
 );
 
@@ -338,9 +327,6 @@ fn keeps_fields_out_of_schema_order_in_place() {
         "resource: https://example.com/auth\n",
         "tags:\n",
         "  - permission\n",
-        "timeliness: current\n",
-        "status: stable\n",
-        "last_validated: 2026-06-19T00:00:00Z\n",
         "---\n",
     );
 
@@ -358,11 +344,11 @@ fn keeps_two_pages_of_the_same_fields_in_their_own_orders() {
 
     assert_eq!(
         top_level_keys(&forward.render().expect("render")),
-        ["title", "type", "tags", "status", "last_validated", "timeliness"]
+        ["title", "type", "tags", "timestamp"]
     );
     assert_eq!(
         top_level_keys(&backward.render().expect("render")),
-        ["type", "title", "tags", "status", "last_validated", "timeliness"]
+        ["type", "title", "tags", "timestamp"]
     );
 }
 
@@ -372,9 +358,9 @@ const NESTED: &str = concat!(
     "title: 权限系统\n",
     "type: concept\n",
     "tags: [permission, security]\n",
-    "status: stable\n",
-    "last_validated: 2026-06-19T00:00:00Z\n",
-    "timeliness: current\n",
+    "",
+    "timestamp: 2026-06-19T00:00:00Z\n",
+    "",
     "sources: [security/concepts/deny-list.md]\n",
     "supersedes:\n",
     "  - path: security/concepts/old-permission.md\n",
@@ -397,9 +383,9 @@ fn indents_each_list_level_by_two_spaces() {
         "tags:\n",
         "  - permission\n",
         "  - security\n",
-        "status: stable\n",
-        "last_validated: 2026-06-19T00:00:00Z\n",
-        "timeliness: current\n",
+        "",
+        "timestamp: 2026-06-19T00:00:00Z\n",
+        "",
         "sources:\n",
         "  - security/concepts/deny-list.md\n",
         "supersedes:\n",
@@ -425,9 +411,9 @@ const EXTENDED: &str = concat!(
     "title: 权限系统\n",
     "type: concept\n",
     "tags: [permission]\n",
-    "status: stable\n",
-    "last_validated: 2026-06-19T00:00:00Z\n",
-    "timeliness: current\n",
+    "",
+    "timestamp: 2026-06-19T00:00:00Z\n",
+    "",
     "review_cycle:\n",
     "  days: 30\n",
     "  owners: [team-a, team-b]\n",
@@ -446,9 +432,9 @@ fn indents_nested_extension_values() {
         "type: concept\n",
         "tags:\n",
         "  - permission\n",
-        "status: stable\n",
-        "last_validated: 2026-06-19T00:00:00Z\n",
-        "timeliness: current\n",
+        "",
+        "timestamp: 2026-06-19T00:00:00Z\n",
+        "",
         "review_cycle:\n",
         "  days: 30\n",
         "  owners:\n",
@@ -473,9 +459,9 @@ const BLOCK_SCALARS: &str = concat!(
     "type: concept\n",
     "tags:\n",
     "  - permission\n",
-    "status: stable\n",
-    "last_validated: 2026-06-19T00:00:00Z\n",
-    "timeliness: current\n",
+    "",
+    "timestamp: 2026-06-19T00:00:00Z\n",
+    "",
     "note: |\n",
     "  第一行\n",
     "  第二行\n",
@@ -553,16 +539,7 @@ fn keeps_extension_fields_in_place() {
 
     assert_eq!(
         top_level_keys(&rendered),
-        [
-            "title",
-            "type",
-            "zeta",
-            "alpha",
-            "tags",
-            "status",
-            "last_validated",
-            "timeliness"
-        ]
+        ["title", "type", "zeta", "alpha", "tags", "timestamp"]
     );
     assert_eq!(reparsed.metadata.extensions, doc.metadata.extensions);
     assert_eq!(
@@ -580,16 +557,7 @@ fn appends_a_new_known_field_at_the_end() {
 
     assert_eq!(
         top_level_keys(&rendered),
-        [
-            "title",
-            "type",
-            "tags",
-            "status",
-            "last_validated",
-            "timeliness",
-            "description",
-            "resource"
-        ]
+        ["title", "type", "tags", "timestamp", "description", "resource"]
     );
     let reparse_then_render = PageDocument::parse(&rendered)
         .expect("reparse")
@@ -607,16 +575,7 @@ fn appends_a_new_extension_field_at_the_end() {
 
     assert_eq!(
         top_level_keys(&rendered),
-        [
-            "title",
-            "type",
-            "zeta",
-            "tags",
-            "status",
-            "last_validated",
-            "timeliness",
-            "alpha"
-        ]
+        ["title", "type", "zeta", "tags", "timestamp", "alpha"]
     );
 }
 
@@ -629,7 +588,6 @@ fn keeps_the_field_position_when_a_value_changes() {
     doc.metadata
         .set_field_text("resource", "https://example.com/new")
         .expect("set link");
-    doc.metadata.status = "draft".to_string();
     let expected = concat!(
         "---\n",
         "title: 权限系统\n",
@@ -639,9 +597,6 @@ fn keeps_the_field_position_when_a_value_changes() {
         "resource: https://example.com/new\n",
         "tags:\n",
         "  - permission\n",
-        "timeliness: current\n",
-        "status: draft\n",
-        "last_validated: 2026-06-19T00:00:00Z\n",
         "---\n",
     );
 
@@ -908,20 +863,6 @@ fn rejects_list_item_of_the_wrong_type() {
 }
 
 #[test]
-fn rejects_non_integer_freshness_threshold() {
-    let text = MINIMAL.replace(
-        "timeliness: current",
-        "timeliness: current\nfreshness_days: 90.5",
-    );
-    let error = PageDocument::parse(&text).expect_err("float threshold");
-
-    assert!(
-        matches!(&error, Error::UnexpectedType { field, .. } if field == "freshness_days"),
-        "{error:?}"
-    );
-}
-
-#[test]
 fn rejects_relation_without_path() {
     let text = FULL.replace(
         "  - path: security/concepts/old-permission.md\n    reason: 新设计覆盖了旧的权限模型\n",
@@ -1005,14 +946,12 @@ fn sets_a_list_field() {
 }
 
 #[test]
-fn sets_an_integer_field() {
+fn sets_an_integer_extension_field() {
     let mut doc = PageDocument::parse(MINIMAL).expect("valid page");
-    doc.metadata
-        .set_field("freshness_days", Value::from(90))
-        .expect("set freshness threshold");
+    doc.metadata.set_field("priority", Value::from(90)).expect("set priority");
 
-    assert_eq!(doc.metadata.freshness_days, Some(90));
-    assert!(doc.render().expect("render").contains("freshness_days: 90\n"));
+    assert_eq!(doc.metadata.extensions["priority"], Value::from(90));
+    assert!(doc.render().expect("render").contains("priority: 90\n"));
 }
 
 #[test]
@@ -1056,16 +995,7 @@ fn sets_an_extension_field_flat() {
 fn keeps_text_of_a_string_field_as_written() {
     // Every string field of the schema takes the text literally, so YAML
     // marks and colons stay part of the value.
-    for name in [
-        "title",
-        "type",
-        "description",
-        "timestamp",
-        "resource",
-        "status",
-        "last_validated",
-        "timeliness",
-    ] {
+    for name in ["title", "type", "description", "timestamp", "resource"] {
         let mut doc = PageDocument::parse(MINIMAL).expect("valid page");
         doc.metadata.set_field_text(name, "Coin: v2").expect("set text");
         let rendered = doc.render().expect("render");
@@ -1098,9 +1028,9 @@ fn keeps_number_shaped_text_in_a_string_field() {
 #[test]
 fn decodes_text_as_yaml_for_a_non_string_field() {
     let mut doc = PageDocument::parse(MINIMAL).expect("valid page");
-    doc.metadata.set_field_text("freshness_days", "90").expect("set threshold");
+    doc.metadata.set_field_text("priority", "90").expect("set priority");
 
-    assert_eq!(doc.metadata.freshness_days, Some(90));
+    assert_eq!(doc.metadata.extensions["priority"], Value::from(90));
 }
 
 #[test]
@@ -1170,10 +1100,10 @@ fn removes_a_structured_field() {
 #[test]
 fn rejects_removing_a_required_field() {
     let mut doc = PageDocument::parse(MINIMAL).expect("valid page");
-    let error = doc.metadata.remove_field("status").expect_err("required");
+    let error = doc.metadata.remove_field("timestamp").expect_err("required");
 
-    assert_eq!(error, Error::MissingField { field: "status".to_string() });
-    assert_eq!(doc.metadata.status, "stable");
+    assert_eq!(error, Error::MissingField { field: "timestamp".to_string() });
+    assert_eq!(doc.metadata.timestamp, "2026-06-19T00:00:00Z");
 }
 
 #[test]
@@ -1253,9 +1183,9 @@ const COMMENTED: &str = concat!(
     "type: concept\n",
     "tags:\n",
     "  - permission\n",
-    "status: stable\n",
-    "last_validated: 2026-06-19T00:00:00Z\n",
-    "timeliness: current # 复查后更新\n",
+    "",
+    "timestamp: 2026-06-19T00:00:00Z\n",
+    "resource: https://example.com/auth # 复查后更新\n",
     "---\n",
     "\n",
     "# 权限系统\n",
@@ -1268,7 +1198,10 @@ fn keeps_comment_lines_where_the_page_puts_them() {
     assert_eq!(doc.render().expect("render"), COMMENTED);
     assert_eq!(doc.metadata.supersedes, None);
     assert!(doc.metadata.extensions.is_empty());
-    assert_eq!(doc.metadata.timeliness, "current");
+    assert_eq!(
+        doc.metadata.resource.as_deref(),
+        Some("https://example.com/auth")
+    );
 }
 
 /// Page whose comment block follows the last field.
@@ -1278,9 +1211,9 @@ const TRAILING_COMMENT: &str = concat!(
     "type: concept\n",
     "tags:\n",
     "  - permission\n",
-    "status: stable\n",
-    "last_validated: 2026-06-19T00:00:00Z\n",
-    "timeliness: current\n",
+    "",
+    "timestamp: 2026-06-19T00:00:00Z\n",
+    "",
     "# 可选生命周期字段（按需取消注释填写，详见 SCHEMA.md）：\n",
     "# supersedes:\n",
     "#   - path: <domain>/concepts/old.md\n",
@@ -1309,9 +1242,9 @@ const NESTED_COMMENT: &str = concat!(
     "type: concept\n",
     "tags:\n",
     "  - permission\n",
-    "status: stable\n",
-    "last_validated: 2026-06-19T00:00:00Z\n",
-    "timeliness: current\n",
+    "",
+    "timestamp: 2026-06-19T00:00:00Z\n",
+    "",
     "supersedes:\n",
     "  # 旧模型的权限判定已被推翻\n",
     "  - path: security/concepts/old-permission.md\n",
@@ -1339,7 +1272,6 @@ fn changes_a_field_next_to_a_comment_block() {
     doc.metadata
         .set_field_text("description", "一句话摘要。")
         .expect("set summary");
-    doc.metadata.status = "draft".to_string();
     let expected = concat!(
         "---\n",
         "title: 权限系统\n",
@@ -1349,9 +1281,9 @@ fn changes_a_field_next_to_a_comment_block() {
         "type: concept\n",
         "tags:\n",
         "  - permission\n",
-        "status: draft\n",
-        "last_validated: 2026-06-19T00:00:00Z\n",
-        "timeliness: current # 复查后更新\n",
+        "",
+        "timestamp: 2026-06-19T00:00:00Z\n",
+        "resource: https://example.com/auth # 复查后更新\n",
         "description: 一句话摘要。\n",
         "---\n",
         "\n",
@@ -1370,7 +1302,7 @@ fn appends_a_real_relation_after_its_commented_example() {
     });
     let rendered = doc.render().expect("render");
     let expected = concat!(
-        "timeliness: current # 复查后更新\n",
+        "resource: https://example.com/auth # 复查后更新\n",
         "supersedes:\n",
         "  - path: security/concepts/old-permission.md\n",
         "    reason: 新设计覆盖了旧的权限模型\n",
@@ -1387,14 +1319,13 @@ fn appends_a_real_relation_after_its_commented_example() {
 #[test]
 fn rejects_changing_a_field_that_carries_an_inline_comment() {
     let mut doc = PageDocument::parse(COMMENTED).expect("valid page");
-    doc.metadata.set_field_text("timeliness", "stale").expect("set mark");
+    doc.metadata
+        .set_field_text("resource", "https://example.com/new")
+        .expect("set link");
     let error = doc.render().expect_err("the comment blocks the change");
 
-    assert_eq!(
-        error,
-        Error::CommentedField { field: "timeliness".to_string() }
-    );
-    assert!(error.to_string().contains("timeliness"), "{error}");
+    assert_eq!(error, Error::CommentedField { field: "resource".to_string() });
+    assert!(error.to_string().contains("resource"), "{error}");
 }
 
 #[test]
@@ -1436,9 +1367,9 @@ const BLOCK_LAYOUT: &str = concat!(
     "tags:\n",
     "  - permission\n",
     "  - security\n",
-    "status: stable\n",
-    "last_validated: 2026-06-19T00:00:00Z\n",
-    "timeliness: current\n",
+    "",
+    "timestamp: 2026-06-19T00:00:00Z\n",
+    "",
     "---\n",
     "\n",
     "# 权限系统\n",
@@ -1486,13 +1417,14 @@ fn rejects_a_column_zero_comment_inside_a_nested_mapping() {
 #[test]
 fn keeps_comment_blocks_and_blank_lines_between_fields() {
     let text = BLOCK_LAYOUT.replace(
-        "status: stable\n",
+        "timestamp: 2026-06-19T00:00:00Z\n",
         concat!(
-            "# 生命周期字段（按需取消注释填写）：\n",
+            "# 关系字段（按需取消注释填写）：\n",
             "# supersedes:\n",
-            "status: stable\n",
+            "",
             "\n",
             "# 末尾备注\n",
+            "timestamp: 2026-06-19T00:00:00Z\n",
         ),
     );
     let doc =
@@ -1567,8 +1499,7 @@ fn rejects_frontmatter_written_as_one_flow_mapping() {
     let text = concat!(
         "---\n",
         "{title: 权限系统, type: concept, tags: [permission], ",
-        "status: stable, last_validated: 2026-06-19T00:00:00Z, ",
-        "timeliness: current}\n",
+        "timestamp: 2026-06-19T00:00:00Z}\n",
         "---\n",
     );
     let error = PageDocument::parse(text).expect_err("no field line exists");

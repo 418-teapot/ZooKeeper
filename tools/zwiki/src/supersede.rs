@@ -53,10 +53,9 @@ pub fn link_supersede_at(
         Relation { path: new_rel.to_string(), reason: reason.to_string() },
     );
 
-    // Mark the old page as validated at the moment of supersedure so that
-    // the unified freshness judgment can distinguish pages reviewed
-    // post-supersedure from those that still need attention.
-    old_document.metadata.last_validated =
+    // The supersedure edits the old page, so its `timestamp` names the
+    // moment of the edit.  A referrer edited later counts as reviewed.
+    old_document.metadata.timestamp =
         Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
 
     store(&new_abs, &new_document)?;
@@ -85,8 +84,8 @@ mod tests {
     /// Valid page with every required field and extra frontmatter lines.
     fn page(title: &str, extra: &str) -> String {
         format!(
-            "---\ntitle: {title}\ntype: concept\ntags: []\nstatus: draft\n\
-             last_validated: 2026-07-01T00:00:00Z\ntimeliness: current\n\
+            "---\ntitle: {title}\ntype: concept\ntags: []\n\
+             timestamp: 2026-07-01T00:00:00Z\n\
              {extra}---\n\n# {title}\n\nBody.\n"
         )
     }
@@ -154,8 +153,8 @@ mod tests {
     }
 
     #[test]
-    fn test_link_supersede_updates_last_validated() {
-        let dir = temp_dir("last_validated");
+    fn test_link_supersede_updates_timestamp() {
+        let dir = temp_dir("supersede_timestamp");
         let old_path = make_page(&dir, "old.md", &page("Old Page", ""));
         let new_path = make_page(&dir, "new.md", &page("New Page", ""));
 
@@ -163,17 +162,11 @@ mod tests {
             .expect("link supersede");
 
         let old_document = load(&old_path).expect("old page");
-        assert_ne!(
-            old_document.metadata.last_validated,
-            "2026-07-01T00:00:00Z"
-        );
-        assert!(old_document.metadata.last_validated.ends_with('Z'));
+        assert_ne!(old_document.metadata.timestamp, "2026-07-01T00:00:00Z");
+        assert!(old_document.metadata.timestamp.ends_with('Z'));
 
         let new_document = load(&new_path).expect("new page");
-        assert_eq!(
-            new_document.metadata.last_validated,
-            "2026-07-01T00:00:00Z"
-        );
+        assert_eq!(new_document.metadata.timestamp, "2026-07-01T00:00:00Z");
     }
 
     #[test]
@@ -263,9 +256,9 @@ mod tests {
                 "title: New Page\n",
                 "type: concept\n",
                 "tags: []\n",
-                "status: draft\n",
-                "last_validated: 2026-07-01T00:00:00Z\n",
-                "timeliness: current\n",
+                "",
+                "timestamp: 2026-07-01T00:00:00Z\n",
+                "",
                 "supersedes:\n",
                 "  - path: old.md\n",
                 "    reason: replaces old\n",

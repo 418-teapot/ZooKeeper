@@ -2,7 +2,7 @@
 title: Agent/Skill/Plugin 判断框架
 description: 通过六个维度评估一个能力应实现为 Agent、Skill 还是 Plugin Extension 的结构化判断框架。
 type: analysis
-timestamp: 2026-09-18T02:37:53Z
+timestamp: 2026-11-23T08:26:06Z
 tags:
   - autoresearch
   - architecture
@@ -10,9 +10,6 @@ tags:
   - extension-design
 sources:
   - autoresearch/sources/rfc/autoresearch-design.md
-status: stable
-last_validated: 2026-09-18
-timeliness: current
 ---
 
 # Agent/Skill/Plugin 判断框架
@@ -85,7 +82,3 @@ autoresearch (plugin)        ← 4 个工具、SQLite、segment、auto-resume、
 ## References
 
 - `autoresearch/sources/rfc/autoresearch-design.md` §3 Agent vs Skill vs Plugin Extension
-
-## Notes
-
-> **待确认：** 该框架假设 host agent 和 subagent 使用同一套工具 API。如果工具 API 差异显著（如 OpenCode vs Pi Extension Bridge），评估结果可能变化。

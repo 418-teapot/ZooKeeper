@@ -9,9 +9,6 @@ tags:
   - versioning
   - git
   - experiment-tracking
-status: stable
-last_validated: 2026-06-19T00:00:00Z
-timeliness: current
 ---
 
 # 实验版本管理

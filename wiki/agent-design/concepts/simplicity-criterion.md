@@ -7,9 +7,6 @@ tags:
   - autoresearch
   - design-principle
   - complexity-tradeoff
-status: stable
-last_validated: 2026-09-15T06:31:27Z
-timeliness: current
 ---
 
 # 简约准则

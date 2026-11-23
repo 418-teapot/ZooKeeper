@@ -458,7 +458,7 @@ mod tests {
         body: &str,
     ) -> String {
         format!(
-            "---\ntitle: {title}\ntype: {page_type}\ntags: []\nstatus: draft\nlast_validated: 2025-01-01T00:00:00Z\ntimeliness: current\n{extra}---\n\n{body}"
+            "---\ntitle: {title}\ntype: {page_type}\ntags: []\ntimestamp: 2025-01-01T00:00:00Z\n{extra}---\n\n{body}"
         )
     }
 
@@ -1900,9 +1900,9 @@ owner: team-a
             "title: Ref\n",
             "type: concept\n",
             "tags: []\n",
-            "status: draft\n",
-            "last_validated: 2025-01-01T00:00:00Z\n",
-            "timeliness: current\n",
+            "",
+            "timestamp: 2025-01-01T00:00:00Z\n",
+            "",
             "---\n",
             "\n",
             "# Ref\n",

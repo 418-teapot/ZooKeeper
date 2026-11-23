@@ -198,17 +198,17 @@ mod tests {
         write_page(
             &dir,
             "shared/concepts/a.md",
-            "---\ntitle: A\ntype: concept\ntags: [auth]\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n",
+            "---\ntitle: A\ntype: concept\ntags: [auth]\ntimestamp: 2026-01-01T00:00:00Z\n---\n",
         );
         write_page(
             &dir,
             "shared/concepts/b.md",
-            "---\ntitle: B\ntype: concept\ntags: [auth, access]\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n",
+            "---\ntitle: B\ntype: concept\ntags: [auth, access]\ntimestamp: 2026-01-01T00:00:00Z\n---\n",
         );
         write_page(
             &dir,
             "shared/concepts/c.md",
-            "---\ntitle: C\ntype: entity\ntags: [database, access]\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n",
+            "---\ntitle: C\ntype: entity\ntags: [database, access]\ntimestamp: 2026-01-01T00:00:00Z\n---\n",
         );
 
         let counts = aggregate_field(
@@ -240,8 +240,8 @@ mod tests {
             &dir,
             "shared/a.md",
             "---\ntitle: A\ntype: concept\ntags: single-tag\n\
-             status: draft\nlast_validated: 2026-01-01\n\
-             timeliness: current\n---\n",
+             timestamp: 2026-01-01T00:00:00Z\n\
+             ---\n",
         );
         let error = aggregate_field(
             &dir,
@@ -261,8 +261,8 @@ mod tests {
         write_page(
             &dir,
             "shared/a.md",
-            "---\ntitle: A\ntype: concept\nstatus: draft\n\
-             last_validated: 2026-01-01\ntimeliness: current\n---\n",
+            "---\ntitle: A\ntype: concept\n\
+             timestamp: 2026-01-01T00:00:00Z\n---\n",
         );
         let error = aggregate_field(
             &dir,
@@ -282,12 +282,12 @@ mod tests {
         write_page(
             &dir,
             "shared/concepts/a.md",
-            "---\ntitle: A\ntype: concept\ntags: [auth]\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n",
+            "---\ntitle: A\ntype: concept\ntags: [auth]\ntimestamp: 2026-01-01T00:00:00Z\n---\n",
         );
         write_page(
             &dir,
             "shared/entities/b.md",
-            "---\ntitle: B\ntype: entity\ntags: [auth]\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n",
+            "---\ntitle: B\ntype: entity\ntags: [auth]\ntimestamp: 2026-01-01T00:00:00Z\n---\n",
         );
 
         let counts = aggregate_field(
@@ -313,12 +313,12 @@ mod tests {
         write_page(
             &dir,
             "shared/concepts/a.md",
-            "---\ntitle: A\ntype: concept\ntags: [auth]\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n",
+            "---\ntitle: A\ntype: concept\ntags: [auth]\ntimestamp: 2026-01-01T00:00:00Z\n---\n",
         );
         write_page(
             &dir,
             "autoresearch/concepts/b.md",
-            "---\ntitle: B\ntype: concept\ntags: [auth]\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n",
+            "---\ntitle: B\ntype: concept\ntags: [auth]\ntimestamp: 2026-01-01T00:00:00Z\n---\n",
         );
 
         let counts = aggregate_field(
@@ -344,17 +344,17 @@ mod tests {
         write_page(
             &dir,
             "shared/concepts/a.md",
-            "---\ntitle: A\ntype: concept\ntags: [auth]\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n",
+            "---\ntitle: A\ntype: concept\ntags: [auth]\ntimestamp: 2026-01-01T00:00:00Z\n---\n",
         );
         write_page(
             &dir,
             "shared/entities/b.md",
-            "---\ntitle: B\ntype: entity\ntags: [auth]\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n",
+            "---\ntitle: B\ntype: entity\ntags: [auth]\ntimestamp: 2026-01-01T00:00:00Z\n---\n",
         );
         write_page(
             &dir,
             "autoresearch/concepts/c.md",
-            "---\ntitle: C\ntype: concept\ntags: [auth]\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n",
+            "---\ntitle: C\ntype: concept\ntags: [auth]\ntimestamp: 2026-01-01T00:00:00Z\n---\n",
         );
 
         // concept + shared: only page a should match.
@@ -381,7 +381,7 @@ mod tests {
         write_page(
             &dir,
             "shared/a.md",
-            "---\ntitle: A\ntype: Concept\ntags: [auth]\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n",
+            "---\ntitle: A\ntype: Concept\ntags: [auth]\ntimestamp: 2026-01-01T00:00:00Z\n---\n",
         );
         let counts = aggregate_field(
             &dir,
@@ -401,7 +401,7 @@ mod tests {
         write_page(
             &dir,
             "shared/a.md",
-            "---\ntitle: A\ntype: concept\ntags: [Auth]\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n",
+            "---\ntitle: A\ntype: concept\ntags: [Auth]\ntimestamp: 2026-01-01T00:00:00Z\n---\n",
         );
         let counts = aggregate_field(
             &dir,
@@ -426,17 +426,17 @@ mod tests {
         write_page(
             &dir,
             "shared/concepts/a.md",
-            "---\ntitle: A\ntype: concept\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n",
+            "---\ntitle: A\ntype: concept\ntags: []\ntimestamp: 2026-01-01T00:00:00Z\n---\n",
         );
         write_page(
             &dir,
             "shared/concepts/b.md",
-            "---\ntitle: B\ntype: concept\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n",
+            "---\ntitle: B\ntype: concept\ntags: []\ntimestamp: 2026-01-01T00:00:00Z\n---\n",
         );
         write_page(
             &dir,
             "shared/entities/c.md",
-            "---\ntitle: C\ntype: entity\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n",
+            "---\ntitle: C\ntype: entity\ntags: []\ntimestamp: 2026-01-01T00:00:00Z\n---\n",
         );
 
         let counts = aggregate_field(
@@ -463,8 +463,8 @@ mod tests {
         write_page(
             &dir,
             "shared/a.md",
-            "---\ntitle: A\ntags: []\nstatus: draft\n\
-             last_validated: 2026-01-01\ntimeliness: current\n---\n",
+            "---\ntitle: A\ntags: []\n\
+             timestamp: 2026-01-01T00:00:00Z\n---\n",
         );
         let error = aggregate_field(
             &dir,
@@ -484,12 +484,12 @@ mod tests {
         write_page(
             &dir,
             "shared/a.md",
-            "---\ntitle: A\ntype: concept\ntags: [auth]\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n",
+            "---\ntitle: A\ntype: concept\ntags: [auth]\ntimestamp: 2026-01-01T00:00:00Z\n---\n",
         );
         write_page(
             &dir,
             "shared/b.md",
-            "---\ntitle: B\ntype: concept\ntags: [misc]\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n",
+            "---\ntitle: B\ntype: concept\ntags: [misc]\ntimestamp: 2026-01-01T00:00:00Z\n---\n",
         );
 
         let counts = aggregate_field(
@@ -515,12 +515,12 @@ mod tests {
         write_page(
             &dir,
             "shared/a.md",
-            "---\ntitle: A\ntype: concept\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n",
+            "---\ntitle: A\ntype: concept\ntags: []\ntimestamp: 2026-01-01T00:00:00Z\n---\n",
         );
         write_page(
             &dir,
             "autoresearch/b.md",
-            "---\ntitle: B\ntype: entity\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n",
+            "---\ntitle: B\ntype: entity\ntags: []\ntimestamp: 2026-01-01T00:00:00Z\n---\n",
         );
 
         let counts = aggregate_field(
@@ -546,17 +546,17 @@ mod tests {
         write_page(
             &dir,
             "shared/concepts/a.md",
-            "---\ntitle: A\ntype: concept\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n",
+            "---\ntitle: A\ntype: concept\ntags: []\ntimestamp: 2026-01-01T00:00:00Z\n---\n",
         );
         write_page(
             &dir,
             "shared/entities/b.md",
-            "---\ntitle: B\ntype: entity\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n",
+            "---\ntitle: B\ntype: entity\ntags: []\ntimestamp: 2026-01-01T00:00:00Z\n---\n",
         );
         write_page(
             &dir,
             "autoresearch/concepts/c.md",
-            "---\ntitle: C\ntype: concept\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n",
+            "---\ntitle: C\ntype: concept\ntags: []\ntimestamp: 2026-01-01T00:00:00Z\n---\n",
         );
 
         let counts = aggregate_field(
@@ -583,13 +583,13 @@ mod tests {
         write_page(
             &dir,
             "shared/concepts/a.md",
-            "---\ntitle: A\ntype: concept\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n",
+            "---\ntitle: A\ntype: concept\ntags: []\ntimestamp: 2026-01-01T00:00:00Z\n---\n",
         );
         // Root-level file (no directory component).
         write_page(
             &dir,
             "overview.md",
-            "---\ntitle: Overview\ntype: synthesis\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n",
+            "---\ntitle: Overview\ntype: synthesis\ntags: []\ntimestamp: 2026-01-01T00:00:00Z\n---\n",
         );
 
         let counts = aggregate_field(
@@ -616,17 +616,17 @@ mod tests {
         write_page(
             &dir,
             "shared/concepts/a.md",
-            "---\ntitle: A\ntype: concept\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n",
+            "---\ntitle: A\ntype: concept\ntags: []\ntimestamp: 2026-01-01T00:00:00Z\n---\n",
         );
         write_page(
             &dir,
             "shared/entities/b.md",
-            "---\ntitle: B\ntype: entity\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n",
+            "---\ntitle: B\ntype: entity\ntags: []\ntimestamp: 2026-01-01T00:00:00Z\n---\n",
         );
         write_page(
             &dir,
             "autoresearch/concepts/c.md",
-            "---\ntitle: C\ntype: concept\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n",
+            "---\ntitle: C\ntype: concept\ntags: []\ntimestamp: 2026-01-01T00:00:00Z\n---\n",
         );
 
         let counts = aggregate_field(
@@ -648,17 +648,17 @@ mod tests {
         write_page(
             &dir,
             "shared/a.md",
-            "---\ntitle: A\ntype: concept\ntags: [auth]\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n",
+            "---\ntitle: A\ntype: concept\ntags: [auth]\ntimestamp: 2026-01-01T00:00:00Z\n---\n",
         );
         write_page(
             &dir,
             "shared/b.md",
-            "---\ntitle: B\ntype: concept\ntags: [misc]\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n",
+            "---\ntitle: B\ntype: concept\ntags: [misc]\ntimestamp: 2026-01-01T00:00:00Z\n---\n",
         );
         write_page(
             &dir,
             "autoresearch/c.md",
-            "---\ntitle: C\ntype: concept\ntags: [auth]\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n",
+            "---\ntitle: C\ntype: concept\ntags: [auth]\ntimestamp: 2026-01-01T00:00:00Z\n---\n",
         );
 
         let counts = aggregate_field(

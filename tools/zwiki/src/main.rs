@@ -319,7 +319,7 @@ enum ContradictionsCommand {
     /// Apply/record contradictions from stdin JSON.
     ///
     /// Reads a JSON array of contradiction pairs from stdin and records
-    /// the contradictions on both pages with a `last_validated` update.
+    /// the contradictions on both pages with a `timestamp` update.
     Apply(ContradictionsApplyArgs),
 }
 
@@ -360,15 +360,11 @@ pub struct PageSetArgs {
     /// Wiki-relative page path
     pub path: String,
 
-    /// Property name (e.g. timeliness, status, tags)
+    /// Property name (e.g. description, resource, tags)
     pub prop: String,
 
-    /// Value to set (required unless --downgrade is used)
+    /// Value to set
     pub value: Option<String>,
-
-    /// Downgrade the property value (status: stable→review→draft)
-    #[arg(long)]
-    pub downgrade: bool,
 
     /// Free-text note recorded in the change log
     #[arg(long)]
@@ -1239,10 +1235,10 @@ struct CheckWriteError {
 /// Apply the automatic writes a writable bundle source accepts, then reload
 /// the pages.
 ///
-/// The writes are the generated indexes, the `## Backlinks` region, and
-/// `timeliness`.  `last_validated` is never written: only an explicit
-/// re-validation may refresh it.  Every update of one page is merged into
-/// one render, so a page never overwrites its own earlier write.
+/// The writes are the generated indexes, the `## Backlinks` region, and the
+/// stored page layout.  `timestamp` is never written: only an agent edit may
+/// refresh it.  Every update of one page is merged into one render, so a
+/// page never overwrites its own earlier write.
 ///
 /// Returns the applied changes and the pages as stored afterwards.
 ///
@@ -1279,10 +1275,10 @@ fn apply_check_writes(
 /// Compute the normalization an automatic `check` write applies to the pages
 /// of `root`, without writing them.
 ///
-/// The updates are the `## Backlinks` region and `timeliness`.  A page inside
-/// an installed bundle layer is never rewritten, so `skip_bundle_pages` leaves
-/// it out of a writable root; a read-only root writes nothing and keeps every
-/// page in the candidate state.
+/// The updates are the `## Backlinks` region and the stored page layout.  A
+/// page inside an installed bundle layer is never rewritten, so
+/// `skip_bundle_pages` leaves it out of a writable root; a read-only root
+/// writes nothing and keeps every page in the candidate state.
 ///
 /// Returns one entry per page whose stored form would change, each carrying
 /// the document the write stores.
@@ -1336,23 +1332,10 @@ fn pending_page_writes(
             .map(|(page, content)| (page.rel.clone(), content))
             .collect();
 
-    // Timeliness follows the unified freshness verdict (time decay, newer
-    // sources, unreviewed supersedes).
-    let reference_date = chrono::Utc::now().date_naive();
-    let freshness_ctx =
-        freshness::FreshnessContext::new(all_pages, &catalog, reference_date)
-            .with_reverse_index(&bl_index);
-    let timeliness_by_rel: HashMap<String, String> =
-        health::mark_stale(all_pages, &freshness_ctx)
-            .into_iter()
-            .map(|u| (u.rel, u.new_timeliness))
-            .collect();
-
     let mut writes: Vec<PageWrite> = Vec::new();
     for page in &candidates {
         let backlinks = backlinks_by_rel.get(&page.rel);
-        let timeliness = timeliness_by_rel.get(page.rel.as_str());
-        if backlinks.is_none() && timeliness.is_none() {
+        if backlinks.is_none() && !layout_differs(page)? {
             continue;
         }
 
@@ -1361,13 +1344,6 @@ fn pending_page_writes(
         if let Some(content) = backlinks {
             document.body.set_backlinks(content.clone());
             kinds.push(ChangeKind::Backlinks);
-        }
-        if let Some(value) = timeliness {
-            document
-                .metadata
-                .set_field_text("timeliness", value)
-                .map_err(|e| format!("{}: {e}", page.rel))?;
-            kinds.push(ChangeKind::Timeliness);
         }
         if layout_differs(page)? {
             kinds.push(ChangeKind::Format);
@@ -1394,8 +1370,8 @@ fn layout_differs(page: &wiki::Page) -> Result<bool, String> {
 }
 
 /// Run health + lint checks against `root`, return structured results
-/// and issue counts. Does NOT print, sync backlinks, write reports,
-/// apply timeliness, or exit. Pure detection only.
+/// and issue counts. Does NOT print, sync backlinks, write reports, or
+/// exit. Pure detection only.
 ///
 /// # Errors
 ///
@@ -1477,7 +1453,6 @@ pub(crate) fn format_health_lint_json(
             "broken_links": fmt_issues(&lint.broken_links),
             "orphan_pages": fmt_issues(&lint.orphan_pages),
             "sparse_pages": fmt_issues(&lint.sparse_pages),
-            "stale_pages": fmt_issues(&lint.stale_pages),
             "cascade_stale": fmt_issues(&lint.cascade_stale),
         },
     })
@@ -1514,7 +1489,6 @@ fn dispatch_page(wiki_root: &WikiRoot, cmd: &PageCommand, json: bool) {
                 &normalized,
                 &args.prop,
                 args.value.as_deref(),
-                args.downgrade,
                 args.note.as_deref(),
             );
         }
@@ -1702,44 +1676,24 @@ fn cmd_page_show(
     }
 }
 
-/// Set a frontmatter property on a page (or downgrade status).
+/// Set a frontmatter property on a page.
 fn cmd_page_set(
     wiki_root: &WikiRoot,
     path: &str,
     prop: &str,
     value: Option<&str>,
-    downgrade: bool,
     note: Option<&str>,
 ) {
     let full = wiki_root.path().join(path);
-    if downgrade {
-        if prop != "status" {
-            eprintln!("--downgrade 仅适用于 status 属性");
-            process::exit(1);
-        }
-        let current = property::get(&full, prop)
-            .unwrap_or_else(|e| {
-                eprintln!("{e}");
-                process::exit(1);
-            })
-            .unwrap_or_default();
-        let new_val = property::downgrade_status(&current);
-        property::set(&full, prop, new_val).unwrap_or_else(|e| {
-            eprintln!("{e}");
-            process::exit(1);
-        });
-        log_mutation(wiki_root.path(), path, "edit", note);
-        crate::print_stdout_line(format!("{current} → {new_val}"));
-    } else if let Some(val) = value {
-        property::set(&full, prop, val).unwrap_or_else(|e| {
-            eprintln!("{e}");
-            process::exit(1);
-        });
-        log_mutation(wiki_root.path(), path, "edit", note);
-    } else {
-        eprintln!("需要设置值或 --downgrade");
+    let Some(val) = value else {
+        eprintln!("需要设置值");
         process::exit(1);
-    }
+    };
+    property::set(&full, prop, val).unwrap_or_else(|e| {
+        eprintln!("{e}");
+        process::exit(1);
+    });
+    log_mutation(wiki_root.path(), path, "edit", note);
 }
 
 /// Unset (delete) a frontmatter property from a page.
@@ -2187,40 +2141,17 @@ mod tests {
             "page",
             "set",
             "concepts/npc.md",
-            "timeliness",
-            "stale",
+            "description",
+            "new summary",
         ])
         .unwrap();
         match args.command {
             Some(Command::Page(PageCommand::Set(ref a))) => {
                 assert_eq!(a.path, "concepts/npc.md");
-                assert_eq!(a.prop, "timeliness");
-                assert_eq!(a.value, Some("stale".to_string()));
-                assert!(!a.downgrade);
+                assert_eq!(a.prop, "description");
+                assert_eq!(a.value, Some("new summary".to_string()));
             }
             _ => panic!("expected Page::Set"),
-        }
-    }
-
-    #[test]
-    fn test_page_set_downgrade_parses() {
-        let args = ZwikiArgs::try_parse_from([
-            "zwiki",
-            "page",
-            "set",
-            "concepts/npc.md",
-            "status",
-            "--downgrade",
-        ])
-        .unwrap();
-        match args.command {
-            Some(Command::Page(PageCommand::Set(ref a))) => {
-                assert_eq!(a.path, "concepts/npc.md");
-                assert_eq!(a.prop, "status");
-                assert!(a.value.is_none());
-                assert!(a.downgrade);
-            }
-            _ => panic!("expected Page::Set with downgrade"),
         }
     }
 
@@ -2235,13 +2166,13 @@ mod tests {
             "page",
             "unset",
             "concepts/npc.md",
-            "timeliness",
+            "description",
         ])
         .unwrap();
         match args.command {
             Some(Command::Page(PageCommand::Unset(ref a))) => {
                 assert_eq!(a.path, "concepts/npc.md");
-                assert_eq!(a.prop, "timeliness");
+                assert_eq!(a.prop, "description");
             }
             _ => panic!("expected Page::Unset"),
         }
@@ -3150,8 +3081,8 @@ mod tests {
         std::fs::write(dir.join("bundle.toml"), TEST_MANIFEST).unwrap();
         std::fs::write(
             dir.join("linker.md"),
-            "---\ntitle: Linker\ntype: concept\ntags: []\nstatus: draft\n\
-             last_validated: 2026-01-01\ntimeliness: current\n---\n\n\
+            "---\ntitle: Linker\ntype: concept\ntags: []\n\
+             timestamp: 2026-01-01T00:00:00Z\n---\n\n\
              See [Broken](broken.md).\n",
         )
         .unwrap();
@@ -3252,15 +3183,15 @@ mod tests {
     }
 
     #[test]
-    fn test_run_check_writes_timeliness_on_a_writable_root() {
-        // A fresh page whose `timeliness` marker is stale is rewritten
-        // before the report runs.
-        let dir = temp_dir("check_writable_timeliness");
+    fn test_run_check_does_not_write_timestamp() {
+        // A writable root normalizes the layout and keeps the stored
+        // `timestamp`: only an agent edit may refresh it.
+        let dir = temp_dir("check_writable_timestamp");
         std::fs::write(dir.join("bundle.toml"), TEST_MANIFEST).unwrap();
         std::fs::create_dir_all(dir.join("logs")).unwrap();
         std::fs::write(dir.join("logs/.gitkeep"), "").unwrap();
 
-        let today = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
+        let stamp = "2020-01-01T00:00:00Z";
         let body = "This document has enough text to pass the health and lint \
                     checks that zwiki runs during validation.  See \
                     [Linker](shared/linker.md).\n";
@@ -3269,19 +3200,17 @@ mod tests {
         std::fs::write(
             &path,
             format!(
-                "---\ntitle: Timeliness Test\ntype: concept\n\
-                 timestamp: {today}\ntags: []\nstatus: draft\n\
-                 last_validated: {today}\ntimeliness: stale\n---\n\n\
-                 # Timeliness Test\n\n{body}\n"
+                "---\ntitle: Timestamp Test\ntype: concept\n\
+                 timestamp: {stamp}\ntags: []\n---\n\n\
+                 # Timestamp Test\n\n{body}\n"
             ),
         )
         .unwrap();
         std::fs::write(
             dir.join("shared/linker.md"),
             format!(
-                "---\ntitle: Linker\ntype: concept\ntimestamp: {today}\n\
-                 tags: []\nstatus: draft\nlast_validated: {today}\n\
-                 timeliness: current\n---\n\n# Linker\n\nSee [Doc](shared/doc.md).\n\
+                "---\ntitle: Linker\ntype: concept\ntimestamp: {stamp}\n\
+                 tags: []\n---\n\n# Linker\n\nSee [Doc](shared/doc.md).\n\
                  This page carries enough body text to pass the health and \
                  lint checks that zwiki runs during validation, so the \
                  fixture leaves no finding of its own.\n"
@@ -3291,11 +3220,11 @@ mod tests {
 
         let code = run_check(&dir, false, Vec::new(), false);
 
-        assert_eq!(code, 0, "a fresh page leaves no issue");
+        assert_eq!(code, 0, "a normalized page leaves no issue");
         let content = std::fs::read_to_string(&path).unwrap();
         assert!(
-            content.contains("timeliness: current"),
-            "the writable root stores the computed timeliness: {content:?}"
+            content.contains(&format!("timestamp: {stamp}")),
+            "check must not rewrite the timestamp: {content:?}"
         );
     }
 
@@ -3326,9 +3255,6 @@ title: Page A
 type: concept
 timestamp: 2026-07-01T00:00:00Z
 tags: []
-status: draft
-last_validated: 2026-07-01T00:00:00Z
-timeliness: current
 ---
 
 # Page A
@@ -3348,9 +3274,6 @@ title: Page B
 type: concept
 timestamp: 2026-07-01T00:00:00Z
 tags: []
-status: draft
-last_validated: 2026-07-01T00:00:00Z
-timeliness: current
 ---
 
 # Page B
@@ -3420,16 +3343,10 @@ Detailed information about page B goes here.
     }
 
     /// Page text with every required field.
-    fn derived_page(
-        title: &str,
-        validated: &str,
-        timeliness: &str,
-        body: &str,
-    ) -> String {
+    fn page_text(title: &str, timestamp: &str, body: &str) -> String {
         format!(
-            "---\ntitle: {title}\ntype: concept\ntags: []\nstatus: draft\n\
-             last_validated: {validated}\ntimeliness: {timeliness}\n---\n\n\
-             # {title}\n\n{body}\n"
+            "---\ntitle: {title}\ntype: concept\ntags: []\n\
+             timestamp: {timestamp}\n---\n\n# {title}\n\n{body}\n"
         )
     }
 
@@ -3447,16 +3364,10 @@ Detailed information about page B goes here.
         std::fs::write(dir.join("bundle.toml"), TEST_MANIFEST).unwrap();
         std::fs::create_dir_all(dir.join("logs")).unwrap();
         std::fs::write(dir.join("logs/.gitkeep"), "").unwrap();
-        let today =
-            chrono::Utc::now().date_naive().format("%Y-%m-%d").to_string();
+        let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
         std::fs::write(
             dir.join("linker.md"),
-            derived_page(
-                "Linker",
-                &today,
-                "current",
-                "See [Target](target.md).",
-            ),
+            page_text("Linker", &now, "See [Target](target.md)."),
         )
         .unwrap();
         std::fs::write(dir.join("target.md"), target).unwrap();
@@ -3465,11 +3376,13 @@ Detailed information about page B goes here.
 
     #[test]
     fn test_apply_check_writes_merges_page_updates() {
-        // One page needs backlinks and timeliness at once: the record holds
-        // one entry, and the reloaded snapshot carries both updates.
+        // One page needs backlinks and a layout normalization at once: the
+        // record holds one entry, and the reloaded snapshot carries both
+        // updates.
         let dir = link_fixture(
             "check_merged_write",
-            &derived_page("Target", "2020-01-01", "current", "Target body."),
+            &page_text("Target", "2020-01-01T00:00:00Z", "Target body.")
+                .replace("tags: []", "tags: [a]"),
         );
         let before = wiki::PageSet::load(&dir);
 
@@ -3480,7 +3393,7 @@ Detailed information about page B goes here.
             changes.iter().filter(|c| c.path == "target.md").collect();
         assert_eq!(
             target.iter().map(|c| c.kind).collect::<Vec<_>>(),
-            vec![ChangeKind::Backlinks, ChangeKind::Timeliness],
+            vec![ChangeKind::Backlinks, ChangeKind::Format],
             "both updates belong to the same write: {changes:?}"
         );
         assert!(
@@ -3499,14 +3412,17 @@ Detailed information about page B goes here.
             stored.body.backlinks().is_some(),
             "the reloaded snapshot carries the generated region"
         );
-        assert_eq!(stored.metadata.timeliness, "stale");
+        assert_eq!(
+            stored.metadata.timestamp, "2020-01-01T00:00:00Z",
+            "check never rewrites the timestamp"
+        );
     }
 
     #[test]
     fn test_apply_check_writes_records_layout_normalization() {
         // A rewritten page whose stored text is not canonical reports both
         // the update and the layout the write normalizes.
-        let target = derived_page("Target", "2020-01-01", "stale", "Body.");
+        let target = page_text("Target", "2020-01-01T00:00:00Z", "Body.");
         let dir = link_fixture("check_format", &format!("{target}\n\n"));
 
         let (changes, _) =
@@ -3535,7 +3451,8 @@ Detailed information about page B goes here.
         // A second run finds nothing to write and leaves every file alone.
         let dir = link_fixture(
             "check_idempotent",
-            &derived_page("Target", "2020-01-01", "current", "Target body."),
+            &page_text("Target", "2020-01-01T00:00:00Z", "Target body.")
+                .replace("tags: []", "tags: [a]"),
         );
 
         let (first, _) =

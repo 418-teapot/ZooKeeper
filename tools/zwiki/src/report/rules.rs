@@ -32,10 +32,6 @@ pub enum Rule {
     PageInvalid,
     /// The `type` value is not valid.
     InvalidType,
-    /// The `status` value is not valid.
-    InvalidStatus,
-    /// The `timeliness` value is not valid.
-    InvalidTimeliness,
     /// A date field is not a valid date.
     InvalidDate,
     /// A frontmatter finding without a specific rule.
@@ -56,11 +52,9 @@ pub enum Rule {
     OrphanPage,
     /// The body is shorter than the sparse threshold.
     SparsePage,
-    /// The page is stale.
-    StalePage,
     /// The page cites a superseded page.
     CascadeStale,
-    /// A source page is newer than the page's `last_validated`.
+    /// A source page is newer than the page's `timestamp`.
     SourceNewer,
     /// The store root index is missing or does not list an installed bundle.
     RootIndex,
@@ -79,8 +73,6 @@ impl Rule {
             Self::LogMissing => "log_missing",
             Self::PageInvalid => "page_invalid",
             Self::InvalidType => "invalid_type",
-            Self::InvalidStatus => "invalid_status",
-            Self::InvalidTimeliness => "invalid_timeliness",
             Self::InvalidDate => "invalid_date",
             Self::InvalidFrontmatter => "invalid_frontmatter",
             Self::SystemFileLink => "system_file_link",
@@ -91,7 +83,6 @@ impl Rule {
             Self::BrokenLink => "broken_link",
             Self::OrphanPage => "orphan_page",
             Self::SparsePage => "sparse_page",
-            Self::StalePage => "stale_page",
             Self::CascadeStale => "cascade_stale",
             Self::SourceNewer => "source_newer",
             Self::RootIndex => "root_index",
@@ -238,14 +229,6 @@ fn lint_issues(lint: &LintResults) -> Vec<ReportIssue> {
             json_details(issue),
         ));
     }
-    for issue in &lint.stale_pages {
-        issues.push(issue_of(
-            Rule::StalePage,
-            &issue.page,
-            "页面已过期",
-            json_details(issue),
-        ));
-    }
     for issue in &lint.cascade_stale {
         issues.push(issue_of(
             Rule::CascadeStale,
@@ -260,9 +243,8 @@ fn lint_issues(lint: &LintResults) -> Vec<ReportIssue> {
 
 /// Report one issue per derived page and source that outdates it.
 ///
-/// The judgment uses the full time of both fields, so a source updated
-/// later on the validation day still counts.  A date-only field names the
-/// start of that day.
+/// The judgment uses the full timestamp of both pages, so a source updated
+/// later on the same day still counts.
 ///
 /// # Errors
 ///
@@ -279,16 +261,15 @@ pub fn from_source_relations(
 
     let mut issues: Vec<ReportIssue> = Vec::new();
     for page in pages {
-        let last_validated = page.document.metadata.last_validated.clone();
         for newer in freshness::newer_sources(page, &by_rel, &catalog) {
             issues.push(issue_of(
                 Rule::SourceNewer,
                 &page.rel,
-                "来源页面的更新时间晚于本页的验证时间",
+                "来源页面的确认时间晚于本页的确认时间",
                 json!({
                     "source": newer.source,
                     "source_timestamp": newer.source_timestamp,
-                    "last_validated": last_validated,
+                    "derived_timestamp": newer.derived_timestamp,
                 }),
             ));
         }
@@ -327,18 +308,6 @@ fn frontmatter_issue(issue: &Issue) -> ReportIssue {
             &issue.page,
             "type 字段值无效",
             json!({"field": "type", "value": value}),
-        ),
-        "invalid_status" => issue_of(
-            Rule::InvalidStatus,
-            &issue.page,
-            "status 字段值无效",
-            json!({"field": "status", "value": value}),
-        ),
-        "invalid_timeliness" => issue_of(
-            Rule::InvalidTimeliness,
-            &issue.page,
-            "timeliness 字段值无效",
-            json!({"field": "timeliness", "value": value}),
         ),
         "invalid_date" => issue_of(
             Rule::InvalidDate,

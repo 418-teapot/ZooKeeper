@@ -70,9 +70,8 @@ fn apply_template(content: &str, title: &str) -> Result<String, String> {
     let mut document =
         PageDocument::parse(content).map_err(|e| format!("模板无效: {e}"))?;
     document.metadata.title = title.to_string();
-    document.metadata.status = "draft".to_string();
     document.metadata.timestamp =
-        Some(chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string());
+        chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
 
     let heading = Regex::new(r"(?m)^# <[^>]+>$").expect("valid regex");
     let author = heading
@@ -402,7 +401,6 @@ mod tests {
             let content = fs::read_to_string(&path).unwrap();
             assert!(content.contains("title: Test Concept"));
             assert!(content.contains("# Test Concept"));
-            assert!(content.contains("status: draft"));
             assert!(content.contains("type: concept"));
             assert!(content.contains("timestamp: "));
         });
@@ -476,8 +474,8 @@ mod tests {
     }
 
     #[test]
-    fn test_create_page_writes_deterministic_frontmatter() {
-        let wiki = temp_dir("create_deterministic_frontmatter");
+    fn test_create_page_writes_model_fields() {
+        let wiki = temp_dir("create_model_fields");
         let path = create_page_at(
             &wiki,
             "autodesign",
@@ -494,36 +492,19 @@ mod tests {
             r"(?m)^timestamp: \d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$",
         )
         .expect("valid regex");
-        let normalised = timestamp.replace(frontmatter, "timestamp: <now>");
+        assert!(
+            timestamp.is_match(frontmatter),
+            "created page carries a UTC timestamp: {frontmatter}"
+        );
 
+        let document = zwiki::document::PageDocument::parse(&content)
+            .expect("created page is a valid document");
+        assert_eq!(document.metadata.title, "Test Concept");
+        assert_eq!(document.metadata.page_type, "concept");
         assert_eq!(
-            normalised,
-            concat!(
-                "---\n",
-                "title: Test Concept\n",
-                "description: <一句话摘要>。\n",
-                "type: concept\n",
-                "timestamp: <now>\n",
-                "tags:\n",
-                "  - tag1\n",
-                "  - tag2\n",
-                "status: draft\n",
-                "last_validated: YYYY-MM-DDTHH:mm:ssZ\n",
-                "timeliness: current\n",
-                "# 可选生命周期字段（按需取消注释填写，详见 SCHEMA.md）：\n",
-                "# supersedes:\n",
-                "#   - path: <domain>/concepts/old.md\n",
-                "#     reason: \"新来源确认此结论已被推翻\"\n",
-                "# superseded_by:\n",
-                "#   - path: <domain>/concepts/new.md\n",
-                "#     reason: \"被新结论取代\"\n",
-                "# contradictions:\n",
-                "#   - path: <domain>/concepts/other.md\n",
-                "#     claims: [\"声明 A\", \"声明 B\"]\n",
-                "#     detected: YYYY-MM-DD\n",
-                "#     resolution: unresolved\n",
-                "# freshness_days: 90",
-            )
+            document.render().expect("render"),
+            content,
+            "the written page is already normalized"
         );
         assert!(body.starts_with("\n# Test Concept\n"), "{body}");
     }
@@ -546,10 +527,6 @@ mod tests {
 
             assert!(
                 content.contains("# supersedes:\n"),
-                "{page_type} lost the guidance comment: {content}"
-            );
-            assert!(
-                content.contains("# freshness_days: 90\n"),
                 "{page_type} lost the guidance comment: {content}"
             );
             let document = zwiki::document::PageDocument::parse(&content)
@@ -599,8 +576,7 @@ mod tests {
 
         assert_eq!(document.metadata.title, "Coin: v2");
         assert_eq!(document.metadata.page_type, "entity");
-        assert_eq!(document.metadata.status, "draft");
-        assert!(document.metadata.timestamp.is_some());
+        assert!(!document.metadata.timestamp.is_empty());
     }
 
     #[test]
@@ -838,12 +814,12 @@ mod tests {
         fs::create_dir_all(domain.join("concepts")).unwrap();
         fs::write(
             domain.join("concepts/old-summary.md"),
-            "---\ntitle: Old Summary\ntype: concept\ndescription: Has a description\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n\n# Old Summary\n",
+            "---\ntitle: Old Summary\ntype: concept\ndescription: Has a description\ntags: []\ntimestamp: 2026-01-01T00:00:00Z\n---\n\n# Old Summary\n",
         )
         .unwrap();
         fs::write(
             domain.join("concepts/old-plain.md"),
-            "---\ntitle: Old Plain\ntype: concept\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n\n# Old Plain\n",
+            "---\ntitle: Old Plain\ntype: concept\ntimestamp: 2026-01-01T00:00:00Z\ntags: []\n---\n\n# Old Plain\n",
         )
         .unwrap();
 
@@ -913,7 +889,7 @@ mod tests {
     fn test_read_full_returns_content() {
         let dir = temp_dir("read_full");
         let path = dir.join("test.md");
-        fs::write(&path, "---\ntitle: Hello\ntype: concept\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n\nBody.").unwrap();
+        fs::write(&path, "---\ntitle: Hello\ntype: concept\ntimestamp: 2026-01-01T00:00:00Z\ntags: []\n---\n\nBody.").unwrap();
 
         let result = read_full(&path);
         assert!(result.is_ok());
@@ -940,8 +916,8 @@ mod tests {
         let path = dir.join("test.md");
         fs::write(
             &path,
-            "---\ntitle: Test\ntype: concept\ntags: []\nstatus: draft\n\
-             last_validated: 2026-01-01\ntimeliness: current\n---\n\n\
+            "---\ntitle: Test\ntype: concept\ntimestamp: 2026-01-01T00:00:00Z\ntags: []\n\
+             ---\n\n\
              ## First Heading\n\nSome text\n\n## Second Heading\n\n\
              ### Sub heading\n\n## Third Heading\n",
         )
@@ -957,7 +933,7 @@ mod tests {
     fn test_read_outline_no_headings() {
         let dir = temp_dir("outline_none");
         let path = dir.join("test.md");
-        fs::write(&path, "---\ntitle: Test\ntype: concept\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n\nJust text.").unwrap();
+        fs::write(&path, "---\ntitle: Test\ntype: concept\ntimestamp: 2026-01-01T00:00:00Z\ntags: []\n---\n\nJust text.").unwrap();
 
         let result = read_outline(&path);
         assert!(result.is_ok());
@@ -970,8 +946,8 @@ mod tests {
         let path = dir.join("test.md");
         fs::write(
             &path,
-            "---\ntitle: Test\ntype: concept\ntags: []\nstatus: draft\n\
-             last_validated: 2026-01-01\ntimeliness: current\n---\n\n\
+            "---\ntitle: Test\ntype: concept\ntimestamp: 2026-01-01T00:00:00Z\ntags: []\n\
+             ---\n\n\
              # Title\n\n## H2 Only\n\n### H3 ignored\n\n## Another H2\n",
         )
         .unwrap();

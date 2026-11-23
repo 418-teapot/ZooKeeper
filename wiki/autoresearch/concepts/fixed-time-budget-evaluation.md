@@ -9,9 +9,6 @@ tags:
   - evaluation
   - metric
   - fair-comparison
-status: stable
-last_validated: 2026-06-19T00:00:00Z
-timeliness: current
 ---
 
 # 固定时间预算评估

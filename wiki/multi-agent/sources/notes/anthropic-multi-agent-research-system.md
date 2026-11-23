@@ -10,9 +10,6 @@ tags:
   - prompt-engineering
   - evaluation
   - anthropic
-status: stable
-last_validated: 2026-09-14T02:14:29Z
-timeliness: current
 ---
 
 # Anthropic 多 agent 研究系统文章

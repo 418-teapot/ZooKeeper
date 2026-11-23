@@ -10,9 +10,6 @@ tags:
   - production
 sources:
   - multi-agent/sources/notes/anthropic-multi-agent-research-system.md
-status: stable
-last_validated: 2026-09-16T01:55:38Z
-timeliness: current
 ---
 
 # 多 agent 系统的评估与生产可靠性

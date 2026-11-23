@@ -13,8 +13,8 @@ pub mod common;
 fn page(title: &str, body: &str) -> String {
     format!(
         "---\ntitle: {title}\ntype: concept\ntimestamp: 2026-01-01T00:00:00Z\n\
-         tags: []\nstatus: draft\nlast_validated: 2026-01-01T00:00:00Z\n\
-         timeliness: current\n---\n\n# {title}\n\n{body}\n"
+         tags: []\n\
+         ---\n\n# {title}\n\n{body}\n"
     )
 }
 

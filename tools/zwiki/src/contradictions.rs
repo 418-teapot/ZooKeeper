@@ -236,12 +236,12 @@ fn record(path: &str, input: &ContradictionInput) -> Contradiction {
 }
 
 /// Process a single contradiction pair: append the record to both pages and
-/// set `last_validated`.  Returns `None` (skip) when the mutual contradiction
+/// set `timestamp`.  Returns `None` (skip) when the mutual contradiction
 /// already exists.
 fn apply_one_pair(
     input: &ContradictionInput,
     wiki_root: &Path,
-    today: &str,
+    now: &str,
 ) -> Result<Option<ApplyEntry>, String> {
     let abs_a = wiki_root.join(&input.page_a);
     let abs_b = wiki_root.join(&input.page_b);
@@ -271,8 +271,8 @@ fn apply_one_pair(
         .get_or_insert_with(Vec::new)
         .push(record(&input.page_a, input));
 
-    document_a.metadata.last_validated = today.to_string();
-    document_b.metadata.last_validated = today.to_string();
+    document_a.metadata.timestamp = now.to_string();
+    document_b.metadata.timestamp = now.to_string();
 
     store(&abs_a, &document_a).map_err(|e| format!("{}: {e}", input.page_a))?;
     store(&abs_b, &document_b).map_err(|e| format!("{}: {e}", input.page_b))?;
@@ -288,9 +288,7 @@ fn apply_one_pair(
 ///
 /// Reads a JSON array of contradiction pairs from stdin, validates
 /// page existence, checks for duplicates, and writes contradiction
-/// records with `last_validated` update.
-/// Status downgrade is NOT performed — callers must explicitly use
-/// `zwiki page set <path> status --downgrade` if desired.
+/// records with a `timestamp` update.
 pub fn cmd_apply(root: &Path, json: bool, note: Option<&str>) {
     let inputs = match input_from_stdin() {
         Ok(v) => v,
@@ -329,10 +327,10 @@ pub fn cmd_apply(root: &Path, json: bool, note: Option<&str>) {
         }
     }
 
-    let today = Utc::now().format("%Y-%m-%d").to_string();
+    let now = Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
     let mut applied: Vec<ApplyEntry> = Vec::new();
     for input in &inputs {
-        match apply_one_pair(input, &wiki_root, &today) {
+        match apply_one_pair(input, &wiki_root, &now) {
             Ok(Some(entry)) => applied.push(entry),
             Ok(None) => {}
             Err(e) => {
@@ -373,7 +371,6 @@ pub fn cmd_apply(root: &Path, json: bool, note: Option<&str>) {
 mod tests {
     use super::*;
     use crate::bundle::testutil::temp_dir;
-    use crate::property;
     use std::fs;
     use zwiki::document::PageDocument;
 
@@ -392,8 +389,8 @@ mod tests {
     /// Valid page with every required field and extra frontmatter lines.
     fn page(title: &str, extra: &str) -> String {
         format!(
-            "---\ntitle: {title}\ntype: concept\ntags: []\nstatus: draft\n\
-             last_validated: 2026-07-01T00:00:00Z\ntimeliness: current\n\
+            "---\ntitle: {title}\ntype: concept\ntags: []\n\
+             timestamp: 2026-07-01T00:00:00Z\n\
              {extra}---\n\n# {title}\n\nBody.\n"
         )
     }
@@ -584,35 +581,6 @@ contradictions:
     }
 
     // -------------------------------------------------------------------
-    // downgrade_status (delegates to property::downgrade_status)
-    // -------------------------------------------------------------------
-
-    #[test]
-    fn test_downgrade_stable_to_review() {
-        assert_eq!(property::downgrade_status("stable"), "review");
-    }
-
-    #[test]
-    fn test_downgrade_review_to_draft() {
-        assert_eq!(property::downgrade_status("review"), "draft");
-    }
-
-    #[test]
-    fn test_downgrade_draft_stays_draft() {
-        assert_eq!(property::downgrade_status("draft"), "draft");
-    }
-
-    #[test]
-    fn test_downgrade_deprecated_stays_deprecated() {
-        assert_eq!(property::downgrade_status("deprecated"), "deprecated");
-    }
-
-    #[test]
-    fn test_downgrade_unknown_status_passthrough() {
-        assert_eq!(property::downgrade_status("unknown"), "unknown");
-    }
-
-    // -------------------------------------------------------------------
     // has_mutual_contradiction
     // -------------------------------------------------------------------
 
@@ -660,10 +628,13 @@ contradictions:
         write(&dir.join("a.md"), &page("Page A", ""));
         write(&dir.join("b.md"), &page("Page B", ""));
 
-        let applied =
-            apply_one_pair(&input("a.md", "b.md"), &dir, "2026-07-05")
-                .expect("apply")
-                .expect("new pair");
+        let applied = apply_one_pair(
+            &input("a.md", "b.md"),
+            &dir,
+            "2026-07-05T00:00:00Z",
+        )
+        .expect("apply")
+        .expect("new pair");
         assert_eq!(applied.page_a, "a.md");
         assert_eq!(applied.page_b, "b.md");
 
@@ -677,7 +648,7 @@ contradictions:
                 resolution: "unresolved".to_string(),
             }])
         );
-        assert_eq!(document_a.metadata.last_validated, "2026-07-05");
+        assert_eq!(document_a.metadata.timestamp, "2026-07-05T00:00:00Z");
 
         let document_b = load(&dir.join("b.md")).expect("page b");
         assert_eq!(
@@ -689,7 +660,7 @@ contradictions:
                 resolution: "unresolved".to_string(),
             }])
         );
-        assert_eq!(document_b.metadata.last_validated, "2026-07-05");
+        assert_eq!(document_b.metadata.timestamp, "2026-07-05T00:00:00Z");
     }
 
     #[test]
@@ -697,15 +668,19 @@ contradictions:
         let dir = temp_dir("apply_existing_pair");
         write(&dir.join("a.md"), &page("Page A", ""));
         write(&dir.join("b.md"), &page("Page B", ""));
-        apply_one_pair(&input("a.md", "b.md"), &dir, "2026-07-05")
+        apply_one_pair(&input("a.md", "b.md"), &dir, "2026-07-05T00:00:00Z")
             .expect("first apply")
             .expect("new pair");
         let before = fs::read_to_string(dir.join("a.md")).expect("read");
 
         assert!(
-            apply_one_pair(&input("a.md", "b.md"), &dir, "2026-07-06")
-                .expect("second apply")
-                .is_none()
+            apply_one_pair(
+                &input("a.md", "b.md"),
+                &dir,
+                "2026-07-06T00:00:00Z"
+            )
+            .expect("second apply")
+            .is_none()
         );
         assert_eq!(fs::read_to_string(dir.join("a.md")).expect("read"), before);
     }
@@ -716,7 +691,7 @@ contradictions:
         write(&dir.join("a.md"), &page("Page A", CONTRADICTION));
         write(&dir.join("b.md"), &page("Page B", ""));
 
-        apply_one_pair(&input("a.md", "b.md"), &dir, "2026-07-05")
+        apply_one_pair(&input("a.md", "b.md"), &dir, "2026-07-05T00:00:00Z")
             .expect("apply")
             .expect("new pair");
 
@@ -735,8 +710,12 @@ contradictions:
         write(&dir.join("b.md"), "---\ntitle: Page B\n---\n\nBody.\n");
         let before = fs::read_to_string(dir.join("a.md")).expect("read");
 
-        let error = apply_one_pair(&input("a.md", "b.md"), &dir, "2026-07-05")
-            .expect_err("invalid page");
+        let error = apply_one_pair(
+            &input("a.md", "b.md"),
+            &dir,
+            "2026-07-05T00:00:00Z",
+        )
+        .expect_err("invalid page");
 
         assert!(error.contains("缺少必需字段"), "unexpected error: {error}");
         assert_eq!(fs::read_to_string(dir.join("a.md")).expect("read"), before);

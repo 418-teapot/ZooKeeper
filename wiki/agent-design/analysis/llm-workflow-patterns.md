@@ -13,9 +13,6 @@ tags:
   - evaluation
 sources:
   - agent-design/sources/notes/anthropic-building-effective-agents.md
-status: stable
-last_validated: 2026-09-15T06:15:36Z
-timeliness: current
 ---
 
 # LLM Workflow 模式

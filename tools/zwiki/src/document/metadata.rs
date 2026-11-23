@@ -16,16 +16,8 @@ use super::Error;
 ///
 /// The list follows the `string` rows of `assets/SCHEMA.md`; a string field
 /// added to [`PageMetadata`] must join it.
-const STRING_FIELDS: [&str; 8] = [
-    "title",
-    "type",
-    "description",
-    "timestamp",
-    "resource",
-    "status",
-    "last_validated",
-    "timeliness",
-];
+const STRING_FIELDS: [&str; 5] =
+    ["title", "type", "description", "timestamp", "resource"];
 
 /// One entry of `supersedes` or `superseded_by`.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -161,28 +153,20 @@ pub struct PageMetadata {
     pub page_type: String,
     /// One-line summary (`description`).
     pub description: Option<String>,
-    /// Last edit time as written (`timestamp`).
-    pub timestamp: Option<String>,
+    /// Content confirmation time in UTC seconds (`timestamp`, required).
+    pub timestamp: String,
     /// External asset URI (`resource`).
     pub resource: Option<String>,
     /// Referenced pages (`sources`).
     pub sources: Option<Vec<String>>,
     /// Tags (`tags`, required).
     pub tags: Vec<String>,
-    /// Lifecycle status (`status`, required).
-    pub status: String,
-    /// Last validation time as written (`last_validated`, required).
-    pub last_validated: String,
-    /// Timeliness mark (`timeliness`, required).
-    pub timeliness: String,
     /// Pages this page overrides (`supersedes`).
     pub supersedes: Option<Vec<Relation>>,
     /// Pages that override this page (`superseded_by`).
     pub superseded_by: Option<Vec<Relation>>,
     /// Recorded conflicts (`contradictions`).
     pub contradictions: Option<Vec<Contradiction>>,
-    /// Freshness threshold in days (`freshness_days`).
-    pub freshness_days: Option<i64>,
     /// Fields the schema does not declare, keyed by field name.
     pub extensions: BTreeMap<String, ExtensionValue>,
     /// Field names in the order the page declares them.
@@ -198,13 +182,10 @@ impl PageMetadata {
             title: required_string(&mut mapping, "title")?,
             page_type: required_string(&mut mapping, "type")?,
             description: optional_string(&mut mapping, "description")?,
-            timestamp: optional_string(&mut mapping, "timestamp")?,
+            timestamp: required_string(&mut mapping, "timestamp")?,
             resource: optional_string(&mut mapping, "resource")?,
             sources: optional_string_list(&mut mapping, "sources")?,
             tags: required_string_list(&mut mapping, "tags")?,
-            status: required_string(&mut mapping, "status")?,
-            last_validated: required_string(&mut mapping, "last_validated")?,
-            timeliness: required_string(&mut mapping, "timeliness")?,
             supersedes: optional_objects(
                 &mut mapping,
                 "supersedes",
@@ -220,7 +201,6 @@ impl PageMetadata {
                 "contradictions",
                 Contradiction::decode,
             )?,
-            freshness_days: optional_integer(&mut mapping, "freshness_days")?,
             extensions: BTreeMap::new(),
             field_order,
         };
@@ -310,9 +290,7 @@ impl PageMetadata {
         if let Some(text) = &self.description {
             insert_string(&mut mapping, "description", text);
         }
-        if let Some(text) = &self.timestamp {
-            insert_string(&mut mapping, "timestamp", text);
-        }
+        insert_string(&mut mapping, "timestamp", &self.timestamp);
         if let Some(text) = &self.resource {
             insert_string(&mut mapping, "resource", text);
         }
@@ -320,9 +298,6 @@ impl PageMetadata {
             mapping.insert(Value::from("sources"), string_sequence(sources));
         }
         mapping.insert(Value::from("tags"), string_sequence(&self.tags));
-        insert_string(&mut mapping, "status", &self.status);
-        insert_string(&mut mapping, "last_validated", &self.last_validated);
-        insert_string(&mut mapping, "timeliness", &self.timeliness);
         if let Some(relations) = &self.supersedes {
             insert_values(
                 &mut mapping,
@@ -346,9 +321,6 @@ impl PageMetadata {
                 records,
                 Contradiction::to_value,
             );
-        }
-        if let Some(days) = self.freshness_days {
-            mapping.insert(Value::from("freshness_days"), Value::from(days));
         }
         for (name, value) in &self.extensions {
             if mapping.contains_key(name.as_str()) {
@@ -456,20 +428,6 @@ fn optional_string_list(
     match take(mapping, key) {
         None | Some(Value::Null) => Ok(None),
         Some(value) => string_list_value(value, key).map(Some),
-    }
-}
-
-/// Read an optional integer field.
-fn optional_integer(
-    mapping: &mut Mapping,
-    key: &str,
-) -> Result<Option<i64>, Error> {
-    match take(mapping, key) {
-        None | Some(Value::Null) => Ok(None),
-        Some(Value::Number(number)) => {
-            number.as_i64().map(Some).ok_or_else(|| unexpected(key, "integer"))
-        }
-        Some(_) => Err(unexpected(key, "integer")),
     }
 }
 

@@ -9,9 +9,6 @@ tags:
   - asd-ste100
   - technical-writing
   - multimodal
-status: review
-last_validated: 2026-10-06T09:11:24Z
-timeliness: current
 ---
 
 ## Overview

@@ -1,15 +1,14 @@
 //! Status — `zwiki status` subcommand.
 //!
-//! Computes and displays a health overview of the wiki: total page count,
-//! distributions by type, domain, status, and timeliness, and the range of
-//! `last_validated` dates.  Supports optional slice filters (`--type`,
-//! `--tag`, `--domain`) to scope the report to a subset of pages.
+//! Computes and displays an overview of the wiki: total page count and the
+//! distributions by type and domain.  Supports optional slice filters
+//! (`--type`, `--tag`, `--domain`) to scope the report to a subset of
+//! pages.
 
 use std::collections::BTreeMap;
 use std::fmt::Write;
 use std::path::Path;
 
-use chrono::NaiveDate;
 use serde::Serialize;
 
 use crate::catalog::Catalog;
@@ -20,15 +19,6 @@ use zwiki::identity::PageId;
 // Data structures
 // ---------------------------------------------------------------------------
 
-/// Date range for the `last_validated` field.
-#[derive(Debug, Clone, Serialize)]
-pub struct DateRange {
-    /// Earliest date (formatted as YYYY-MM-DD), or `None` if unavailable.
-    pub earliest: Option<String>,
-    /// Latest date (formatted as YYYY-MM-DD), or `None` if unavailable.
-    pub latest: Option<String>,
-}
-
 /// Health status report for the wiki.
 #[derive(Debug, Clone, Serialize)]
 pub struct StatusReport {
@@ -38,12 +28,6 @@ pub struct StatusReport {
     pub by_type: BTreeMap<String, usize>,
     /// Distribution by domain (first path component).
     pub by_domain: BTreeMap<String, usize>,
-    /// Distribution by status (`status` frontmatter field).
-    pub by_status: BTreeMap<String, usize>,
-    /// Distribution by timeliness (`timeliness` frontmatter field).
-    pub by_timeliness: BTreeMap<String, usize>,
-    /// Range of `last_validated` dates.
-    pub last_validated_range: DateRange,
 }
 
 // ---------------------------------------------------------------------------
@@ -73,11 +57,7 @@ pub fn compute_status(
 
     let mut by_type: BTreeMap<String, usize> = BTreeMap::new();
     let mut by_domain: BTreeMap<String, usize> = BTreeMap::new();
-    let mut by_status: BTreeMap<String, usize> = BTreeMap::new();
-    let mut by_timeliness: BTreeMap<String, usize> = BTreeMap::new();
     let mut total: usize = 0;
-    let mut earliest_date: Option<NaiveDate> = None;
-    let mut latest_date: Option<NaiveDate> = None;
 
     for page in pages {
         // Apply slice filters (AND semantics).
@@ -108,39 +88,9 @@ pub fn compute_status(
         {
             *by_domain.entry(domain.to_string()).or_insert(0) += 1;
         }
-
-        if !metadata.status.is_empty() {
-            *by_status.entry(metadata.status.clone()).or_insert(0) += 1;
-        }
-
-        if !metadata.timeliness.is_empty() {
-            *by_timeliness.entry(metadata.timeliness.clone()).or_insert(0) += 1;
-        }
-
-        // last_validated range.
-        if let Some(date) = wiki::parse_date(&metadata.last_validated) {
-            if earliest_date.is_none_or(|e| date < e) {
-                earliest_date = Some(date);
-            }
-            if latest_date.is_none_or(|l| date > l) {
-                latest_date = Some(date);
-            }
-        }
     }
 
-    let date_range = DateRange {
-        earliest: earliest_date.map(|d| d.format("%Y-%m-%d").to_string()),
-        latest: latest_date.map(|d| d.format("%Y-%m-%d").to_string()),
-    };
-
-    Ok(StatusReport {
-        total,
-        by_type,
-        by_domain,
-        by_status,
-        by_timeliness,
-        last_validated_range: date_range,
-    })
+    Ok(StatusReport { total, by_type, by_domain })
 }
 
 // ---------------------------------------------------------------------------
@@ -189,31 +139,6 @@ pub fn format_status(
         let _ = writeln!(output, "{}", crate::display::count_line(k, *v));
     }
 
-    // Status distribution.
-    output.push_str("\n状态分布:\n");
-    for (k, v) in &report.by_status {
-        let _ = writeln!(output, "{}", crate::display::count_line(k, *v));
-    }
-
-    // Timeliness distribution.
-    output.push_str("\n时效性:\n");
-    for (k, v) in &report.by_timeliness {
-        let _ = writeln!(output, "{}", crate::display::count_line(k, *v));
-    }
-
-    // Date range.
-    output.push_str("\n最近验证范围: ");
-    match (
-        &report.last_validated_range.earliest,
-        &report.last_validated_range.latest,
-    ) {
-        (Some(e), Some(l)) => {
-            let _ = write!(output, "{e} ~ {l}");
-        }
-        _ => output.push('无'),
-    }
-    output.push('\n');
-
     output
 }
 
@@ -252,15 +177,7 @@ mod tests {
     // -------------------------------------------------------------------
 
     /// Create a page with the given properties for status testing.
-    fn make_page(
-        wiki_root: &Path,
-        rel: &str,
-        page_type: &str,
-        status: &str,
-        timeliness: &str,
-        last_validated: &str,
-        tags: &[&str],
-    ) {
+    fn make_page(wiki_root: &Path, rel: &str, page_type: &str, tags: &[&str]) {
         let tags_str = if tags.is_empty() {
             "[]".to_string()
         } else {
@@ -270,9 +187,8 @@ mod tests {
         };
         let title = rel.split('/').next_back().unwrap_or("page");
         let content = format!(
-            "---\ntitle: {title}\ntype: {page_type}\nstatus: {status}\n\
-             timeliness: {timeliness}\nlast_validated: {last_validated}\n\
-             tags: {tags_str}\n---\n# {title}\n",
+            "---\ntitle: {title}\ntype: {page_type}\n\
+             timestamp: 2026-01-01T00:00:00Z\ntags: {tags_str}\n---\n# {title}\n",
         );
         write_page(wiki_root, rel, &content);
     }
@@ -289,10 +205,6 @@ mod tests {
         assert_eq!(report.total, 0);
         assert!(report.by_type.is_empty());
         assert!(report.by_domain.is_empty());
-        assert!(report.by_status.is_empty());
-        assert!(report.by_timeliness.is_empty());
-        assert!(report.last_validated_range.earliest.is_none());
-        assert!(report.last_validated_range.latest.is_none());
     }
 
     // -------------------------------------------------------------------
@@ -302,31 +214,12 @@ mod tests {
     #[test]
     fn test_status_all_pages() {
         let dir = wiki_root("all_pages");
-        make_page(
-            &dir,
-            "shared/concepts/foo.md",
-            "concept",
-            "stable",
-            "current",
-            "2025-01-15",
-            &["access"],
-        );
-        make_page(
-            &dir,
-            "shared/entities/bar.md",
-            "entity",
-            "draft",
-            "stale",
-            "2024-06-01",
-            &["item"],
-        );
+        make_page(&dir, "shared/concepts/foo.md", "concept", &["access"]);
+        make_page(&dir, "shared/entities/bar.md", "entity", &["item"]);
         make_page(
             &dir,
             "autoresearch/concepts/baz.md",
             "concept",
-            "stable",
-            "current",
-            "2025-03-01",
             &["research"],
         );
 
@@ -341,38 +234,20 @@ mod tests {
         // Domain distribution.
         assert_eq!(report.by_domain.get("shared"), Some(&2_usize));
         assert_eq!(report.by_domain.get("autoresearch"), Some(&1_usize));
-
-        // Status distribution.
-        assert_eq!(report.by_status.get("stable"), Some(&2_usize));
-        assert_eq!(report.by_status.get("draft"), Some(&1_usize));
-
-        // Timeliness distribution.
-        assert_eq!(report.by_timeliness.get("current"), Some(&2_usize));
-        assert_eq!(report.by_timeliness.get("stale"), Some(&1_usize));
-
-        // Date range.
-        assert_eq!(
-            report.last_validated_range.earliest,
-            Some("2024-06-01".to_string())
-        );
-        assert_eq!(
-            report.last_validated_range.latest,
-            Some("2025-03-01".to_string())
-        );
     }
 
     // -------------------------------------------------------------------
-    // Pages without status / timeliness
+    // Pages the model rejects
     // -------------------------------------------------------------------
 
     #[test]
     fn test_status_invalid_page_fails() {
         let dir = wiki_root("missing_fields");
-        // A page without status, timeliness, or last_validated.
+        // A page without a timestamp cannot be loaded as a page.
         write_page(
             &dir,
             "shared/concepts/nofields.md",
-            "---\ntitle: No Fields\ntype: concept\n---\n# No Fields\n",
+            "---\ntitle: No Fields\ntype: concept\ntimestamp: 2026-01-01T00:00:00Z\n---\n# No Fields\n",
         );
 
         let error = compute_status(&dir, None, None, None, &no_bundles())
@@ -387,7 +262,7 @@ mod tests {
         write_page(
             &dir,
             "shared/concepts/notype.md",
-            "---\ntitle: No Type\nstatus: stable\n---\n# No Type\n",
+            "---\ntitle: No Type\n---\n# No Type\n",
         );
 
         let error = compute_status(&dir, None, None, None, &no_bundles())
@@ -398,24 +273,8 @@ mod tests {
     #[test]
     fn test_status_type_slice() {
         let dir = wiki_root("type_slice");
-        make_page(
-            &dir,
-            "shared/concepts/a.md",
-            "concept",
-            "stable",
-            "current",
-            "2025-01-01",
-            &[],
-        );
-        make_page(
-            &dir,
-            "shared/entities/b.md",
-            "entity",
-            "draft",
-            "stale",
-            "2024-01-01",
-            &[],
-        );
+        make_page(&dir, "shared/concepts/a.md", "concept", &[]);
+        make_page(&dir, "shared/entities/b.md", "entity", &[]);
 
         let report =
             compute_status(&dir, Some("concept"), None, None, &no_bundles())
@@ -432,24 +291,8 @@ mod tests {
     #[test]
     fn test_status_tag_slice() {
         let dir = wiki_root("tag_slice");
-        make_page(
-            &dir,
-            "shared/concepts/a.md",
-            "concept",
-            "stable",
-            "current",
-            "2025-01-01",
-            &["access"],
-        );
-        make_page(
-            &dir,
-            "shared/concepts/b.md",
-            "concept",
-            "draft",
-            "stale",
-            "2024-01-01",
-            &["misc"],
-        );
+        make_page(&dir, "shared/concepts/a.md", "concept", &["access"]);
+        make_page(&dir, "shared/concepts/b.md", "concept", &["misc"]);
 
         let report =
             compute_status(&dir, None, Some("access"), None, &no_bundles())
@@ -464,24 +307,8 @@ mod tests {
     #[test]
     fn test_status_domain_slice() {
         let dir = wiki_root("domain_slice");
-        make_page(
-            &dir,
-            "shared/concepts/a.md",
-            "concept",
-            "stable",
-            "current",
-            "2025-01-01",
-            &[],
-        );
-        make_page(
-            &dir,
-            "autoresearch/concepts/b.md",
-            "concept",
-            "draft",
-            "stale",
-            "2024-01-01",
-            &[],
-        );
+        make_page(&dir, "shared/concepts/a.md", "concept", &[]);
+        make_page(&dir, "autoresearch/concepts/b.md", "concept", &[]);
 
         let report =
             compute_status(&dir, None, None, Some("shared"), &no_bundles())
@@ -494,20 +321,12 @@ mod tests {
     #[test]
     fn test_status_by_domain_excludes_root_files() {
         let dir = wiki_root("root_file_domain");
-        make_page(
-            &dir,
-            "shared/concepts/a.md",
-            "concept",
-            "stable",
-            "current",
-            "2025-01-01",
-            &[],
-        );
+        make_page(&dir, "shared/concepts/a.md", "concept", &[]);
         // Root-level file (no directory component).
         write_page(
             &dir,
             "overview.md",
-            "---\ntitle: Overview\ntype: synthesis\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\n# Overview\n",
+            "---\ntitle: Overview\ntype: synthesis\ntags: []\ntimestamp: 2026-01-01T00:00:00Z\n---\n# Overview\n",
         );
 
         let report = compute_status(&dir, None, None, None, &no_bundles())
@@ -516,49 +335,6 @@ mod tests {
         assert!(report.by_domain.contains_key("shared"));
         // Root-level files must not appear as domains.
         assert!(!report.by_domain.contains_key("overview.md"));
-    }
-
-    // -------------------------------------------------------------------
-    // Date range edge cases
-    // -------------------------------------------------------------------
-
-    #[test]
-    fn test_status_invalid_dates_ignored() {
-        let dir = wiki_root("bad_dates");
-        write_page(
-            &dir,
-            "shared/concepts/a.md",
-            "---\ntitle: A\ntype: concept\nstatus: stable\n\
-             last_validated: not-a-date\ntags: []\ntimeliness: current\n---\n# A\n",
-        );
-        let report = compute_status(&dir, None, None, None, &no_bundles())
-            .expect("valid pages");
-        assert!(report.last_validated_range.earliest.is_none());
-        assert!(report.last_validated_range.latest.is_none());
-    }
-
-    #[test]
-    fn test_status_single_date() {
-        let dir = wiki_root("single_date");
-        make_page(
-            &dir,
-            "shared/concepts/a.md",
-            "concept",
-            "stable",
-            "current",
-            "2025-06-15",
-            &[],
-        );
-        let report = compute_status(&dir, None, None, None, &no_bundles())
-            .expect("valid pages");
-        assert_eq!(
-            report.last_validated_range.earliest,
-            Some("2025-06-15".to_string())
-        );
-        assert_eq!(
-            report.last_validated_range.latest,
-            Some("2025-06-15".to_string())
-        );
     }
 
     // -------------------------------------------------------------------
@@ -571,13 +347,9 @@ mod tests {
             total: 0,
             by_type: BTreeMap::new(),
             by_domain: BTreeMap::new(),
-            by_status: BTreeMap::new(),
-            by_timeliness: BTreeMap::new(),
-            last_validated_range: DateRange { earliest: None, latest: None },
         };
         let output = format_status(&report, None, None, None);
         assert!(output.contains("页面总数: 0"));
-        assert!(output.contains("最近验证范围: 无"));
     }
 
     #[test]
@@ -586,9 +358,6 @@ mod tests {
             total: 2,
             by_type: BTreeMap::from([("concept".to_string(), 2)]),
             by_domain: BTreeMap::from([("shared".to_string(), 2)]),
-            by_status: BTreeMap::new(),
-            by_timeliness: BTreeMap::new(),
-            last_validated_range: DateRange { earliest: None, latest: None },
         };
         let output = format_status(&report, Some("concept"), None, None);
         assert!(output.starts_with("切片: type=concept"));
@@ -607,18 +376,6 @@ mod tests {
                 ("autoresearch".to_string(), 1),
                 ("shared".to_string(), 2),
             ]),
-            by_status: BTreeMap::from([
-                ("draft".to_string(), 1),
-                ("stable".to_string(), 2),
-            ]),
-            by_timeliness: BTreeMap::from([
-                ("current".to_string(), 2),
-                ("stale".to_string(), 1),
-            ]),
-            last_validated_range: DateRange {
-                earliest: Some("2024-06-01".to_string()),
-                latest: Some("2025-03-01".to_string()),
-            },
         };
         let output = format_status(&report, None, None, None);
         assert!(output.contains("页面总数: 3"));
@@ -628,13 +385,6 @@ mod tests {
         assert!(output.contains("领域分布:"));
         assert!(output.contains("  autoresearch — 1 页"));
         assert!(output.contains("  shared — 2 页"));
-        assert!(output.contains("状态分布:"));
-        assert!(output.contains("  draft — 1 页"));
-        assert!(output.contains("  stable — 2 页"));
-        assert!(output.contains("时效性:"));
-        assert!(output.contains("  current — 2 页"));
-        assert!(output.contains("  stale — 1 页"));
-        assert!(output.contains("最近验证范围: 2024-06-01 ~ 2025-03-01"));
     }
 
     #[test]
@@ -643,9 +393,6 @@ mod tests {
             total: 1,
             by_type: BTreeMap::from([("concept".to_string(), 1)]),
             by_domain: BTreeMap::from([("shared".to_string(), 1)]),
-            by_status: BTreeMap::new(),
-            by_timeliness: BTreeMap::new(),
-            last_validated_range: DateRange { earliest: None, latest: None },
         };
         let output =
             format_status(&report, Some("concept"), Some("auth"), None);
@@ -662,19 +409,11 @@ mod tests {
             total: 0,
             by_type: BTreeMap::new(),
             by_domain: BTreeMap::new(),
-            by_status: BTreeMap::new(),
-            by_timeliness: BTreeMap::new(),
-            last_validated_range: DateRange { earliest: None, latest: None },
         };
         let output = format_status_json(&report);
         assert!(output.contains("\"total\": 0"));
         assert!(output.contains("\"by_type\": {}"));
         assert!(output.contains("\"by_domain\": {}"));
-        assert!(output.contains("\"by_status\": {}"));
-        assert!(output.contains("\"by_timeliness\": {}"));
-        assert!(output.contains("\"last_validated_range\": {"));
-        assert!(output.contains("\"earliest\": null"));
-        assert!(output.contains("\"latest\": null"));
     }
 
     #[test]
@@ -683,20 +422,10 @@ mod tests {
             total: 2,
             by_type: BTreeMap::from([("concept".to_string(), 2)]),
             by_domain: BTreeMap::from([("shared".to_string(), 2)]),
-            by_status: BTreeMap::from([("stable".to_string(), 2)]),
-            by_timeliness: BTreeMap::from([("current".to_string(), 2)]),
-            last_validated_range: DateRange {
-                earliest: Some("2024-01-01".to_string()),
-                latest: Some("2025-01-01".to_string()),
-            },
         };
         let output = format_status_json(&report);
         assert!(output.contains("\"total\": 2"));
         assert!(output.contains("\"concept\": 2"));
         assert!(output.contains("\"shared\": 2"));
-        assert!(output.contains("\"stable\": 2"));
-        assert!(output.contains("\"current\": 2"));
-        assert!(output.contains("\"earliest\": \"2024-01-01\""));
-        assert!(output.contains("\"latest\": \"2025-01-01\""));
     }
 }

@@ -10,9 +10,6 @@ tags:
   - tool-design
   - evaluation
   - anthropic
-status: stable
-last_validated: 2026-09-16T00:00:00Z
-timeliness: current
 ---
 
 # Anthropic Writing effective tools for agents 工程博客

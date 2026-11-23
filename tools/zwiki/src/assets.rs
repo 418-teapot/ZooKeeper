@@ -82,14 +82,7 @@ mod tests {
     fn test_template_keeps_the_lifecycle_guidance() {
         for page_type in TEMPLATE_TYPES {
             let content = template(page_type).expect("template");
-            assert!(
-                content.contains(
-                    "# 可选生命周期字段（按需取消注释填写，详见 SCHEMA.md）："
-                ),
-                "{page_type} lost the guidance comment"
-            );
             assert!(content.contains("# supersedes:\n"), "{page_type}");
-            assert!(content.contains("# freshness_days: 90\n"), "{page_type}");
         }
     }
 
@@ -105,7 +98,6 @@ mod tests {
             assert_eq!(metadata.supersedes, None, "{page_type}");
             assert_eq!(metadata.superseded_by, None, "{page_type}");
             assert_eq!(metadata.contradictions, None, "{page_type}");
-            assert_eq!(metadata.freshness_days, None, "{page_type}");
             assert!(metadata.extensions.is_empty(), "{page_type}");
         }
     }

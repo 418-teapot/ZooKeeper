@@ -10,7 +10,7 @@ use chrono::Utc;
 const HEALTH_SECTION_COUNT: usize = 8;
 
 /// Number of lint check sections.
-const LINT_SECTION_COUNT: usize = 5;
+const LINT_SECTION_COUNT: usize = 4;
 
 /// Total number of check items across health and lint.
 const TOTAL_SECTION_COUNT: usize = HEALTH_SECTION_COUNT + LINT_SECTION_COUNT;
@@ -39,7 +39,6 @@ pub const fn count_lint_issues(r: &LintResults) -> usize {
     r.broken_links.len()
         + r.orphan_pages.len()
         + r.sparse_pages.len()
-        + r.stale_pages.len()
         + r.cascade_stale.len()
 }
 
@@ -332,7 +331,6 @@ pub struct LintResults {
     pub broken_links: Vec<Issue>,
     pub orphan_pages: Vec<Issue>,
     pub sparse_pages: Vec<Issue>,
-    pub stale_pages: Vec<Issue>,
     pub cascade_stale: Vec<Issue>,
 }
 
@@ -405,9 +403,6 @@ pub fn format_full_report(health: &CheckResults, lint: &LintResults) -> String {
         }
         if !lint.sparse_pages.is_empty() {
             lines.extend(fmt_sparse_pages(&lint.sparse_pages));
-        }
-        if !lint.stale_pages.is_empty() {
-            lines.extend(fmt_stale_pages(&lint.stale_pages));
         }
         if !lint.cascade_stale.is_empty() {
             lines.extend(fmt_cascade_stale(&lint.cascade_stale));
@@ -486,27 +481,6 @@ fn fmt_sparse_pages(issues: &[Issue]) -> Vec<String> {
     lines
 }
 
-fn fmt_stale_pages(issues: &[Issue]) -> Vec<String> {
-    let mut lines = Vec::new();
-    lines.push(format!("## 过时页面（{}）", issues.len()));
-    lines.push(String::new());
-    lines.push("| 页面 | 验证时间 | 原因 |".to_string());
-    lines.push("|---|---|---|".to_string());
-    for issue in issues {
-        let details: serde_json::Value =
-            serde_json::from_str(&issue.details).unwrap_or_default();
-        let last_validated = details["last_validated"].as_str().unwrap_or("");
-        lines.push(format!(
-            "| `{}` | {} | {} |",
-            issue.page,
-            last_validated,
-            format_reasons(&details),
-        ));
-    }
-    lines.push(String::new());
-    lines
-}
-
 /// Join the `reasons` array of an issue's details into a display string.
 fn format_reasons(details: &serde_json::Value) -> String {
     details["reasons"]
@@ -574,7 +548,7 @@ mod tests {
 
         assert!(report.contains("全部通过 ✅"), "should contain all-pass");
         assert!(
-            report.contains("扫描 42 页，13 项检查"),
+            report.contains("扫描 42 页，12 项检查"),
             "header with page count"
         );
         assert!(!report.contains("## "), "no sections when all-pass: {report}");
@@ -667,21 +641,13 @@ mod tests {
             category: "orphan".into(),
             details: r#"{"inbound_links":0,"in_index":false}"#.into(),
         });
-        lint.stale_pages.push(Issue {
-            page: "concepts/old.md".into(),
-            category: "stale".into(),
-            details:
-                r#"{"last_validated":"2020-01-01","reasons":["time_expired"]}"#
-                    .into(),
-        });
         let report = format_full_report(&health, &lint);
 
         assert!(report.contains("## 日志覆盖（1）"));
         assert!(report.contains("## 孤立页面（1）"));
-        assert!(report.contains("## 过时页面（1）"));
         assert!(!report.contains("## 空文件"), "zero health section");
         assert!(!report.contains("## 断裂链接"), "zero lint section");
-        assert!(report.contains("**总计：3 个问题**（健康 1 + lint 2）"));
+        assert!(report.contains("**总计：2 个问题**（健康 1 + lint 1）"));
     }
 
     /// Section titles for lint use pure Chinese (no English annotation).
@@ -704,11 +670,6 @@ mod tests {
             category: "x".into(),
             details: "{}".into(),
         });
-        lint.stale_pages.push(Issue {
-            page: "d.md".into(),
-            category: "x".into(),
-            details: "{}".into(),
-        });
         lint.cascade_stale.push(Issue {
             page: "e.md".into(),
             category: "x".into(),
@@ -719,7 +680,6 @@ mod tests {
         assert!(report.contains("## 断裂链接（1）"));
         assert!(report.contains("## 孤立页面（1）"));
         assert!(report.contains("## 稀疏页面（1）"));
-        assert!(report.contains("## 过时页面（1）"));
         assert!(report.contains("## 级联过时（1）"));
         // No English annotations
         assert!(!report.contains("Broken Links"));
@@ -810,7 +770,7 @@ mod tests {
                 r#"{"target":"other.md","occurrences":[{"display":"other","line":5}]}"#.into(),
         });
 
-        // Lint: 5 sections
+        // Lint: 4 sections
         let mut lint = LintResults::default();
         lint.broken_links.push(Issue {
             page: "broken.md".into(),
@@ -826,13 +786,6 @@ mod tests {
             page: "sparse.md".into(),
             category: "sparse".into(),
             details: r#"{"body_length":10,"threshold":50}"#.into(),
-        });
-        lint.stale_pages.push(Issue {
-            page: "stale.md".into(),
-            category: "stale".into(),
-            details:
-                r#"{"last_validated":"2020-01-01","reasons":["time_expired"]}"#
-                    .into(),
         });
         lint.cascade_stale.push(Issue {
             page: "cascade.md".into(),

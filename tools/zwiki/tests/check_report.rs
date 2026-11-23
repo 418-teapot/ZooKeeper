@@ -17,10 +17,10 @@ the scenario in one full sentence, so no stub rule applies to it.";
 
 /// Page text with every required field.
 fn page(title: &str, body: &str) -> String {
-    let today = chrono::Utc::now().date_naive().format("%Y-%m-%d").to_string();
+    let today = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
     format!(
-        "---\ntitle: {title}\ntype: concept\ntags: []\nstatus: draft\n\
-         last_validated: {today}\ntimeliness: current\n---\n\n\
+        "---\ntitle: {title}\ntype: concept\ntags: []\n\
+         timestamp: {today}\n---\n\n\
          # {title}\n\n{body}\n"
     )
 }
@@ -29,8 +29,8 @@ fn page(title: &str, body: &str) -> String {
 fn source_page(title: &str, timestamp: &str) -> String {
     format!(
         "---\ntitle: {title}\ntype: source\ntimestamp: {timestamp}\n\
-         tags: []\nstatus: draft\nlast_validated: {timestamp}\n\
-         timeliness: current\n---\n\n# {title}\n\n{BODY}\n"
+         tags: []\n\
+         ---\n\n# {title}\n\n{BODY}\n"
     )
 }
 
@@ -38,8 +38,8 @@ fn source_page(title: &str, timestamp: &str) -> String {
 fn analysis_page(title: &str, validated: &str, sources: &str) -> String {
     format!(
         "---\ntitle: {title}\ntype: analysis\nsources: {sources}\n\
-         tags: []\nstatus: draft\nlast_validated: {validated}\n\
-         timeliness: current\n---\n\n# {title}\n\n{BODY}\n\n\
+         tags: []\ntimestamp: {validated}\n\
+         ---\n\n# {title}\n\n{BODY}\n\n\
          See [Bar](bar.md).\n"
     )
 }
@@ -96,7 +96,7 @@ fn test_json_report_describes_one_clean_run() {
     let (report, code) = check_json(&root);
 
     assert_eq!(code, Some(0), "a clean root passes: {report}");
-    assert_eq!(report["schema_version"], 1, "the layout is versioned");
+    assert_eq!(report["schema_version"], 2, "the layout is versioned");
     assert_eq!(report["status"], "ok");
     assert_eq!(report["read_only"], false);
     assert!(report["error"].is_null(), "a completed run has no error");
@@ -159,9 +159,9 @@ fn test_json_report_lists_changes_and_remaining_issues() {
         assert!(
             matches!(
                 change["kind"].as_str(),
-                Some("format" | "index" | "backlinks" | "timeliness")
+                Some("format" | "index" | "backlinks")
             ),
-            "the kind is one of the four updates: {change}"
+            "the kind is one of the three updates: {change}"
         );
     }
     assert_eq!(report["summary"]["changes"], changes.len());
@@ -194,14 +194,14 @@ fn test_json_report_lists_changes_and_remaining_issues() {
 #[test]
 fn test_json_report_omits_an_issue_the_run_repaired() {
     let root = source_root("check_report_repaired");
-    let today = chrono::Utc::now().date_naive().format("%Y-%m-%d");
-    // `archived` is not a valid timeliness value; the automatic write
-    // stores the computed value before the checks run.
+    let today = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ");
+    // Flow-style tags are not the stored layout; the automatic write
+    // normalizes the page before the checks run.
     std::fs::write(
         root.join("target.md"),
         format!(
-            "---\ntitle: Target\ntype: concept\ntags: []\nstatus: draft\n\
-             last_validated: {today}\ntimeliness: archived\n---\n\n\
+            "---\ntitle: Target\ntype: concept\ntags: [a]\n\
+             timestamp: {today}\n---\n\n\
              # Target\n\n{BODY}\n"
         ),
     )
@@ -213,26 +213,19 @@ fn test_json_report_omits_an_issue_the_run_repaired() {
 
     assert_eq!(code, Some(0), "the repair leaves no issue: {report}");
     assert_eq!(report["status"], "ok");
-    assert!(
-        !report["issues"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|issue| issue["rule"] == "invalid_timeliness"),
-        "a repaired field is no issue of the same run: {report}"
-    );
+    assert_eq!(report["summary"]["issues"], 0, "no issue remains: {report}");
     assert!(
         report["changes"]
             .as_array()
             .unwrap()
             .iter()
-            .any(|c| c["path"] == "target.md" && c["kind"] == "timeliness"),
-        "the applied timeliness update is a change: {report}"
+            .any(|c| c["path"] == "target.md" && c["kind"] == "format"),
+        "the applied layout normalization is a change: {report}"
     );
     let stored = std::fs::read_to_string(root.join("target.md")).unwrap();
     assert!(
-        stored.contains("timeliness: current"),
-        "the stored page carries the computed value: {stored}"
+        stored.contains("tags:\n  - a\n"),
+        "the stored page carries the normalized list: {stored}"
     );
 }
 
@@ -265,8 +258,8 @@ fn test_json_report_marks_a_read_only_root() {
 #[test]
 fn test_source_newer_issue_carries_source_and_both_times() {
     let root = source_root("check_report_source_newer");
-    // The source changed later on the validation day, so only the full
-    // time of both fields tells them apart.
+    // The source changed later on the same day, so only the full
+    // timestamp of both pages tells them apart.
     std::fs::write(
         root.join("bar.md"),
         source_page("Bar", "2026-11-20T10:00:00Z"),
@@ -274,7 +267,7 @@ fn test_source_newer_issue_carries_source_and_both_times() {
     .unwrap();
     std::fs::write(
         root.join("foo.md"),
-        analysis_page("Foo", "2026-11-20", "[bar.md]"),
+        analysis_page("Foo", "2026-11-20T09:00:00Z", "[bar.md]"),
     )
     .unwrap();
 
@@ -295,7 +288,7 @@ fn test_source_newer_issue_carries_source_and_both_times() {
         issue["details"]["source_timestamp"], "2026-11-20T10:00:00Z",
         "the report keeps the stored timestamp"
     );
-    assert_eq!(issue["details"]["last_validated"], "2026-11-20");
+    assert_eq!(issue["details"]["derived_timestamp"], "2026-11-20T09:00:00Z");
 }
 
 #[test]
@@ -312,7 +305,7 @@ fn test_one_source_spelling_reports_one_source_newer() {
         root.join("foo.md"),
         analysis_page(
             "Foo",
-            "2026-11-20",
+            "2026-11-20T09:00:00Z",
             "['[Bar](bar.md)', '[Bar](@test-wiki/bar.md)', bar.md]",
         ),
     )
@@ -347,7 +340,7 @@ fn test_text_report_shows_counts_changes_issues_and_result() {
     .unwrap();
     std::fs::write(
         root.join("foo.md"),
-        analysis_page("Foo", "2026-11-20", "[bar.md]"),
+        analysis_page("Foo", "2026-11-20T09:00:00Z", "[bar.md]"),
     )
     .unwrap();
 
@@ -365,8 +358,8 @@ fn test_text_report_shows_counts_changes_issues_and_result() {
         "the source issue names the source and its time: {stdout}"
     );
     assert!(
-        stdout.contains("验证时间 2026-11-20"),
-        "the source issue names the validation time: {stdout}"
+        stdout.contains("本页确认时间 2026-11-20T09:00:00Z"),
+        "the source issue names the page timestamp: {stdout}"
     );
 }
 
