@@ -1,6 +1,6 @@
 //! Core wiki library — path resolution, page discovery, page loading.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -200,6 +200,23 @@ impl PageSet {
     #[must_use]
     pub fn contains(&self, rel: &str) -> bool {
         self.pages.iter().any(|page| page.rel == rel)
+    }
+
+    /// Replace the loaded documents of the pages `updates` names.
+    ///
+    /// The pages keep their file identity, so a read-only check can judge
+    /// the state a write would store without touching the file.
+    pub fn apply_documents(
+        &mut self,
+        updates: impl IntoIterator<Item = (String, PageDocument)>,
+    ) {
+        let documents: HashMap<String, PageDocument> =
+            updates.into_iter().collect();
+        for page in &mut self.pages {
+            if let Some(document) = documents.get(&page.rel) {
+                page.document = document.clone();
+            }
+        }
     }
 
     /// Every page, or one error naming every page that failed to load.
@@ -424,53 +441,80 @@ pub fn resolve_wiki_link(target: &str, base: &Path) -> Option<String> {
 /// indexed when listed in any index, not only the root one.
 #[must_use]
 pub fn collect_index_entries(root: &Path) -> Vec<HashSet<String>> {
-    let exclude_dirs: HashSet<&str> = EXCLUDED_DIRS.iter().copied().collect();
-    let meta: HashSet<&str> = META_FILES.iter().copied().collect();
-    let mut entries: Vec<HashSet<String>> = Vec::new();
+    collect_index_entries_with(root, &HashMap::new())
+}
 
+/// Collect the page paths of every `index.md`, judging `indexes` content in
+/// place of the file on disk.
+///
+/// `indexes` holds root-relative index paths and the content the caller
+/// computed for them.  An entry whose file does not exist yet is still an
+/// index, so a candidate snapshot covers an index a write would create.
+#[must_use]
+pub fn collect_index_entries_with(
+    root: &Path,
+    indexes: &HashMap<String, String>,
+) -> Vec<HashSet<String>> {
+    let mut contents: std::collections::BTreeMap<String, String> =
+        disk_index_entries(root).into_iter().collect();
+    contents
+        .extend(indexes.iter().map(|(rel, text)| (rel.clone(), text.clone())));
+    contents
+        .into_iter()
+        .map(|(rel, content)| index_entries(&rel, &content))
+        .collect()
+}
+
+/// Read every `index.md` below `root` as `(relative path, content)` pairs.
+fn disk_index_entries(root: &Path) -> Vec<(String, String)> {
+    let exclude_dirs: HashSet<&str> = EXCLUDED_DIRS.iter().copied().collect();
     let walk = WalkDir::new(root)
         .into_iter()
         .filter_map(Result::ok)
         .filter(|e| e.file_type().is_file())
         .filter(|e| e.file_name() == "index.md");
 
+    let mut indexes: Vec<(String, String)> = Vec::new();
     for entry in walk {
         let index_path = entry.path();
-        let rel_index = index_path.strip_prefix(root).unwrap_or(index_path);
-
-        if rel_index.components().any(|c| {
+        let rel = index_path.strip_prefix(root).unwrap_or(index_path);
+        if rel.components().any(|c| {
             exclude_dirs.contains(c.as_os_str().to_str().unwrap_or(""))
         }) {
             continue;
         }
+        indexes
+            .push((rel.to_string_lossy().to_string(), read_file(index_path)));
+    }
+    indexes
+}
 
-        let index_dir = index_path.parent().unwrap_or(root);
-        let index_parent = rel_index.parent().unwrap_or_else(|| Path::new(""));
-        let content = read_file(index_path);
-        let mut listed: HashSet<String> = HashSet::new();
+/// The page paths one index lists, resolved against its own directory.
+fn index_entries(rel_index: &str, content: &str) -> HashSet<String> {
+    let meta: HashSet<&str> = META_FILES.iter().copied().collect();
+    let index_parent =
+        Path::new(rel_index).parent().unwrap_or_else(|| Path::new(""));
+    let mut listed: HashSet<String> = HashSet::new();
 
-        for link in parse_index_links(&content) {
-            let Some(rel_to_index) = resolve_wiki_link(&link, index_dir) else {
-                continue;
-            };
-            let full_rel = if index_parent.as_os_str().is_empty() {
-                rel_to_index
-            } else {
-                format!("{}/{}", index_parent.to_string_lossy(), rel_to_index)
-            };
-            let fname = Path::new(&full_rel)
-                .file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or("");
-            if !meta.contains(fname) {
-                listed.insert(full_rel);
-            }
+    for link in parse_index_links(content) {
+        let Some(rel_to_index) = resolve_wiki_link(&link, index_parent) else {
+            continue;
+        };
+        let full_rel = if index_parent.as_os_str().is_empty() {
+            rel_to_index
+        } else {
+            format!("{}/{}", index_parent.to_string_lossy(), rel_to_index)
+        };
+        let fname = Path::new(&full_rel)
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("");
+        if !meta.contains(fname) {
+            listed.insert(full_rel);
         }
-
-        entries.push(listed);
     }
 
-    entries
+    listed
 }
 
 // ---------------------------------------------------------------------------
@@ -528,41 +572,41 @@ pub fn page_matches_slice(
 // Date parsing
 // ---------------------------------------------------------------------------
 
-/// Parse an ISO 8601 date string (`YYYY-MM-DD` or `YYYY-MM-DDTHH:mm:ssZ`).
+/// Parse an ISO 8601 date string (`YYYY-MM-DD` or `YYYY-MM-DDTHH:mm:ssZ`)
+/// into the moment it names.
 ///
-/// Accepts both with and without time component for backward compatibility.
-///
-/// Returns `Some(NaiveDate)` on success, `None` on failure.
+/// A date without a time names the start of that day, so two values stay
+/// comparable to the second.  Returns `None` when the value is empty or
+/// malformed.
 #[must_use]
-pub fn parse_date(date_str: &str) -> Option<chrono::NaiveDate> {
-    let cleaned = date_str.trim();
+pub fn parse_moment(value: &str) -> Option<chrono::NaiveDateTime> {
+    let cleaned = value.trim();
     if cleaned.is_empty() {
         return None;
     }
 
-    // Try plain date format: YYYY-MM-DD
-    if let Ok(d) = chrono::NaiveDate::parse_from_str(cleaned, "%Y-%m-%d") {
-        return Some(d);
+    if let Ok(date) = chrono::NaiveDate::parse_from_str(cleaned, "%Y-%m-%d") {
+        return date.and_hms_opt(0, 0, 0);
     }
 
-    // Try datetime formats (with optional Z suffix).
+    // Datetime formats, with an optional `Z` suffix and optional
+    // fractional seconds.
     let cleaned = cleaned.strip_suffix('Z').unwrap_or(cleaned);
-
-    // With fractional seconds.
-    if let Ok(dt) =
+    if let Ok(moment) =
         chrono::NaiveDateTime::parse_from_str(cleaned, "%Y-%m-%dT%H:%M:%S%.f")
     {
-        return Some(dt.date());
+        return Some(moment);
     }
+    chrono::NaiveDateTime::parse_from_str(cleaned, "%Y-%m-%dT%H:%M:%S").ok()
+}
 
-    // Without fractional seconds.
-    if let Ok(dt) =
-        chrono::NaiveDateTime::parse_from_str(cleaned, "%Y-%m-%dT%H:%M:%S")
-    {
-        return Some(dt.date());
-    }
-
-    None
+/// Parse an ISO 8601 date string (`YYYY-MM-DD` or `YYYY-MM-DDTHH:mm:ssZ`)
+/// into the day it names.
+///
+/// Returns `Some(NaiveDate)` on success, `None` on failure.
+#[must_use]
+pub fn parse_date(date_str: &str) -> Option<chrono::NaiveDate> {
+    parse_moment(date_str).map(|moment| moment.date())
 }
 
 // ===========================================================================

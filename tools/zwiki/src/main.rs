@@ -21,18 +21,21 @@ mod log;
 mod r#move;
 mod page;
 mod property;
+mod report;
 mod search;
 mod status;
 mod supersede;
 mod verify;
 mod wiki;
 
-use crate::bundle::ZwikiLock;
+use crate::report::ChangeKind;
 use clap::{Args, Parser, Subcommand};
+use std::collections::HashMap;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::process;
 use tempfile::TempDir;
+use zwiki::document::PageDocument;
 
 /// Resolved wiki root — either a writable local directory or a read-only
 /// temporary extraction (from tar.gz or URL).
@@ -984,20 +987,6 @@ fn cmd_supersede(
     crate::print_stdout_line(format!("已记录取代关系: {old} ← {new}"));
 }
 
-/// Report a command failure and return exit code 1: a JSON error object on
-/// stdout in JSON mode, the message on stderr otherwise.
-fn report_error(error: &str, json_mode: bool) -> i32 {
-    if json_mode {
-        let output = serde_json::json!({"status": "error", "error": error});
-        crate::print_stdout_line(
-            serde_json::to_string_pretty(&output).unwrap(),
-        );
-    } else {
-        eprintln!("{error}");
-    }
-    1
-}
-
 /// Validate `--domain` and emit the error output if invalid.
 ///
 /// Returns `true` when the caller should short-circuit (invalid domain
@@ -1025,446 +1014,383 @@ fn check_domain_or_print(
     false
 }
 
-/// Handle `zwiki check` — unified dispatch for Dir and Temp roots.
+/// Handle `zwiki check` — one report for every root form.
 ///
-/// - `Dir` root: per-bundle check + `sync_derived_metadata` (writable);
-///   when no lock bundles exist, runs health/lint on the root directly.
-/// - `Temp` root: manifest + structure + health/lint only (read-only).
+/// A local directory is writable when it is a bundle source; the installed
+/// store and a directory without `bundle.toml` are read-only.  A temporary
+/// root always is: the archive is examined and never written.
 fn dispatch_check(root: &WikiRoot, json_mode: bool) {
     match root {
         WikiRoot::Dir(dir) => {
-            let lock = bundle::read_lock_at(dir).unwrap_or_else(|msg| {
-                eprintln!("{msg}");
-                process::exit(1);
-            });
-            if lock.entries.is_empty() {
-                // No bundles — check the root directory directly so that
-                // `--root ./wiki` on a wiki without a lock still validates.
-                let code = dispatch_check_root_dir(dir, json_mode);
-                if code != 0 {
-                    process::exit(code);
-                }
+            let read_only = is_read_only_check_root(dir);
+            let lock = match bundle::read_lock_at(dir) {
+                Ok(lock) => lock,
+                Err(message) => process::exit(report_check_error(
+                    &message, read_only, json_mode,
+                )),
+            };
+            let issues = if lock.entries.is_empty() {
+                Vec::new()
             } else {
-                let code = dispatch_check_no_arg_inner(dir, &lock, json_mode);
-                if code != 0 {
-                    process::exit(code);
-                }
+                store_root_issues(dir, &lock)
+            };
+            let code = run_check(dir, read_only, issues, json_mode);
+            if code != 0 {
+                process::exit(code);
             }
         }
         WikiRoot::Temp(tmp) => {
-            // Read bundle.toml directly (no double-copy via resolve_source).
-            let manifest_path = tmp.path().join("bundle.toml");
-            if !manifest_path.exists() {
-                if json_mode {
-                    let output = serde_json::json!({
-                        "status": "error",
-                        "error": "bundle.toml not found in wiki root",
-                    });
-                    crate::print_stdout_line(
-                        serde_json::to_string_pretty(&output).unwrap(),
-                    );
-                } else {
-                    eprintln!("错误: 在 wiki 根中未找到 bundle.toml");
-                }
-                process::exit(1);
+            if let Err(message) = check_temp_root(tmp.path(), json_mode) {
+                process::exit(report_check_error(&message, true, json_mode));
             }
-            if let Err(e) = bundle::read_manifest(&manifest_path, json_mode) {
-                if json_mode {
-                    let output =
-                        serde_json::json!({"status": "error", "error": e});
-                    crate::print_stdout_line(
-                        serde_json::to_string_pretty(&output).unwrap(),
-                    );
-                } else {
-                    eprintln!("{e}");
-                }
-                process::exit(1);
-            }
-            // Bundle structure check (index.md + logs/).
-            if let Err(e) =
-                bundle::check_bundle_structure(tmp.path(), json_mode)
-            {
-                if json_mode {
-                    let output =
-                        serde_json::json!({"status": "error", "error": e});
-                    crate::print_stdout_line(
-                        serde_json::to_string_pretty(&output).unwrap(),
-                    );
-                } else {
-                    eprintln!("{e}");
-                }
-                process::exit(1);
-            }
-            // Health + lint checks.
-            let checked = run_health_lint_at(tmp.path());
-            let (health_results, lint_results, health_issues, lint_issues) =
-                match checked {
-                    Ok(results) => results,
-                    Err(error) => {
-                        process::exit(report_error(&error, json_mode))
-                    }
-                };
-            let total = health_issues + lint_issues;
-            if json_mode {
-                print_json_check_output(
-                    &health_results,
-                    &lint_results,
-                    health_issues,
-                    lint_issues,
-                    DerivedSync::Skipped,
-                );
-            } else {
-                crate::print_stdout_line(display::format_full_report(
-                    &health_results,
-                    &lint_results,
-                ));
-            }
-            // Read-only: skip derived metadata writes.
-            eprintln!("只读根，已跳过派生元数据同步");
-            if total > 0 {
-                process::exit(1);
+            let code = run_check(tmp.path(), true, Vec::new(), json_mode);
+            if code != 0 {
+                process::exit(code);
             }
         }
     }
 }
 
-/// Derived-metadata outcome reported by `zwiki check`.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum DerivedSync {
-    /// Read-only root: nothing was written.
-    Skipped,
-    /// Every page is synchronized.
-    Synced,
-    /// Synchronization failed; the caller reports the error.
-    Failed,
-}
-
-impl DerivedSync {
-    const fn as_str(self) -> &'static str {
-        match self {
-            Self::Skipped => "skipped",
-            Self::Synced => "synced",
-            Self::Failed => "failed",
-        }
-    }
-}
-
-/// Check a directory root directly (no lock file) — run health/lint +
-/// `sync_derived_metadata`.  Returns exit code (0 = pass, 1 = issues found).
-fn dispatch_check_root_dir(dir: &Path, json_mode: bool) -> i32 {
-    // An installed store and a directory nested in a bundle are read-only.
-    let read_only = is_read_only_check_root(dir);
-    let set = wiki::PageSet::load(dir);
-    let mut sync_error = None;
-    let derived_sync = if read_only {
-        eprintln!("只读根，已跳过派生元数据同步");
-        DerivedSync::Skipped
-    } else {
-        // Regenerate generated index bodies from authored frontmatter so
-        // the report reflects the synchronized state.
-        index::regenerate_all_indexes(dir, json_mode);
-        // Sync derived metadata (writable for Dir root).
-        match sync_derived_metadata(dir, &set, json_mode) {
-            Ok(()) => DerivedSync::Synced,
-            Err(error) => {
-                sync_error = Some(error);
-                DerivedSync::Failed
-            }
-        }
-    };
-    let checked = run_health_lint(dir, &set);
-    let (health_results, lint_results, health_issues, lint_issues) =
-        match checked {
-            Ok(results) => results,
-            Err(error) => return report_error(&error, json_mode),
-        };
-    let total = health_issues + lint_issues;
-    if json_mode {
-        print_json_check_output(
-            &health_results,
-            &lint_results,
-            health_issues,
-            lint_issues,
-            derived_sync,
-        );
-    } else {
-        crate::print_stdout_line(display::format_full_report(
-            &health_results,
-            &lint_results,
-        ));
-    }
-    sync_error.map_or_else(
-        || i32::from(total > 0),
-        |error| {
-            eprintln!("{error}");
-            1
-        },
-    )
-}
-
-/// Sync backlinks and apply timeliness updates (`mark_stale` +
-/// `invalidate_by_source`) across a set of pages under `root`.  When
-/// `suppress_eprint` is true, informational eprintln messages are suppressed
-/// (used in `json_mode` for the no-arg check path).
+/// Validate the manifest and the layout of a temporary root.
 ///
 /// # Errors
 ///
-/// Fails when a page cannot be read, parsed, or written, so the caller
-/// reports the failure instead of a partial sync.
-fn sync_derived_metadata(
+/// Fails when the root holds no manifest, holds an invalid one, or misses
+/// the bundle layout, so no bundle is left to check.
+fn check_temp_root(root: &Path, json_mode: bool) -> Result<(), String> {
+    let manifest_path = root.join("bundle.toml");
+    if !manifest_path.exists() {
+        return Err(String::from("在 wiki 根中未找到 bundle.toml"));
+    }
+    bundle::read_manifest(&manifest_path, json_mode)?;
+    bundle::check_bundle_structure(root, json_mode)
+}
+
+/// The store-root checks: the root index must name every installed bundle,
+/// and every installed bundle must be present.
+///
+/// A broken root index or a missing bundle is a content issue of the root,
+/// not a failure of the run.
+fn store_root_issues(
     root: &Path,
-    set: &wiki::PageSet,
-    suppress_eprint: bool,
-) -> Result<(), String> {
-    let all_pages = set.require_all()?;
-    if all_pages.is_empty() {
-        return Ok(());
+    lock: &bundle::ZwikiLock,
+) -> Vec<report::ReportIssue> {
+    let mut issues: Vec<report::ReportIssue> = Vec::new();
+    if let Err(message) = bundle::check_root_index(root, lock) {
+        issues.push(report::ReportIssue {
+            rule: report::rules::Rule::RootIndex,
+            path: String::from("index.md"),
+            message,
+            details: serde_json::json!({"index": "index.md"}),
+        });
+    }
+    issues.extend(
+        lock.entries
+            .iter()
+            .filter_map(|entry| missing_bundle_issue(root, entry)),
+    );
+    issues
+}
+
+/// The issue of one installed bundle whose directory is missing.
+fn missing_bundle_issue(
+    root: &Path,
+    entry: &bundle::ZwikiLockEntry,
+) -> Option<report::ReportIssue> {
+    if root.join(&entry.target).exists() {
+        return None;
+    }
+    Some(report::ReportIssue {
+        rule: report::rules::Rule::BundleMissing,
+        path: entry.target.clone(),
+        message: String::from("已安装的 bundle 目录缺失"),
+        details: serde_json::json!({
+            "name": entry.name,
+            "target": entry.target,
+        }),
+    })
+}
+
+/// Check one root and print its report.
+///
+/// A writable root applies the automatic writes, then judges the stored
+/// pages.  A write that fails keeps the changes it stored, and the run
+/// judges the pages as they are on disk.
+/// A read-only root writes nothing: it reports the same
+/// normalization as unapplied changes and judges the state a write would
+/// store, including the index content a write would generate.
+fn run_check(
+    root: &Path,
+    read_only: bool,
+    mut issues: Vec<report::ReportIssue>,
+    json_mode: bool,
+) -> i32 {
+    let mut set = wiki::PageSet::load(root);
+    let mut changes: Vec<report::Change> = Vec::new();
+    let mut indexes: HashMap<String, String> = HashMap::new();
+    let mut error: Option<String> = None;
+
+    if read_only {
+        eprintln!("只读根，已跳过派生元数据同步");
+        let pending = index::pending_updates(root, json_mode);
+        changes.extend(pending.iter().map(|update| report::Change {
+            path: update.path.clone(),
+            kind: ChangeKind::Index,
+        }));
+        indexes = pending.into_iter().map(|u| (u.path, u.content)).collect();
+        match pending_page_writes(root, &set, false, json_mode) {
+            Ok(writes) => {
+                changes.extend(writes.iter().flat_map(PageWrite::changes));
+                set.apply_documents(
+                    writes.into_iter().map(|w| (w.rel, w.document)),
+                );
+            }
+            Err(message) => error = Some(message),
+        }
+    } else {
+        match apply_check_writes(root, &set, json_mode) {
+            Ok((applied, reloaded)) => {
+                changes = applied;
+                set = reloaded;
+            }
+            Err(failure) => {
+                changes = failure.changes;
+                error = Some(failure.message);
+                // A partial write leaves the pages on disk as they are.
+                set = wiki::PageSet::load(root);
+            }
+        }
     }
 
-    // Pages inside an installed bundle layer must never be rewritten.
-    // Their check report is still produced; only the derived metadata
-    // writes are skipped.  The bundle pages remain part of the reverse
-    // index so that writable pages still see their inbound links.
-    let readonly_count = all_pages
-        .iter()
-        .filter(|p| wiki::bundle_on_path(root, &p.rel).is_some())
-        .count();
-    if readonly_count > 0 && !suppress_eprint {
-        eprintln!("已跳过 {readonly_count} 个只读 bundle 页面");
+    let pages = set.pages().len() + set.errors().len();
+    match run_health_lint_with_indexes(root, &set, &indexes) {
+        Ok((health, lint, _, _)) => {
+            issues.extend(report::rules::from_health_lint(&health, &lint));
+            match report::rules::from_source_relations(root, &set) {
+                Ok(source_issues) => issues.extend(source_issues),
+                Err(message) => error = error.or(Some(message)),
+            }
+        }
+        Err(message) => error = error.or(Some(message)),
     }
-    let writable: Vec<wiki::Page> = all_pages
+
+    let report = report::Report::new(read_only, pages, changes, issues, error);
+    print_report(&report, json_mode);
+    report.exit_code()
+}
+
+/// Print one `check` report: a single JSON document or the text layout.
+///
+/// The failure that stopped the run also goes to stderr, so a shell that
+/// reads only the error stream still sees it.
+fn print_report(report: &report::Report, json_mode: bool) {
+    if json_mode {
+        let document = serde_json::to_string_pretty(&report.to_json()).unwrap();
+        crate::print_stdout_line(document);
+    } else {
+        crate::print_stdout_line(report::text::render(report));
+    }
+    if let Some(message) = &report.error {
+        eprintln!("{message}");
+    }
+}
+
+/// Print the report of a run that stopped before it examined any page.
+fn report_check_error(error: &str, read_only: bool, json_mode: bool) -> i32 {
+    let report = report::Report::new(
+        read_only,
+        0,
+        Vec::new(),
+        Vec::new(),
+        Some(error.to_string()),
+    );
+    print_report(&report, json_mode);
+    report.exit_code()
+}
+
+/// One page an automatic `check` write updates.
+struct PageWrite {
+    /// Path relative to the checked root.
+    rel: String,
+    /// The page document the write stores.
+    document: PageDocument,
+    /// Updates the write applies, in application order.
+    kinds: Vec<ChangeKind>,
+}
+
+impl PageWrite {
+    /// The report entries of this write, one per update.
+    fn changes(&self) -> impl Iterator<Item = report::Change> + '_ {
+        self.kinds
+            .iter()
+            .map(|kind| report::Change { path: self.rel.clone(), kind: *kind })
+    }
+}
+
+/// A `check` write that stopped before it stored every update.
+#[derive(Debug)]
+struct CheckWriteError {
+    /// Updates the run stored before the failure.
+    changes: Vec<report::Change>,
+    /// Failure that stopped the write.
+    message: String,
+}
+
+/// Apply the automatic writes a writable bundle source accepts, then reload
+/// the pages.
+///
+/// The writes are the generated indexes, the `## Backlinks` region, and
+/// `timeliness`.  `last_validated` is never written: only an explicit
+/// re-validation may refresh it.  Every update of one page is merged into
+/// one render, so a page never overwrites its own earlier write.
+///
+/// Returns the applied changes and the pages as stored afterwards.
+///
+/// # Errors
+///
+/// Fails when a page cannot be read, parsed, rendered, or written.  The
+/// error keeps the changes the run stored before the failure.
+fn apply_check_writes(
+    dir: &Path,
+    set: &wiki::PageSet,
+    suppress_eprint: bool,
+) -> Result<(Vec<report::Change>, wiki::PageSet), CheckWriteError> {
+    let mut changes: Vec<report::Change> =
+        index::regenerate_all_indexes(dir, suppress_eprint)
+            .into_iter()
+            .map(|path| report::Change { path, kind: ChangeKind::Index })
+            .collect();
+    let writes = match pending_page_writes(dir, set, true, suppress_eprint) {
+        Ok(writes) => writes,
+        Err(message) => return Err(CheckWriteError { changes, message }),
+    };
+    for write in &writes {
+        if let Err(e) =
+            document_io::store(&dir.join(&write.rel), &write.document)
+        {
+            let message = format!("{}: {e}", write.rel);
+            return Err(CheckWriteError { changes, message });
+        }
+        changes.extend(write.changes());
+    }
+    Ok((changes, wiki::PageSet::load(dir)))
+}
+
+/// Compute the normalization an automatic `check` write applies to the pages
+/// of `root`, without writing them.
+///
+/// The updates are the `## Backlinks` region and `timeliness`.  A page inside
+/// an installed bundle layer is never rewritten, so `skip_bundle_pages` leaves
+/// it out of a writable root; a read-only root writes nothing and keeps every
+/// page in the candidate state.
+///
+/// Returns one entry per page whose stored form would change, each carrying
+/// the document the write stores.
+///
+/// # Errors
+///
+/// Fails when a page cannot be read or parsed, so the caller reports the
+/// failure instead of a partial state.
+fn pending_page_writes(
+    root: &Path,
+    set: &wiki::PageSet,
+    skip_bundle_pages: bool,
+    suppress_eprint: bool,
+) -> Result<Vec<PageWrite>, String> {
+    let all_pages = set.require_all()?;
+    if all_pages.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let candidates: Vec<wiki::Page> = all_pages
         .iter()
-        .filter(|p| wiki::bundle_on_path(root, &p.rel).is_none())
+        .filter(|page| {
+            !skip_bundle_pages
+                || wiki::bundle_on_path(root, &page.rel).is_none()
+        })
         .cloned()
         .collect();
+    if skip_bundle_pages
+        && candidates.len() < all_pages.len()
+        && !suppress_eprint
+    {
+        eprintln!(
+            "已跳过 {} 个只读 bundle 页面",
+            all_pages.len() - candidates.len()
+        );
+    }
 
     // Page identity comes from the bundle manifests; without them no
     // reference has a target.
     let catalog = catalog::Catalog::new(root, set)?;
 
-    // Sync backlinks.  The reverse index is built from all pages so that
-    // bundle pages contribute their outbound links, but only writable
-    // pages are rewritten.
+    // The reverse index is built from all pages so that bundle pages
+    // contribute their outbound links, but only candidate pages are
+    // normalized.  It also feeds the supersede detection of the freshness
+    // verdict.
     let bl_index = backlinks::build_reverse_index(&catalog, all_pages);
     let titles = backlinks::title_map(all_pages);
-    let updated =
-        backlinks::update_backlinks(&bl_index, &titles, &writable, &catalog)?;
-    if updated > 0 && !suppress_eprint {
-        eprintln!("已同步 {updated} 个页面的反向链接");
-    }
+    let backlinks_by_rel: HashMap<String, Option<String>> =
+        backlinks::pending_backlinks(&bl_index, &titles, &candidates, &catalog)
+            .into_iter()
+            .map(|(page, content)| (page.rel.clone(), content))
+            .collect();
 
-    // Apply timeliness updates derived from the unified freshness verdict
-    // (time decay, newer sources, unreviewed supersedes) to writable
-    // pages only.  The reverse index is reused for supersede detection.
+    // Timeliness follows the unified freshness verdict (time decay, newer
+    // sources, unreviewed supersedes).
     let reference_date = chrono::Utc::now().date_naive();
     let freshness_ctx =
         freshness::FreshnessContext::new(all_pages, &catalog, reference_date)
             .with_reverse_index(&bl_index);
-    let stale_updates: Vec<health::StaleUpdate> =
+    let timeliness_by_rel: HashMap<String, String> =
         health::mark_stale(all_pages, &freshness_ctx)
             .into_iter()
-            .filter(|u| wiki::bundle_on_path(root, &u.rel).is_none())
+            .map(|u| (u.rel, u.new_timeliness))
             .collect();
-    let stale_count =
-        stale_updates.iter().filter(|u| u.new_timeliness == "stale").count();
-    let current_count =
-        stale_updates.iter().filter(|u| u.new_timeliness == "current").count();
-    for update in &stale_updates {
-        property::set(&update.path, "timeliness", &update.new_timeliness)
-            .map_err(|e| format!("{}: {e}", update.rel))?;
-    }
-    if !stale_updates.is_empty() && !suppress_eprint {
-        eprintln!(
-            "已标记 {} 个页面的 timeliness（stale: {}, current: {}）",
-            stale_updates.len(),
-            stale_count,
-            current_count,
-        );
-    }
 
-    // Invalidate derived pages whose sources have changed.
-    let invalidated: Vec<health::InvalidateUpdate> =
-        health::invalidate_by_source(all_pages, &catalog)
-            .into_iter()
-            .filter(|u| wiki::bundle_on_path(root, &u.rel).is_none())
-            .collect();
-    for update in &invalidated {
-        property::set(
-            &update.path,
-            "last_validated",
-            &update.new_last_validated,
-        )
-        .map_err(|e| format!("{}: {e}", update.rel))?;
-    }
-    if !invalidated.is_empty() && !suppress_eprint {
-        eprintln!(
-            "已重置 {} 个页面的 last_validated（来源页面已变更）",
-            invalidated.len()
-        );
-    }
-    Ok(())
-}
-
-/// Inner implementation of `dispatch_check_no_arg` that returns an exit code
-/// instead of calling `process::exit`.  Returns `0` for success, `1` for
-/// failures (issues found or missing bundles).  Takes `wiki_root` and `lock`
-/// as parameters so callers can pass test directories.
-fn dispatch_check_no_arg_inner(
-    wiki_root: &Path,
-    lock: &ZwikiLock,
-    json_mode: bool,
-) -> i32 {
-    // An installed store and a directory nested in a bundle are read-only.
-    let read_only = is_read_only_check_root(wiki_root);
-    // Root index check first — missing/corrupt index is fatal.
-    if let Err(msg) = bundle::check_root_index(wiki_root, lock) {
-        if json_mode {
-            let output = serde_json::json!({"status": "error", "error": msg});
-            crate::print_stdout_line(
-                serde_json::to_string_pretty(&output).unwrap(),
-            );
-        } else {
-            crate::print_stdout_line(msg);
-        }
-        return 1;
-    }
-    if !json_mode {
-        crate::print_stdout_line("root index.md 检查通过");
-    }
-
-    let mut total_issues: usize = 0;
-    let mut missing_count: usize = 0;
-    let mut bundle_results: Vec<serde_json::Value> = Vec::new();
-    let mut had_missing = false;
-
-    for entry in &lock.entries {
-        let bundle_dir = wiki_root.join(&entry.target);
-
-        if !bundle_dir.exists() {
-            had_missing = true;
-            missing_count += 1;
-            if json_mode {
-                bundle_results.push(serde_json::json!({
-                    "name": entry.name,
-                    "status": "missing",
-                }));
-            } else {
-                crate::print_stdout_line(format!(
-                    "✗ {} — 未安装（目标目录缺失）",
-                    entry.name
-                ));
-            }
+    let mut writes: Vec<PageWrite> = Vec::new();
+    for page in &candidates {
+        let backlinks = backlinks_by_rel.get(&page.rel);
+        let timeliness = timeliness_by_rel.get(page.rel.as_str());
+        if backlinks.is_none() && timeliness.is_none() {
             continue;
         }
 
-        let counts = check_single_bundle(
-            &bundle_dir,
-            json_mode,
-            &mut bundle_results,
-            entry,
-        );
-        let (health_issues, lint_issues) = match counts {
-            Ok(counts) => counts,
-            Err(error) => return report_error(&error, json_mode),
-        };
-        total_issues += health_issues + lint_issues;
-    }
-
-    // Sync backlinks and apply timeliness updates across the entire wiki
-    // root before printing the aggregate output.  Read-only roots skip all
-    // writes.
-    let mut sync_error = None;
-    let derived_sync = if read_only {
-        eprintln!("只读根，已跳过派生元数据同步");
-        DerivedSync::Skipped
-    } else {
-        let set = wiki::PageSet::load(wiki_root);
-        match sync_derived_metadata(wiki_root, &set, json_mode) {
-            Ok(()) => DerivedSync::Synced,
-            Err(error) => {
-                sync_error = Some(error);
-                DerivedSync::Failed
-            }
+        let mut document = page.document.clone();
+        let mut kinds: Vec<ChangeKind> = Vec::new();
+        if let Some(content) = backlinks {
+            document.body.set_backlinks(content.clone());
+            kinds.push(ChangeKind::Backlinks);
         }
-    };
-
-    if json_mode {
-        let status = if total_issues > 0
-            || had_missing
-            || derived_sync == DerivedSync::Failed
-        {
-            "error"
-        } else {
-            "ok"
-        };
-        let final_output = serde_json::json!({
-            "status": status,
-            "root_index": "ok",
-            "bundles": bundle_results,
-            "total_issues": total_issues,
-            "missing": missing_count,
-            "read_only_root": derived_sync == DerivedSync::Skipped,
-            "derived_metadata_sync": derived_sync.as_str(),
-        });
-        crate::print_stdout_line(
-            serde_json::to_string_pretty(&final_output).unwrap(),
-        );
-    } else if total_issues > 0 || had_missing {
-        crate::print_stdout_line("");
-        crate::print_stdout_line("---");
-        crate::print_stdout_line(format!(
-            "**全局总计：{total_issues} 个问题**"
-        ));
+        if let Some(value) = timeliness {
+            document
+                .metadata
+                .set_field_text("timeliness", value)
+                .map_err(|e| format!("{}: {e}", page.rel))?;
+            kinds.push(ChangeKind::Timeliness);
+        }
+        if layout_differs(page)? {
+            kinds.push(ChangeKind::Format);
+        }
+        writes.push(PageWrite { rel: page.rel.clone(), document, kinds });
     }
 
-    if let Some(error) = sync_error {
-        eprintln!("{error}");
-        return 1;
-    }
-    if total_issues > 0 || had_missing {
-        return 1;
-    }
-    0
+    Ok(writes)
 }
 
-/// Run health + lint checks for a single bundle directory, accumulate JSON
-/// results into `bundle_results` (when `json_mode`), and return the issue
-/// counts for the caller to sum.
+/// Whether the stored page text differs from what the document model writes.
+///
+/// A page a write normalizes also carries that difference.
 ///
 /// # Errors
 ///
-/// Fails when the bundle pages carry no bundle identity.
-fn check_single_bundle(
-    bundle_dir: &Path,
-    json_mode: bool,
-    bundle_results: &mut Vec<serde_json::Value>,
-    entry: &bundle::ZwikiLockEntry,
-) -> Result<(usize, usize), String> {
-    let (health_results, lint_results, health_issues, lint_issues) =
-        run_health_lint_at(bundle_dir)?;
-
-    if json_mode {
-        let hl_json = format_health_lint_json(&health_results, &lint_results);
-        bundle_results.push(serde_json::json!({
-            "name": entry.name,
-            "status": if health_issues + lint_issues == 0 { "ok" } else { "issues" },
-            "issues": health_issues + lint_issues,
-            "health": hl_json["health"],
-            "lint": hl_json["lint"],
-        }));
-    } else {
-        let total = health_issues + lint_issues;
-        if total == 0 {
-            crate::print_stdout_line(format!("✓ {} — 健康", entry.name));
-        } else {
-            crate::print_stdout_line(format!(
-                "✗ {} — {} 个问题（health: {}, lint: {}）",
-                entry.name, total, health_issues, lint_issues,
-            ));
-        }
-    }
-
-    Ok((health_issues, lint_issues))
+/// Fails when the stored page cannot be read or the document rendered.
+fn layout_differs(page: &wiki::Page) -> Result<bool, String> {
+    let rendered =
+        page.document.render().map_err(|e| format!("{}: {e}", page.rel))?;
+    let stored = std::fs::read_to_string(&page.path)
+        .map_err(|e| format!("{}: {e}", page.rel))?;
+    Ok(rendered != stored)
 }
 
 /// Run health + lint checks against `root`, return structured results
@@ -1493,7 +1419,23 @@ pub(crate) fn run_health_lint(
     set: &wiki::PageSet,
 ) -> Result<(display::CheckResults, display::LintResults, usize, usize), String>
 {
-    let health_results = health::run_all(root, set)?;
+    run_health_lint_with_indexes(root, set, &HashMap::new())
+}
+
+/// Run health and lint checks on one snapshot, judging `indexes` content in
+/// place of the index files on disk.
+///
+/// # Errors
+///
+/// Fails when the pages carry no bundle identity, so the lint rules cannot
+/// resolve their references.
+fn run_health_lint_with_indexes(
+    root: &Path,
+    set: &wiki::PageSet,
+    indexes: &HashMap<String, String>,
+) -> Result<(display::CheckResults, display::LintResults, usize, usize), String>
+{
+    let health_results = health::run_all(root, set, indexes)?;
     let lint_results = lint::run_all(root, set)?;
     let health_issues = display::count_health_issues(&health_results);
     let lint_issues = display::count_lint_issues(&lint_results);
@@ -1501,8 +1443,8 @@ pub(crate) fn run_health_lint(
 }
 
 /// Build the JSON representation of health + lint results (without the
-/// outer wrapper).  Used by both `check_single_bundle` and
-/// `print_json_check_output`.
+/// outer wrapper).  `bundle install` and `bundle update` show a candidate
+/// bundle with it.
 pub(crate) fn format_health_lint_json(
     health: &display::CheckResults,
     lint: &display::LintResults,
@@ -1539,34 +1481,6 @@ pub(crate) fn format_health_lint_json(
             "cascade_stale": fmt_issues(&lint.cascade_stale),
         },
     })
-}
-
-fn print_json_check_output(
-    health: &display::CheckResults,
-    lint: &display::LintResults,
-    health_issues: usize,
-    lint_issues: usize,
-    derived_sync: DerivedSync,
-) {
-    let mut json_output = format_health_lint_json(health, lint);
-    let total = health_issues + lint_issues;
-    // `status` reflects whether the check passed — consumers rely on this
-    // field (not just the exit code) to decide success/failure.
-    let status = if total == 0 && derived_sync != DerivedSync::Failed {
-        "ok"
-    } else {
-        "error"
-    };
-    json_output["status"] = serde_json::json!(status);
-    json_output["total_issues"] = serde_json::json!(total);
-    json_output["read_only_root"] =
-        serde_json::json!(derived_sync == DerivedSync::Skipped);
-    json_output["derived_metadata_sync"] =
-        serde_json::json!(derived_sync.as_str());
-
-    crate::print_stdout_line(
-        serde_json::to_string_pretty(&json_output).unwrap(),
-    );
 }
 
 /// Dispatch all `page` subcommands — show, set, unset, create, move.
@@ -3221,26 +3135,8 @@ mod tests {
     }
 
     // -------------------------------------------------------------------
-    // dispatch_check_no_arg_inner
+    // run_check
     // -------------------------------------------------------------------
-
-    /// Page template with full frontmatter and sufficient body text (>100 chars)
-    /// to pass health and lint checks when stamped with the current time.
-    const PAGE_OK: &str = "---
-title: Proper Page
-type: concept
-timestamp: {{timestamp}}
-tags: []
-status: draft
-last_validated: {{timestamp}}
-timeliness: current
----
-
-# Proper Page
-
-This document has enough text to pass the health and lint checks that zwiki
-runs during validation.  It contains well over one hundred characters to
-satisfy the stub threshold check and other quality gates.\n";
 
     /// A valid bundle manifest for fixtures that need page identity.
     const TEST_MANIFEST: &str = "[package]\nname = \"test\"\nversion = \"0.1.0\"\n\n\
@@ -3282,19 +3178,22 @@ satisfy the stub threshold check and other quality gates.\n";
     }
 
     #[test]
-    fn test_dispatch_check_root_dir_empty() {
-        // Verify dispatch_check_root_dir succeeds on an empty directory.
+    fn test_run_check_reports_the_generated_index_unapplied() {
+        // A bare directory accepts no write, so the index a bundle source
+        // would generate stays unapplied.
         let dir = temp_dir("check_root_empty");
         std::fs::create_dir_all(dir.join("logs")).unwrap();
-        let code = dispatch_check_root_dir(&dir, false);
-        assert_eq!(code, 0, "empty root dir should return 0");
+        let code = run_check(&dir, true, Vec::new(), false);
+        assert_eq!(code, 1, "an unapplied index fails the run");
+        assert!(
+            !dir.join("index.md").exists(),
+            "the read-only root is never written"
+        );
     }
 
     #[test]
-    fn test_dispatch_check_no_arg_inner_missing_exits() {
-        let dir = temp_dir("check_inner_missing_ci");
-        // Create a store index referencing the missing bundle so
-        // check_root_index passes and we test missing-dir detection.
+    fn test_store_root_issues_report_a_missing_bundle() {
+        let dir = temp_dir("check_store_missing");
         std::fs::write(
             dir.join("index.md"),
             "- [missing](bundles/missing/index.md)\n",
@@ -3313,46 +3212,20 @@ satisfy the stub threshold check and other quality gates.\n";
             }],
             ..Default::default()
         };
-        let code = dispatch_check_no_arg_inner(&dir, &lock, false);
-        assert_eq!(code, 1, "missing bundle should return 1");
+        let issues = store_root_issues(&dir, &lock);
+
+        assert_eq!(issues.len(), 1, "one issue per missing bundle: {issues:?}");
+        assert_eq!(issues[0].rule, report::rules::Rule::BundleMissing);
+        assert_eq!(issues[0].path, "bundles/missing");
     }
 
     #[test]
-    fn test_dispatch_check_no_arg_inner_valid() {
-        let dir = temp_dir("check_inner_valid");
-        // Create a store index referencing the bundle.
-        std::fs::write(
-            dir.join("index.md"),
-            "- [test](bundles/test/index.md)\n",
-        )
-        .unwrap();
-
-        // Create a bundle directory with a healthy page (not index.md, which
-        // is excluded from page discovery).
+    fn test_store_root_issues_report_an_unlinked_index() {
+        let dir = temp_dir("check_store_unlinked");
+        std::fs::write(dir.join("index.md"), "# Index\n").unwrap();
         let bundle_dir = dir.join("bundles").join("test");
         std::fs::create_dir_all(&bundle_dir).unwrap();
         std::fs::write(bundle_dir.join("bundle.toml"), TEST_MANIFEST).unwrap();
-        // Add index.md referencing the bundle page so the index-sync check
-        // passes and doc.md is not orphaned.
-        std::fs::write(
-            bundle_dir.join("index.md"),
-            "---
-title: Bundle Index
----
-
-# Bundle
-
-- [Doc](doc.md)
-",
-        )
-        .unwrap();
-        // Add a discoverable page with full frontmatter + body.
-        let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
-        std::fs::write(
-            bundle_dir.join("doc.md"),
-            PAGE_OK.replace("{{timestamp}}", &now),
-        )
-        .unwrap();
 
         let lock = bundle::ZwikiLock {
             entries: vec![bundle::ZwikiLockEntry {
@@ -3366,133 +3239,81 @@ title: Bundle Index
             }],
             ..Default::default()
         };
-        let code = dispatch_check_no_arg_inner(&dir, &lock, false);
-        assert_eq!(code, 0, "valid bundle should return 0");
-    }
+        let issues = store_root_issues(&dir, &lock);
 
-    #[test]
-    fn test_dispatch_check_no_arg_inner_default_timeliness_writes() {
-        // Verify that `zwiki check` (no source) materialises timeliness
-        // from the unified freshness verdict by default.  The page is
-        // freshly validated, so the verdict is fresh and a stale marker is
-        // rewritten to current.  The page lies outside every installed
-        // bundle, so the sync may write it.
-        let dir = temp_dir("check_inner_timeliness");
-        // A writable parent must contain bundle.toml; without it the root
-        // is read-only for check and no derived metadata is written.
-        std::fs::write(
-            dir.join("bundle.toml"),
-            "[package]\nname = \"store\"\nversion = \"0.1.0\"\n\n\
-             [export]\ninclude = [\"**/*.md\"]\n",
-        )
-        .unwrap();
-        std::fs::write(
-            dir.join("index.md"),
-            "- [test](bundles/test/index.md)\n- [Doc](shared/doc.md)\n",
-        )
-        .unwrap();
-
-        let bundle_dir = dir.join("bundles").join("test");
-        std::fs::create_dir_all(&bundle_dir).unwrap();
-        std::fs::write(bundle_dir.join("bundle.toml"), TEST_MANIFEST).unwrap();
-        std::fs::write(
-            bundle_dir.join("index.md"),
-            "---\ntitle: Index\n---\n\n# Index\n",
-        )
-        .unwrap();
-
-        // Validation time is derived from today so the page stays fresh
-        // regardless of wall-clock drift.  The stale `timeliness` marker is
-        // what the check must correct.
-        let today = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
-        let page_content = format!(
-            "\
----
-title: Timeliness Test
-type: concept
-timestamp: {today}
-tags: []
-status: draft
-last_validated: {today}
-timeliness: stale
----
-
-# Timeliness Test
-
-This page has enough text to pass the health and lint checks that zwiki
-runs during validation.  It contains well over one hundred characters to
-satisfy the stub threshold check and other quality gates required for the
-bundle validation process.\n"
+        assert_eq!(issues.len(), 1, "one root index issue: {issues:?}");
+        assert_eq!(issues[0].rule, report::rules::Rule::RootIndex);
+        assert_eq!(issues[0].path, "index.md");
+        assert!(
+            issues[0].message.contains("test"),
+            "the issue names the unreferenced bundle: {}",
+            issues[0].message
         );
-        let page_path = dir.join("shared").join("doc.md");
-        std::fs::create_dir_all(page_path.parent().unwrap()).unwrap();
-        std::fs::write(&page_path, page_content).unwrap();
+    }
 
-        let lock = bundle::ZwikiLock {
-            entries: vec![bundle::ZwikiLockEntry {
-                name: "test".to_string(),
-                version: "1.0".to_string(),
-                registry: String::new(),
-                target: "bundles/test".to_string(),
-                integrity: "sha256-abc".to_string(),
-                installed_at: "2026-01-01T00:00:00Z".to_string(),
-                description: None,
-            }],
-            ..Default::default()
-        };
+    #[test]
+    fn test_run_check_writes_timeliness_on_a_writable_root() {
+        // A fresh page whose `timeliness` marker is stale is rewritten
+        // before the report runs.
+        let dir = temp_dir("check_writable_timeliness");
+        std::fs::write(dir.join("bundle.toml"), TEST_MANIFEST).unwrap();
+        std::fs::create_dir_all(dir.join("logs")).unwrap();
+        std::fs::write(dir.join("logs/.gitkeep"), "").unwrap();
 
-        let code = dispatch_check_no_arg_inner(&dir, &lock, false);
-        assert_eq!(code, 0, "fresh page should return 0");
+        let today = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
+        let body = "This document has enough text to pass the health and lint \
+                    checks that zwiki runs during validation.  See \
+                    [Linker](shared/linker.md).\n";
+        let path = dir.join("shared").join("doc.md");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &path,
+            format!(
+                "---\ntitle: Timeliness Test\ntype: concept\n\
+                 timestamp: {today}\ntags: []\nstatus: draft\n\
+                 last_validated: {today}\ntimeliness: stale\n---\n\n\
+                 # Timeliness Test\n\n{body}\n"
+            ),
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("shared/linker.md"),
+            format!(
+                "---\ntitle: Linker\ntype: concept\ntimestamp: {today}\n\
+                 tags: []\nstatus: draft\nlast_validated: {today}\n\
+                 timeliness: current\n---\n\n# Linker\n\nSee [Doc](shared/doc.md).\n\
+                 This page carries enough body text to pass the health and \
+                 lint checks that zwiki runs during validation, so the \
+                 fixture leaves no finding of its own.\n"
+            ),
+        )
+        .unwrap();
 
-        // Verify timeliness was updated in the file content.
-        let content = std::fs::read_to_string(&page_path).unwrap();
+        let code = run_check(&dir, false, Vec::new(), false);
+
+        assert_eq!(code, 0, "a fresh page leaves no issue");
+        let content = std::fs::read_to_string(&path).unwrap();
         assert!(
             content.contains("timeliness: current"),
-            "the page should have timeliness: current after check, \
-             got: {content:?}"
+            "the writable root stores the computed timeliness: {content:?}"
         );
     }
 
     #[test]
-    fn test_dispatch_check_no_arg_inner_propagates_failure() {
-        let dir = temp_dir("check_inner_fail");
-        std::fs::write(
-            dir.join("index.md"),
-            "- [test](bundles/test/index.md)\n",
-        )
-        .unwrap();
+    fn test_run_check_propagates_a_page_failure() {
+        let dir = temp_dir("check_page_failure");
+        std::fs::write(dir.join("bundle.toml"), TEST_MANIFEST).unwrap();
+        // No frontmatter: the document model rejects the page.
+        std::fs::write(dir.join("page.md"), "# Page\n").unwrap();
 
-        let bundle_dir = dir.join("bundles").join("test");
-        std::fs::create_dir_all(&bundle_dir).unwrap();
-        std::fs::write(bundle_dir.join("bundle.toml"), TEST_MANIFEST).unwrap();
-        // index.md is excluded from page discovery, so add a non-index page
-        // with no frontmatter — check_frontmatter reports missing_frontmatter.
-        std::fs::write(bundle_dir.join("index.md"), "# Bundle\n").unwrap();
-        std::fs::write(bundle_dir.join("page.md"), "# Page\n").unwrap();
+        let code = run_check(&dir, false, Vec::new(), false);
 
-        let lock = bundle::ZwikiLock {
-            entries: vec![bundle::ZwikiLockEntry {
-                name: "test".to_string(),
-                version: "1.0".to_string(),
-                registry: String::new(),
-                target: "bundles/test".to_string(),
-                integrity: "sha256-abc".to_string(),
-                installed_at: "2026-01-01T00:00:00Z".to_string(),
-                description: None,
-            }],
-            ..Default::default()
-        };
-
-        let code = dispatch_check_no_arg_inner(&dir, &lock, false);
-        assert_eq!(
-            code, 1,
-            "check must propagate failure via return code instead of process::exit",
-        );
+        assert_eq!(code, 1, "a page the model rejects fails the run");
     }
 
     #[test]
-    fn test_sync_derived_metadata_writes_backlinks() {
-        // Verify that sync_derived_metadata writes backlinks into pages.
+    fn test_apply_check_writes_stores_backlinks() {
+        // A page with an inbound link gains the generated region.
         let dir = temp_dir("sync_bl");
         std::fs::write(dir.join("bundle.toml"), TEST_MANIFEST).unwrap();
         std::fs::create_dir_all(dir.join("logs")).unwrap();
@@ -3546,10 +3367,18 @@ Detailed information about page B goes here.
         );
         std::fs::write(dir.join("page_b.md"), &page_b).unwrap();
 
-        sync_derived_metadata(&dir, &wiki::PageSet::load(&dir), false)
-            .expect("sync derived metadata");
+        let (changes, _) =
+            apply_check_writes(&dir, &wiki::PageSet::load(&dir), false)
+                .expect("apply writes");
+        assert!(
+            changes
+                .iter()
+                .any(|c| c.path == "page_b.md"
+                    && c.kind == ChangeKind::Backlinks),
+            "the change names the page that gained backlinks: {changes:?}"
+        );
 
-        // Verify backlinks were synced to page_b.md.
+        // The write stores the region, not only the report entry.
         let content_b = std::fs::read_to_string(dir.join("page_b.md")).unwrap();
         assert!(
             content_b.contains("## Backlinks"),
@@ -3560,7 +3389,7 @@ Detailed information about page B goes here.
             "page_b.md Backlinks should reference Page A"
         );
 
-        // Verify page_a.md was NOT modified.
+        // A page with no inbound link stays unchanged.
         let content_a = std::fs::read_to_string(dir.join("page_a.md")).unwrap();
         assert!(
             !content_a.contains("## Backlinks"),
@@ -3588,5 +3417,144 @@ Detailed information about page B goes here.
         ]);
         assert!(after.is_ok());
         assert_eq!(after.unwrap().root, Some("/tmp/test".to_string()));
+    }
+
+    /// Page text with every required field.
+    fn derived_page(
+        title: &str,
+        validated: &str,
+        timeliness: &str,
+        body: &str,
+    ) -> String {
+        format!(
+            "---\ntitle: {title}\ntype: concept\ntags: []\nstatus: draft\n\
+             last_validated: {validated}\ntimeliness: {timeliness}\n---\n\n\
+             # {title}\n\n{body}\n"
+        )
+    }
+
+    /// The page at `rel` in `set`.
+    fn page_at<'a>(set: &'a wiki::PageSet, rel: &str) -> &'a wiki::Page {
+        set.pages()
+            .iter()
+            .find(|page| page.rel == rel)
+            .unwrap_or_else(|| panic!("no page at {rel}"))
+    }
+
+    /// A bundle source with `target.md`, plus a linker that references it.
+    fn link_fixture(dir_name: &str, target: &str) -> PathBuf {
+        let dir = temp_dir(dir_name);
+        std::fs::write(dir.join("bundle.toml"), TEST_MANIFEST).unwrap();
+        std::fs::create_dir_all(dir.join("logs")).unwrap();
+        std::fs::write(dir.join("logs/.gitkeep"), "").unwrap();
+        let today =
+            chrono::Utc::now().date_naive().format("%Y-%m-%d").to_string();
+        std::fs::write(
+            dir.join("linker.md"),
+            derived_page(
+                "Linker",
+                &today,
+                "current",
+                "See [Target](target.md).",
+            ),
+        )
+        .unwrap();
+        std::fs::write(dir.join("target.md"), target).unwrap();
+        dir
+    }
+
+    #[test]
+    fn test_apply_check_writes_merges_page_updates() {
+        // One page needs backlinks and timeliness at once: the record holds
+        // one entry, and the reloaded snapshot carries both updates.
+        let dir = link_fixture(
+            "check_merged_write",
+            &derived_page("Target", "2020-01-01", "current", "Target body."),
+        );
+        let before = wiki::PageSet::load(&dir);
+
+        let (changes, after) =
+            apply_check_writes(&dir, &before, true).expect("apply writes");
+
+        let target: Vec<&report::Change> =
+            changes.iter().filter(|c| c.path == "target.md").collect();
+        assert_eq!(
+            target.iter().map(|c| c.kind).collect::<Vec<_>>(),
+            vec![ChangeKind::Backlinks, ChangeKind::Timeliness],
+            "both updates belong to the same write: {changes:?}"
+        );
+        assert!(
+            changes
+                .iter()
+                .any(|c| c.path == "index.md" && c.kind == ChangeKind::Index),
+            "the generated root index is part of the change set: {changes:?}"
+        );
+
+        assert!(
+            page_at(&before, "target.md").document.body.backlinks().is_none(),
+            "the snapshot before the write has no generated region"
+        );
+        let stored = &page_at(&after, "target.md").document;
+        assert!(
+            stored.body.backlinks().is_some(),
+            "the reloaded snapshot carries the generated region"
+        );
+        assert_eq!(stored.metadata.timeliness, "stale");
+    }
+
+    #[test]
+    fn test_apply_check_writes_records_layout_normalization() {
+        // A rewritten page whose stored text is not canonical reports both
+        // the update and the layout the write normalizes.
+        let target = derived_page("Target", "2020-01-01", "stale", "Body.");
+        let dir = link_fixture("check_format", &format!("{target}\n\n"));
+
+        let (changes, _) =
+            apply_check_writes(&dir, &wiki::PageSet::load(&dir), true)
+                .expect("apply writes");
+
+        let kinds: Vec<ChangeKind> = changes
+            .iter()
+            .filter(|c| c.path == "target.md")
+            .map(|c| c.kind)
+            .collect();
+        assert_eq!(
+            kinds,
+            vec![ChangeKind::Backlinks, ChangeKind::Format],
+            "the stale validation date is already stored as stale"
+        );
+        let text = std::fs::read_to_string(dir.join("target.md")).unwrap();
+        assert!(
+            !text.contains("\n\n\n"),
+            "the write drops the trailing blank lines: {text:?}"
+        );
+    }
+
+    #[test]
+    fn test_apply_check_writes_is_idempotent() {
+        // A second run finds nothing to write and leaves every file alone.
+        let dir = link_fixture(
+            "check_idempotent",
+            &derived_page("Target", "2020-01-01", "current", "Target body."),
+        );
+
+        let (first, _) =
+            apply_check_writes(&dir, &wiki::PageSet::load(&dir), true)
+                .expect("first run");
+        assert!(!first.is_empty(), "the first run writes");
+        let stored = std::fs::read_to_string(dir.join("target.md")).unwrap();
+
+        let (second, _) =
+            apply_check_writes(&dir, &wiki::PageSet::load(&dir), true)
+                .expect("second run");
+        assert!(
+            second.is_empty(),
+            "a synchronized root needs no write: {second:?}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(dir.join("target.md")).unwrap(),
+            stored,
+            "the second run keeps the stored page"
+        );
     }
 }

@@ -1326,7 +1326,7 @@ fn test_log_subcommand_rejected() {
     );
 }
 
-/// Run `check --json` and return the pages listed under `log_coverage`.
+/// Run `check --json` and return the pages flagged as missing a log entry.
 fn coverage_pages(bin: &Path, wiki: &Path) -> Vec<String> {
     let output = Command::new(bin)
         .args(["--root", &wiki.to_string_lossy(), "check", "--json"])
@@ -1337,11 +1337,12 @@ fn coverage_pages(bin: &Path, wiki: &Path) -> Vec<String> {
         .unwrap_or_else(|e| {
             panic!("check --json output is not JSON: {e}\n{stdout}")
         });
-    value["health"]["log_coverage"]
+    value["issues"]
         .as_array()
-        .expect("log_coverage array")
+        .expect("issues array")
         .iter()
-        .filter_map(|i| i["page"].as_str().map(ToString::to_string))
+        .filter(|issue| issue["rule"] == "log_missing")
+        .filter_map(|issue| issue["path"].as_str().map(ToString::to_string))
         .collect()
 }
 

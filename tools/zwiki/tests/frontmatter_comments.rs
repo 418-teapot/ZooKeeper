@@ -229,10 +229,10 @@ fn test_check_keeps_comments_while_syncing_derived_content() {
     );
 
     let output = zwiki(&["--root", &root.to_string_lossy(), "check"]);
-    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
-        stderr.contains("已同步 1 个页面的反向链接"),
-        "check should sync the backlinks: {stderr}"
+        stdout.contains("`concepts/target.md` — 反向链接"),
+        "check should sync the backlinks: {stdout}"
     );
 
     let content =
@@ -375,20 +375,16 @@ fn test_check_reports_an_ambiguous_layout() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     let report: serde_json::Value =
         serde_json::from_str(&stdout).expect("check keeps the JSON contract");
-    let frontmatter = report["health"]["frontmatter"]
-        .as_array()
-        .expect("frontmatter issues stay in the payload");
-    let invalid: Vec<&serde_json::Value> = frontmatter
-        .iter()
-        .filter(|issue| issue["category"] == "invalid_document")
-        .collect();
+    let issues = report["issues"].as_array().expect("issues is an array");
+    let invalid: Vec<&serde_json::Value> =
+        issues.iter().filter(|issue| issue["rule"] == "page_invalid").collect();
 
-    assert_eq!(invalid.len(), 1, "one explicit invalid_document: {stdout}");
-    assert_eq!(invalid[0]["page"], "concepts/ambiguous.md");
+    assert_eq!(invalid.len(), 1, "one explicit page_invalid issue: {stdout}");
+    assert_eq!(invalid[0]["path"], "concepts/ambiguous.md");
     assert!(
-        invalid[0]["details"]
+        invalid[0]["details"]["error"]
             .as_str()
-            .is_some_and(|details| details.contains("布局")),
+            .is_some_and(|error| error.contains("布局")),
         "the issue names the layout: {stdout}"
     );
 

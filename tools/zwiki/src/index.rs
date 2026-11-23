@@ -168,6 +168,24 @@ fn build_domain_body(domain_dir: &Path) -> Result<String, String> {
 /// Returns an error when the generated index cannot be written.
 #[must_use = "the returned change flag should be handled"]
 pub fn regenerate_domain_index(domain_dir: &Path) -> Result<bool, String> {
+    let Some(updated) = domain_index_content(domain_dir)? else {
+        return Ok(false);
+    };
+    let index_path = domain_dir.join("index.md");
+    zutil::fileio::write_atomic(&index_path, &updated).map_err(|e| {
+        format!("无法写入领域索引 {}: {e}", index_path.display())
+    })?;
+    Ok(true)
+}
+
+/// The content a write stores in `<domain_dir>/index.md`.
+///
+/// Returns `None` when the file already holds it.
+///
+/// # Errors
+///
+/// Fails when a page of the domain cannot be loaded.
+fn domain_index_content(domain_dir: &Path) -> Result<Option<String>, String> {
     let index_path = domain_dir.join("index.md");
     let domain =
         domain_dir.file_name().and_then(|n| n.to_str()).unwrap_or_default();
@@ -175,15 +193,7 @@ pub fn regenerate_domain_index(domain_dir: &Path) -> Result<bool, String> {
     let base = existing.clone().unwrap_or_else(|| default_frontmatter(domain));
     let body = build_domain_body(domain_dir)?;
     let updated = with_generated_body(&base, &body);
-
-    if existing.as_deref() == Some(updated.as_str()) {
-        return Ok(false);
-    }
-
-    zutil::fileio::write_atomic(&index_path, &updated).map_err(|e| {
-        format!("无法写入领域索引 {}: {e}", index_path.display())
-    })?;
-    Ok(true)
+    Ok((existing.as_deref() != Some(updated.as_str())).then_some(updated))
 }
 
 // ---------------------------------------------------------------------------
@@ -273,6 +283,19 @@ fn build_bundle_root_body(root: &Path) -> String {
 /// Returns an error when the generated index cannot be written.
 #[must_use = "the returned change flag should be handled"]
 pub fn regenerate_bundle_root_index(root: &Path) -> Result<bool, String> {
+    let Some(updated) = root_index_content(root) else {
+        return Ok(false);
+    };
+    let index_path = root.join("index.md");
+    zutil::fileio::write_atomic(&index_path, &updated)
+        .map_err(|e| format!("无法写入根索引 {}: {e}", index_path.display()))?;
+    Ok(true)
+}
+
+/// The content a write stores in `<root>/index.md`.
+///
+/// Returns `None` when the file already holds it.
+fn root_index_content(root: &Path) -> Option<String> {
     let index_path = root.join("index.md");
     let root_name =
         root.file_name().and_then(|n| n.to_str()).unwrap_or_default();
@@ -280,38 +303,77 @@ pub fn regenerate_bundle_root_index(root: &Path) -> Result<bool, String> {
     let base =
         existing.clone().unwrap_or_else(|| default_frontmatter(root_name));
     let updated = with_generated_body(&base, &build_bundle_root_body(root));
+    (existing.as_deref() != Some(updated.as_str())).then_some(updated)
+}
 
-    if existing.as_deref() == Some(updated.as_str()) {
-        return Ok(false);
-    }
-
-    zutil::fileio::write_atomic(&index_path, &updated)
-        .map_err(|e| format!("无法写入根索引 {}: {e}", index_path.display()))?;
-    Ok(true)
+/// One index file an automatic `check` write replaces.
+#[derive(Debug, Clone)]
+pub struct IndexUpdate {
+    /// Path relative to the checked root.
+    pub path: String,
+    /// Content the write stores.
+    pub content: String,
 }
 
 /// Regenerate every domain index under a writable bundle source and its
 /// bundle root index.  Failures are reported (unless suppressed) without
 /// aborting the caller.
 ///
+/// Returns the root-relative paths of the indexes that changed.  An index
+/// whose generated body already matches the file is left untouched.
+///
 /// A root carrying `zwiki.lock` is an installed store, not a bundle source,
 /// so its store root index is left to the bundle commands.
-pub fn regenerate_all_indexes(root: &Path, suppress_eprint: bool) {
+pub fn regenerate_all_indexes(
+    root: &Path,
+    suppress_eprint: bool,
+) -> Vec<String> {
+    let mut changed: Vec<String> = Vec::new();
+    for update in pending_updates(root, suppress_eprint) {
+        let index_path = root.join(&update.path);
+        match zutil::fileio::write_atomic(&index_path, &update.content) {
+            Ok(()) => changed.push(update.path),
+            Err(e) => warn(
+                &format!("无法写入索引 {}: {e}", index_path.display()),
+                suppress_eprint,
+            ),
+        }
+    }
+    changed
+}
+
+/// The index writes a root needs, without writing them.
+///
+/// Mirrors the layout [`regenerate_all_indexes`] stores, so a read-only root
+/// reports the same normalization as unapplied changes.  An index whose
+/// generated body already matches the file is left out.
+pub fn pending_updates(root: &Path, suppress_eprint: bool) -> Vec<IndexUpdate> {
+    let mut updates: Vec<IndexUpdate> = Vec::new();
+
     for domain in discover_domain_dirs(root) {
-        if let Err(e) = regenerate_domain_index(&root.join(&domain))
-            && !suppress_eprint
-        {
-            eprintln!("警告: {e}");
+        let domain_dir = root.join(&domain);
+        match domain_index_content(&domain_dir) {
+            Ok(Some(content)) => updates.push(IndexUpdate {
+                path: format!("{domain}/index.md"),
+                content,
+            }),
+            Ok(None) => {}
+            Err(e) => warn(&e, suppress_eprint),
         }
     }
 
-    if root.join("zwiki.lock").exists() {
-        return;
-    }
-    if let Err(e) = regenerate_bundle_root_index(root)
-        && !suppress_eprint
+    if !root.join("zwiki.lock").exists()
+        && let Some(content) = root_index_content(root)
     {
-        eprintln!("警告: {e}");
+        updates.push(IndexUpdate { path: String::from("index.md"), content });
+    }
+    updates
+}
+
+/// Report one skipped index update.
+fn warn(message: &str, suppress_eprint: bool) {
+    if !suppress_eprint {
+        eprintln!("警告: {message}");
     }
 }
 

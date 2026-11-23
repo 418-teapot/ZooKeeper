@@ -56,7 +56,7 @@ fn test_check_on_store_root_skips_derived_sync() {
 }
 
 #[test]
-fn test_check_on_store_root_json_marks_sync_skipped() {
+fn test_check_on_store_root_json_marks_read_only() {
     let base = temp_dir("check_bundles_readonly_json");
     std::fs::write(base.join("zwiki.lock"), "bundles = []\n").unwrap();
     let bundle = base.join("core");
@@ -72,12 +72,8 @@ fn test_check_on_store_root_json_marks_sync_skipped() {
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
-        stdout.contains("\"read_only_root\": true"),
+        stdout.contains("\"read_only\": true"),
         "json should flag a read-only root: {stdout}"
-    );
-    assert!(
-        stdout.contains("\"derived_metadata_sync\": \"skipped\""),
-        "json should report skipped sync: {stdout}"
     );
 }
 
@@ -158,7 +154,7 @@ fn test_check_on_store_root_skips_all_writes() {
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
-        stdout.contains("\"read_only_root\": true"),
+        stdout.contains("\"read_only\": true"),
         "store root must be reported read-only: {stdout}"
     );
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -221,10 +217,10 @@ fn test_check_places_backlinks_without_old_anchors() {
         .args(["--root", root.to_string_lossy().as_ref(), "check"])
         .output()
         .expect("run zwiki check");
-    let plain_stderr = String::from_utf8_lossy(&plain.stderr);
+    let plain_stdout = String::from_utf8_lossy(&plain.stdout);
     assert!(
-        plain_stderr.contains("已同步 1 个页面的反向链接"),
-        "plain check should report the sync: {plain_stderr}"
+        plain_stdout.contains("`concepts/target.md` — 反向链接"),
+        "plain check should report the sync: {plain_stdout}"
     );
 
     // The generated region sits at the end of the body, with no invented
@@ -249,25 +245,24 @@ fn test_check_places_backlinks_without_old_anchors() {
         .args(["--root", root.to_string_lossy().as_ref(), "check"])
         .output()
         .expect("run zwiki check again");
-    let again_stderr = String::from_utf8_lossy(&again.stderr);
+    let again_stdout = String::from_utf8_lossy(&again.stdout);
     assert!(
-        !again_stderr.contains("已同步"),
-        "an unchanged sync must not rewrite pages: {again_stderr}"
+        !again_stdout.contains("变更（"),
+        "an unchanged sync must not rewrite pages: {again_stdout}"
     );
 
-    // JSON mode keeps the informational sync messages off stderr.
+    // A synchronized root reports no applied change.
     let json = Command::new(env!("CARGO_BIN_EXE_zwiki"))
         .args(["--root", root.to_string_lossy().as_ref(), "check", "--json"])
         .output()
         .expect("run zwiki check --json");
-    let json_stderr = String::from_utf8_lossy(&json.stderr);
-    assert!(
-        !json_stderr.contains("已同步"),
-        "json check must not emit sync messages on stderr: {json_stderr}"
-    );
     let json_stdout = String::from_utf8_lossy(&json.stdout);
     assert!(
-        json_stdout.contains("\"derived_metadata_sync\": \"synced\""),
-        "json check should report the sync state: {json_stdout}"
+        json_stdout.contains("\"read_only\": false"),
+        "json check reports a writable root: {json_stdout}"
+    );
+    assert!(
+        json_stdout.contains("\"changes\": []"),
+        "a synchronized root lists no change: {json_stdout}"
     );
 }

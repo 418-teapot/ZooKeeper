@@ -265,6 +265,38 @@ pub fn title_map(pages: &[wiki::Page]) -> HashMap<String, String> {
 // update_backlinks
 // ---------------------------------------------------------------------------
 
+/// The pages whose generated `## Backlinks` region must change.
+///
+/// Returns one entry per page whose region differs from `index`: the page
+/// and its new content, or `None` when the page keeps no inbound links.
+/// Callers apply every entry themselves, so one page is written once.
+pub fn pending_backlinks<'a>(
+    index: &HashMap<String, Vec<String>>,
+    titles: &HashMap<String, String>,
+    pages: &'a [wiki::Page],
+    catalog: &Catalog,
+) -> Vec<(&'a wiki::Page, Option<String>)> {
+    let mut pending: Vec<(&wiki::Page, Option<String>)> = Vec::new();
+
+    for page in pages {
+        let Some(target) = catalog.id_of(&page.rel) else {
+            continue;
+        };
+        let sources = index.get(&page.rel).cloned().unwrap_or_default();
+        let content = if sources.is_empty() {
+            None
+        } else {
+            Some(format_backlinks_content(&sources, target, catalog, titles))
+        };
+        if page.document.body.backlinks() == content.as_deref() {
+            continue;
+        }
+        pending.push((page, content));
+    }
+
+    pending
+}
+
 /// Synchronize the generated `## Backlinks` region of every page.
 ///
 /// A page with inbound links gets the formatted list; a page without inbound
@@ -285,21 +317,8 @@ pub fn update_backlinks(
 ) -> Result<usize, String> {
     let mut updated_count = 0;
 
-    for page in pages {
-        let Some(target) = catalog.id_of(&page.rel) else {
-            continue;
-        };
-        let sources = index.get(&page.rel).cloned().unwrap_or_default();
-        let content = if sources.is_empty() {
-            None
-        } else {
-            Some(format_backlinks_content(&sources, target, catalog, titles))
-        };
-
+    for (page, content) in pending_backlinks(index, titles, pages, catalog) {
         let mut document = page.document.clone();
-        if document.body.backlinks() == content.as_deref() {
-            continue;
-        }
         document.body.set_backlinks(content);
         document_io::store(&page.path, &document)
             .map_err(|e| format!("{}: {e}", page.rel))?;

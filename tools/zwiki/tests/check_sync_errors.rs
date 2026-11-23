@@ -42,23 +42,26 @@ fn test_check_reports_page_the_model_rejects() {
     let report: serde_json::Value =
         serde_json::from_str(&stdout).expect("stdout keeps the JSON contract");
     assert_eq!(report["status"], "error");
-    assert_eq!(report["derived_metadata_sync"], "failed");
+    assert!(
+        report["error"]
+            .as_str()
+            .is_some_and(|error| error.contains("broken.md")),
+        "the report carries the failure: {stdout}"
+    );
     assert_eq!(
-        report["health"]["total_pages"], 2,
+        report["summary"]["pages"], 2,
         "the rejected page keeps its place in the page count: {stdout}"
     );
 
-    let frontmatter = report["health"]["frontmatter"]
-        .as_array()
-        .expect("frontmatter issues stay in the payload");
-    let invalid: Vec<&serde_json::Value> = frontmatter
-        .iter()
-        .filter(|issue| issue["category"] == "invalid_document")
-        .collect();
-    assert_eq!(invalid.len(), 1, "one explicit invalid_document issue");
-    assert_eq!(invalid[0]["page"], "broken.md");
+    let issues = report["issues"].as_array().expect("issues is an array");
+    let invalid: Vec<&serde_json::Value> =
+        issues.iter().filter(|issue| issue["rule"] == "page_invalid").collect();
+    assert_eq!(invalid.len(), 1, "one explicit page_invalid issue");
+    assert_eq!(invalid[0]["path"], "broken.md");
     assert!(
-        invalid[0]["details"].as_str().is_some_and(|d| !d.is_empty()),
+        invalid[0]["details"]["error"]
+            .as_str()
+            .is_some_and(|error| !error.is_empty()),
         "the issue carries the load error: {stdout}"
     );
 
@@ -125,4 +128,49 @@ fn test_check_reports_write_failure() {
         stderr.contains("target.md"),
         "the failure must name the page: {stderr}"
     );
+
+    // The report carries every write the run stored before it failed, so
+    // the change set agrees with the state on disk.
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let report: serde_json::Value =
+        serde_json::from_str(&stdout).expect("stdout keeps the JSON contract");
+    assert_eq!(report["status"], "error");
+    let changes = report["changes"].as_array().expect("changes is an array");
+    assert_eq!(
+        report["summary"]["changes"],
+        changes.len(),
+        "the change count comes from the array: {stdout}"
+    );
+    assert!(
+        changes
+            .iter()
+            .any(|change| change["path"] == "index.md"
+                && change["kind"] == "index"),
+        "the report keeps the generated index: {stdout}"
+    );
+    assert!(
+        root.join("index.md").is_file(),
+        "the reported index is on disk: {stdout}"
+    );
+    assert!(
+        !changes.iter().any(|change| change["path"] == "target.md"),
+        "the failed write is not recorded: {stdout}"
+    );
+    let target = std::fs::read_to_string(root.join("target.md")).unwrap();
+    assert!(
+        !target.contains("## Backlinks"),
+        "the failed page keeps its stored text: {target:?}"
+    );
+    for change in changes {
+        if change["kind"] != "timeliness" {
+            continue;
+        }
+        let path = root.join(change["path"].as_str().expect("path"));
+        let text = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("a reported change names a page: {e}"));
+        assert!(
+            text.contains("timeliness: stale"),
+            "every reported timeliness update is on disk: {text:?}"
+        );
+    }
 }

@@ -5,7 +5,7 @@
 //! judgment implemented here.  Keeping the thresholds, exemptions, and
 //! reason semantics in one module stops the consumers from drifting apart.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use chrono::NaiveDate;
 
@@ -89,20 +89,31 @@ pub fn threshold_days(page: &Page) -> i64 {
     }
 }
 
-/// Pairs `(source_rel, source_date)` where a source page is newer than the
-/// derived page's `last_validated`.
+/// A source page that outdates the derived page listing it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SourceNewer {
+    /// Source page path relative to the wiki root.
+    pub source: String,
+    /// The source `timestamp` as stored.
+    pub source_timestamp: String,
+}
+
+/// Sources that outdate the page's `last_validated`.
 ///
+/// Both fields are compared with their full time, so a source updated on
+/// the validation day still counts.
 /// Applies only to `analysis` / `synthesis` pages with a non-empty `sources`
 /// list and a parseable `last_validated`.  A bare entry names a page of the
 /// derived page's bundle; `@bundle/path` names a page of `bundle`.  An entry
 /// may carry a markdown link, which names its target.
+/// Entries that name the same page give one result.
 /// Unresolvable sources and unparseable timestamps are skipped.
 #[must_use]
-pub fn stale_sources<'a>(
+pub fn newer_sources<'a>(
     page: &'a Page,
     by_rel: &HashMap<&'a str, &'a Page>,
     catalog: &Catalog,
-) -> Vec<(String, NaiveDate)> {
+) -> Vec<SourceNewer> {
     let metadata = &page.document.metadata;
     if !matches!(metadata.page_type.as_str(), "analysis" | "synthesis") {
         return Vec::new();
@@ -113,39 +124,53 @@ pub fn stale_sources<'a>(
         _ => return Vec::new(),
     };
 
-    let Some(derived_date) = wiki::parse_date(&metadata.last_validated) else {
+    let Some(validated) = wiki::parse_moment(&metadata.last_validated) else {
         return Vec::new();
     };
 
-    let mut stale: Vec<(String, NaiveDate)> = Vec::new();
+    let mut newer: Vec<SourceNewer> = Vec::new();
+    let mut seen: HashSet<&str> = HashSet::new();
     for entry in sources {
         let Some(source_rel) = source_rel(page, entry, catalog) else {
             continue;
         };
+        // Several spellings of an entry name one page, and one page gives
+        // one result.
+        if !seen.insert(source_rel) {
+            continue;
+        }
 
-        let Some(source_page) = by_rel.get(source_rel.as_str()) else {
+        let Some(source_page) = by_rel.get(source_rel) else {
             continue;
         };
-        let Some(ts_str) = source_page.document.metadata.timestamp.as_deref()
+        let Some(timestamp) =
+            source_page.document.metadata.timestamp.as_deref()
         else {
             continue;
         };
-        let Some(source_date) = wiki::parse_date(ts_str) else {
+        let Some(changed) = wiki::parse_moment(timestamp) else {
             continue;
         };
 
-        if source_date > derived_date {
-            stale.push((source_rel, source_date));
+        if changed > validated {
+            newer.push(SourceNewer {
+                source: source_rel.to_string(),
+                source_timestamp: timestamp.to_string(),
+            });
         }
     }
 
-    stale
+    newer
 }
 
 /// The page path a `sources` entry names, `None` when it names no page.
-fn source_rel(page: &Page, entry: &str, catalog: &Catalog) -> Option<String> {
+fn source_rel<'c>(
+    page: &Page,
+    entry: &str,
+    catalog: &'c Catalog,
+) -> Option<&'c str> {
     let referrer = catalog.id_of(&page.rel)?;
-    catalog.resolve_rel(referrer, entry).map(ToString::to_string)
+    catalog.resolve_rel(referrer, entry)
 }
 
 /// Peer lookups the judgment needs.  Build the context once from the page
@@ -242,7 +267,7 @@ impl<'a> FreshnessContext<'a> {
         if (self.reference_date - lv_date).num_days() > threshold_days(page) {
             reasons.push(StaleReason::TimeExpired);
         }
-        if !stale_sources(page, &self.by_rel, self.catalog).is_empty() {
+        if !newer_sources(page, &self.by_rel, self.catalog).is_empty() {
             reasons.push(StaleReason::SourceNewer);
         }
         if self.has_unreviewed_supersede(page, lv_str) {
@@ -480,7 +505,7 @@ mod tests {
     }
 
     #[test]
-    fn test_markdown_link_source_names_the_same_page() {
+    fn test_source_spellings_report_one_source_newer() {
         // A `sources` entry may carry a markdown link; its target is the
         // same page as the bare path, in the bare and explicit forms.
         let analysis = make_page(
@@ -510,17 +535,13 @@ mod tests {
             pages.iter().map(|p| (p.rel.as_str(), p)).collect();
         let catalog = Catalog::flat(&pages);
 
-        let stale = stale_sources(&pages[0], &by_rel, &catalog);
+        let newer = newer_sources(&pages[0], &by_rel, &catalog);
         let targets: Vec<&str> =
-            stale.iter().map(|(rel, _)| rel.as_str()).collect();
+            newer.iter().map(|source| source.source.as_str()).collect();
         assert_eq!(
             targets,
-            vec![
-                "shared/sources/bar.md",
-                "shared/sources/bar.md",
-                "shared/sources/bar.md"
-            ],
-            "every spelling of the entry names the same page"
+            vec!["shared/sources/bar.md"],
+            "every spelling of the entry names the same page once"
         );
     }
 

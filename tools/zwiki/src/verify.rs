@@ -72,7 +72,7 @@ pub fn cmd_verify(root: &Path, json: bool, domain: Option<&str>) {
 /// Applies the optional domain filter, sorts the results, and returns
 /// them so tests can exercise the logic without capturing stdout.
 /// The per-page stale-source scan is delegated to
-/// [`freshness::stale_sources`].
+/// [`freshness::newer_sources`].
 ///
 /// # Errors
 ///
@@ -103,18 +103,16 @@ pub fn collect_stale_pairs(
             }
         }
 
-        let pairs = freshness::stale_sources(page, &by_rel, &catalog);
-        for (source_rel, _) in pairs {
-            let lv_str = page.document.metadata.last_validated.clone();
-            let ts_str = by_rel
-                .get(source_rel.as_str())
-                .and_then(|p| p.document.metadata.timestamp.clone())
-                .unwrap_or_default();
+        for newer in freshness::newer_sources(page, &by_rel, &catalog) {
             stale.push(StalePair {
                 derived_page: page.rel.clone(),
-                source_page: source_rel,
-                source_timestamp: ts_str,
-                derived_last_validated: lv_str,
+                source_page: newer.source,
+                source_timestamp: newer.source_timestamp,
+                derived_last_validated: page
+                    .document
+                    .metadata
+                    .last_validated
+                    .clone(),
             });
         }
     }
@@ -139,8 +137,6 @@ mod tests {
     use std::path::PathBuf;
 
     use super::*;
-    use crate::health;
-    use crate::wiki;
 
     // -------------------------------------------------------------------
     // Helpers
@@ -163,66 +159,6 @@ mod tests {
             fs::create_dir_all(parent).expect("failed to create parent");
         }
         fs::write(path, text).expect("failed to write file");
-    }
-
-    // -------------------------------------------------------------------
-    // 1. Stale detection via invalidate_by_source (preserved behavior)
-    // -------------------------------------------------------------------
-
-    #[test]
-    fn test_cmd_verify_stale_detected() {
-        // Source page has a newer timestamp than the analysis page's
-        // last_validated → should report the stale pair.
-        let dir = crate::bundle::testutil::temp_dir("stale_detected");
-        write(
-            &dir.join("shared/sources/bar.md"),
-            "---\ntitle: Bar\ntype: source\ntimestamp: 2024-06-01\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\nBody.\n",
-        );
-        write(
-            &dir.join("shared/analysis/foo.md"),
-            "---\ntitle: Foo\ntype: analysis\n\
-             sources: [shared/sources/bar.md]\n\
-             last_validated: 2024-01-01\ntags: []\nstatus: draft\ntimeliness: current\n---\nBody.\n",
-        );
-
-        let pages = wiki::PageSet::load(&dir)
-            .require_all()
-            .expect("valid pages")
-            .to_vec();
-
-        let updates =
-            health::invalidate_by_source(&pages, &Catalog::flat(&pages));
-        assert_eq!(updates.len(), 1, "should detect one stale pair");
-        assert_eq!(updates[0].rel, "shared/analysis/foo.md");
-        assert_eq!(updates[0].new_last_validated, "2024-06-01");
-    }
-
-    #[test]
-    fn test_cmd_verify_no_stale_when_timestamps_match() {
-        // When source timestamp equals derived last_validated → no stale.
-        let dir = wiki_root("no_stale_match");
-        write(
-            &dir.join("shared/sources/bar.md"),
-            "---\ntitle: Bar\ntype: source\ntimestamp: 2024-01-01\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\nBody.\n",
-        );
-        write(
-            &dir.join("shared/analysis/foo.md"),
-            "---\ntitle: Foo\ntype: analysis\n\
-             sources: [shared/sources/bar.md]\n\
-             last_validated: 2024-01-01\ntags: []\nstatus: draft\ntimeliness: current\n---\nBody.\n",
-        );
-
-        let pages = wiki::PageSet::load(&dir)
-            .require_all()
-            .expect("valid pages")
-            .to_vec();
-
-        let updates =
-            health::invalidate_by_source(&pages, &Catalog::flat(&pages));
-        assert!(
-            updates.is_empty(),
-            "matching timestamps should not produce stale pair"
-        );
     }
 
     // -------------------------------------------------------------------
@@ -270,12 +206,10 @@ mod tests {
         );
 
         let stale = collect_stale_pairs(&dir, None).expect("valid pages");
-        assert_eq!(stale.len(), 2, "both entries reach the source");
-        assert!(
-            stale
-                .iter()
-                .all(|pair| pair.source_page == "shared/sources/bar.md"),
-            "every entry names the same source page: {stale:?}"
+        assert_eq!(stale.len(), 1, "both spellings name one stale pair");
+        assert_eq!(
+            stale[0].source_page, "shared/sources/bar.md",
+            "the pair names the source page: {stale:?}"
         );
     }
 

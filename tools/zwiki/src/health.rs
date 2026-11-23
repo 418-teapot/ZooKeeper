@@ -12,7 +12,7 @@ use zwiki::identity::PageId;
 
 use crate::catalog::Catalog;
 use crate::display::{CheckResults, IndexSyncResult, Issue};
-use crate::freshness::{self, FreshnessContext};
+use crate::freshness::FreshnessContext;
 use crate::wiki;
 use crate::wiki::{Page, PageError, PageSet};
 
@@ -100,7 +100,7 @@ pub fn check_empty_files(pages: &[Page], threshold: usize) -> Vec<Issue> {
 /// on disk.
 ///
 /// Each `index.md` resolves its links relative to its own directory (see
-/// `wiki::collect_index_entries`).  Collects every page path referenced
+/// `wiki::collect_index_entries_with`).  Collects every page path referenced
 /// across **any** index as the global `indexed_anywhere` set.  A file is
 /// reported as `on_disk_not_in_index` only if it appears on disk but is
 /// **not** listed in any index — this implements the OKF §6
@@ -110,7 +110,15 @@ pub fn check_empty_files(pages: &[Page], threshold: usize) -> Vec<Issue> {
 ///
 /// `in_index_not_on_disk` reports links that exist in any index but whose
 /// target file is missing from disk.
-pub fn check_index_sync(pages: &[Page], wiki_dir: &Path) -> IndexSyncResult {
+///
+/// `indexes` holds root-relative index paths and the content the caller
+/// computed for them, so a read-only root judges the index a write would
+/// store without touching the file.
+pub fn check_index_sync(
+    pages: &[Page],
+    wiki_dir: &Path,
+    indexes: &HashMap<String, String>,
+) -> IndexSyncResult {
     let meta_names: HashSet<&str> = META_FILE_NAMES.iter().copied().collect();
 
     // Build a set of all wiki-relative disk paths (non-meta).
@@ -135,7 +143,7 @@ pub fn check_index_sync(pages: &[Page], wiki_dir: &Path) -> IndexSyncResult {
     let mut indexed_anywhere: HashSet<String> = HashSet::new();
     let mut in_index_not_on_disk: Vec<String> = Vec::new();
 
-    for index_rel_paths in wiki::collect_index_entries(wiki_dir) {
+    for index_rel_paths in wiki::collect_index_entries_with(wiki_dir, indexes) {
         for p in &index_rel_paths {
             indexed_anywhere.insert(p.clone());
         }
@@ -865,8 +873,6 @@ pub fn check_duplicate_inline_links(
 /// updating.
 #[derive(Debug, Clone)]
 pub struct StaleUpdate {
-    /// Absolute filesystem path.
-    pub path: PathBuf,
     /// Path relative to `WIKI_DIR`.
     pub rel: String,
     /// The new timeliness value ("current" or "stale").
@@ -891,69 +897,10 @@ pub fn mark_stale(pages: &[Page], ctx: &FreshnessContext) -> Vec<StaleUpdate> {
         let existing = page.document.metadata.timeliness.as_str();
         if existing != new_timeliness {
             updates.push(StaleUpdate {
-                path: page.path.clone(),
                 rel: page.rel.clone(),
                 new_timeliness: new_timeliness.to_string(),
             });
         }
-    }
-
-    updates
-}
-
-// ---------------------------------------------------------------------------
-// Source-traceback invalidation
-// ---------------------------------------------------------------------------
-
-/// Result of a source-traceback invalidation — a derived (analysis or
-/// synthesis) page whose `last_validated` needs resetting because one or
-/// more of its source pages have a newer `timestamp`.
-#[derive(Debug, Clone)]
-pub struct InvalidateUpdate {
-    /// Absolute filesystem path.
-    pub path: PathBuf,
-    /// Path relative to `WIKI_DIR`.
-    pub rel: String,
-    /// The new `last_validated` value (the latest source timestamp).
-    pub new_last_validated: String,
-}
-
-/// Check every analysis and synthesis page: if any source page has a
-/// `timestamp` newer than the derived page's `last_validated`, the
-/// validation is stale and `last_validated` should be reset to the
-/// latest source timestamp.
-///
-/// Edge cases handled:
-/// - Missing `sources` field or empty array → skip.
-/// - Unresolvable source path (not in the page set) → skip.
-/// - Unparseable source `timestamp` → skip that source.
-/// - Missing or unparseable `last_validated` on the derived page → skip.
-///
-/// `catalog` resolves each `sources` entry from the derived page's bundle.
-pub fn invalidate_by_source(
-    pages: &[Page],
-    catalog: &Catalog,
-) -> Vec<InvalidateUpdate> {
-    // Build a lookup map keyed by rel path for O(1) source resolution.
-    let by_rel: HashMap<&str, &Page> =
-        pages.iter().map(|p| (p.rel.as_str(), p)).collect();
-
-    let mut updates: Vec<InvalidateUpdate> = Vec::new();
-
-    for page in pages {
-        let pairs = freshness::stale_sources(page, &by_rel, catalog);
-        if pairs.is_empty() {
-            continue;
-        }
-
-        // Collapse to the latest source timestamp (existing behavior).
-        let max_source_date =
-            pairs.iter().map(|(_, d)| d).max().copied().unwrap();
-        updates.push(InvalidateUpdate {
-            path: page.path.clone(),
-            rel: page.rel.clone(),
-            new_last_validated: max_source_date.format("%Y-%m-%d").to_string(),
-        });
     }
 
     updates
@@ -967,13 +914,19 @@ pub fn invalidate_by_source(
 ///
 /// `set` is the shared page snapshot.  A page the document model rejected
 /// keeps its place in the page count and is reported as `invalid_document`;
-/// the remaining rules run on the valid pages.
+/// the remaining rules run on the valid pages.  `indexes` holds
+/// root-relative index paths and the content the caller computed for them,
+/// so a read-only root judges the index a write would store.
 ///
 /// # Errors
 ///
 /// Fails when the pages carry no bundle identity, as the inline-link rules
 /// resolve every body link through the catalog.
-pub fn run_all(root: &Path, set: &PageSet) -> Result<CheckResults, String> {
+pub fn run_all(
+    root: &Path,
+    set: &PageSet,
+    indexes: &HashMap<String, String>,
+) -> Result<CheckResults, String> {
     let pages = set.pages();
     let catalog = Catalog::new(root, set)?;
     let mut frontmatter = check_invalid_documents(set.errors());
@@ -983,7 +936,7 @@ pub fn run_all(root: &Path, set: &PageSet) -> Result<CheckResults, String> {
     Ok(CheckResults {
         total_pages: pages.len() + set.errors().len(),
         empty_files: check_empty_files(pages, DEFAULT_STUB_THRESHOLD),
-        index_sync: check_index_sync(pages, root),
+        index_sync: check_index_sync(pages, root, indexes),
         log_coverage: check_log_coverage(pages, root),
         frontmatter,
         system_file_links: check_system_file_links(pages),
@@ -1045,11 +998,6 @@ mod tests {
             chrono::Utc::now().date_naive(),
         );
         mark_stale(pages, &ctx)
-    }
-
-    /// Invalidate derived pages with the identity of the pages in memory.
-    fn invalidate(pages: &[Page]) -> Vec<InvalidateUpdate> {
-        invalidate_by_source(pages, &Catalog::flat(pages))
     }
 
     fn page_paths_to_pages(paths: &[PathBuf], base: &Path) -> Vec<Page> {
@@ -1144,7 +1092,7 @@ mod tests {
         write(&dir.join("concepts").join("baz.md"), &page_md("Baz"));
 
         let pages = discover_local_pages(&dir);
-        let result = check_index_sync(&pages, &dir);
+        let result = check_index_sync(&pages, &dir, &HashMap::new());
         assert!(
             result
                 .on_disk_not_in_index
@@ -1173,7 +1121,7 @@ mod tests {
         write(&dir.join("concepts").join("foo.md"), &page_md("Foo"));
 
         let pages = discover_local_pages(&dir);
-        let result = check_index_sync(&pages, &dir);
+        let result = check_index_sync(&pages, &dir, &HashMap::new());
         assert!(
             result
                 .in_index_not_on_disk
@@ -1197,7 +1145,7 @@ mod tests {
         write(&dir.join("concepts").join("bar.md"), &page_md("Bar"));
 
         let pages = discover_local_pages(&dir);
-        let result = check_index_sync(&pages, &dir);
+        let result = check_index_sync(&pages, &dir, &HashMap::new());
         assert!(result.on_disk_not_in_index.is_empty());
         assert!(result.in_index_not_on_disk.is_empty());
     }
@@ -1215,7 +1163,7 @@ mod tests {
         write(&dir.join("concepts").join("foo.md"), &page_md("Foo"));
 
         let pages = discover_local_pages(&dir);
-        let result = check_index_sync(&pages, &dir);
+        let result = check_index_sync(&pages, &dir, &HashMap::new());
         // Both overview.md and concepts/foo.md are indexed and on disk.
         assert!(
             !result.in_index_not_on_disk.contains(&"overview.md".to_string()),
@@ -1246,7 +1194,7 @@ mod tests {
         write(&dir.join("concepts").join("bar.md"), &page_md("Bar"));
 
         let pages = discover_local_pages(&dir);
-        let result = check_index_sync(&pages, &dir);
+        let result = check_index_sync(&pages, &dir, &HashMap::new());
         assert!(
             result.on_disk_not_in_index.is_empty(),
             "pages indexed in subdir index.md should not be reported: {:?}",
@@ -1492,7 +1440,7 @@ mod tests {
         write(&dir.join("concepts/broken.md"), "# No frontmatter\n");
 
         let set = wiki::PageSet::load(&dir);
-        let results = run_all(&dir, &set).expect("checks");
+        let results = run_all(&dir, &set, &HashMap::new()).expect("checks");
 
         assert_eq!(results.total_pages, 2, "invalid page counts as a page");
         let invalid: Vec<&Issue> = results
@@ -2078,181 +2026,5 @@ last_validated: not-a-date\n---\nBody.\n";
             "References should be removed"
         );
         assert!(!result.contains("## Notes"), "Notes should be removed");
-    }
-
-    // =======================================================================
-    // invalidate_by_source
-    // =======================================================================
-
-    #[test]
-    fn test_invalidate_by_source_stale_detected() {
-        // Source timestamp newer than derived last_validated → update.
-        let analysis = make_page(
-            "shared/analysis/foo.md",
-            "---\ntitle: Foo\ntype: analysis\nsources: [shared/sources/bar.md]\nlast_validated: 2024-01-01\ntags: []\nstatus: draft\ntimeliness: current\n---\nBody.\n",
-        );
-        let source = make_page(
-            "shared/sources/bar.md",
-            "---\ntitle: Bar\ntype: source\ntimestamp: 2024-06-01\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\nBody.\n",
-        );
-        let updates = invalidate(&[analysis, source]);
-        assert_eq!(updates.len(), 1);
-        assert_eq!(updates[0].rel, "shared/analysis/foo.md");
-        assert_eq!(updates[0].new_last_validated, "2024-06-01");
-    }
-
-    #[test]
-    fn test_invalidate_by_source_source_older() {
-        // Source timestamp older than derived last_validated → no update.
-        let analysis = make_page(
-            "shared/analysis/foo.md",
-            "---\ntitle: Foo\ntype: analysis\nsources: [shared/sources/bar.md]\nlast_validated: 2024-06-01\ntags: []\nstatus: draft\ntimeliness: current\n---\nBody.\n",
-        );
-        let source = make_page(
-            "shared/sources/bar.md",
-            "---\ntitle: Bar\ntype: source\ntimestamp: 2024-01-01\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\nBody.\n",
-        );
-        let updates = invalidate(&[analysis, source]);
-        assert!(updates.is_empty(), "older source should not trigger stale");
-    }
-
-    #[test]
-    fn test_invalidate_by_source_no_stale_when_timestamps_match() {
-        // Source timestamp same as derived last_validated → no update.
-        let analysis = make_page(
-            "shared/analysis/foo.md",
-            "---\ntitle: Foo\ntype: analysis\nsources: [shared/sources/bar.md]\nlast_validated: 2024-06-01\ntags: []\nstatus: draft\ntimeliness: current\n---\nBody.\n",
-        );
-        let source = make_page(
-            "shared/sources/bar.md",
-            "---\ntitle: Bar\ntype: source\ntimestamp: 2024-06-01\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\nBody.\n",
-        );
-        let updates = invalidate(&[analysis, source]);
-        assert!(
-            updates.is_empty(),
-            "equal timestamps should not trigger stale"
-        );
-    }
-
-    #[test]
-    fn test_invalidate_by_source_empty_sources() {
-        // Empty sources array → skip.
-        let analysis = make_page(
-            "shared/analysis/foo.md",
-            "---\ntitle: Foo\ntype: analysis\nsources: []\nlast_validated: 2024-01-01\ntags: []\nstatus: draft\ntimeliness: current\n---\nBody.\n",
-        );
-        let updates = invalidate(&[analysis]);
-        assert!(updates.is_empty(), "empty sources should be skipped");
-    }
-
-    #[test]
-    fn test_invalidate_by_source_missing_sources() {
-        // Missing sources field → skip.
-        let analysis = make_page(
-            "shared/analysis/foo.md",
-            "---\ntitle: Foo\ntype: analysis\nlast_validated: 2024-01-01\ntags: []\nstatus: draft\ntimeliness: current\n---\nBody.\n",
-        );
-        let updates = invalidate(&[analysis]);
-        assert!(updates.is_empty(), "missing sources should be skipped");
-    }
-
-    #[test]
-    fn test_invalidate_by_source_missing_last_validated() {
-        // Missing last_validated → skip (never blindly overwrite).
-        let analysis = make_page(
-            "shared/analysis/foo.md",
-            "---\ntitle: Foo\ntype: analysis\nsources: [shared/sources/bar.md]\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\nBody.\n",
-        );
-        let source = make_page(
-            "shared/sources/bar.md",
-            "---\ntitle: Bar\ntype: source\ntimestamp: 2024-06-01\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\nBody.\n",
-        );
-        let updates = invalidate(&[analysis, source]);
-        assert!(updates.is_empty(), "missing last_validated should be skipped");
-    }
-
-    #[test]
-    fn test_invalidate_by_source_unresolvable_source() {
-        // Source path not in the page set → skip that source.
-        let analysis = make_page(
-            "shared/analysis/foo.md",
-            "---\ntitle: Foo\ntype: analysis\nsources: [shared/sources/bar.md]\nlast_validated: 2024-01-01\ntags: []\nstatus: draft\ntimeliness: current\n---\nBody.\n",
-        );
-        // Only the analysis page — bar.md is not in the set.
-        let updates = invalidate(&[analysis]);
-        assert!(
-            updates.is_empty(),
-            "unresolvable source path should be skipped"
-        );
-    }
-
-    #[test]
-    fn test_invalidate_by_source_non_analysis_skipped() {
-        // Pages that are not analysis/synthesis should be skipped.
-        let concept = make_page(
-            "shared/concepts/foo.md",
-            "---\ntitle: Foo\ntype: concept\nsources: [shared/sources/bar.md]\nlast_validated: 2024-01-01\ntags: []\nstatus: draft\ntimeliness: current\n---\nBody.\n",
-        );
-        let updates = invalidate(&[concept]);
-        assert!(
-            updates.is_empty(),
-            "non-analysis/synthesis pages should be skipped"
-        );
-    }
-
-    #[test]
-    fn test_invalidate_by_source_synthesis_type() {
-        // Synthesis pages also participate in invalidation.
-        let synthesis = make_page(
-            "shared/syntheses/overview.md",
-            "---\ntitle: Overview\ntype: synthesis\nsources: [shared/sources/bar.md]\nlast_validated: 2024-01-01\ntags: []\nstatus: draft\ntimeliness: current\n---\nBody.\n",
-        );
-        let source = make_page(
-            "shared/sources/bar.md",
-            "---\ntitle: Bar\ntype: source\ntimestamp: 2024-06-01\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\nBody.\n",
-        );
-        let updates = invalidate(&[synthesis, source]);
-        assert_eq!(updates.len(), 1);
-        assert_eq!(updates[0].rel, "shared/syntheses/overview.md");
-        assert_eq!(updates[0].new_last_validated, "2024-06-01");
-    }
-
-    #[test]
-    fn test_invalidate_by_source_multiple_sources_one_stale() {
-        // Two sources: one newer, one older → detects stale.
-        let analysis = make_page(
-            "shared/analysis/foo.md",
-            "---\ntitle: Foo\ntype: analysis\nsources: [shared/sources/bar.md, shared/sources/baz.md]\nlast_validated: 2024-01-01\ntags: []\nstatus: draft\ntimeliness: current\n---\nBody.\n",
-        );
-        let bar = make_page(
-            "shared/sources/bar.md",
-            "---\ntitle: Bar\ntype: source\ntimestamp: 2024-06-01\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\nBody.\n",
-        );
-        let baz = make_page(
-            "shared/sources/baz.md",
-            "---\ntitle: Baz\ntype: source\ntimestamp: 2024-03-01\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\nBody.\n",
-        );
-        let updates = invalidate(&[analysis, bar, baz]);
-        assert_eq!(updates.len(), 1);
-        // Should use the latest source timestamp.
-        assert_eq!(updates[0].new_last_validated, "2024-06-01");
-    }
-
-    #[test]
-    fn test_invalidate_by_source_unparseable_timestamp() {
-        // Source with unparseable timestamp → skip that source.
-        let analysis = make_page(
-            "shared/analysis/foo.md",
-            "---\ntitle: Foo\ntype: analysis\nsources: [shared/sources/bar.md]\nlast_validated: 2024-01-01\ntags: []\nstatus: draft\ntimeliness: current\n---\nBody.\n",
-        );
-        let source = make_page(
-            "shared/sources/bar.md",
-            "---\ntitle: Bar\ntype: source\ntimestamp: not-a-date\ntags: []\nstatus: draft\nlast_validated: 2026-01-01\ntimeliness: current\n---\nBody.\n",
-        );
-        let updates = invalidate(&[analysis, source]);
-        assert!(
-            updates.is_empty(),
-            "unparseable source timestamp should be skipped"
-        );
     }
 }

@@ -100,21 +100,18 @@ fn read_page(root: &Path, rel: &str) -> String {
         .unwrap_or_else(|e| panic!("page {rel} should read: {e}"))
 }
 
-/// The `(page, target_path)` pairs lint reports as broken links.
+/// The `(page, target_path)` pairs `check` reports as broken links.
 fn broken_links(root: &Path) -> Vec<(String, String)> {
     let report = report(root, &["check"]);
-    report["lint"]["broken_links"]
+    report["issues"]
         .as_array()
-        .expect("broken_links is an array")
+        .expect("issues is an array")
         .iter()
+        .filter(|issue| issue["rule"] == "broken_link")
         .map(|issue| {
-            let details =
-                issue["details"].as_str().expect("details is a JSON string");
-            let details: serde_json::Value =
-                serde_json::from_str(details).expect("details is JSON");
             (
-                issue["page"].as_str().expect("page").to_string(),
-                details["target_path"]
+                issue["path"].as_str().expect("path").to_string(),
+                issue["details"]["target_path"]
                     .as_str()
                     .expect("target_path")
                     .to_string(),
@@ -252,9 +249,9 @@ fn test_local_backlinks_are_written_once() {
 
     let first = check(&root);
     assert!(
-        String::from_utf8_lossy(&first.stderr).contains("已同步"),
-        "the first check should write the backlinks: {}",
-        String::from_utf8_lossy(&first.stderr)
+        String::from_utf8_lossy(&first.stdout).contains("反向链接"),
+        "the first check reports the backlinks write: {}",
+        String::from_utf8_lossy(&first.stdout)
     );
     let after_first = read_page(&root, "concepts/target.md");
     assert!(
@@ -265,9 +262,9 @@ fn test_local_backlinks_are_written_once() {
 
     let second = check(&root);
     assert!(
-        !String::from_utf8_lossy(&second.stderr).contains("已同步"),
+        !String::from_utf8_lossy(&second.stdout).contains("变更（"),
         "a second check must not rewrite: {}",
-        String::from_utf8_lossy(&second.stderr)
+        String::from_utf8_lossy(&second.stdout)
     );
     assert_eq!(read_page(&root, "concepts/target.md"), after_first);
 }
