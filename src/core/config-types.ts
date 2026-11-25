@@ -185,7 +185,7 @@ export interface ModeProfile {
   hooks: string[];
   /** Tool names registered (compress, decompress). */
   tools: string[];
-  /** Slash-command names registered (go, switch, debug). */
+  /** Slash-command names registered (go, switch, debug, view). */
   commands: string[];
 }
 

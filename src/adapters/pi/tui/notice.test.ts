@@ -44,6 +44,19 @@ describe("buildPiNoticeEntryRenderer", () => {
     ]);
   });
 
+  it("does not clip a notice to a render width (the zoo-view page owns clipping)", () => {
+    const renderer = buildPiNoticeEntryRenderer();
+    const content = "很长的通知内容".repeat(20);
+    const component = renderer(
+      { data: { content } },
+      { expanded: false },
+      { fg: (_color: string, text: string) => text },
+    ) as { render(width?: number): string[] } | undefined;
+    assert.ok(component);
+
+    assert.deepEqual(component.render(10), ["[zoo]", content]);
+  });
+
   it("returns undefined for an empty or missing payload", () => {
     const renderer = buildPiNoticeEntryRenderer();
     assert.equal(renderer({ data: { content: "" } }, {}, undefined), undefined);

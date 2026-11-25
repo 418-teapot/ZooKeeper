@@ -102,11 +102,13 @@ import {
   buildTodoCardRenderer,
 } from "./tui/index.js";
 import { buildPiNoticeEntryRenderer } from "./tui/notice.js";
+import { buildPiViewEntryRenderer } from "./tui/view.js";
 import type {
   ExtensionAPI,
   PiCommandContext,
   PiEventHandlers,
 } from "./types.js";
+import { createPiViewHost } from "./view-host.js";
 
 // realpathSync follows the symlink to the real module location, so the
 // computed skill paths resolve into the project directory even when the
@@ -350,6 +352,13 @@ export function buildPiCapabilities(
      * contributes no tools (fail-closed, matching OpenCode).
      */
     askQuestionChannel?: Partial<Capabilities>["askQuestionChannel"];
+    /**
+     * The view host of this runtime (the `/view` page channel).  Only pi
+     * renders a persistent entry at the client's own width, so only this
+     * host binds it; OpenCode omits it and the `/view` unit is skipped.
+     * Undefined in a bare composition (a unit test).
+     */
+    viewHost?: Partial<Capabilities>["viewHost"];
   },
 ): PiCapabilities {
   const { modeProfile, askConfig, subagentConfig, subagentModels } =
@@ -440,6 +449,10 @@ export function buildPiCapabilities(
     // unit is skipped (fail-closed, so `ask` never registers on
     // OpenCode).
     askQuestionChannel: hostDeps?.askQuestionChannel,
+    // The `/view` page channel.  Only pi renders a persistent entry at the
+    // client's own width; without it the `/view` command unit is skipped
+    // (fail-closed, so the command never registers on OpenCode).
+    viewHost: hostDeps?.viewHost,
     // pi has no SDK client: the context-pruning transform runs and
     // returns the pruned replacement to pi.  The release notification
     // does not need a client: it posts through the unified pi tool
@@ -678,6 +691,8 @@ export interface PiStartPrepared extends PiEventHandlers {
   readonly commands: readonly PiCommandStart[];
   /** The `zoo-notice` entry renderer publish registers. */
   readonly noticeRenderer: unknown;
+  /** The `zoo-view` entry renderer publish registers. */
+  readonly viewRenderer: unknown;
 }
 
 /** The options of one pi start. */
@@ -964,6 +979,11 @@ export function createPiRuntimeInstance(
         // resolved, so the ask unit registers on pi only and stays closed
         // on OpenCode.
         askQuestionChannel,
+        // The `/view` page channel: pi appends the page as a `zoo-view`
+        // custom entry and its renderer clips it to the client width, so
+        // only this host binds the port (and only this host registers the
+        // command).
+        viewHost: createPiViewHost(appendEntry),
       }),
   });
 
@@ -1335,6 +1355,12 @@ export async function preparePiStart(
   // import).
   const noticeRenderer = buildPiNoticeEntryRenderer();
 
+  // The `zoo-view` entry renderer: the `/view` command posts one page per
+  // invocation, and the renderer clips each line to the width the
+  // transcript currently shows.  Built here, independently of the
+  // profile, exactly like the notice renderer.
+  const viewRenderer = buildPiViewEntryRenderer();
+
   // The fourteen handlers close over the wiring surfaces assembled above;
   // their bodies live in `handlers.ts`.
   const handlers = createPiEventHandlers({
@@ -1387,5 +1413,5 @@ export async function preparePiStart(
     stopExtension: (event) => lifecycle.stopExtension(event),
   });
 
-  return { ...handlers, tools, commands, noticeRenderer };
+  return { ...handlers, tools, commands, noticeRenderer, viewRenderer };
 }

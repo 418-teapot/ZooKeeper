@@ -865,6 +865,18 @@ describe("command atomic registration", () => {
     await plugin.config(config);
     assert.equal(config.command, undefined);
   });
+
+  it('commands=["view"] registers nothing — the pi-only view capability is absent', async () => {
+    // `/view` needs a host that renders a persistent entry at the client's
+    // own width.  OpenCode binds no such port, so the unit is skipped and
+    // the command never registers here.
+    const plugin = await pluginWithCommands(["view"]);
+    assert.equal(plugin["command.execute.before"], undefined);
+
+    const config = hostConfig();
+    await plugin.config(config);
+    assert.equal(config.command, undefined);
+  });
 });
 
 // ---------------------------------------------------------------------------

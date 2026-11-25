@@ -133,7 +133,7 @@ describe("createPiRuntime — publish", () => {
     ]);
     assert.deepEqual(
       api.renderers.map((entry) => entry.customType),
-      ["zoo-notice"],
+      ["zoo-notice", "zoo-view"],
     );
     assert.equal(typeof api.handlers.session_start, "function");
     assert.equal(typeof api.handlers.tool_call, "function");

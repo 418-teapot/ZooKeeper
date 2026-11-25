@@ -284,11 +284,21 @@ export interface PiMessageEndContext {
  * Minimal duck-type shape of the pi command-handler context.
  *
  * pi passes its `ExtensionCommandContext` (see `createCommandContext` in
- * the pi runner) to a registered command handler; ZooKeeper only reads the
- * session id off it.
+ * the pi runner) to a registered command handler; ZooKeeper reads the
+ * session id off it and, when the host exposes one, the session's current
+ * model-visible message projection.
  */
 export interface PiCommandContext {
-  sessionManager?: { getSessionId(): string };
+  sessionManager?: {
+    getSessionId(): string;
+    /**
+     * The current leaf's compaction-aware projection of the session.
+     *
+     * Absent on a host that does not expose it, and the command then
+     * presents no page.
+     */
+    buildSessionProjection?(): { messages: unknown[] };
+  };
 }
 
 /**

@@ -1385,6 +1385,77 @@ describe("startPi — registerCommand wiring", () => {
     assert.equal(typeof renderer.renderer, "function");
   });
 
+  it("registers a zoo-view entry renderer with pi", async () => {
+    const api = mockApi();
+    await startInstance(piScope(POLY_ZOO, MODES_RAW), api as any);
+    const renderer = api.renderers.find((r) => r.customType === "zoo-view");
+    assert.ok(renderer, "zoo-view entry renderer must be registered");
+    assert.equal(typeof renderer.renderer, "function");
+  });
+
+  it("/view presents the current conversation as a zoo-view entry without a published round view", async () => {
+    // The page comes from the session's own projection, so a session that
+    // never ran a transform still has a view: the reasoning is kept off the
+    // line and the tool call stays visible with its name, arguments and
+    // result under the same mN as the message that carries it.
+    const api = mockApi();
+    const runtime = createContextRuntime();
+    await startInstance(
+      piScope(
+        {
+          mode: {
+            poly: { ...POLY_PROFILE, commands: ["view"] },
+          },
+        },
+        MODES_RAW,
+      ),
+      api as any,
+      { contextRuntime: runtime },
+    );
+    assert.equal(runtime.roundView("sess-view"), undefined);
+    const view = api.commands.find((c) => c.name === "view");
+    assert.ok(view && typeof view.handler === "function");
+
+    await (view.handler as (args: string, ctx: unknown) => Promise<void>)("", {
+      sessionManager: {
+        getSessionId: () => "sess-view",
+        buildSessionProjection: () => ({
+          messages: [
+            { role: "system", content: "系统提示" },
+            { role: "user", content: "看一下目录" },
+            {
+              role: "assistant",
+              content: [
+                { type: "thinking", thinking: "思考".repeat(40) },
+                { type: "text", text: "我来执行" },
+                {
+                  type: "toolCall",
+                  id: "c1",
+                  name: "bash",
+                  arguments: { command: "ls" },
+                },
+              ],
+            },
+            {
+              role: "toolResult",
+              toolCallId: "c1",
+              toolName: "bash",
+              content: [{ type: "text", text: "file1" }],
+              isError: false,
+            },
+          ],
+        }),
+      },
+    });
+
+    const entry = api.appendedEntries.find((e) => e.customType === "zoo-view");
+    assert.ok(entry, "the page must go through the zoo-view custom entry");
+    assert.deepEqual((entry.data as any)?.lines, [
+      " 4 tokens  user:      │ [m1] 看一下目录",
+      '63 tokens  assistant: │ [m2] 我来执行 [tool bash] {"command":"ls"} [result] file1',
+    ]);
+  });
+
   it("registers the zoo-notice renderer even without commands enabled", async () => {
     // The renderer is unconditional: every in-session notification is a
     // zoo-notice entry, so a profile that enables no command still needs

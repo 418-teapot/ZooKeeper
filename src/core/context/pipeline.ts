@@ -74,7 +74,7 @@
  * @module
  */
 
-import { log } from "../../utils/logger.js";
+import { type LogEntry, log } from "../../utils/logger.js";
 import type { ContextPruningConfig } from "../config-types.js";
 import type { WorkPermit } from "../lifecycle/index.js";
 import type { ToastPayload, ToolHost } from "../ports/tool-host.js";
@@ -86,6 +86,7 @@ import type {
   HostMessage,
   Projection,
   RegionEdit,
+  RenderEntry,
   ViewItem,
 } from "./lens.js";
 import { promptSideTokens } from "./measure.js";
@@ -112,7 +113,7 @@ import {
 } from "./round-view.js";
 import type { ContextRuntime, RuntimeFlaggedState } from "./runtime.js";
 import { checkSpan } from "./spanhash.js";
-import { type Block, markStale } from "./state.js";
+import { type Block, markStale, type SessionState } from "./state.js";
 import { itemInterval, type NumberedItem, numberView } from "./view-refs.js";
 
 // ---------------------------------------------------------------------------
@@ -186,6 +187,12 @@ interface PipelinePhaseContext {
   toasts: ToastPayload[];
   /** Success log entries to emit once the commit succeeds. */
   logs: StagedLog[];
+  /**
+   * The immediate diagnostic sink (fold expiry warnings).  A phase reports
+   * through it only when the caller supplied one: the preview passes none,
+   * so it never writes a log line.
+   */
+  warn?: (entry: LogEntry) => void;
   /** The conversation array; phases replace it as they render. */
   messages: unknown;
   /** The current projection snapshot of `messages`. */
@@ -207,17 +214,19 @@ interface PipelinePhaseContext {
   protection?: ProtectionMap;
   /** The folded view items, read by the producers and rendered. */
   foldedItems: ViewItem[];
+  /** The round's render plan, in view order. */
+  plan: RenderEntry[];
   /** The phantom threshold shared by the nudge and the compress tool. */
   eligibilityConfig: EligibilityConfig;
 }
 
 /**
- * The read phase's inputs — the handler arguments plus the extracted
- * session id, carried as a single object to keep the seam named.
+ * The read phase's inputs — the handler arguments plus the diagnostic
+ * sink, carried as a single object to keep the seam named.
  */
 type PipelineInputs = Pick<
   PipelinePhaseContext,
-  "adapter" | "config" | "hasCompressTool" | "toast" | "messages"
+  "adapter" | "config" | "hasCompressTool" | "toast" | "messages" | "warn"
 >;
 
 // ---------------------------------------------------------------------------
@@ -234,12 +243,11 @@ type PipelineInputs = Pick<
  */
 function readPhase(
   runtime: ContextRuntime,
-  permit: WorkPermit,
+  sessionId: string,
   state: RuntimeFlaggedState,
   inputs: PipelineInputs,
 ): PipelinePhaseContext {
   const { adapter, messages, config } = inputs;
-  const sessionId = permit.sessionID;
   const snapshot = adapter.history(messages);
   const view = snapshot.messages;
   const modelLimit = runtime.modelLimit(sessionId);
@@ -261,6 +269,7 @@ function readPhase(
     roundView: { projection: snapshot, numbered: [], protection },
     protection,
     foldedItems: [],
+    plan: [],
     notices: [],
     toasts: [],
     logs: [],
@@ -444,7 +453,7 @@ function foldPhase(ctx: PipelinePhaseContext): void {
         historyLength: snapshot.messages.length,
         ...(block.title !== undefined ? { title: block.title } : {}),
       };
-      log.warn({ ...entry, ...EXPIRY_DIAGNOSTICS[reason](snapshot, block) });
+      ctx.warn?.({ ...entry, ...EXPIRY_DIAGNOSTICS[reason](snapshot, block) });
     }
     markStale(
       state,
@@ -571,7 +580,10 @@ function producersPhase(ctx: PipelinePhaseContext): void {
  * publishes it (see `contextPruningTransformHandler`).
  *
  * The render plan is computed here, once, over the lens the round's
- * edits landed in; the adapter only applies it.
+ * edits landed in; the adapter only applies it.  The plan stays on the
+ * context: the preview reads it to tell which message received a line
+ * ref, so a rendered text that looks like a ref is never mistaken for
+ * one.
  */
 function publishPhase(ctx: PipelinePhaseContext): void {
   const { adapter, sessionId, state } = ctx;
@@ -590,10 +602,8 @@ function publishPhase(ctx: PipelinePhaseContext): void {
   // messages survive, which carries each unit's dense `[mN] ` line ref,
   // and what each folded block's summary text is.  The returned array is
   // threaded through every subsequent step.
-  ctx.messages = adapter.materialize(
-    ctx.messages,
-    planViewRender(ctx.view, ctx.foldedItems, numbered, state),
-  );
+  ctx.plan = planViewRender(ctx.view, ctx.foldedItems, numbered, state);
+  ctx.messages = adapter.materialize(ctx.messages, ctx.plan);
 
   ctx.numbered = numbered;
   if (numbered.length > 0) {
@@ -718,6 +728,48 @@ function summarizePhase(ctx: PipelinePhaseContext): PruneSummary {
 }
 
 // ---------------------------------------------------------------------------
+// Round runner
+// ---------------------------------------------------------------------------
+
+/** One round's phase results and its accounting. */
+interface Round {
+  /** The finished phase context (rendered conversation, view, logs). */
+  ctx: PipelinePhaseContext;
+  /** Effective-only accounting of the round. */
+  summary: PruneSummary;
+}
+
+/**
+ * Run every phase of one pruning round over a draft state.
+ *
+ * The transform's single phase sequence (see the module docstring).  Both
+ * the transform handler and the preview run it, so the two can never
+ * disagree on the fold, the release gate or the `mN` numbering.  It writes
+ * only the state it is given and the context it returns: the caller owns
+ * the commit, the notices, the logs and the publication.
+ *
+ * @param runtime - The plugin instance's context records (read only).
+ * @param sessionId - The session the round belongs to.
+ * @param state - The draft state the phases mutate.
+ * @param inputs - The round's conversation, config and hooks.
+ * @returns The finished context and the round's accounting.
+ */
+function runRoundPhases(
+  runtime: ContextRuntime,
+  sessionId: string,
+  state: RuntimeFlaggedState,
+  inputs: PipelineInputs,
+): Round {
+  const ctx = readPhase(runtime, sessionId, state, inputs);
+  releasePhase(ctx);
+  foldPhase(ctx);
+  producersPhase(ctx);
+  publishPhase(ctx);
+  nudgePhase(ctx);
+  return { ctx, summary: summarizePhase(ctx) };
+}
+
+// ---------------------------------------------------------------------------
 // Handler
 // ---------------------------------------------------------------------------
 
@@ -768,21 +820,18 @@ export async function contextPruningTransformHandler(
   }
   if (!permit.isActive()) return messages;
 
-  const committed = await runtime.commit(permit, (state) => {
-    const ctx = readPhase(runtime, permit, state, {
+  const committed = await runtime.commit(permit, (state) =>
+    runRoundPhases(runtime, permit.sessionID, state, {
       adapter,
       messages,
       config,
       hasCompressTool,
       toast,
-    });
-    releasePhase(ctx);
-    foldPhase(ctx);
-    producersPhase(ctx);
-    publishPhase(ctx);
-    nudgePhase(ctx);
-    return { ctx, summary: summarizePhase(ctx) };
-  });
+      // Success entries are staged on the context; diagnostics are
+      // immediate.
+      warn: (entry) => log.warn(entry),
+    }),
+  );
   if (committed === undefined) return messages;
 
   // The commit is the point of no return: the round's view, its notices and
@@ -885,4 +934,99 @@ export async function handleContextPruning(
       error: String(err),
     });
   }
+}
+
+// ---------------------------------------------------------------------------
+// Preview
+// ---------------------------------------------------------------------------
+
+/**
+ * The transform's next output, as the `/view` page reads it.
+ *
+ * `lens` is the transcript the round's plan was computed over (the token
+ * accounting and the roles come from it), `rendered` is the projection of
+ * the messages the transform would actually send — final ordinals, injected
+ * `[mN] ` refs and the invocation table — `plan` is the render plan behind
+ * that rendering (which message carries which ref), and the items and
+ * numbering are the round's own address space.
+ */
+export interface RoundPreview {
+  /** The pre-render lens the fold and the plan ran over. */
+  lens: HostMessage[];
+  /** The projection of the rendered conversation. */
+  rendered: Projection;
+  /** The render plan applied to the conversation, in view order. */
+  plan: RenderEntry[];
+  /** The folded view items, in view order. */
+  items: ViewItem[];
+  /** The round's dense `mN` numbering. */
+  numbered: NumberedItem[];
+}
+
+/** The inputs of one preview round. */
+export interface RoundPreviewInput {
+  /** The plugin instance's context records (read only). */
+  runtime: ContextRuntime;
+  /** The session the round belongs to. */
+  sessionId: string;
+  /**
+   * The session's committed state.  The preview runs over a copy, so the
+   * caller's state is never written.
+   */
+  state: SessionState;
+  /** The host adapter that projects and renders the conversation. */
+  adapter: HostAdapter<unknown>;
+  /** The session's current model-visible conversation. */
+  messages: unknown;
+  /** Unified context-pruning configuration. */
+  config: ContextPruningConfig;
+  /** Whether the `compress` tool is registered (gates the nudge). */
+  hasCompressTool?: boolean;
+}
+
+/**
+ * Compute the messages the context transform will send, without writing.
+ *
+ * Runs the transform's own phase sequence over a copy of the session state
+ * and returns the round's view, so the page shows the fold, the release
+ * gate and the `mN` numbering the next transform will produce — no
+ * published round view is needed and none is published.  Every side effect
+ * of the real transform is absent by construction: the state it mutates is
+ * a copy, the notices, toasts and success logs stay staged on the discarded
+ * context, no diagnostic is emitted, and the store, the model limit and the
+ * published view are untouched.
+ *
+ * Fail-closed: an empty or non-array conversation yields undefined, exactly
+ * like the transform, which then returns the conversation unchanged.
+ *
+ * @param input - The runtime, the session, the state copy source and the
+ *   round's conversation and config.
+ * @returns The round's view and rendered projection, or undefined when
+ *   there is nothing to render.
+ */
+export function previewRound(
+  input: RoundPreviewInput,
+): RoundPreview | undefined {
+  const { messages } = input;
+  if (!messages || !Array.isArray(messages) || messages.length === 0) {
+    return undefined;
+  }
+  const { ctx } = runRoundPhases(
+    input.runtime,
+    input.sessionId,
+    structuredClone(input.state),
+    {
+      adapter: input.adapter,
+      messages,
+      config: input.config,
+      hasCompressTool: input.hasCompressTool,
+    },
+  );
+  return {
+    lens: ctx.view,
+    rendered: input.adapter.history(ctx.messages),
+    plan: ctx.plan,
+    items: ctx.foldedItems,
+    numbered: ctx.numbered,
+  };
 }

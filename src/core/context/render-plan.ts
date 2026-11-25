@@ -32,6 +32,22 @@ import { injectLinePrefix, pickInjectableRegion } from "./writable-regions.js";
 export type { RenderEntry };
 
 /**
+ * Count the plan entries one view item produces.
+ *
+ * An original item renders every message of its fold unit, so its entry
+ * count is the interval length; a summary item renders as one synthetic
+ * message.  `planViewRender` emits exactly this many entries per item, in
+ * view order, so a reader that walks the plan and the materialized
+ * conversation side by side can group both by item.
+ *
+ * @param item - The view item to measure.
+ * @returns The number of plan entries the item contributes.
+ */
+export function planEntryCount(item: ViewItem): number {
+  return item.type === "summary" ? 1 : item.end - item.start;
+}
+
+/**
  * Plan how a numbered folded view materializes.
  *
  * Original items keep every member message of their fold unit; the

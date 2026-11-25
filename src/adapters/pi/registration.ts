@@ -145,14 +145,45 @@ interface PiCommandRegistration {
 }
 
 /**
+ * The commands whose handler reads the session's messages.
+ *
+ * Only `/view` shows the conversation; every other command runs on its
+ * arguments alone, so its handler never touches the host's projection.
+ */
+const MESSAGE_COMMANDS: ReadonlySet<string> = new Set(["view"]);
+
+/**
+ * Project the session's current model-visible messages.
+ *
+ * pi hands a `context` handler the session's messages with the
+ * `role === "system"` entries already removed, so the projection drops
+ * them too: a command that reads the conversation shows the same message
+ * list the transform will receive.  A context that cannot project the
+ * session yields undefined, and the command presents no page.
+ *
+ * @param ctx - The pi command context.
+ * @returns The session's messages, or undefined when they are unavailable.
+ */
+function sessionMessages(ctx: PiCommandContext): unknown[] | undefined {
+  const projection = ctx?.sessionManager?.buildSessionProjection?.();
+  if (projection === undefined) return undefined;
+  return projection.messages.filter(
+    (message) => (message as { role?: unknown } | null)?.role !== "system",
+  );
+}
+
+/**
  * Assemble the pi `registerCommand` registrations from the composed
  * commands slot.
  *
  * The handler resolves the session id from pi's command context
  * (`ctx.sessionManager.getSessionId()`) and forwards the raw arguments
  * string into the host-agnostic `CommandInput`, mirroring the OpenCode
- * adapter's command routing.  Binding the command context to the session
- * contexts is the wiring layer's job, inside the permit.
+ * adapter's command routing.  Only a command that reads the conversation
+ * receives the session's current messages; every other command keeps its
+ * input free of them and makes no projection call.  Binding the command
+ * context to the session contexts is the wiring layer's job, inside the
+ * permit.
  *
  * @param commands - The composed command contributions, keyed by name.
  * @returns The pi command registrations (empty for an empty slot).
@@ -166,11 +197,15 @@ export function buildPiCommandRegistrationPlan(
     replacesSession: contribution.replacesSession === true,
     handler: async (args, ctx, permit) => {
       const sessionID = ctx?.sessionManager?.getSessionId() ?? "";
+      const messages = MESSAGE_COMMANDS.has(contribution.name)
+        ? sessionMessages(ctx)
+        : undefined;
       await contribution.handle(
         {
           command: contribution.name,
           sessionID,
           arguments: args,
+          ...(messages === undefined ? {} : { messages }),
         },
         permit,
       );

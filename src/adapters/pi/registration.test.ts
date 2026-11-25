@@ -87,6 +87,89 @@ describe("buildPiCommandRegistrationPlan", () => {
     assert.equal(captured?.arguments, "context");
   });
 
+  it("passes the session's projected messages without the system messages", async () => {
+    let captured: CommandInput | undefined;
+    let projections = 0;
+    const commands: ComposedResult["commands"] = {
+      view: {
+        name: "view",
+        description: "desc",
+        handle: async (input) => {
+          captured = input;
+        },
+      },
+    };
+    const user = { role: "user", content: "问题" };
+    const [reg] = buildPiCommandRegistrationPlan(commands);
+
+    await reg.handler("", {
+      sessionManager: {
+        getSessionId: () => "sess-pi",
+        buildSessionProjection: () => {
+          projections += 1;
+          return {
+            messages: [{ role: "system", content: "提示" }, user],
+          };
+        },
+      },
+    });
+
+    assert.deepEqual(captured?.messages, [user]);
+    assert.equal(projections, 1, "/view reads the projection once");
+  });
+
+  it("does not project the session for a command that reads no messages", async () => {
+    let captured: CommandInput | undefined;
+    let projections = 0;
+    const commands: ComposedResult["commands"] = {
+      custom: {
+        name: "custom",
+        description: "desc",
+        handle: async (input) => {
+          captured = input;
+        },
+      },
+    };
+    const [reg] = buildPiCommandRegistrationPlan(commands);
+
+    await reg.handler("args", {
+      sessionManager: {
+        getSessionId: () => "sess-pi",
+        buildSessionProjection: () => {
+          projections += 1;
+          return { messages: [{ role: "user", content: "问题" }] };
+        },
+      },
+    });
+
+    assert.equal(projections, 0, "no projection for a message-free command");
+    assert.deepEqual(captured, {
+      command: "custom",
+      sessionID: "sess-pi",
+      arguments: "args",
+    });
+  });
+
+  it("omits the messages when the command context cannot project them", async () => {
+    let captured: CommandInput | undefined;
+    const commands: ComposedResult["commands"] = {
+      view: {
+        name: "view",
+        description: "desc",
+        handle: async (input) => {
+          captured = input;
+        },
+      },
+    };
+    const [reg] = buildPiCommandRegistrationPlan(commands);
+
+    await reg.handler("", {
+      sessionManager: { getSessionId: () => "sess-pi" },
+    });
+
+    assert.equal(captured?.messages, undefined);
+  });
+
   it("carries the contribution's replacing claim", () => {
     const commands: ComposedResult["commands"] = {
       go: {

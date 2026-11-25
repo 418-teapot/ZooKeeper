@@ -16,7 +16,7 @@
  *      reply-strip (textComplete), todo-continuation → auto-debug
  *      (onSettled).
  *   2. tool units — compress, decompress, subagent, ask.
- *   3. command units — go, switch, debug.
+ *   3. command units — go, switch, debug, view.
  *   4. agent units — the two behavioral agents plus the five
  *      prompt-only agents generated from the table in
  *      `agents/prompt-agents.ts`.
@@ -40,6 +40,7 @@ import { promptAgentUnits } from "./agents/prompt-agents.js";
 import { unit as debugCommandUnit } from "./commands/debug/index.js";
 import { unit as goCommandUnit } from "./commands/go/index.js";
 import { unit as switchCommandUnit } from "./commands/switch/index.js";
+import { unit as viewCommandUnit } from "./commands/view/index.js";
 import {
   defineSkill,
   type SkillUnitDescriptor,
@@ -178,6 +179,7 @@ export const REGISTRY: UnitDescriptor[] = [
   goCommandUnit,
   switchCommandUnit,
   debugCommandUnit,
+  viewCommandUnit,
   // ── Agent units ─────────────────────────────────────────────────
   dolphinUnit,
   molaUnit,

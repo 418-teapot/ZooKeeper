@@ -119,6 +119,15 @@ export interface CommandInput {
   command: string;
   sessionID: string;
   arguments: string;
+  /**
+   * The session's current model-visible conversation, in the host's own
+   * message shape (opaque to the core).
+   *
+   * A host whose command context cannot name the conversation leaves it
+   * out, so a command that reads the conversation presents nothing instead
+   * of addressing a stale one.
+   */
+  messages?: unknown;
 }
 
 /**

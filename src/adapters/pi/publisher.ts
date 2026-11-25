@@ -6,8 +6,8 @@
  * synchronous, so the owner exists before the first fallible step.  Its
  * publisher then runs the start in two phases: `prepare` (see `wire.ts`)
  * computes the whole start without touching pi, and `publish` performs the
- * writes, in a fixed order: the tools, the commands, the `zoo-notice` entry
- * renderer, and finally the event keys.
+ * writes, in a fixed order: the tools, the commands, the `zoo-notice` and
+ * `zoo-view` entry renderers, and finally the event keys.
  *
  * The order is the reason the split exists.  pi's registration calls have no
  * rollback, so a start that fails halfway leaves the host half wired.  Every
@@ -75,6 +75,12 @@ export function publishPiStart(
     pi.registerEntryRenderer(
       "zoo-notice",
       prepared.noticeRenderer as unknown as Parameters<
+        ExtensionAPI["registerEntryRenderer"]
+      >[1],
+    );
+    pi.registerEntryRenderer(
+      "zoo-view",
+      prepared.viewRenderer as unknown as Parameters<
         ExtensionAPI["registerEntryRenderer"]
       >[1],
     );

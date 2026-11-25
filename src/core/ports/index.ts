@@ -30,6 +30,7 @@ import type { SwitchPort } from "./switch.js";
 import type { TodoPort } from "./todo.js";
 import type { ToolHostPort } from "./tool-host.js";
 import type { ValidationPort } from "./validation.js";
+import type { ViewPort } from "./view.js";
 
 export type { AgentPort } from "./agent.js";
 export type { AskPort, QuestionChannelProvider } from "./ask.js";
@@ -50,6 +51,7 @@ export type { SwitchHost, SwitchNewSessionOps, SwitchPort } from "./switch.js";
 export type { TodoPort, TodoStateAccess } from "./todo.js";
 export type { ToastPayload, ToolHost, ToolHostPort } from "./tool-host.js";
 export type { ValidationPort } from "./validation.js";
+export type { ViewHost, ViewPort } from "./view.js";
 
 /**
  * Every capability a unit may declare.
@@ -75,4 +77,5 @@ export interface Capabilities
     SwitchPort,
     HandoffPort,
     SessionPort,
-    ToolHostPort {}
+    ToolHostPort,
+    ViewPort {}
