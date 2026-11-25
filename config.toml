@@ -599,6 +599,7 @@ ask = "deny"
 "rm *"           = "deny"
 [agent.kiwi.permission.skill]
 "*" = "deny"
+"explain" = "allow"
 "kiwi-*" = "allow"
 
 # 禁用内置 agent
